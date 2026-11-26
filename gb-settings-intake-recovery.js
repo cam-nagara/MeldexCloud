@@ -64,7 +64,9 @@
     try {
       await global.apiFetch(`${ENDPOINT}/resolve`, {
         method: 'POST',
-        body: { operation_id: row.dataset.operationId, root: row.dataset.root, action },
+        // apiFetch は本文をそのまま送るため、文字列化しないとサーバーが読めない。
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operation_id: row.dataset.operationId, root: row.dataset.root, action }),
       });
       notify(action === 'discard' ? '止まっていた取込を取り消しました' : '止まっていた取込を解消しました');
     } catch (error) {

@@ -218,7 +218,7 @@ CalendarComponent.prototype._renderGantt = function() {
     }
     const row = document.createElement('div'); row.className = 'gb-cal-gantt-row';
     const left = document.createElement('button'); left.type = 'button'; left.className = 'gb-cal-gantt-left gb-cal-gantt-item-title'; left.textContent = item.title;
-    left.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id) : this._showTaskModal(item.source.id));
+    left.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id, item.source.start) : this._showTaskModal(item.source.id));
     const track = document.createElement('div'); track.className = 'gb-cal-gantt-track';
     const todayPos = ((new Date().setHours(0,0,0,0) - win.start) / rangeMs) * 100;
     if (todayPos >= 0 && todayPos <= 100) { const todayLine = document.createElement('span'); todayLine.className = 'gb-cal-gantt-today'; todayLine.style.left = `${todayPos}%`; track.appendChild(todayLine); }
@@ -244,7 +244,7 @@ CalendarComponent.prototype._renderGantt = function() {
   if (unscheduled.length) {
     const section = document.createElement('div'); section.className = 'gb-cal-gantt-unscheduled';
     section.innerHTML = `<strong>未スケジュール (${unscheduled.length})</strong>`;
-    unscheduled.forEach(item => { const button = document.createElement('button'); button.type = 'button'; button.textContent = item.title; button.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id) : this._showTaskModal(item.source.id)); section.appendChild(button); });
+    unscheduled.forEach(item => { const button = document.createElement('button'); button.type = 'button'; button.textContent = item.title; button.addEventListener('click', () => item.kind === 'event' ? this._openEventInPanel(item.source.id, item.source.start) : this._showTaskModal(item.source.id)); section.appendChild(button); });
     host.appendChild(section);
   }
 };

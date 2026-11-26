@@ -170,6 +170,30 @@
     return toolbar;
   }
 
+  async function refreshValueHistory(scope, entryId, path) {
+    for (const root of document.querySelectorAll('[data-meldex-entity-detail]')) {
+      const controller = root._meldexEntityDetailController;
+      const target = controller?.valueHistoryTarget?.();
+      if (!target?.connected || target.scope !== scope) continue;
+      await controller.ready;
+      const current = controller.valueHistoryTarget();
+      if (!current.connected || current.scope !== scope) continue;
+      if (entryId ? current.entryId !== entryId : current.path !== path) continue;
+      const focused = document.activeElement;
+      const focusId = root.contains(focused) ? focused?.dataset?.e2eId : '';
+      const sameControls = () => Array.from(root.querySelectorAll('[data-e2e-id]'))
+        .filter(control => control.dataset.e2eId === focusId);
+      const focusIndex = focusId ? sameControls().indexOf(focused) : -1;
+      await controller.rerender();
+      // The columns tab is selected asynchronously and may replace its controls once more.
+      await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.flush?.();
+      // Do not steal focus if the user moved elsewhere while the value was loading.
+      if (focusIndex >= 0 && (document.activeElement === focused || document.activeElement === document.body)) {
+        sameControls()[focusIndex]?.focus({ preventScroll: true });
+      }
+    }
+  }
+
   function mount(rootOrOptions, path, surface, readOnly) {
     const options = rootOrOptions?.nodeType
       ? { root: rootOrOptions, path, surface, readOnly }
@@ -383,6 +407,7 @@
       let cancellingTitle = false;
       const entryId = state.data?.entry_id || state.data?.id
         || Object.values(state.data?.properties || {}).flat().find(value => value?.entry_id)?.entry_id || '';
+      state.valueHistoryEntryId = entryId;
       const renameCtx = options.ctx || (typeof getAllPanes === 'function' ? Object.values(getAllPanes() || {}) : [])
         .find(ctx => !ctx.destroyed && Object.values(ctx.pivotData?.entities || {}).some(entity =>
           (entryId && (entity?._id || entity?.entry_id) === entryId)
@@ -535,16 +560,22 @@
       if (state.surface === 'main') grid.id = 'entity-props-grid';
       columnsPane.appendChild(grid);
       state.parentDb = parent;
+      const valueHistoryScope = typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope;
+      const valueHistoryPath = state.path;
       const entityGridOptions = {
         parentDb: parent,
         propTypes: meta?.property_types || options.propTypes || undefined,
         surface: state.surface,
         topicTabs: true,
+        historyScope: options.historyScope,
+        onHistoryChanged: typeof valueHistoryScope === 'string' ? () => refreshValueHistory(valueHistoryScope, entryId, valueHistoryPath) : undefined,
         readOnly: access.readOnly,
         ctx: options.ctx,
       };
-      state.selectTopicLayout = async (layoutId) => {
-        if (await state.defaultForm?.showColumns?.() === false) return false;
+      state.selectTopicLayout = async (layoutId, selection = {}) => {
+        // Mounting the outer columns panel must retain the default form inside it.
+        const initialColumns = selection.initial && layoutId === (window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns');
+        if (!initialColumns && await state.defaultForm?.showColumns?.() === false) return false;
         state.currentTopicLayoutId = layoutId;
         if (typeof renderEntityPropsGridInto === 'function') {
           renderEntityPropsGridInto(grid, data, state.path, { ...entityGridOptions, topicLayoutId: layoutId });
@@ -553,8 +584,12 @@
       };
       // 統合タブの「＋」「…」からトピックレイアウトを操作する時の対象（表示中の列一覧の枠とシート）。
       // 操作の後はタブの並びと表示中のレイアウトを描き直す。
-      state.topicHistoryScope = () => (state.surface === 'main' ? ''
-        : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(parent) : (typeof _dbScope === 'function' ? _dbScope(parent) : '')));
+      state.topicHistoryScope = () => {
+        const owner = typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope;
+        if (typeof owner === 'string') return owner;
+        return state.surface === 'main' ? '' : (typeof _dbScopeForPath === 'function'
+          ? _dbScopeForPath(renameDbPath) : (typeof _dbScope === 'function' ? _dbScope(renameDbPath) : ''));
+      };
       state.topicLayoutContext = () => {
         grid._elHistoryScope = state.topicHistoryScope();
         return {
@@ -566,6 +601,10 @@
           const previousHost = window.GBEditorHost?.get?.() || null;
           const previousScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : null;
           const layoutTabPrefix = '__layout__:';
+          // 「＋」からの追加・複製などでトピックレイアウト側が選んだレイアウトを、統合タブの選択にも反映する
+          // （追加しても列一覧のタブのままで、新しいレイアウトが開かず編集もできなかった。2026-11-24）。
+          const sessionTab = window.GBEntityLayout?.sessionTab?.(grid, state.path);
+          if (sessionTab && sessionTab !== state.currentTopicLayoutId) state.currentTopicLayoutId = sessionTab;
           const selected = state.currentTopicLayoutId && state.currentTopicLayoutId !== (window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns')
             ? layoutTabPrefix + state.currentTopicLayoutId : undefined;
           await refreshAttachmentsOnly(selected);
@@ -592,7 +631,10 @@
       // （2026-11-21 反応の速さの検査で、サブパネルのトピックが古い値のままになるのを検出）。
       // この画面の中で入力している間・既定のフォームの時は描き直さない（入力中の内容を消さないため）。
       let valuesRefreshSeq = 0;
-      const editingHere = () => root.contains(document.activeElement) && document.activeElement !== document.body;
+      // Submitting disables the input (and can move focus to an error notice).
+      // The unsaved editor still owns its contents until it succeeds/cancels.
+      const editingHere = () => !!root.querySelector('.entry-prop-inline-add')
+        || root.contains(document.activeElement) && document.activeElement !== document.body;
       const redrawProps = () => {
         if (typeof renderEntityPropsGridInto === 'function') {
           renderEntityPropsGridInto(grid, data, state.path, {
@@ -634,8 +676,12 @@
       window.addEventListener('meldex:entity-values-changed', onValuesChanged);
       state.valuesCleanup = () => window.removeEventListener('meldex:entity-values-changed', onValuesChanged);
 
+      const formHistoryScope = () => {
+        const owner = typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope;
+        return typeof owner === 'string' ? owner : titleScope;
+      };
       state.defaultForm = await window.MeldexSheetDefaultForm?.mount(grid, data, state.path, meta, {
-        ...entityGridOptions, beforeWrite: save, onRevision: revision => {
+        ...entityGridOptions, historyScope: formHistoryScope, beforeWrite: save, onRevision: revision => {
           if (state.editor && !state.dirty && !state.saving
             && String(data.page_content || '') === (state.editor.dataset.lastSavedMd || '')) {
             state.editor.dataset.lastSavedRevision = String(revision);
@@ -792,14 +838,22 @@
         if (!await flush()) return false;
         const refreshed = await apiFetch('/entity?path=' + encodeURIComponent(state.path));
         if (await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.dispose?.() === false) return false;
+        const defaultView = state.defaultForm?.getView?.();
         state.data = refreshed;
-        return render();
+        const rendered = await render();
+        if (rendered && defaultView === 'columns') await state.defaultForm?.showColumns?.();
+        return rendered;
       } catch (error) {
         if (typeof showStatus === 'function') showStatus('トピックを再表示できませんでした: ' + (error.userMessage || error.message || error), true);
         return false;
       }
     }
-    const controller = { get editor() { return state.editor; }, flush, dispose, rerender, ready: null };
+    const controller = {
+      get editor() { return state.editor; },
+      valueHistoryTarget() { return { path: state.path, entryId: state.valueHistoryEntryId || '', connected: root.isConnected && !state.disposed,
+        scope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope }; },
+      flush, dispose, rerender, ready: null,
+    };
     controller.ready = Promise.resolve(previousDispose).catch(() => false).then(saved => {
       if (saved === false) return false;
       root._meldexEntityDetailController = controller;

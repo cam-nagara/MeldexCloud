@@ -123,6 +123,8 @@
     } else if (typeof _folderSelected !== 'undefined' && _folderSelected) {
       items = [_folderSelected];
     }
+    // 大きなフォルダで多数を選んでいる時は、選択はパスごとに1件ずつ持っているので、重なりの確認を省く
+    if (items.length > 2000 && globalThis.MeldexFolderLarge?.active?.()) return items;
     const byPath = new Map();
     items.forEach(item => {
       if (item?.path && !byPath.has(item.path)) byPath.set(item.path, item);
@@ -140,8 +142,13 @@
   }
 
   function _folderToolbarTopLevelItems(items) {
-    const sorted = (items || [])
-      .filter(item => item?.path)
+    const withPath = (items || []).filter(item => item?.path);
+    // 同じフォルダの直下どうしは親子にならない。大きなフォルダで全件を選んだ時に、下の確認（件数の2乗）を通さない。
+    if (withPath.length > 200) {
+      const parents = new Set(withPath.map(item => _folderToolbarParentPath(item.path)));
+      if (parents.size === 1) return withPath;
+    }
+    const sorted = withPath
       .sort((a, b) => _folderToolbarNormalizePath(a.path).length - _folderToolbarNormalizePath(b.path).length);
     const topLevel = [];
     sorted.forEach(item => {
@@ -246,8 +253,10 @@
       if (button && button.disabled !== !!disabled) button.disabled = !!disabled;
     };
     setDisabled(buttons.copy, !hasSelection);
-    setDisabled(buttons.cut, !hasSelection || selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem));
-    setDisabled(buttons.delete, !hasSelection || selection.every(_folderToolbarIsLockedItem));
+    // 多数（大きなフォルダのすべて選択など）を選んでいる時は、1件ずつのロックの確認を省く（操作の時に確認する）
+    const manySelected = selection.length > 2000;
+    setDisabled(buttons.cut, !hasSelection || (!manySelected && (selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem))));
+    setDisabled(buttons.delete, !hasSelection || (!manySelected && selection.every(_folderToolbarIsLockedItem)));
     setDisabled(buttons.paste, (! _folderToolbarClipboard?.items?.length && !window.MeldexOsFileIntake?.isSupported?.()) || !currentPath || targetLocked);
     setDisabled(buttons.add, !currentPath || targetLocked);
     setDisabled(buttons.up, !_folderToolbarUpTarget());
@@ -271,7 +280,8 @@
       });
       return node ? (node._nodeData?.path || node.dataset.path) : '';
     };
-    const list = Array.from(new Set((folders || []).map(toTreePath).filter(Boolean)));
+    // 同じフォルダは1回だけ調べる（多数の項目の移動では、移動元のフォルダが件数ぶん渡される）
+    const list = Array.from(new Set(Array.from(new Set((folders || []).filter(Boolean))).map(toTreePath).filter(Boolean)));
     if (!list.length) return true;
     if (typeof _outlinerSyncFolderChildren === 'function') {
       let ok = true;
@@ -287,6 +297,10 @@
 
   async function _folderToolbarRefresh(preservePaths = [], options = {}) {
     const folderPath = _folderToolbarCurrentPath();
+    // 他の面（メイン／サブパネル）が同じフォルダ・変わったフォルダを表示していれば、そちらも読み直す
+    if (typeof _folderNotifyFoldersChanged === 'function') {
+      _folderNotifyFoldersChanged([folderPath, ...(Array.isArray(options.treeFolders) ? options.treeFolders : [])].filter(Boolean));
+    }
     const refreshTrees = () => {
       if (typeof refreshOutliner === 'function') return refreshOutliner({ force: true, reason: 'folder-toolbar' });
       const refreshJobs = [];
@@ -301,6 +315,7 @@
       const folderOk = options.refreshFolder === false || !folderPath || typeof openFolder !== 'function'
         ? true
         : (await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
+          ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
           skipShowView: true, skipSaveLastView: true, skipNavPush: true, skipHighlight: true, skipGlobalUi: true,
           ...(options.isCurrent ? { isLegacyLoadCurrent: options.isCurrent } : {}),
         })) !== false;
@@ -320,6 +335,7 @@
       const scroller = options.preserveScroll && typeof _folderGridEl === 'function' ? _folderGridEl() : null;
       const scroll = scroller ? [scroller.scrollLeft, scroller.scrollTop] : null;
       folderOk = await openFolder(folderPath.split(/[\\/]/).pop() || folderPath, folderPath, {
+        ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
         skipShowView: true,
         skipSaveLastView: true,
         skipNavPush: true,
@@ -668,6 +684,23 @@
     await folderToolbarPasteToFolder(_folderToolbarCurrentPath());
   }
 
+  async function showFolderSelectionProperties(sourceItems, sourceEl) {
+    const items = _folderToolbarOperationItems(sourceItems);
+    if (!items.length) return;
+    const fromTree = !!sourceEl?.closest?.('.tree-node');
+    global.openRightPanelTab?.('information', sourceEl);
+    // パネルの表示に伴う元タブの同期が「開いているフォルダ」を通知した後で、
+    // メニューが指定した選択を渡す。待機中に利用者が選択を変えたら上書きしない。
+    await global.GBPaneBridge?.whenSettled?.();
+    const selected = fromTree && typeof treeSelection !== 'undefined'
+      ? treeSelection.getNodeData() : (typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems : []);
+    const paths = values => values.map(item => item.path).sort().join('\n');
+    if (paths(selected) !== paths(items)) return;
+    global.GBOptionTargetContext?.set(items.map(item => ({
+      ...item, kind: item.type === 'folder' ? 'folder' : 'file',
+    })), 'folder-menu');
+  }
+
   function appendFolderOperationButtons(menu, options = {}) {
     if (!menu) return null;
     const row = document.createElement('div');
@@ -821,6 +854,8 @@
         if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-toolbar-sort' });
       }, active);
     });
+    // 大きなフォルダの表示では、サーバーで並べ替えられる順（名前・更新日時・作成日時）だけ選べる
+    globalThis.MeldexFolderLarge?.adjustSortMenu?.(menu, options);
     _folderToolbarMountChoiceMenu(menu, trigger);
   }
 
@@ -889,7 +924,8 @@
     menu.className = 'gb-context-menu folder-toolbar-layout-menu';
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', 'フォルダの表示形式');
-    const icons = {grid:'layoutGrid', waterfall:'layoutDashboard', hflow:'columns', list:'list'};
+    const icons = typeof FOLDER_LAYOUT_ICONS === 'object' ? FOLDER_LAYOUT_ICONS
+      : {grid:'layoutGrid', waterfall:'layoutDashboard', hflow:'columns', list:'list', 'list-small':'listCompact'};
     Array.from(select.options).forEach(option => {
       _folderToolbarMenuItem(menu, option.textContent, icons[option.value], () => {
         setFolderLayout(option.value);
@@ -908,6 +944,7 @@
     if (folderPath && typeof openFolder === 'function') {
       const label = document.getElementById('folder-title')?.textContent || folderPath;
       await openFolder(label, folderPath, {
+        ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
         silent: true,
         skipShowView: true,
         skipNavPush: true,
@@ -1029,6 +1066,7 @@
   global.folderToolbarCanPasteTo = folderToolbarCanPasteTo;
   global.folderToolbarPasteToFolder = folderToolbarPasteToFolder;
   global.appendFolderOperationButtons = appendFolderOperationButtons;
+  global.showFolderSelectionProperties = showFolderSelectionProperties;
   global.showFolderToolbarSortMenu = showFolderToolbarSortMenu;
   global.syncFolderLayoutControl = syncFolderLayoutControl;
   global.toggleFolderSubfolderContents = toggleFolderSubfolderContents;

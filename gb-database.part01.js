@@ -659,6 +659,11 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
+    // 別パネルへ移った直後も、同じシートの確定済み入力が保存中ならその結果を読んでから描画する。
+    if (typeof waitForPendingDbValueMutations === 'function') {
+      await waitForPendingDbValueMutations(dbPath);
+      if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
+    }
     const pivotData = await apiFetch(url, { signal: dbLoadController.signal, foreground: true });
     if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     window.MeldexTopicPlacementUI?.projectSheetPivot?.(dbPath, pivotData);
@@ -792,6 +797,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     if (ctx._dbLoadAbortController === dbLoadController) delete ctx._dbLoadAbortController;
     if (ctx?._selectDatabaseInFlight?.promise === inFlightPromise) {
       delete ctx._selectDatabaseInFlight;
+      if (!openOpts.skipGlobalUi && typeof _refreshFileThemeTargetBindings === 'function') _refreshFileThemeTargetBindings();
     }
     if (typeof resolveInFlightLoad === 'function') {
       resolveInFlightLoad(finalLoadResult || {
@@ -1015,7 +1021,12 @@ function _dbResolveUndoCtx(dbPath, options = {}) {
 function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, options = {}) {
   const dbPath = _dbResolveUndoDbPath(val, options);
   const ctx = _dbResolveUndoCtx(dbPath, options);
-  const scope = _dbScope(dbPath);
+  const scope = typeof options.historyScope === 'function' ? options.historyScope()
+    : typeof options.historyScope === 'string' ? options.historyScope : _dbScope(dbPath);
+  const refresh = async () => {
+    if (typeof options.onHistoryChanged === 'function') await options.onHistoryChanged();
+    else if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
+  };
   const undoUpdates = { new_value: oldValue };
   const redoUpdates = { new_value: newValue };
   if (oldRichHtml !== undefined || newRichHtml !== undefined) {
@@ -1025,8 +1036,8 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, 
   if (options.oldUpdates && typeof options.oldUpdates === 'object') Object.assign(undoUpdates, options.oldUpdates);
   if (options.newUpdates && typeof options.newUpdates === 'object') Object.assign(redoUpdates, options.newUpdates);
   historyPush(label,
-    async () => { await _apiPutValue(val, undoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
-    async () => { await _apiPutValue(val, redoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
+    async () => { await _apiPutValue(val, undoUpdates); await refresh(); },
+    async () => { await _apiPutValue(val, redoUpdates); await refresh(); },
     scope
   );
 }

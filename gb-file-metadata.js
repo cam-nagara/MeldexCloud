@@ -79,10 +79,28 @@
   }
 
   async function update(path, patch, writeContext = null) {
-    const meta = await apiPost('/file-meta', { ...(writeContext || {}), ...patch, path }, { silentError: true });
+    const meta = await apiPost('/file-meta', { ...(writeContext || {}), ...patch, path }, { silentError: true, requireRemoteCommit: true });
     cache.set(String(path), meta);
     refreshRatingControls(path, meta);
     return meta;
+  }
+
+  function pushMetadataHistory(label, undo, redo, scope = '') {
+    if (typeof historyPush === 'function') return historyPush(label, undo, redo, scope);
+    return window.MeldexViewerHistory?.push?.(label, undo, redo);
+  }
+
+  function metadataHistoryLane(path) {
+    const scope = window.GBAnnotationSurfaces?.historyScope?.() || '';
+    const normalized = typeof _normalizeAnnotationTargetPath === 'function'
+      ? _normalizeAnnotationTargetPath(path) : String(path || '').replace(/\\/g, '/');
+    // 本体の画像タブではUndoの入口が注釈の履歴を使う。同じファイルの
+    // プロパティだけをその面へ結び、他のファイルの履歴は混ぜない。
+    return normalized && scope.startsWith('annotation:' + normalized + '#') ? scope : '';
+  }
+
+  function metadataHistoryScope() {
+    return { token: window.MeldexFileIcons?.scope?.(), vault: typeof state !== 'undefined' ? state.vaultPath : '' };
   }
 
   function setRatingButtons(group, rating) {
@@ -123,7 +141,8 @@
         const next = previous === value ? 0 : value;
         const scopeToken = window.MeldexFileIcons?.scope?.();
         const vaultPath = typeof state !== 'undefined' ? state.vaultPath : '';
-        const reservation = typeof historyReserve === 'function' ? historyReserve('ファイル: 評価', '') : null;
+        const historyLane = metadataHistoryLane(path);
+        const reservation = typeof historyReserve === 'function' ? historyReserve('ファイル: 評価', historyLane) : null;
         group.dataset.saving = '1';
         setRatingButtons(group, next);
         try {
@@ -134,7 +153,7 @@
             }
             return update(path, { rating }, writeContext);
           };
-          const register = () => typeof historyPush === 'function' && historyPush('ファイル: 評価', () => restore(previous), () => restore(next), '');
+          const register = () => pushMetadataHistory('ファイル: 評価', () => restore(previous), () => restore(next), historyLane);
           if (reservation) reservation.capture(register); else register();
           if (typeof showStatus === 'function') showStatus(next ? `評価を${next}つ星にしました` : '評価を解除しました');
         } catch (error) {
@@ -178,6 +197,112 @@
   // 入力欄から離れた時・ファイルを切り替えた時・ウィンドウを閉じる時は即座に確定させる。
   const MEMO_AUTOSAVE_DELAY_MS = 1200;
   const pendingMemos = new Map();
+  const MEMO_DRAFT_PREFIX = 'meldex-file-memo-draft-v1:';
+  const MEMO_DRAFT_MAX_CHARS = 250000;
+
+  function _memoDraftIdentity(path, writeContext) {
+    const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
+    const account = String(workspace.accountId || workspace.ownerId || '');
+    const root = String(workspace.path || metadataHistoryScope().vault || writeContext?.expected_root
+      || window.MeldexViewerScene?.currentRootPath?.() || '');
+    const scope = JSON.stringify([mode, account, root || (window.location?.origin || '') + (window.location?.pathname || '')]);
+    let file = String(path || '').replace(/\\/g, '/');
+    if (typeof _normalizeAnnotationTargetPath === 'function') file = _normalizeAnnotationTargetPath(file);
+    else if (root && !/^(?:[a-z]:\/|\/|[a-z]+:\/\/)/i.test(file)) file = root.replace(/\\/g, '/').replace(/\/$/, '') + '/' + file;
+    return { scope, file, key: MEMO_DRAFT_PREFIX + JSON.stringify([scope, file]) };
+  }
+
+  function _readMemoDraft(identity) {
+    const raw = localStorage.getItem(identity.key);
+    if (!raw) return null;
+    const draft = JSON.parse(raw);
+    if (draft?.schema !== 1 || draft.scope !== identity.scope || draft.file !== identity.file
+      || typeof draft.value !== 'string' || typeof draft.base !== 'string' || typeof draft.owner !== 'string'
+      || draft.value.length > MEMO_DRAFT_MAX_CHARS || draft.base.length > MEMO_DRAFT_MAX_CHARS) {
+      throw new Error('未保存メモの復旧情報を読み込めませんでした');
+    }
+    return draft;
+  }
+
+  function _memoDraftError(error, kind) {
+    const name = /^[A-Za-z][A-Za-z0-9]*Error$/.test(error?.name || '') ? error.name : 'Error';
+    window.MeldexDiagnostics?.recordSheetIncident?.(kind, {
+      op: 'viewer.metadata-draft', errorType: name, source: 'local-storage',
+    });
+    console.warn('メモの端末内保全に失敗しました', name);
+  }
+
+  function _reserveMemoDraft(textarea, memo, fromInput = false) {
+    try {
+      const saved = _readMemoDraft(memo.draftIdentity);
+      if (textarea.value === memo.savedValue) {
+        if (!memo.draftConflict && saved?.owner === memo.draftOwner) localStorage.removeItem(memo.draftIdentity.key);
+        memo.draftFailed = false;
+        return true;
+      }
+      // 保存先が変わった場合は両方を残す。古い未保存メモを自動的に上書きしない。
+      if (memo.draftConflict && textarea.value !== memo.draftConflict.value) throw new Error('別の未保存メモを保全しています');
+      if (memo.draftConflict) {
+        memo.draftConflict = null;
+        memo.draftConflictView?.remove();
+      }
+      // 保存応答が遅れて戻っても、別の編集欄が後から保全した内容を消さない。
+      if (!fromInput && saved && saved.owner !== memo.draftOwner) {
+        memo.draftFailed = saved.value !== textarea.value;
+        return !memo.draftFailed;
+      }
+      if (textarea.value.length > MEMO_DRAFT_MAX_CHARS || memo.savedValue.length > MEMO_DRAFT_MAX_CHARS) {
+        throw new Error('端末内へ保全できるメモの大きさを超えました');
+      }
+      localStorage.setItem(memo.draftIdentity.key, JSON.stringify({
+        schema: 1, scope: memo.draftIdentity.scope, file: memo.draftIdentity.file, owner: memo.draftOwner,
+        base: memo.savedValue, value: textarea.value,
+      }));
+      memo.draftFailed = false;
+      return true;
+    } catch (error) {
+      memo.draftFailed = true;
+      _memoDraftError(error, 'save-failed');
+      return false;
+    }
+  }
+
+  function _restoreMemoDraft(textarea, memo) {
+    try {
+      const draft = _readMemoDraft(memo.draftIdentity);
+      if (!draft) return;
+      if (draft.value === memo.savedValue) {
+        localStorage.removeItem(memo.draftIdentity.key);
+        return;
+      }
+      if (draft.base === memo.savedValue) {
+        textarea.value = draft.value;
+        const protectedValue = _reserveMemoDraft(textarea, memo, true);
+        _memoStatus(memo.statusEl, protectedValue ? '未保存' : '端末内に保全できませんでした', !protectedValue);
+        return;
+      }
+      memo.draftConflict = draft;
+      const details = document.createElement('details');
+      details.className = 'file-embedded-group';
+      details.dataset.e2eId = 'file-memo-draft-conflict';
+      const summary = document.createElement('summary');
+      summary.textContent = '別の未保存メモ';
+      const explanation = document.createElement('p');
+      explanation.textContent = '保存先の内容が変わったため、未保存のメモを別に残しています';
+      const preview = document.createElement('textarea');
+      preview.readOnly = true;
+      preview.setAttribute('aria-label', '別の未保存メモ');
+      preview.value = draft.value;
+      details.append(summary, explanation, preview);
+      memo.statusEl.closest('.file-embedded-memo').append(details);
+      memo.draftConflictView = details;
+    } catch (error) {
+      memo.draftConflict = { unreadable: true };
+      _memoStatus(memo.statusEl, '未保存メモを読み込めませんでした', true);
+      _memoDraftError(error, 'load-failed');
+    }
+  }
 
   function _memoStatus(el, text, isError) {
     if (!el) return;
@@ -188,6 +313,7 @@
   function _flushMemo(textarea) {
     const state = pendingMemos.get(textarea);
     if (!state) return Promise.resolve(true);
+    _reserveMemoDraft(textarea, state);
     if (state.timer) { clearTimeout(state.timer); state.timer = null; }
     if (state.composing) return Promise.resolve(false);
     if (state.drain) return state.drain;
@@ -203,22 +329,54 @@
   }
 
   async function _drainMemo(textarea, state) {
+    let wrote = false;
     // 保存中に追記された分も書き切る。失敗したらそこで打ち切り、無限に再送しない。
     while (textarea.value !== state.savedValue) {
       if (state.composing) return false;
       const value = textarea.value;
+      const previous = state.savedValue;
+      const scope = metadataHistoryScope();
+      const historyLane = metadataHistoryLane(state.path);
+      const reservation = typeof historyReserve === 'function' ? historyReserve('ファイル: メモ', historyLane) : null;
       _memoStatus(state.statusEl, '保存中...');
       state.inflight = update(state.path, { note: value }, state.writeContext);
       try {
         await state.inflight;
+        wrote = true;
         state.savedValue = value;
-        _memoStatus(state.statusEl, '保存しました');
+        _reserveMemoDraft(textarea, state);
+        const restore = async note => {
+          const currentScope = metadataHistoryScope();
+          if (scope.token !== currentScope.token || scope.vault !== currentScope.vault) {
+            throw new Error('保存先が変わったためメモを戻せません');
+          }
+          if ([...pendingMemos].some(([editor, pending]) => pending.path === state.path && editor.value !== pending.savedValue)) {
+            throw new Error('未保存のメモがあるため履歴を適用できません');
+          }
+          await update(state.path, { note }, state.writeContext);
+          for (const [editor, pending] of pendingMemos) {
+            if (pending.path !== state.path || editor.value !== pending.savedValue) continue;
+            editor.value = note; pending.savedValue = note;
+            _memoStatus(pending.statusEl, '保存済み');
+          }
+        };
+        const register = () => pushMetadataHistory('ファイル: メモ', () => restore(previous), () => restore(value), historyLane);
+        if (reservation) reservation.capture(register); else register();
+        _memoStatus(state.statusEl, '保存済み');
       } catch (error) {
+        state.hadSaveFailure = true;
         _memoStatus(state.statusEl, '保存できませんでした', true);
         if (typeof showStatus === 'function') showStatus('メモを保存できませんでした: ' + (error?.message || error), true);
         return false;
       } finally {
         state.inflight = null;
+        reservation?.cancel();
+      }
+    }
+    if (state.hadSaveFailure) {
+      state.hadSaveFailure = false;
+      if (textarea.isConnected && typeof showStatus === 'function') {
+        showStatus(wrote ? 'このメモを保存しました' : '未保存の変更を元に戻しました');
       }
     }
     return true;
@@ -252,7 +410,8 @@
 
   function bindMemoAutosave(textarea, statusEl, path, initialValue) {
     _pruneDetachedMemos();
-    pendingMemos.set(textarea, {
+    const writeContext = metadataWriteContext();
+    const memoState = {
       path,
       statusEl,
       savedValue: initialValue,
@@ -260,13 +419,21 @@
       inflight: null,
       drain: null,
       composing: false,
-      writeContext: metadataWriteContext(),
-    });
+      writeContext,
+      draftIdentity: _memoDraftIdentity(path, writeContext),
+      draftOwner: crypto.randomUUID?.() || String(Date.now()) + Math.random(),
+      draftFailed: false,
+      draftConflict: null,
+    };
+    pendingMemos.set(textarea, memoState);
+    _restoreMemoDraft(textarea, memoState);
     const scheduleSave = event => {
       const state = pendingMemos.get(textarea);
       if (!state) return;
       if (state.timer) clearTimeout(state.timer);
-      _memoStatus(state.statusEl, textarea.value === state.savedValue ? '' : '未保存');
+      const protectedValue = _reserveMemoDraft(textarea, state, true);
+      _memoStatus(state.statusEl, protectedValue ? textarea.value === state.savedValue ? '' : '未保存'
+        : '端末内に保全できませんでした', !protectedValue);
       if (state.composing || event?.isComposing) return;
       state.timer = setTimeout(() => { _flushMemo(textarea); }, MEMO_AUTOSAVE_DELAY_MS);
     };
@@ -293,6 +460,11 @@
   }
 
   window.addEventListener('pagehide', () => { flushPendingMemos(); });
+  window.addEventListener('beforeunload', event => {
+    if (![...pendingMemos].some(([textarea, memo]) => memo.draftFailed && textarea.value !== memo.savedValue)) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
 
   function appendMetadataGroups(host, embedded) {
     const groups = Array.isArray(embedded?.groups) ? embedded.groups : [];

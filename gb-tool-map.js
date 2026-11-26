@@ -229,7 +229,7 @@ class MapAppComponent extends ToolComponent {
       let notice=host.querySelector(':scope > .gb-inline-error');
       if(!notice&&(store.error||this._draftFailed&&store.dirty)) { notice=GBUI.createInlineError({onRetry:()=>this.flush()});host.prepend(notice); }
       if(notice) {
-        const message=store.error ? '保存できません: '+(store.error.userMessage||store.error.message)+'。未保存の編集を保持しています。保存先を確認して再試行してください'
+        const message=store.error ? '保存できません: '+String(store.error.userMessage||store.error.message||'').replace(/[。．.\s]+$/,'')+'。未保存の編集を保持しています。保存先を確認して再試行してください'
           : this._draftFailed&&store.dirty ? '下書きを保全できません。マップを書き出してください' : '';
         notice.setMessage(message);notice.setBusy(!!store.pending);
       }

@@ -773,12 +773,18 @@ function _dbPushInsertedEntitiesHistory(dbPath, ctx, createdItemsPromise, viewBe
       if (result.failures?.length) throw result.failures[0].error || new Error('追加したトピックを取り消せませんでした');
     },
     async () => {
-      const failedRefs = [];
-      for (const ref of trashRefs) {
-        try {
-          await apiPost('/outliner/restore', { trash_name: ref.trash_name, ...(ref.trash_root ? { trash_root: ref.trash_root } : {}) });
-        } catch {
-          failedRefs.push(ref);
+      let failedRefs = [];
+      if (typeof window.MeldexSheetRowRestore?.restore === 'function') {
+        // 同じ名前・同じIDのトピックが既にある時は、共通のダイアログでたずねる
+        const outcome = await window.MeldexSheetRowRestore.restore(trashRefs);
+        failedRefs = outcome.failed.concat(outcome.skipped);
+      } else {
+        for (const ref of trashRefs) {
+          try {
+            await apiPost('/outliner/restore', { trash_name: ref.trash_name, ...(ref.trash_root ? { trash_root: ref.trash_root } : {}) });
+          } catch {
+            failedRefs.push(ref);
+          }
         }
       }
       trashRefs = failedRefs;

@@ -155,6 +155,16 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
   try {
     if (!isNew) {
       await _apiPutValue(val, { new_value: nextValue });
+      // 保存中に行が差し替わった場合も、同じ候補の現在の参照へ反映する。
+      // 後から入力された値は、先行する保存の完了で巻き戻さない。
+      const live = typeof _getPivotEntityData === 'function'
+        ? (_getPivotEntityData(entityPath, ctx)?.[propName] || []).find(candidate => candidate === val
+          || (val.candidate_id ? candidate.candidate_id === val.candidate_id
+            : candidate.file === val.file && candidate.candidate_index === val.candidate_index)) : val;
+      if (live && val.value === nextValue && (live.value === oldValue || live.value === nextValue)
+        && typeof _upsertLocalPivotValue === 'function') {
+        _upsertLocalPivotValue(entityPath, propName, val, nextValue, null, ctx);
+      }
       if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, val, oldValue, nextValue);
     } else {
       const result = await _apiPostValue(entityPath, propName, nextValue, status, '');
@@ -687,7 +697,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
 
   // 解除（値をクリア）
   const clearItem = document.createElement('div');
-  clearItem.className = 'status-dropdown-item';
+  clearItem.className = 'status-dropdown-item status-dropdown-clear';
   clearItem.style.cssText = 'color:var(--fg2);font-style:italic;';
   clearItem.textContent = '解除';
   clearItem.addEventListener('click', async () => {
@@ -743,7 +753,7 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
     if (typeof appendDbOptionDeleteButton === 'function') appendDbOptionDeleteButton(item,
       { dbPath: sourceDbPath, propName, option: opt, ctx: sourceCtx,
         beforeConfirm: () => closeAllDropdowns(sourceCtx || el) });
-    if (val.value === opt) item.classList.add('selected');
+    if (val.value === opt) { item.classList.add('selected'); item.dataset.ddInitial = '1'; }
     item.addEventListener('click', async () => {
       closeAllDropdowns(sourceCtx || el);
       if (opt !== val.value) {

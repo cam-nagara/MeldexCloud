@@ -486,7 +486,8 @@
 
   async function _loadScene(sceneEntry, token) {
     try {
-      if (/^blob:/i.test(String(sceneEntry.path || ''))) {
+      if (window.MeldexViewerCloudFileOpen?.annotationCapability?.()?.available === false
+          || /^blob:/i.test(String(sceneEntry.path || ''))) {
         window.MeldexViewerAnnotationLegacy?.setItemsForPath?.(sceneEntry.path, []);
         return;
       }
@@ -561,6 +562,11 @@
   }
   // 表示中のすべてのシーンのアノテートを消す（本体の annClear() 相当）。
   async function clearAll(options = {}) {
+    const run = report => clearCurrentScenes(report);
+    return window.__viewerAnnotationWithHistoryBatch
+      ? window.__viewerAnnotationWithHistoryBatch(run) : run(window.__viewerAnnotationReportSave);
+  }
+  async function clearCurrentScenes(reportSave) {
     const strokes = [];
     _scenes.forEach(scene => {
       scene.strokesG.querySelectorAll('path, polygon, rect, ellipse').forEach(el => {
@@ -569,21 +575,20 @@
     });
     const noteCount = _scenes.reduce((sum, scene) => sum + (scene.notes?.length || 0), 0);
     if (!strokes.length && !noteCount) return false;
-    if (!options.confirmed && !window.confirm('表示中のアノテートをすべて削除します。よろしいですか？')) return false;
     for (const el of strokes) {
       try {
         const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;
         const result = el.dataset.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId)) : null;
         el.remove();
-        window.__viewerAnnotationReportSave?.(true, 'delete', null, result, { before, after: null });
+        reportSave?.(true, 'delete', null, result, { before, after: null });
       } catch (error) {
         viewerAnnotationSaveFailed(error, 'アノテートを削除できませんでした');
-        window.__viewerAnnotationReportSave?.(false, 'delete', error);
+        reportSave?.(false, 'delete', error);
         return false;
       }
     }
     for (const scene of _scenes) {
-      if (await window.MeldexViewerAnnotationNotes?.deleteAll?.(scene) === false) return false;
+      if (await window.MeldexViewerAnnotationNotes?.deleteAll?.(scene, reportSave) === false) return false;
     }
     // 旧座標系のアノテート（viewer-annotation-legacy.js）は消しゴムと同じく対象外。
     // 破壊的な座標変換を避けるため表示専用で扱っている。

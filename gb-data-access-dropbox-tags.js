@@ -32,6 +32,7 @@
     _normalizeFolderPath,
     _joinPath,
     _basename,
+    _folderLinkPathKey,
     _requirePwaProvider,
     _requireUnlockedPath,
   } = internals;
@@ -928,14 +929,30 @@
         return { ok: true, tags: requested, match_mode: matchMode, source_folder: '', results, total: results.length };
       }
       const tag = tagForValue(catalog, query.get('tag') || '');
-      const results = tag ? Object.entries(store.assignments)
-        .filter(([, ids]) => Array.isArray(ids) && ids.includes(tag.id))
-        .map(([path, ids]) => ({
-          path,
-          name: _basename(path),
-          type: '',
-          tags: ids.map(id => catalog.tags.find(item => item.id === id)).filter(Boolean),
-        })) : [];
+      // フォルダパネルは空のtagとpathで、配下のタグを一度に取得する（デスクトップと同じ契約）。
+      // 名前が似た隣接フォルダや別の保存先は含めず、割当や辞書を書き換えない。
+      const folder = !String(query.get('tag') || '').trim() && query.get('path')
+        ? safeTargetPath(query.get('path')).replace(/\/+$/, '') : '';
+      const pathKey = path => typeof _folderLinkPathKey === 'function'
+        ? _folderLinkPathKey(provider, path) : _normalizeFolderPath(path);
+      const folderKey = folder ? pathKey(folder) : '';
+      const prefix = folderKey.endsWith(':') ? folderKey : folderKey + '/';
+      const results = tag || folder ? Object.entries(store.assignments)
+        .filter(([path, ids]) => folder
+          ? (!!folderKey && (pathKey(path) === folderKey || pathKey(path).startsWith(prefix)))
+          : (Array.isArray(ids) && ids.includes(tag.id)))
+        .map(([path, ids]) => {
+          // 同じ保存先を指す短いパス／仮想ルートの別表記を、要求側の表記へ揃える。
+          const depth = folder ? pathKey(path).slice(folderKey.length).split('/').filter(Boolean).length : 0;
+          const suffix = depth ? _normalizeFolderPath(path).split('/').slice(-depth).join('/') : '';
+          const resultPath = folder ? (suffix ? folder + '/' + suffix : folder) : path;
+          return {
+            path: resultPath,
+            name: _basename(resultPath),
+            type: '',
+            tags: ids.map(id => catalog.tags.find(item => item.id === id)).filter(Boolean),
+          };
+        }) : [];
       return { ok: true, tag: query.get('tag') || '', source_folder: '', results, total: results.length };
     }
     return NOT_HANDLED;

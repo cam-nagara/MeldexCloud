@@ -338,6 +338,7 @@ function bdApplyNodeShapeStyles(div, nodeStyle) {
     div.style.setProperty('--bd-base-filter', 'drop-shadow(0 1px 2px rgba(0,0,0,0.15))');
   } else if (nodeStyle.shape === 'octagon') div.style.clipPath = 'polygon(12% 0%, 88% 0%, 100% 12%, 100% 88%, 88% 100%, 12% 100%, 0% 88%, 0% 12%)';
   else if (nodeStyle.shape === 'pill') div.style.borderRadius = '999px';
+  else if (nodeStyle.shape === 'accent-card') bdApplyAccentCardStyles(div, nodeStyle);
   if (nodeStyle.fontSize) div.style.fontSize = nodeStyle.fontSize + 'px';
   if (nodeStyle.fontBold) div.style.fontWeight = 'bold';
   if (nodeStyle.fontItalic) div.style.fontStyle = 'italic';
@@ -882,6 +883,33 @@ function bdAppendNodeImage(div, node) {
   window.MeldexImageLoading?.track?.(img, { host: div, label: 'ボードの画像を読み込んでいます', errorMode: 'silent' });
 }
 
+// 「カード（左帯）」: 枠の色で左端に太い帯を引き、1行目を同じ色の見出しにする。
+// 帯は左枠線の太さで描くため、カードの寸法計算や形状の判定は矩形と同じ扱いになる。
+function bdApplyAccentCardStyles(div, nodeStyle) {
+  const accent = nodeStyle.borderColor && nodeStyle.borderColor !== 'transparent'
+    ? _bdColorWithOpacity(nodeStyle.borderColor, nodeStyle.borderOpacity)
+    : 'var(--accent, #3b82f6)';
+  const width = Math.max(4, Math.min(16, Math.round((+nodeStyle.borderWidth || 1.5) * 4)));
+  div.style.borderStyle = 'solid';
+  if (!(+nodeStyle.borderWidth)) {
+    div.style.borderColor = accent;
+    div.style.borderWidth = '1px';
+  }
+  div.style.borderLeftColor = accent;
+  div.style.borderLeftWidth = width + 'px';
+  div.style.setProperty('--bd-accent-color', accent);
+}
+
+// 先頭行を見出しとして包む（本文の文字列や保存内容は変えない）。
+function bdWrapAccentCardTitle(textHtml) {
+  const html = String(textHtml || '');
+  if (!html) return html;
+  const index = html.indexOf('<br>');
+  const title = index < 0 ? html : html.slice(0, index);
+  const rest = index < 0 ? '' : html.slice(index + 4);
+  return '<span class="bd-text-title">' + title + '</span>' + (rest ? '<span class="bd-text-body">' + rest + '</span>' : '');
+}
+
 function bdAppendNodeText(div, node, nodeStyle, options = {}) {
   const txt = document.createElement('div');
   txt.className = 'bd-text';
@@ -902,9 +930,10 @@ function bdAppendNodeText(div, node, nodeStyle, options = {}) {
   const currentOccurrence = currentMatch?.type === 'node' && currentMatch?.id === node.id
     ? (currentMatch.occurrence || 0)
     : -1;
-  const textHtml = findActive
+  const plainHtml = findActive
     ? _bdRenderTextWithHighlight(displayText, bd._findQuery, currentOccurrence)
     : esc(displayText).replace(/\n/g, '<br>');
+  const textHtml = nodeStyle.shape === 'accent-card' && !node.img ? bdWrapAccentCardTitle(plainHtml) : plainHtml;
   if (node.link && !node.img) {
     const content = document.createElement('span');
     content.className = 'bd-link-card-content';
@@ -924,11 +953,16 @@ function bdAppendNodeText(div, node, nodeStyle, options = {}) {
   } else {
     txt.innerHTML = options.fastCardRender ? textHtml : applyAutoLinks(textHtml, bd.path);
   }
-  if (nodeStyle.textColor) txt.style.color = nodeStyle.textColor;
   txt.style.position = 'relative';
   txt.style.zIndex = '9';
+  bdApplyNodeTextStyles(txt, nodeStyle, node.id);
+  div.appendChild(txt);
+}
+
+function bdApplyNodeTextStyles(txt, nodeStyle, nodeId) {
+  txt.style.color = nodeStyle.textColor || '';
   const textStrokeWidth = Math.max(0, +nodeStyle.textStrokeWidth || 0);
-  if (typeof _bdApplyTextOutline === 'function') _bdApplyTextOutline(txt, 0, '', node.id);
+  if (typeof _bdApplyTextOutline === 'function') _bdApplyTextOutline(txt, 0, '', nodeId);
   txt.style.filter = '';
   txt.style.webkitTextStroke = '';
   txt.style.paintOrder = '';
@@ -938,7 +972,46 @@ function bdAppendNodeText(div, node, nodeStyle, options = {}) {
   } else {
     txt.style.textShadow = '';
   }
-  div.appendChild(txt);
+}
+
+// 形状や内容を変えない個別書式の更新。本文・動画・HUDと入力位置を保持する。
+function bdRefreshNodeStyleInPlace(nodeId, options = {}) {
+  const node = bd.nodes.find(item => item.id === nodeId);
+  const element = document.getElementById('bdn-' + nodeId);
+  if (!node || !element) return false;
+  const style = bdGetNodeStyle(node);
+  const sample = document.createElement('div');
+  bdApplyNodeBaseStyles(sample, node, style, !bd.displayFilters || bd.displayFilters.showStatus !== false);
+  for (const key of ['background', 'color', 'border-color', 'border-width', 'border-style', 'border-radius',
+    'font-size', 'font-weight', 'font-style', 'box-shadow', 'filter', '--bd-base-filter', '--bd-accent-color']) {
+    const value = sample.style.getPropertyValue(key);
+    if (value) element.style.setProperty(key, value); else element.style.removeProperty(key);
+  }
+  const wasAccentCard = element.dataset.shape === 'accent-card';
+  if (options.geometry) {
+    element.dataset.shape = style.shape || 'rect';
+    for (const key of ['width', 'clip-path']) {
+      const value = sample.style.getPropertyValue(key);
+      if (value) element.style.setProperty(key, value); else element.style.removeProperty(key);
+    }
+    // 雲から通常の形へ戻す場合も本文を残し、輪郭だけを片付ける。
+    if (!['cloud', 'thorn', 'thorn-curve', 'fluffy'].includes(element.dataset.shape)) {
+      element.querySelector(':scope > .bd-cloud-border-svg')?.remove();
+      element.style.removeProperty('overflow');
+    }
+    if (element.dataset.shape === 'accent-card') element.style.removeProperty('padding');
+    else element.style.padding = '6px 8px';
+  }
+  let text = element.querySelector(':scope > .bd-text');
+  // 左帯カードとの切り替えでは見出しの包み方だけが変わるため、本文の表示を作り直す。
+  if (text && options.geometry && wasAccentCard !== (style.shape === 'accent-card')) {
+    const holder = document.createElement('div');
+    bdAppendNodeText(holder, node, style, { showImageNames: !bd.displayFilters || bd.displayFilters.showImageNames !== false });
+    const next = holder.firstElementChild;
+    if (next) { text.replaceWith(next); text = next; }
+  }
+  if (text) bdApplyNodeTextStyles(text, style, node.id);
+  return true;
 }
 
 function bdAppendContainedNodes(div, node, ctx, fastCardRender) {
@@ -1023,22 +1096,75 @@ function bdMeasureNodeElement(nodeOrId, element) {
   const node = typeof nodeOrId === 'string' ? bd.nodes.find(n => n.id === nodeOrId) : nodeOrId;
   const div = element || (node?.id ? document.getElementById('bdn-' + node.id) : null);
   if (!node || !div) return false;
+  bdApplyNodeDynamicShape(div, node);
   node._rw = div.offsetWidth;
   node._rh = div.offsetHeight;
-  bdApplyNodeDynamicShape(div, node);
   return true;
 }
 
-function bdApplyNodeDynamicShape(div, node) {
+function bdMeasureNodeElements(entries) {
+  const records = entries.filter(({n, div}) => n && div).map(({n, div}) => {
+    const shape = div.dataset.shape || '';
+    const dynamic = ['ellipse', 'cloud', 'thorn', 'thorn-curve', 'fluffy'].includes(shape);
+    const nodeStyle = dynamic && typeof bdGetNodeStyle === 'function' ? bdGetNodeStyle(n) : null;
+    if (dynamic && shape !== 'ellipse') {
+      div.style.borderWidth = '0';
+      div.style.borderStyle = 'none';
+    }
+    if (dynamic && typeof _bdComputeShapePadding === 'function') div.style.padding = '6px 8px';
+    return {n, div, shape, dynamic, nodeStyle};
+  });
+  if (typeof _bdComputeShapePadding === 'function') {
+    for (let pass = 0; pass < 24; pass++) {
+      // 全要素を読み終えてから書く。各カードの更新ごとに全体を再計算させない。
+      const updates = records.filter(record => record.dynamic).map(record => {
+        const pad = _bdComputeShapePadding(record.shape, record.div.offsetWidth, record.div.offsetHeight, record.nodeStyle);
+        const padding = pad ? `${pad.padY}px ${pad.padX}px` : null;
+        return padding && record.div.style.padding !== padding ? {div:record.div, padding} : null;
+      }).filter(Boolean);
+      if (!updates.length) break;
+      updates.forEach(({div, padding}) => { div.style.padding = padding; });
+    }
+  }
+  const measured = records.map(record => ({...record, width:record.div.offsetWidth, height:record.div.offsetHeight}));
+  measured.forEach(({n, div, nodeStyle, width, height}) => {
+    bdApplyNodeDynamicShape(div, n, {paddingReady:true, nodeStyle, width, height});
+    n._rw = width;
+    n._rh = height;
+  });
+}
+
+function bdApplyNodeDynamicShape(div, node, options = {}) {
   const shape = div.dataset.shape || '';
-  if (shape === 'cloud' || shape === 'thorn' || shape === 'thorn-curve' || shape === 'fluffy') {
-    const ns = typeof bdGetNodeStyle === 'function' ? bdGetNodeStyle(node) : null;
+  const cloudShape = shape === 'cloud' || shape === 'thorn' || shape === 'thorn-curve' || shape === 'fluffy';
+  if (!cloudShape && shape !== 'ellipse') return;
+  const ns = options.nodeStyle !== undefined ? options.nodeStyle
+    : (typeof bdGetNodeStyle === 'function' ? bdGetNodeStyle(node) : null);
+  // SVG の輪郭に CSS の枠幅を重ねない。余白の計算前に最終の枠幅へ揃える。
+  if (cloudShape) {
+    div.style.borderWidth = '0';
+    div.style.borderStyle = 'none';
+  }
+  if (!options.paddingReady && typeof _bdComputeShapePadding === 'function') {
+    // 直前の書式の余白に依存させず、折り返しを含む寸法を先に確定する。
+    div.style.padding = '6px 8px';
+    for (let pass = 0; pass < 24; pass++) {
+      const pad = _bdComputeShapePadding(shape, div.offsetWidth, div.offsetHeight, ns);
+      if (!pad) break;
+      const padding = `${pad.padY}px ${pad.padX}px`;
+      if (div.style.padding === padding) break;
+      div.style.padding = padding;
+    }
+  }
+  if (cloudShape) {
     const fn = shape === 'thorn-curve' ? _bdThornCurveClipPath
              : shape === 'thorn' ? _bdThornClipPath
              : shape === 'fluffy' ? _bdFluffyClipPath
              : _bdCloudClipPath;
     if (typeof fn === 'function') {
-      const path = fn(div.offsetWidth, div.offsetHeight, ns ? {
+      const width = options.width ?? div.offsetWidth;
+      const height = options.height ?? div.offsetHeight;
+      const path = fn(width, height, ns ? {
         bumpW: ns.cloudBumpWidth,
         bumpH: ns.cloudBumpHeight,
         sideW: ns.cloudSideWidth,
@@ -1047,13 +1173,8 @@ function bdApplyNodeDynamicShape(div, node) {
         subWidth: ns.cloudSubWidthRatio,
         subHeight: ns.cloudSubHeightRatio,
       } : undefined);
-      if (path && typeof _bdApplyCloudShape === 'function') _bdApplyCloudShape(div, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '', ns?.borderOpacity, ns?.bgOpacity);
+      if (path && typeof _bdApplyCloudShape === 'function') _bdApplyCloudShape(div, path, ns?.borderColor || '', ns?.borderWidth || 0, ns?.bgColor || '', ns?.borderOpacity, ns?.bgOpacity, { width, height });
     }
-  }
-  if ((shape === 'ellipse' || shape === 'cloud' || shape === 'thorn' || shape === 'thorn-curve' || shape === 'fluffy') && typeof _bdComputeShapePadding === 'function') {
-    const ns = typeof bdGetNodeStyle === 'function' ? bdGetNodeStyle(node) : null;
-    const pad = _bdComputeShapePadding(shape, div.offsetWidth, div.offsetHeight, ns);
-    if (pad) div.style.padding = `${pad.padY}px ${pad.padX}px`;
   }
 }
 

@@ -6,6 +6,8 @@
   // 読み取りでは進めない。連続する自分の編集・履歴復元だけが版を引き継ぐ。
   const historyRevisions = new Map();
   let capabilities = null;
+  let capabilitiesLoading = null;
+  let capabilitiesSequence = 0;
   let proposals = [];
   let selectedId = '';
   let loading = null;
@@ -15,6 +17,12 @@
   let listIncludesArchived = false;
   let loadingIncludesArchived = false;
   let listLoaded = false;
+
+  function invalidateCapabilities() {
+    capabilities = null;
+    capabilitiesLoading = null;
+    capabilitiesSequence++;
+  }
 
   function user() {
     return String((typeof getUsername === 'function' ? getUsername() : '') || 'anonymous').trim();
@@ -27,7 +35,12 @@
   function selectedKey() {
     syncContext();
     const workspaceId = String(capabilities?.workspaceId || rootPath() || 'default');
-    return `meldex:scheduler:selected:${workspaceId}:${user()}`;
+    const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const scope = [workspace.accountId || workspace.account_id || '',
+      workspace.securityScopeId || workspace.security_scope_id || ''];
+    // 単独利用の保存キーは維持し、認証付きの案選択はアカウント・権限範囲で分ける。
+    return `meldex:scheduler:selected:${workspaceId}:${user()}`
+      + (scope.some(Boolean) ? ':' + JSON.stringify(scope) : '');
   }
 
   function syncContext() {
@@ -37,12 +50,14 @@
       typeof state !== 'undefined' ? String(state.vaultPath || '') : '',
       runtime?.getMode?.() || '',
       window.MeldexWorkspaces?.getActiveId?.() || workspace.workspaceId || workspace.workspace_id || '',
-      workspace.path || workspace.folder || '', workspace.access || workspace.role || '']);
+      workspace.path || workspace.folder || '', workspace.access || workspace.role || '',
+      workspace.accountId || workspace.account_id || '',
+      workspace.securityScopeId || workspace.security_scope_id || '']);
     if (key !== contextKey) {
       contextKey = key;
       contextGeneration++;
       mutationGeneration++;
-      capabilities = null; proposals = []; selectedId = ''; loading = null;
+      invalidateCapabilities(); proposals = []; selectedId = ''; loading = null;
       listIncludesArchived = false; listLoaded = false; CACHE.clear(); historyRevisions.clear();
     }
     return contextGeneration;
@@ -109,10 +124,22 @@
   }
 
   async function loadCapabilities(force = false) {
-    syncContext();
+    const generation = syncContext();
+    if (capabilitiesLoading && !force) return capabilitiesLoading;
     if (capabilities && !force) return capabilities;
-    capabilities = await request(`/scheduler/capabilities${query({ current_user: user(), root_path: rootPath() })}`);
-    return capabilities;
+    const sequence = ++capabilitiesSequence;
+    const task = request(`/scheduler/capabilities${query({ current_user: user(), root_path: rootPath() })}`).then(result => {
+      assertContext(generation);
+      if (sequence !== capabilitiesSequence) {
+        if (capabilitiesLoading && capabilitiesLoading !== task) return capabilitiesLoading;
+        return capabilities || loadCapabilities();
+      }
+      capabilities = result;
+      return capabilities;
+    });
+    capabilitiesLoading = task;
+    try { return await task; }
+    finally { if (capabilitiesLoading === task) capabilitiesLoading = null; }
   }
 
   async function capabilityPolicy() {
@@ -120,12 +147,12 @@
   }
 
   async function patchCapabilityPolicy(patchValue, expectedRevision) {
-    capabilities = null;
+    invalidateCapabilities();
     return request('/scheduler/capability-policy', { method: 'PATCH', body: { patch: patchValue, expectedRevision } });
   }
 
   async function resetCapabilityPolicy(expectedRevision) {
-    capabilities = null;
+    invalidateCapabilities();
     return request('/scheduler/capability-policy/reset', { method: 'POST', body: { expectedRevision } });
   }
 
@@ -212,9 +239,20 @@
     const proposalId = String(id || '');
     const proposal = proposalId ? await get(proposalId) : null;
     assertContext(generation);
-    selectedId = proposal?.id || '';
-    if (selectedId) localStorage.setItem(selectedKey(), selectedId);
-    else localStorage.removeItem(selectedKey());
+    const nextId = proposal?.id || '';
+    const key = selectedKey();
+    assertContext(generation);
+    try {
+      if (nextId) localStorage.setItem(key, nextId);
+      else localStorage.removeItem(key);
+    } catch (error) {
+      const failure = new Error('スケジュール案の選択をこの端末に記憶できませんでした。案は残っています。もう一度選んでください');
+      failure.code = 'scheduler_selection_storage_failed';
+      failure.userMessage = failure.message;
+      failure.cause = error;
+      throw failure;
+    }
+    selectedId = nextId;
     document.dispatchEvent(new CustomEvent('meldex:scheduler-proposal-selected', {
       detail: { proposalId: selectedId, proposal, preserveViewState: true },
     }));
@@ -384,7 +422,7 @@
     errorMessage: error => error?.userMessage || error?.message || String(error),
     _resetForTests() {
       contextKey = ''; contextGeneration++; listIncludesArchived = false; listLoaded = false;
-      capabilities = null; proposals = []; selectedId = ''; loading = null; CACHE.clear();
+      invalidateCapabilities(); proposals = []; selectedId = ''; loading = null; CACHE.clear();
     },
   });
 })();

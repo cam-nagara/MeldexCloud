@@ -20,8 +20,9 @@
     const order = Array.isArray(src.fields) ? unique(src.fields).filter(name => available.includes(name)) : available;
     return { ...src, schemaVersion: 1, fields: order,
       required: unique(src.required || []).filter(name => order.includes(name)),
-      labels: object(src.labels) ? src.labels : {}, descriptions: object(src.descriptions) ? src.descriptions : {},
-      placeholders: object(src.placeholders) ? src.placeholders : {},
+      labels: Object.assign(Object.create(null), object(src.labels) ? src.labels : {}),
+      descriptions: Object.assign(Object.create(null), object(src.descriptions) ? src.descriptions : {}),
+      placeholders: Object.assign(Object.create(null), object(src.placeholders) ? src.placeholders : {}),
       rules: (Array.isArray(src.rules) ? src.rules : []).filter(rule => object(rule) && order.includes(rule.property)),
     };
   }

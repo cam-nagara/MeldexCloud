@@ -194,6 +194,13 @@
     return text;
   }
 
+  function endedLabel(label) {
+    const text = String(label || '').replace(/(?:\.{3}|…|・・・)\s*$/, '').trim();
+    const match = text.match(/^(.*[一-鿿゠-ヿA-Za-z0-9ぁ-ん])中$/);
+    if (match && match[1].length >= 2) return match[1];
+    return text;
+  }
+
   function _finish(record, status, values) {
     if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
     const next = values || {};
@@ -202,6 +209,12 @@
       record.state.label = next.label !== undefined && String(next.label || '').trim()
         ? String(next.label)
         : completedLabel(record.state.label);
+    } else if (next.label !== undefined && String(next.label || '').trim()) {
+      record.state.label = String(next.label);
+    } else {
+      // 終わった処理に「〜中」「〜しています」を残さない（「ファイルを移動中 一部失敗」は、まだ動いているのか
+      // 止まったのか分からず不安にさせていた: 2026-11-24 利用者の報告）。
+      record.state.label = endedLabel(record.state.label);
     }
     record.state.status = status;
     record.state.cancellable = false;
@@ -403,6 +416,7 @@
     const label = String(options.label || '処理中');
     const kind = String(options.kind || 'operation');
     const quiet = !!options.quiet;
+    const retryIds = Array.isArray(options.retryIds) ? options.retryIds.slice() : [];
     let complete = options.onComplete;
     let ownerFrame = options.ownerFrame, ownerDocument = options.ownerDocument;
     options = null;
@@ -425,6 +439,7 @@
       retry: () => {
         discardClosedOwner();
         return runRemoteJob({ endpoint, body: JSON.parse(bodyText), label, kind, quiet,
+          retryIds: [...retryIds, operation.id],
           onComplete: complete, ownerFrame, ownerDocument });
       },
     });
@@ -445,9 +460,16 @@
       discardClosedOwner();
       complete?.(current.result);
       operation?.succeed();
+      // Retain the historical failed status, but resolve its visible warning
+      // only after the retry is confirmed saved. Failed/cancelled retries keep
+      // every earlier warning and never dismiss an unrelated operation.
+      retryIds.forEach(id => _disposeRecord(records.get(id), 'retry-resolved'));
       return current.result;
     } catch (error) {
-      operation?.fail({ message: error.message, error });
+      operation?.fail(window.describeJobFailure
+        ? window.describeJobFailure(error, {label})
+        : {error: label + 'を完了できませんでした。' + error.message,
+          details: [{stage: '原因と対処', message: error.message + '。接続先や保存先を確認してください。'}]});
       if (!quiet) throw error;
       return null;
     }

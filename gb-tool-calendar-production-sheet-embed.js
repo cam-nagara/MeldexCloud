@@ -467,6 +467,8 @@
     instance.containerEl = _buildContainerDOM(instance);
     hostEl.appendChild(instance.containerEl);
     instance.ctx = _buildPaneContext(instance);
+    // 設定表・作品一覧は初回だけ一行省略。保存済みの表／ビュー／列の指定を優先する。
+    instance.ctx.productionCellTextOverflowDefault = 'clip';
     // GBLayout のグローバルペインレジストリへ登録せず、埋め込みDOMからだけ
     // コンテキストを解決できるようにする。セル編集や再描画がグローバルstateへ
     // 戻った後も、このシート固有の property_types を失わないために必要。

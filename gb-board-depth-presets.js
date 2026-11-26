@@ -184,6 +184,17 @@
       ]),
     },
     {
+      id: 'depth-preset-diagram-card',
+      name: '図解カード（資料・レポート）',
+      description: '落ち着いた面に役割色の細い枠と左帯、色付きの見出しで読ませる。直角の細い矢印でつなぐ',
+      build: levels([
+        { name: '主題', idx: 6, tone: 'card', shape: 'accent-card', fontSize: 15, width: 460, radius: 8, borderWidth: 1.5, lineTone: 'neutral', line: { width: 1.5, pathType: 'orthogonal', arrow: 'end' } },
+        { name: '分類', idx: 5, tone: 'card', shape: 'accent-card', fontSize: 14, width: 300, radius: 8, borderWidth: 1.5, lineTone: 'neutral', line: { width: 1.5, pathType: 'orthogonal', arrow: 'end' } },
+        { name: '項目', idx: 4, tone: 'card', shape: 'accent-card', fontSize: 13, width: 460, radius: 8, borderWidth: 1.5, lineTone: 'neutral', line: { width: 1.5, pathType: 'orthogonal', arrow: 'end' } },
+        { name: '詳細', idx: 2, tone: 'card', shape: 'accent-card', fontSize: 13, width: 320, radius: 8, borderWidth: 1.5, lineTone: 'neutral', line: { width: 1.5, pathType: 'orthogonal', arrow: 'end' } },
+      ]),
+    },
+    {
       id: 'depth-preset-presentation',
       name: 'プレゼン（高コントラスト）',
       description: '画面共有や発表向け。すべて塗りつぶし、文字と線を太めにする',

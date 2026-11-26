@@ -218,7 +218,9 @@
       caption.textContent = labelText;
       label.append(control, caption);
       row.appendChild(label);
-      if (helpText) row.insertAdjacentHTML('beforeend', fieldHelp(helpText));
+      if (helpText) row.insertAdjacentHTML('beforeend', fieldHelp(helpText, {
+        e2eId: 'gb-production-field-help-' + encodeURIComponent(name),
+      }));
       return { label: row, value: () => (control.checked ? 'true' : 'false'), controls: [control] };
     }
     const label = document.createElement('label');

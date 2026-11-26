@@ -33,6 +33,7 @@
     leftChromePollTimer: 0,
     restoreFocusEl: null,
     initialized: false,
+    visualUrls: [],
   };
 
   const NEW_ITEM_TYPES = [
@@ -139,6 +140,7 @@
       keywords,
       subcommands: options.subcommands || null,
       fileKey: options.fileKey || '',
+      visual: options.visual || null,
     };
   }
 
@@ -272,7 +274,7 @@
 
   function _commandFileKey(entry, type) {
     const openPath = _entryOpenPath(entry);
-    return `${type || _navTypeForEntry(entry)}:${_entryRootKey(entry)}:${String(entry?.path || '')}:${openPath}`;
+    return `${type || _navTypeForEntry(entry)}:${_entryRootKey(entry)}:${String(entry?.path || '')}:${openPath}${entry?.visual_id ? ':visual:' + entry.visual_id : ''}`;
   }
 
   function invalidateCommandPaletteGlobalIndex() {
@@ -315,6 +317,7 @@
   }
 
   async function _openUnifiedSearchResult(entry) {
+    if (entry?.visual_id && entry.page && window.MeldexPdfVisual) return window.MeldexPdfVisual.openResult(entry);
     const opened = _openFile(entry);
     if (opened === false) return false;
     await opened;
@@ -628,20 +631,21 @@
       const type = _navTypeForEntry(file) || file.type || 'page';
       const mediaType = _mediaTypeForEntry(file, type);
       const displayType = _displayTypeForEntry(file, type, mediaType);
-      const label = file.name || file.path;
+      const label = (file.name || file.path) + (file.visual_id ? ` · ${file.page}ページ（${file.kind === 'page' ? '全体' : '領域'}）` : '');
       const key = _commandFileKey(file, type);
       if (existingKeys.has(key)) continue;
       existingKeys.add(key);
       const sources = (file.sources || [file.source]).filter(Boolean).map(source => ({ name: '名前', content: '本文', clip: '画像', tags: 'タグ', memo: 'メモ' }[source] || source));
       out.push(_command(
         `search:${key}`, '検索結果', label,
-        `${sources.join('・') || '検索'} / ${file.path}`,
+        `${sources.join('・') || '検索'} / ${file.path}${file.visual_id ? ' / ' + (file.caption?.description || file.matches?.[0]?.text || '画像の内容') : ''}`,
         _iconForFileType(displayType),
         () => _openUnifiedSearchResult({ ...file, type, label, mediaType }),
         {
           keywords: [file.path, label],
           meta: file.matches?.[0]?.line ? `L${file.matches[0].line}` : (file.score == null ? '開く' : Number(file.score).toFixed(3)),
           fileKey: key,
+          visual: file.visual_id ? file : null,
         },
       ));
     }
@@ -708,6 +712,7 @@
   }
 
   function _renderList() {
+    state.visualUrls.forEach(url => URL.revokeObjectURL(url)); state.visualUrls = [];
     if (!state.list) return;
     _clearList();
     const items = state.items;
@@ -750,6 +755,11 @@
     icon.className = 'cmd-palette-item-icon';
     icon.setAttribute('aria-hidden', 'true');
     icon.innerHTML = _icon(item.icon, 18);
+    if (item.visual && window.MeldexPdfVisual) {
+      const image = document.createElement('img'); image.alt = '検索した画像領域'; image.style.cssText = 'width:48px;height:40px;object-fit:contain';
+      icon.replaceChildren(image); icon.style.cssText = 'width:48px;flex-shrink:0';
+      void window.MeldexPdfVisual.thumbnail(image, item.visual, state.visualUrls);
+    }
 
     const main = document.createElement('span');
     main.className = 'cmd-palette-item-main';
@@ -1067,6 +1077,7 @@
   }
 
   function closeCommandPalette(options = {}) {
+    state.visualUrls.forEach(url => URL.revokeObjectURL(url)); state.visualUrls = [];
     if (!state.overlay) return;
     clearTimeout(state.searchTimer);
     state.searchTimer = 0;

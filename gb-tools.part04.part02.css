@@ -184,6 +184,18 @@
 .trash-dialog-name,.trash-dialog-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trash-dialog-detail { color: var(--fg2); font-size: 11px; }
 .trash-dialog-status { min-height: 18px; overflow-wrap: anywhere; }
+/* 複数選択: 見出し（全選択・選択中の件数）と行のチェックボックス。選択で行の寸法は変えない（背景だけ）。 */
+.trash-dialog-head { display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 8px; color: var(--fg2); font-size: 12px; }
+.trash-dialog-head-check { display: inline-flex; align-items: center; }
+.trash-dialog-count { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trash-dialog-icon { display: inline-flex; align-items: center; gap: 6px; }
+.trash-dialog-check { --gb-checkbox-size-override: 16px; width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--accent); flex: 0 0 auto; }
+.trash-dialog-row { cursor: default; }
+.trash-dialog-row.is-selected { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.trash-dialog-result { cursor: help; }
+.trash-dialog-retry:empty { display: none; }
+/* 復元の競合ダイアログ: 選べない扱い（押せないボタン）の理由をツールチップで出すための包み */
+.gb-restore-conflict-unavailable { display: inline-flex; cursor: help; }
 @media (max-width: 600px) {
   .gb-db-search-controls { grid-template-columns: minmax(0, 1fr); }
   .gb-db-search-controls input,

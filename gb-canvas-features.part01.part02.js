@@ -287,6 +287,8 @@ function _bdApplyDepthCardFieldsToNode(node, depthStyle) {
   // depth が雲型系シェイプを明示しているときのみ、雲型パラメータも適用する
   if (_BD_CLOUD_SHAPES.has(depthStyle.shape)) {
     _BD_DEPTH_CLOUD_FIELDS.forEach(field => {
+      // 雲型の輪郭も、個別入力で指定した項目は開き直した後まで優先する。
+      if (node[guardKey(field)]) return;
       const v = depthStyle[field];
       if (!Number.isFinite(+v)) return;
       node[field] = +v;

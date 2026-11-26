@@ -1,4 +1,114 @@
-/* gb-note-enhance.part04.js: Markdown の行頭入力ショートカット（part02 が1000行を超えたため分割） */
+/* gb-note-enhance.part04.js: ノートの表の操作の初期化・セルのメニューの結び付けと、Markdown の行頭入力ショートカット（part02 が1000行を超えたため分割。part02 の直後に続けて読み込む） */
+
+function _initTableOperations() {
+  _ensureTableRowDragHandle();
+  document.addEventListener('pointermove', (e) => {
+    if (_noteTableResizeState) {
+      _noteTableResizeMove(e);
+      return;
+    }
+    _noteTableSetResizeHover(_noteTableCellAtResizeEdge(e));
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    _noteTableStartResize(e);
+  }, true);
+  document.addEventListener('pointerup', _noteTableFinishResize, true);
+  document.addEventListener('pointercancel', _noteTableFinishResize, true);
+  document.addEventListener('click', (e) => {
+    const cell = _noteTableCellFromTarget(e.target);
+    if (cell) _showNoteTableCellControls(cell);
+  });
+
+  // セルクリックで直接編集
+  document.addEventListener('click', (e) => {
+    const cell = e.target.closest('td, th');
+    if (!cell || !cell.closest('#page-content table, #entity-freetext table')) return;
+    if (cell.closest('[contenteditable="true"]')) return; // contentEditable内テーブルは gb-editor.js に委譲
+    if (cell.querySelector('input.cell-edit')) return;
+    const editable = cell.closest('#page-content, #entity-freetext');
+    if (!_noteTableCanEdit(editable)) return;
+
+    const input = document.createElement('input');
+    input.className = 'cell-edit';
+    input.type = 'text';
+    input.value = cell.textContent.trim();
+    input.style.cssText = 'width:100%;border:none;background:transparent;color:inherit;font:inherit;padding:0;outline:none;';
+
+    const originalText = cell.textContent;
+    let cancelled = false;
+    cell.textContent = '';
+    cell.appendChild(input);
+    input.focus();
+    input.select();
+
+    input.addEventListener('blur', () => {
+      if (cancelled) return;
+      cell.textContent = input.value;
+      const pc = cell.closest('#page-content, #entity-freetext');
+      _noteTableDispatchInput(pc);
+    });
+
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+      if (ev.key === 'Escape') { cancelled = true; cell.textContent = originalText; }
+      if (ev.key === 'Tab') {
+        ev.preventDefault();
+        input.blur();
+        const nextCell = ev.shiftKey ? cell.previousElementSibling : cell.nextElementSibling;
+        if (nextCell) nextCell.click();
+        else {
+          const row = cell.parentElement;
+          const nextRow = ev.shiftKey ? row.previousElementSibling : row.nextElementSibling;
+          if (nextRow) {
+            const target = ev.shiftKey ? nextRow.lastElementChild : nextRow.firstElementChild;
+            if (target) target.click();
+          }
+        }
+      }
+    });
+  });
+}
+_initTableOperations();
+window.showNoteTableCellControls = _showNoteTableCellControls;
+
+// テーブルセル右クリックで行/列削除メニュー（editable コンテナ委譲）
+// 旧: document 委譲 → editable コンテナ個別登録へ移行（global-contextmenu-refactor-plan.md）
+// 4-7: セル判定セレクタを closest('td, th') に簡略化。これにより #dp-editable 内テーブルも拾える。
+function _tableCellCtxMenuHandler(e) {
+  const editable = e.currentTarget;
+  const cell = e.target.closest('td, th');
+  if (!cell) return;
+  const table = cell.closest('table');
+  if (!table) return;
+  if (!_noteTableCanEdit(editable, { silent: true })) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation?.();
+  _showNoteTableCellControls(cell);
+  _showNoteTableCellMenu(cell, e.clientX, e.clientY, { editable });
+}
+
+// editable コンテナにテーブルセルメニューを付ける
+function bindTableCellContextMenu(el) {
+  if (!el || el._tableCellCtxMenuAttached) return;
+  el._tableCellCtxMenuAttached = true;
+  el.addEventListener('contextmenu', _tableCellCtxMenuHandler);
+  // タッチ/ペンの長押しでも同じハンドラを発火
+  if (typeof addLongPressHandler === 'function') addLongPressHandler(el, _tableCellCtxMenuHandler);
+}
+
+// 静的要素に初期バインド（#dp-editable は gb-detail-panel.part02.js の _dpBindAutoSave で動的バインド）
+bindTableCellContextMenu(document.getElementById('page-content'));
+bindTableCellContextMenu(document.getElementById('entity-freetext'));
+
+// ============================================================
+// 行頭記法（工程6） — 「・」「数値」「h1〜h6」「既存の#〜######」+ Space
+// ============================================================
+// 計画書§5工程6: 共通の現在行変換（gb-note-block-types.js の
+// MeldexNoteBlockTypes.convertCurrentLineTo）へ委譲する。現在行の解決境界も
+// レジストリの resolveCurrentBlock を正本にし、旧実装（#page-content 直下の
+// div/p/h1-6/blockquote だけを対象にした専用ロジック）は残さない。
 
 // 行頭からキャレットまでのテキスト（改行区切りの現在行部分）を取得する。
 function _noteLineTextBeforeCaret(block, range) {

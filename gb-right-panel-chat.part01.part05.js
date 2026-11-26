@@ -5,7 +5,7 @@
   }
   await Promise.allSettled(refreshJobs);
   if (typeof openFolder === 'function' && _folderPath) {
-    await openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, {
+    await openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
       skipShowView: true,
       skipSaveLastView: true,
       skipNavPush: true,

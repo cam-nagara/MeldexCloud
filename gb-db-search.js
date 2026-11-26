@@ -763,17 +763,24 @@ function _dbSearchCsvCell(value) {
 /* --- DBスコープ選択肢を列挙 --- */
 
 function _populateDbScopeOptions(select) {
-  // フォルダツリーのツリーからDB型ノードを収集（_nodeDataベース）
   const seen = new Set();
+  const add = (path, label) => {
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    const opt = document.createElement('option');
+    opt.value = path;
+    opt.textContent = label || path.replace(/\\/g, '/').split('/').pop();
+    select.appendChild(opt);
+  };
+  // ツリーが閉じている時や新規シートを開いた直後も、現在のシートは選択できる。
+  if (typeof state !== 'undefined' && state.currentDbPath) {
+    add(state.currentDbPath, state.dbMetadata?.display_title);
+  }
+  // そのほかの既知のシートを、展開済みのフォルダツリーから追加する。
   document.querySelectorAll('#outliner-tree .tree-node').forEach(node => {
     const nd = node._nodeData;
     if (!nd || nd.type !== 'database' || !nd.path) return;
-    if (seen.has(nd.path)) return;
-    seen.add(nd.path);
-    const opt = document.createElement('option');
-    opt.value = nd.path;
-    opt.textContent = nd.name || nd.path.split('/').pop();
-    select.appendChild(opt);
+    add(nd.path, nd.name);
   });
 }
 

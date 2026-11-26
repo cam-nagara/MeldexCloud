@@ -104,7 +104,7 @@
     const archiveItems = isMulti ? [...treeSelection.items].map(node => node._nodeData).filter(data => data?.path) : [nodeData];
     window.MeldexArchiveTools.appendMenu(menu, archiveItems, closeTreeContextMenu);
   }
-  const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
+  const shellPath = !isMulti && nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
   const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
   if (shellReady) {
     await appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked, beforeDisplay: true });

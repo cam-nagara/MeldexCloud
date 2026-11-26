@@ -46,6 +46,22 @@ function _saveFileTheme(theme) {
 }
 
 let _dbFolderNoteStyleSaveQueue = Promise.resolve();
+const _dbFileStyleWrites = new Map();
+
+function _dbFileStyleWriteKey(path) {
+  return String(path || '').replace(/\\/g, '/').toLocaleLowerCase();
+}
+
+function _dbFileStyleHasUnsavedChanges(path = state?.currentDbPath) {
+  const key = _dbFileStyleWriteKey(path);
+  if (_dbFileStyleWriteKey(state?.currentDbPath) === key && state.dbMetadata?.__chipThemeMigrationPending) return true;
+  const write = _dbFileStyleWrites.get(key);
+  if (!write) return false;
+  const current = _dbFileStyleWriteKey(state?.currentDbPath) === key && state.dbMetadata === write.metadata
+    ? state.dbMetadata?.style || state.dbMetadata?.theme
+    : (write.latestOptimistic ? write.latest : write.saved);
+  return JSON.stringify(_cloneFileStyleObject(current)) !== JSON.stringify(write.saved);
+}
 
 function _syncDbMetadataFileStyle(theme, dbPath = state?.currentDbPath) {
   const normalize = value => String(value || '').replace(/\\/g, '/').toLocaleLowerCase();
@@ -64,6 +80,15 @@ function _syncDbMetadataFileStyle(theme, dbPath = state?.currentDbPath) {
     delete meta.theme;
   });
   if (typeof _invalidateDbMetadataCache === 'function') _invalidateDbMetadataCache(dbPath);
+}
+
+const _noteFileStyleWrites = new WeakMap();
+function _waitForNoteFileStyleWrites(pc) {
+  return _noteFileStyleWrites.get(pc)?.queue || Promise.resolve();
+}
+function _noteFileStyleSaveOwnsMarkdown(pc, markdown) {
+  const write = _noteFileStyleWrites.get(pc);
+  return !!write?.pending && write.path === pc?.dataset?.path && write.latestMarkdown === markdown;
 }
 
 async function _saveFileThemeToNoteFrontmatter(theme) {
@@ -97,29 +122,80 @@ async function _saveFileThemeToNoteFrontmatter(theme) {
   }
   pc.dataset.frontmatter = fmStr;
   pc.dispatchEvent(new Event('input'));
-  if (typeof _runNoteAutoSave === 'function') {
-    await _runNoteAutoSave(pc, path, { skipHistory: true });
-    return pc.dataset.path === path && _noteMarkdownFromEditor(pc) === pc.dataset.lastSavedMd;
+  const markdown = _noteMarkdownFromEditor(pc);
+  const snapshot = _cloneFileStyleObject(theme);
+  let write = _noteFileStyleWrites.get(pc);
+  if (!write || write.path !== path) {
+    write = { path, saved: _cloneFileStyleObject(_parseFileStyleFromFrontmatter(pc.dataset.lastSavedMd || '')), pending: 0 };
+    _noteFileStyleWrites.set(pc, write);
   }
-  return true;
+  write.pending += 1;
+  write.latestMarkdown = markdown;
+  // 保存要求はここで既存の文書キューへ渡す。後で古い本文を再送しない。
+  const saving = typeof _runNoteAutoSave === 'function'
+    ? _runNoteAutoSave(pc, path, { skipHistory: true }) : Promise.resolve({ outcome: 'saved' });
+  const outcome = Promise.resolve(saving).then(value => ({ value }), error => ({ error }));
+  const saveTask = async () => {
+    const before = _cloneFileStyleObject(write.saved);
+    const result = await outcome;
+    if (result.error) throw result.error;
+    if (!['saved', 'unchanged'].includes(result.value?.outcome)) return false;
+    write.saved = _cloneFileStyleObject(snapshot);
+    return { fileStyleBefore: before, fileStyleAfter: _cloneFileStyleObject(snapshot) };
+  };
+  // 履歴の確定だけを操作順に並べ、古い応答でも直前の操作を取り消せるようにする。
+  write.queue = (write.queue || Promise.resolve()).catch(() => {}).then(saveTask);
+  return write.queue.finally(() => {
+    write.pending -= 1;
+    if (!write.pending && _noteFileStyleWrites.get(pc) === write
+      && JSON.stringify(_cloneFileStyleObject(_parseFileStyleFromFrontmatter(pc.dataset.frontmatter || ''))) === JSON.stringify(write.saved)) {
+      _noteFileStyleWrites.delete(pc);
+    }
+  });
 }
 
-function _saveFileThemeToDbFolderNote(theme) {
+function _saveFileThemeToDbFolderNote(theme, options = {}) {
   const dbPath = state?.currentDbPath;
   if (!dbPath) return Promise.resolve();
   const themeSnapshot = _cloneFileStyleObject(theme);
+  const key = _dbFileStyleWriteKey(dbPath);
+  let write = _dbFileStyleWrites.get(key);
+  if (!write || (!write.pending && write.metadata !== state.dbMetadata)) {
+    write = { saved: _cloneFileStyleObject(state.dbMetadata?.style || state.dbMetadata?.theme),
+      metadata: state.dbMetadata, generation: 0, pending: 0 };
+    _dbFileStyleWrites.set(key, write);
+  }
+  const generation = ++write.generation;
+  write.pending += 1;
+  write.latest = themeSnapshot;
+  write.latestOptimistic = !!options.optimistic;
+  // 次の入力は保存応答を待たず、今入力した値を基にする。
+  // 古い応答で新しい入力を巻き戻さず、保存失敗時も再試行できる値を保持する。
+  if (options.optimistic) _syncDbMetadataFileStyle(themeSnapshot, dbPath);
   const saveTask = async () => {
+    const before = _cloneFileStyleObject(write.saved);
     try {
       // テーマだけを原子的に更新し、並行する表示設定や本文の保存を保全する。
       await apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), {
         style: Object.keys(themeSnapshot).length ? themeSnapshot : null,
         theme: null,
       });
-      _syncDbMetadataFileStyle(themeSnapshot, dbPath);
+      write.saved = _cloneFileStyleObject(themeSnapshot);
+      if (themeSnapshot.__chipTypeMigration && write.metadata) delete write.metadata.__chipThemeMigrationPending;
+      if (write.generation === generation) _syncDbMetadataFileStyle(themeSnapshot, dbPath);
       showStatus('シートのテーマを保存しました');
+      return { fileStyleBefore: before, fileStyleAfter: _cloneFileStyleObject(themeSnapshot) };
     } catch (e) {
-      showStatus('テーマ保存に失敗しました', true);
+      if (options.rollbackOnFailure && write.generation === generation) _syncDbMetadataFileStyle(before, dbPath);
+      showStatus(options.optimistic && !options.rollbackOnFailure
+        ? 'テーマ保存に失敗しました。未保存の設定を保持しています。「…」→「保存」で再試行できます'
+        : 'テーマ保存に失敗しました', true);
       throw e;
+    } finally {
+      write.pending -= 1;
+      if (!write.pending && write.generation === generation && !_dbFileStyleHasUnsavedChanges(dbPath)) {
+        _dbFileStyleWrites.delete(key);
+      }
     }
   };
   _dbFolderNoteStyleSaveQueue = _dbFolderNoteStyleSaveQueue.catch(() => {}).then(saveTask);
@@ -214,8 +290,26 @@ function _fileStyleIsLocalCustomTheme(style) {
   return String(themeId || '') === _fileStyleLocalCustomThemeId();
 }
 
+let _fileStyleOsAccentRefreshPromise = null;
+function _ensureFileStyleOsAccentColor() {
+  if (_fileStyleOsAccentRefreshPromise || typeof MeldexThemeManager === 'undefined'
+    || MeldexThemeManager.getOsAccentColor?.() || typeof MeldexThemeManager.refreshOsAccentColor !== 'function') return;
+  // 共通テーマのOS色がOFFでも、ファイル側のONは再起動後に取得する。
+  // 1画面で繰り返し適用されても、取得要求は1回にまとめる。
+  _fileStyleOsAccentRefreshPromise = Promise.resolve().then(() => MeldexThemeManager.refreshOsAccentColor())
+    .catch(() => null).then(() => {
+      let ctx = typeof _getCurrentFileStyleContext === 'function' ? _getCurrentFileStyleContext() : null;
+      if (!ctx && window.isCalendarStyleContextActive?.()) ctx = 'calendar';
+      if (!ctx || typeof _fsGetStyleForContext !== 'function' || !_fileStyleUsesOsAccent(_fsGetStyleForContext(ctx))) return;
+      // 応答中に対象が変わっていても、現在開いているファイルだけを読み直す。
+      if (typeof _fsApplyCurrentStyleRuntime === 'function') _fsApplyCurrentStyleRuntime(ctx);
+      if (typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels(ctx);
+    });
+}
+
 function _applyFileStyleOsAccentVars(vars) {
   if (typeof MeldexThemeManager === 'undefined') return;
+  _ensureFileStyleOsAccentColor();
   const accent = typeof MeldexThemeManager.getOsAccentColor === 'function' ? MeldexThemeManager.getOsAccentColor() : '';
   const text = typeof MeldexThemeManager.getOsAccentTextColor === 'function' ? MeldexThemeManager.getOsAccentTextColor() : '';
   vars['--theme-os-accent'] = accent || 'AccentColor';
@@ -840,113 +934,3 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
   setTimeout(() => document.addEventListener('mousedown', closeMenu, true), 0);
   return menu;
 }
-
-function _initTableOperations() {
-  _ensureTableRowDragHandle();
-  document.addEventListener('pointermove', (e) => {
-    if (_noteTableResizeState) {
-      _noteTableResizeMove(e);
-      return;
-    }
-    _noteTableSetResizeHover(_noteTableCellAtResizeEdge(e));
-  });
-  document.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    _noteTableStartResize(e);
-  }, true);
-  document.addEventListener('pointerup', _noteTableFinishResize, true);
-  document.addEventListener('pointercancel', _noteTableFinishResize, true);
-  document.addEventListener('click', (e) => {
-    const cell = _noteTableCellFromTarget(e.target);
-    if (cell) _showNoteTableCellControls(cell);
-  });
-
-  // セルクリックで直接編集
-  document.addEventListener('click', (e) => {
-    const cell = e.target.closest('td, th');
-    if (!cell || !cell.closest('#page-content table, #entity-freetext table')) return;
-    if (cell.closest('[contenteditable="true"]')) return; // contentEditable内テーブルは gb-editor.js に委譲
-    if (cell.querySelector('input.cell-edit')) return;
-    const editable = cell.closest('#page-content, #entity-freetext');
-    if (!_noteTableCanEdit(editable)) return;
-
-    const input = document.createElement('input');
-    input.className = 'cell-edit';
-    input.type = 'text';
-    input.value = cell.textContent.trim();
-    input.style.cssText = 'width:100%;border:none;background:transparent;color:inherit;font:inherit;padding:0;outline:none;';
-
-    const originalText = cell.textContent;
-    let cancelled = false;
-    cell.textContent = '';
-    cell.appendChild(input);
-    input.focus();
-    input.select();
-
-    input.addEventListener('blur', () => {
-      if (cancelled) return;
-      cell.textContent = input.value;
-      const pc = cell.closest('#page-content, #entity-freetext');
-      _noteTableDispatchInput(pc);
-    });
-
-    input.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
-      if (ev.key === 'Escape') { cancelled = true; cell.textContent = originalText; }
-      if (ev.key === 'Tab') {
-        ev.preventDefault();
-        input.blur();
-        const nextCell = ev.shiftKey ? cell.previousElementSibling : cell.nextElementSibling;
-        if (nextCell) nextCell.click();
-        else {
-          const row = cell.parentElement;
-          const nextRow = ev.shiftKey ? row.previousElementSibling : row.nextElementSibling;
-          if (nextRow) {
-            const target = ev.shiftKey ? nextRow.lastElementChild : nextRow.firstElementChild;
-            if (target) target.click();
-          }
-        }
-      }
-    });
-  });
-}
-_initTableOperations();
-window.showNoteTableCellControls = _showNoteTableCellControls;
-
-// テーブルセル右クリックで行/列削除メニュー（editable コンテナ委譲）
-// 旧: document 委譲 → editable コンテナ個別登録へ移行（global-contextmenu-refactor-plan.md）
-// 4-7: セル判定セレクタを closest('td, th') に簡略化。これにより #dp-editable 内テーブルも拾える。
-function _tableCellCtxMenuHandler(e) {
-  const editable = e.currentTarget;
-  const cell = e.target.closest('td, th');
-  if (!cell) return;
-  const table = cell.closest('table');
-  if (!table) return;
-  if (!_noteTableCanEdit(editable, { silent: true })) return;
-  e.preventDefault();
-  e.stopPropagation();
-  e.stopImmediatePropagation?.();
-  _showNoteTableCellControls(cell);
-  _showNoteTableCellMenu(cell, e.clientX, e.clientY, { editable });
-}
-
-// editable コンテナにテーブルセルメニューを付ける
-function bindTableCellContextMenu(el) {
-  if (!el || el._tableCellCtxMenuAttached) return;
-  el._tableCellCtxMenuAttached = true;
-  el.addEventListener('contextmenu', _tableCellCtxMenuHandler);
-  // タッチ/ペンの長押しでも同じハンドラを発火
-  if (typeof addLongPressHandler === 'function') addLongPressHandler(el, _tableCellCtxMenuHandler);
-}
-
-// 静的要素に初期バインド（#dp-editable は gb-detail-panel.part02.js の _dpBindAutoSave で動的バインド）
-bindTableCellContextMenu(document.getElementById('page-content'));
-bindTableCellContextMenu(document.getElementById('entity-freetext'));
-
-// ============================================================
-// 行頭記法（工程6） — 「・」「数値」「h1〜h6」「既存の#〜######」+ Space
-// ============================================================
-// 計画書§5工程6: 共通の現在行変換（gb-note-block-types.js の
-// MeldexNoteBlockTypes.convertCurrentLineTo）へ委譲する。現在行の解決境界も
-// レジストリの resolveCurrentBlock を正本にし、旧実装（#page-content 直下の
-// div/p/h1-6/blockquote だけを対象にした専用ロジック）は残さない。

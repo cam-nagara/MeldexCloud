@@ -133,7 +133,7 @@
     if (scene.isPdf && scene.pageIndex != null) newData.pageIndex = scene.pageIndex;
     const tail = _convertLegacyTail(scene, data);
     if (tail) newData.tail = tail;
-    return NotesEngine()?.render?.(scene, { id: item.id, color: item.color }, newData) || null;
+    return NotesEngine()?.render?.(scene, item, newData, data) || null;
   }
 
   // rebuild()は互換のため残置（viewer-annotation-scene.jsのrebuild()から無条件で呼ばれる）。

@@ -42,7 +42,7 @@ function _dbPinnedColumnOffsets(renderedCols, pinnedCols, entityColumnPinned, sa
     offsets[token] = left;
     const rawWidth = token === '__entity__'
       ? entityWidth
-      : ((savedWidths && savedWidths[token]) || 100);
+      : ((savedWidths && savedWidths[token]) || 150);
     const numericWidth = Number(rawWidth);
     left += Number.isFinite(numericWidth) && numericWidth > 0
       ? numericWidth

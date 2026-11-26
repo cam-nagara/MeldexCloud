@@ -4,6 +4,7 @@
 
   const Api = () => window.MeldexSchedulerProposals;
   let toolbarObserver = null;
+  const PROPOSAL_READ_ONLY_MESSAGE = '閲覧専用です。スケジュール案の操作は管理者またはスケジュール管理者が行います。確定した予定はカレンダーで確認できます。';
   const CAPABILITY_LABELS = Object.freeze({
     'scheduler.allocate': '自動割り当て',
     'scheduler.proposal.manage': '案の操作',
@@ -28,11 +29,12 @@
         let feedback = host.querySelector(':scope > .gb-scheduler-action-error');
         if (!feedback) {
           feedback = window.GBUI.createInlineError(message);
-          feedback.classList.add('gb-scheduler-progress', 'is-error', 'gb-scheduler-action-error');
+          feedback.classList.add('gb-scheduler-action-error');
           host.insertBefore(feedback, host.querySelector(':scope > .gb-scheduler-proposal-actions'));
         }
         feedback.dataset.proposalId = Api()?.selectedId?.() || '';
-        feedback.textContent = message;
+        if (typeof feedback.setMessage === 'function') feedback.setMessage(message);
+        else feedback.textContent = message;
         feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       }
     } else {
@@ -117,6 +119,17 @@
     const sequence = select._schedulerLoadSequence = (select._schedulerLoadSequence || 0) + 1;
     const previous = api.selectedId();
     try {
+      const caps = await api.loadCapabilities();
+      if (sequence !== select._schedulerLoadSequence) return;
+      if (caps.allowed?.['scheduler.proposal.manage'] === false) {
+        const confirmed = document.createElement('option');
+        confirmed.value = '';
+        confirmed.textContent = '確定版（閲覧専用）';
+        select.replaceChildren(confirmed);
+        select.disabled = true;
+        select.title = PROPOSAL_READ_ONLY_MESSAGE;
+        return;
+      }
       const proposals = await api.list(force);
       if (sequence !== select._schedulerLoadSequence) return;
       select.replaceChildren();
@@ -282,6 +295,9 @@
     const progress = document.createElement('div');
     progress.className = 'gb-scheduler-progress'; progress.hidden = true; progress.setAttribute('role', 'status');
     body.appendChild(progress);
+    const feedback = window.GBUI.createInlineError('');
+    feedback.classList.add('gb-scheduler-allocation-error');
+    body.appendChild(feedback);
 
     const modal = window.GBUI.createModal({
       title: '自動割り当て', body, variant: modalVariant(), extraClass: 'gb-scheduler-modal',
@@ -295,6 +311,7 @@
         status('対象にするタスクを1件以上選んでください', true); return;
       }
       run.disabled = true; cancel.disabled = true; progress.hidden = false;
+      feedback.setMessage('');
       progress.textContent = '案を作成しています…';
       const requestId = `allocation-${Date.now().toString(36)}`;
       const stop = button('処理を中止', 'square', async () => {
@@ -311,10 +328,10 @@
         modal.close('complete');
         syncAllSelectors(true);
       } catch (error) {
-        progress.textContent = Api().errorMessage(error);
-        progress.classList.add('is-error');
+        progress.hidden = true;
+        feedback.setMessage(Api().errorMessage(error));
         run.disabled = false; cancel.disabled = false;
-        progress.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       }
     }, { primary: true, e2eId: 'scheduler-allocation-create' });
     modal.footer.append(cancel, run);
@@ -363,6 +380,53 @@
         summary.className = 'gb-scheduler-compare-summary';
         summary.textContent = result.same ? '配置の差はありません' : `${result.changes.length}件の配置に差があります`;
         body.appendChild(summary);
+        const baseName = candidates.find(item => item.id === select.value)?.name || '選択した案';
+        const describe = row => {
+          if (!row) return 'この案にはありません';
+          if (row.status === 'unassigned') return `配置できません\n${row.reason || '配置できる勤務枠がありません'}`;
+          const time = value => {
+            const date = new Date(value || '');
+            if (Number.isNaN(date.getTime())) return '日時未設定';
+            const pad = n => String(n).padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+          };
+          const people = Array.isArray(row.users) && row.users.length ? row.users : [row.user].filter(Boolean);
+          return `${time(row.start)} ～ ${time(row.end)}\n担当: ${people.join('、') || '未設定'}`;
+        };
+        for (const change of result.changes || []) {
+          const row = change.after || change.before || {};
+          const card = document.createElement('section');
+          card.className = 'gb-section gb-section--boxed gb-scheduler-compare-task';
+          const title = document.createElement('strong');
+          const kind = !change.before ? '追加' : !change.after ? '削除' : '変更';
+          title.textContent = `${kind}: ${row.work_title ? row.work_title + ' / ' : ''}${row.task_name || '名前未設定の作業'}`;
+          card.appendChild(title);
+          const columns = document.createElement('div');
+          columns.className = 'gb-scheduler-compare-columns';
+          for (const [label, placement] of [[`比較元（${baseName}）`, change.before], [`変更案（${current.name || '表示中の案'}）`, change.after]]) {
+            const column = document.createElement('div');
+            const heading = document.createElement('div');
+            heading.className = 'gb-section-desc';
+            heading.textContent = label;
+            const value = document.createElement('div');
+            value.className = 'gb-scheduler-compare-value';
+            value.textContent = describe(placement);
+            column.append(heading, value);
+            columns.appendChild(column);
+          }
+          card.appendChild(columns);
+          body.appendChild(card);
+        }
+        // 比較条件は結果に置き換わるため、実行済みの無効ボタンは残さない。
+        modal.footer.replaceChildren(cancel);
+        modal.modal.classList.add('gb-scheduler-compare-complete');
+        if (typeof innerWidth === 'number' && innerWidth > 700 && modal.modal.dataset.userSized !== '1') {
+          // 初回の小さな選択欄の高さを、非同期に増えた結果へ合わせる。
+          // 利用者が変更・保存した寸法は維持する。
+          const height = modal.header.offsetHeight + modal.footer.offsetHeight + modal.body.scrollHeight;
+          modal.modal.style.height = Math.min(height, innerHeight - 32) + 'px';
+          window.GBModalShell?.clamp?.(modal.modal, modal.header, modal.footer);
+        }
       } catch (error) { compare.disabled = false; status(Api().errorMessage(error), true); }
     }, { primary: true, e2eId: 'scheduler-compare-run' });
     modal.footer.append(cancel, compare); modal.modal.appendChild(modal.footer); modal.open();
@@ -444,7 +508,18 @@
       const seq = ++refreshSeq;
       const isCurrent = () => seq === refreshSeq && host.__schedulerAllocationSeq === renderSeq;
       let caps;
-      try { caps = await Api().loadCapabilities(); await Api().list(); }
+      try {
+        caps = await Api().loadCapabilities();
+        if (!isCurrent()) return;
+        if (caps.allowed?.['scheduler.proposal.manage'] === false) {
+          summary.classList.remove('is-error');
+          summary.textContent = PROPOSAL_READ_ONLY_MESSAGE;
+          actions.replaceChildren();
+          proposalDetails.replaceChildren();
+          return;
+        }
+        await Api().list();
+      }
       catch (error) { if (isCurrent()) { summary.textContent = Api().errorMessage(error); summary.classList.add('is-error'); } return; }
       if (!isCurrent()) return;
       const current = Api().current();

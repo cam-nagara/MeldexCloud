@@ -116,7 +116,7 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
             expected_entry_name: item.name || undefined } : {}),
         })),
         ...confirmationPayload,
-      });
+      }, { silentError: options.silentError === true });
       const batchResults = Array.isArray(payload?.results) ? payload.results : [];
       if (batchResults.length === batchTargets.length) {
         return batchResults.map((entry, index) => {
@@ -158,7 +158,7 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
         ...((item.entry_id || item.entryId) ? { expected_entry_id: item.entry_id || item.entryId,
           expected_entry_name: item.name || undefined } : {}),
         ...confirmationPayload,
-      });
+      }, { silentError: options.silentError === true });
       results.push({ status: 'fulfilled', value });
       const trashRef = _outlinerTrashRefFromResponse(value);
       if (trashRef && typeof options.onSuccess === 'function') {
@@ -215,10 +215,20 @@ function _removeFolderItemsForPaths(paths) {
   if (!deletedPaths.length) return;
   const matches = path => deletedPaths.some(dp => _isOutlinerPathWithin(canonical(path), dp));
 
-  document.querySelectorAll('#folder-grid .fv-item').forEach(itemEl => {
+  // フォルダの表示は面（メイン／サブパネル）ごとに状態を持つ。削除した項目は、表示しているすべての面から外す。
+  const applyToSurface = () => {
+  const independentSurface = typeof _folderIsIndependentSurface === 'function' && _folderIsIndependentSurface();
+  const surfaceCards = typeof _folderGridEl === 'function'
+    ? (_folderGridEl()?.querySelectorAll('.fv-item') || [])
+    : document.querySelectorAll('#folder-grid .fv-item');
+  let removedCards = 0;
+  surfaceCards.forEach(itemEl => {
     const path = itemEl?.dataset?.path || '';
-    if (path && matches(path)) itemEl.remove();
+    if (path && matches(path)) { itemEl.remove(); removedCards += 1; }
   });
+  if (independentSurface && !removedCards
+      && !(typeof _folderItems !== 'undefined' && Array.isArray(_folderItems) && _folderItems.some(item => matches(item?.path)))
+      && !globalThis.MeldexFolderLarge?.active?.()) return;
 
   if (typeof _folderItems !== 'undefined' && Array.isArray(_folderItems)) {
     _folderItems = _folderItems.filter(item => !matches(item?.path));
@@ -233,13 +243,18 @@ function _removeFolderItemsForPaths(paths) {
     _folderSelected = _folderSelectedItems?.[_folderSelectedItems.length - 1] || null;
   }
 
-  const countEl = document.getElementById('folder-item-count');
+  const countEl = independentSurface ? null : document.getElementById('folder-item-count');
   if (countEl && typeof _folderVisibleItems !== 'undefined' && typeof _folderItems !== 'undefined') {
     countEl.textContent = _folderVisibleItems.length + (_folderItems.length !== _folderVisibleItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
   }
   if (typeof _syncFolderCheckboxes === 'function') _syncFolderCheckboxes();
   if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
+  // 大きなフォルダの表示は位置で並べているので、外したカードの分は一覧を取り直して詰める
+  if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.refresh(); return; }
   if (typeof _scheduleWaterfallLayout === 'function') _scheduleWaterfallLayout();
+  };
+  if (typeof _folderForEachSurface === 'function') _folderForEachSurface(applyToSurface);
+  else applyToSurface();
 }
 
 function _markOutlinerDeletePending(paths, options = {}) {
@@ -266,24 +281,246 @@ function _outlinerTrashRefsToNames(refs) {
   return (refs || []).map(ref => ref?.trash_name).filter(Boolean);
 }
 
+// ---- ゴミ箱からの復元 ----
+// 戻し先に同じ名前の項目がある時、本体は黙って上書きも別名にもせず「競合」を返す（409 RESTORE_CONFLICT）。
+// ここで利用者に「置き換え／スキップ／両方残す」を選んでもらい、選んだ扱いを付けて送り直す。
+// 多数の復元（多数の削除の取り消し）は、この件数ずつに分けて /outliner/restore-batch へ送る。
+const OUTLINER_RESTORE_BATCH_CHUNK = 100;
+const OUTLINER_RESTORE_BATCH_MIN = 8;
+let _outlinerRestoreBatchUnsupported = false;
+
+function _outlinerRestoreConflictDetail(source) {
+  const detail = source?.payload?.detail?.code ? source.payload.detail : source?.detail;
+  if (detail && typeof detail === 'object' && detail.code === 'RESTORE_CONFLICT') return detail;
+  // Cloud（Dropbox）の経路は、エラーそのものに種別を持たせて返す
+  const code = source?.code || source?.meldexCode || source?.error?.code || source?.error?.meldexCode;
+  if (code === 'RESTORE_CONFLICT') {
+    return { code, message: String(source?.message || source?.error?.message || ''), choices: ['skip', 'keep_both'] };
+  }
+  return null;
+}
+
+// 同じ名前の項目がある時の選択（共通のダイアログ部品）。{ policy: 'replace'|'skip'|'keep_both', applyAll } を返す。
+// 閉じた・中止した時は null（呼び出し側は、残りを戻さずゴミ箱に残す）。
+function askRestoreConflict(detail, remaining = 0) {
+  if (typeof window.GBUI?.createModal !== 'function') return Promise.resolve(null);
+  const choices = Array.isArray(detail?.choices) && detail.choices.length ? detail.choices : ['skip', 'keep_both'];
+  return new Promise(resolve => {
+    const opener = document.activeElement;
+    const message = document.createElement('div');
+    message.className = 'gb-restore-conflict-message';
+    const conflictName = detail?.name || detail?.original_path || '';
+    // シートのトピック（行）は、名前とIDのどちらかが重なると戻せない。扱いの説明もトピック用にする。
+    const isRow = detail?.row === true;
+    const unavailable = detail?.unavailable && typeof detail.unavailable === 'object' ? detail.unavailable : {};
+    message.textContent = conflictName
+      ? (isRow ? `復元先のシートに「${conflictName}」が既にあります。どうしますか？` : `復元先に「${conflictName}」が既にあります。どうしますか？`)
+      : `${detail?.message || '復元先に同じ名前の項目があります'}。どうしますか？`;
+    const where = document.createElement('div');
+    where.className = 'gb-section-desc';
+    where.textContent = String(detail?.original_path || '');
+    const body = [message, where];
+    let applyAll = null;
+    if (remaining > 0) {
+      const label = document.createElement('label');
+      label.className = 'gb-restore-conflict-apply-all';
+      applyAll = document.createElement('input');
+      applyAll.type = 'checkbox';
+      applyAll.dataset.e2eId = 'restore-conflict-apply-all';
+      label.append(applyAll, document.createTextNode(` 残りの同じ名前の項目（${remaining} 件）にも同じ操作をする`));
+      body.push(label);
+    }
+    let answer = null;
+    let modalApi = null;
+    const button = (policy, text, help, primary) => {
+      const element = document.createElement('button');
+      element.type = 'button';
+      element.className = 'gb-btn gb-btn-sm' + (primary ? ' gb-btn-primary' : '');
+      element.textContent = text;
+      element.dataset.e2eId = 'restore-conflict-' + policy;
+      // 補足は共通のツールチップで出す（本文に長い説明を置かない）
+      element.setAttribute('data-gb-tooltip', help);
+      element.setAttribute('aria-label', `${text}（${help}）`);
+      element.addEventListener('click', () => {
+        answer = policy === 'cancel' ? null : { policy, applyAll: !!applyAll?.checked };
+        modalApi.close(policy);
+      });
+      return element;
+    };
+    // 安全に選べない扱いは、押せないボタンとして残し、理由を共通のツールチップで示す
+    const unavailableButton = (policy, text, reason) => {
+      const wrap = document.createElement('span');
+      wrap.className = 'gb-restore-conflict-unavailable';
+      wrap.tabIndex = 0;
+      wrap.dataset.e2eId = 'restore-conflict-' + policy + '-unavailable';
+      wrap.setAttribute('role', 'note');
+      wrap.setAttribute('data-gb-tooltip', reason);
+      wrap.setAttribute('aria-label', `${text}は選べません（${reason}）`);
+      const element = document.createElement('button');
+      element.type = 'button';
+      element.className = 'gb-btn gb-btn-sm';
+      element.textContent = text;
+      element.disabled = true;
+      element.dataset.e2eId = 'restore-conflict-' + policy;
+      wrap.append(element);
+      return wrap;
+    };
+    const footer = [button('cancel', '中止', '残りは戻さず、ゴミ箱に残します')];
+    footer.push(button('skip', 'スキップ', 'この項目は戻さず、ゴミ箱に残します'));
+    if (choices.includes('replace')) {
+      footer.push(button('replace', '置き換え', isRow ? '今あるトピックをゴミ箱へ移してから戻します' : '今ある方をゴミ箱へ移してから戻します'));
+    } else if (unavailable.replace) footer.push(unavailableButton('replace', '置き換え', String(unavailable.replace)));
+    if (choices.includes('keep_both')) {
+      footer.push(button('keep_both', '両方残す', isRow ? '「名前_2」のような別の名前のトピックとして戻します' : '「名前 (2)」のような別の名前で戻します', true));
+    } else if (unavailable.keep_both) footer.push(unavailableButton('keep_both', '両方残す', String(unavailable.keep_both)));
+    modalApi = window.GBUI.createModal({
+      id: 'gb-restore-conflict',
+      title: '同じ名前の項目があります',
+      body,
+      footer,
+      variant: 'standard',
+      extraClass: 'gb-confirm',
+      geometryKey: 'restore-conflict',
+      initialFocus: () => [...footer].reverse().find(element => element.tagName === 'BUTTON') || footer[0],
+      returnFocus: () => opener,
+      closeLabel: '復元を中止',
+      closeOnEsc: true,
+      closeOnOverlay: false,
+      onClose: () => resolve(answer),
+    });
+    modalApi.modal?.setAttribute?.('role', 'alertdialog');
+    modalApi.open();
+  });
+}
+
+// ゴミ箱の項目（{trash_name, trash_root}）を元の場所へ戻す。結果は refs と同じ並びで、
+// { ok:true, value } / { ok:true, skipped:true }（戻さなかった。ゴミ箱に残る）/ { ok:false, error, status, detail }。
+// options:
+//   allowMissingOriginal  元の場所の記録が無い古い項目も戻す（ゴミ箱の画面からの復元）
+//   singleRequest(ref, policy)  1件ずつ送る時の要求 { path, body }（ゴミ箱の画面は従来の /trash/restore を使う）
+//   onProgress(done, total)     まとめて送った塊が済むたび
+async function restoreTrashRefsWithConflicts(refs, options = {}) {
+  const list = Array.isArray(refs) ? refs : [];
+  const outcomes = new Array(list.length).fill(null);
+  const attempts = new Array(list.length).fill(0);
+  const ask = typeof options.ask === 'function' ? options.ask : askRestoreConflict;
+  const itemFor = (index, policy) => ({
+    trash_name: list[index].trash_name,
+    ...(list[index].trash_root ? { trash_root: list[index].trash_root } : {}),
+    ...(policy ? { conflict_policy: policy } : {}),
+    ...(options.allowMissingOriginal ? { allow_missing_original: true } : {}),
+  });
+  const singleRequestFor = (index, policy) => {
+    const custom = typeof options.singleRequest === 'function' ? options.singleRequest(list[index], policy) : null;
+    return custom?.path ? custom : { path: '/outliner/restore', body: itemFor(index, policy) };
+  };
+  const failed = (error, status, detail) => ({
+    ok: false, status: status || error?.status || 0, detail: detail ?? error?.payload?.detail ?? null,
+    error: error || new Error(String(detail?.message || detail || '復元できませんでした')),
+  });
+  const sendSingles = async (indexes, policyFor) => {
+    for (const index of indexes) {
+      try {
+        const request = singleRequestFor(index, policyFor(index));
+        const value = await apiPost(request.path, request.body, { silentError: true });
+        outcomes[index] = { ok: true, value, skipped: !!value?.skipped };
+      } catch (error) {
+        outcomes[index] = failed(error);
+      }
+    }
+  };
+  const send = async (indexes, policyFor) => {
+    indexes.forEach(index => { attempts[index] += 1; });
+    const useBatch = () => !_outlinerRestoreBatchUnsupported && indexes.length >= OUTLINER_RESTORE_BATCH_MIN
+      && !window.MeldexRuntimeAdapter?.isDropboxMode?.();
+    if (!useBatch()) { await sendSingles(indexes, policyFor); return; }
+    for (let start = 0; start < indexes.length; start += OUTLINER_RESTORE_BATCH_CHUNK) {
+      const chunk = indexes.slice(start, start + OUTLINER_RESTORE_BATCH_CHUNK);
+      if (_outlinerRestoreBatchUnsupported) { await sendSingles(chunk, policyFor); continue; }
+      try {
+        const payload = await apiPost('/outliner/restore-batch', {
+          items: chunk.map(index => itemFor(index, policyFor(index))),
+        }, { silentError: true, timeoutMs: 600000 });
+        const results = Array.isArray(payload?.results) ? payload.results : [];
+        chunk.forEach((index, offset) => {
+          const row = results[offset];
+          if (row?.ok) outcomes[index] = { ok: true, value: row.value || {}, skipped: !!row.skipped };
+          else outcomes[index] = failed(null, row?.status, row?.detail ?? '復元の結果を確認できませんでした');
+        });
+        if (typeof options.onProgress === 'function') options.onProgress(Math.min(start + chunk.length, indexes.length), indexes.length);
+      } catch (error) {
+        if (error?.status === 404 || error?.status === 405) {
+          // 古い本体: まとめての復元が無い。1件ずつ送る。
+          _outlinerRestoreBatchUnsupported = true;
+          await sendSingles(chunk, policyFor);
+        } else {
+          chunk.forEach(index => { outcomes[index] = failed(error); });
+        }
+      }
+    }
+  };
+
+  await send(list.map((_, index) => index).filter(index => list[index]?.trash_name), () => '');
+  let applyAllPolicy = '';
+  for (;;) {
+    const conflicts = outcomes
+      .map((outcome, index) => (outcome && !outcome.ok && _outlinerRestoreConflictDetail(outcome) && attempts[index] < 4 ? index : -1))
+      .filter(index => index >= 0);
+    if (!conflicts.length) break;
+    const decided = new Map();
+    for (let position = 0; position < conflicts.length; position += 1) {
+      const index = conflicts[position];
+      const detail = _outlinerRestoreConflictDetail(outcomes[index]);
+      const choices = Array.isArray(detail.choices) ? detail.choices : [];
+      let policy = applyAllPolicy && choices.includes(applyAllPolicy) ? applyAllPolicy : '';
+      if (!policy) {
+        const answer = await ask(detail, conflicts.length - position - 1);
+        if (!answer) {
+          // 中止: 残りは戻さない（ゴミ箱に残る）
+          conflicts.slice(position).forEach(rest => { outcomes[rest] = { ok: true, skipped: true, conflict: true }; });
+          break;
+        }
+        policy = answer.policy;
+        if (answer.applyAll) applyAllPolicy = policy;
+      }
+      if (policy === 'skip') outcomes[index] = { ok: true, skipped: true, conflict: true };
+      else decided.set(index, policy);
+    }
+    if (!decided.size) break;
+    await send([...decided.keys()], index => decided.get(index));
+  }
+  return outcomes;
+}
+
+if (typeof window !== 'undefined') {
+  window.MeldexRestoreConflict = {
+    ask: askRestoreConflict,
+    detail: _outlinerRestoreConflictDetail,
+    restoreTrashRefs: restoreTrashRefsWithConflicts,
+  };
+}
+
 async function _restoreOutlinerDeleteRecords(records) {
   const restored = [];
   const failures = [];
-  for (const record of records || []) {
-    if (!record?.deleted || !record.trashRef?.trash_name) continue;
-    try {
-      const result = await apiPost('/outliner/restore', {
-        trash_name: record.trashRef.trash_name,
-        ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
-      });
+  const skipped = [];
+  const pending = (records || []).filter(record => record?.deleted && record.trashRef?.trash_name);
+  const outcomes = await restoreTrashRefsWithConflicts(pending.map(record => record.trashRef));
+  pending.forEach((record, index) => {
+    const outcome = outcomes[index];
+    if (outcome?.ok && outcome.skipped) {
+      skipped.push(record);   // 利用者が戻さないと選んだ（ゴミ箱に残る）
+    } else if (outcome?.ok) {
+      const result = outcome.value;
       record.currentPath = result?.restored_to || result?.restored_path || record.item.path;
       record.deleted = false;
       restored.push(result);
-    } catch (error) {
+    } else {
+      const error = outcome?.error || new Error('復元できませんでした');
       failures.push({ record, error });
     }
-  }
-  return { restored, failures };
+  });
+  return { restored, failures, skipped };
 }
 
 async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result, refreshSuccessfulRedo = false) {
@@ -298,7 +535,7 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result, refreshS
   if (typeof renderHomeFolderTree === 'function') jobs.push(Promise.resolve(renderHomeFolderTree()).catch(() => {}));
   if (typeof renderWorkspaceSidebar === 'function') jobs.push(Promise.resolve(renderWorkspaceSidebar()).catch(() => {}));
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
-    jobs.push(Promise.resolve(openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, {
+    jobs.push(Promise.resolve(openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
       skipShowView: true,
       skipSaveLastView: true,
       skipNavPush: true,
@@ -351,6 +588,54 @@ function pushCreatedOutlinerItemHistory(item, label, options = {}) {
   return entry;
 }
 
+// 多数の項目の削除は、この件数ずつに分けて送る（参照の確認 → /outliner/delete-batch を塊ごとに行う）。
+// 1回の要求に数千件を載せると、応答までの間に進み具合が分からず、時間切れになると全体の結果が分からなくなる。
+const OUTLINER_DELETE_BATCH_CHUNK = 100;
+
+function _outlinerDeleteNeedsChunks(targets, options) {
+  return !options?.confirmation && targets.length > OUTLINER_DELETE_BATCH_CHUNK
+    && typeof MeldexDeleteImpactWarning !== 'undefined' && !window.MeldexRuntimeAdapter?.isDropboxMode?.();
+}
+
+async function _deleteOutlinerTargetsInChunks(targets, options = {}) {
+  const progress = window.MeldexImportProgress;
+  const token = progress?.beginOperation?.('ファイルを削除中', targets.length, { delayMs: 0, kind: 'file-delete' });
+  const results = [];
+  let stopped = null;
+  try {
+    for (let start = 0; start < targets.length; start += OUTLINER_DELETE_BATCH_CHUNK) {
+      const chunk = targets.slice(start, start + OUTLINER_DELETE_BATCH_CHUNK);
+      if (stopped) {
+        chunk.forEach(item => { try { options.onFailure?.(item, stopped); } catch {} results.push({ status: 'rejected', reason: stopped }); });
+        continue;
+      }
+      // 参照の確認は塊ごとに取る（確認の控えは、その塊の項目にだけ有効）
+      const confirmation = await MeldexDeleteImpactWarning.authorizeReversibleDelete(chunk.map(item => ({
+        path: item.path, kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
+        ...(item.assetId ? { assetId: item.assetId } : {}),
+      })));
+      if (!confirmation) {
+        // 確認できなかった塊と、その後の塊は削除しない（すでに削除した塊は成功のまま扱う）
+        stopped = '参照の確認に失敗したため削除を中止しました';
+        chunk.forEach(item => { try { options.onFailure?.(item, stopped); } catch {} results.push({ status: 'rejected', reason: stopped }); });
+        continue;
+      }
+      if (typeof purgeAppPathReferences === 'function') purgeAppPathReferences(chunk.map(item => item.path));
+      const chunkResults = await _deleteOutlinerTargetsSequentially(chunk, { ...options, confirmation });
+      results.push(...chunkResults);
+      progress?.updateOperation?.(results.length, null, token);
+    }
+  } finally {
+    const failed = results.filter(result => result.status !== 'fulfilled').length + Math.max(0, targets.length - results.length);
+    progress?.finishOperation?.(token, {
+      failed,
+      label: failed ? '削除' : `${targets.length}件を削除しました`,
+      summary: failed ? `${targets.length - failed}件を削除・${failed}件は削除できませんでした（元の場所に残っています）` : '',
+    });
+  }
+  return results;
+}
+
 async function deleteOutlinerItemsWithHistory(items, options = {}) {
   const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
   if (requestedTargets.some(item => item.linked)) {
@@ -375,7 +660,9 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     try { options.onOptimisticDelete(targets); } catch {}
   }
 
-  const confirmation = options.confirmation || (typeof MeldexDeleteImpactWarning !== 'undefined'
+  // 件数が多い時は、参照の確認と削除を塊ごとに行う（呼び出し元が確認済みの控えを渡した時は、従来どおり1回で送る）
+  const deleteInChunks = typeof _outlinerDeleteNeedsChunks === 'function' && _outlinerDeleteNeedsChunks(targets, options);
+  const confirmation = deleteInChunks ? { confirmed: true, operation: 'trash', chunked: true } : options.confirmation || (typeof MeldexDeleteImpactWarning !== 'undefined'
     ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(targets.map(item => ({
       path: item.path, kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
       ...(item.assetId ? { assetId: item.assetId } : {}),
@@ -387,11 +674,11 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     historyReservation?.cancel();
     return { targets, requestedTargets, succeeded: [], skipped: [], failed, failedCount: targets.length, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
   }
-  // 確認が済むまでは、未保存のエディタやタブの参照を保つ。
-  if (typeof purgeAppPathReferences === 'function') purgeAppPathReferences(targetPaths);
+  // 確認が済むまでは、未保存のエディタやタブの参照を保つ（塊ごとに削除する時は、塊の確認が済んでから外す）。
+  if (!deleteInChunks && typeof purgeAppPathReferences === 'function') purgeAppPathReferences(targetPaths);
 
-  const results = await _deleteOutlinerTargetsSequentially(targets, {
-    confirmation,
+  const results = await (deleteInChunks ? _deleteOutlinerTargetsInChunks : _deleteOutlinerTargetsSequentially)(targets, {
+    ...(deleteInChunks ? {} : { confirmation }),
     onSuccess: (item, response) => {
       if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
     },
@@ -454,7 +741,10 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
         if (restoreFailures.length) {
           throw new Error(`${restoreFailures.length} 件を復元できませんでした。成功した項目は再試行しません`);
         }
-        if (typeof showStatus === 'function') showStatus(restored.length + ' 件を復元しました');
+        if (typeof showStatus === 'function') {
+          const kept = deleteRecords.filter(record => record.deleted).length;
+          showStatus(restored.length + ' 件を復元しました' + (kept ? `（${kept} 件は戻さず、ゴミ箱に残しました）` : ''));
+        }
       },
       async () => {
         const pendingRecords = deleteRecords.filter(record => !record.deleted);
@@ -635,7 +925,8 @@ function _outlinerAppendMenuItem(menu, options) {
   if (options?.html != null) {
     item.innerHTML = options.html;
   } else {
-    item.innerHTML = _outlinerMenuIconHtml(options?.icon) + '<span>' + _outlinerEscHtml(options?.label || '') + '</span>';
+    const iconName = options?.icon === false ? '' : (options?.icon || window.MeldexMenuIcons?.resolve?.(options?.label) || '');
+    item.innerHTML = _outlinerMenuIconHtml(iconName) + '<span>' + _outlinerEscHtml(options?.label || '') + '</span>';
   }
   if (options?.hasSubmenu) {
     item.classList.add('has-submenu');
@@ -929,21 +1220,22 @@ function _pushCreatedOutlinerItemsHistory(createdItems, label, scope, options = 
   const refresh = async () => {
     if (typeof options.refresh === 'function') { await options.refresh(); return; }
     await _outlinerSyncFoldersOrReload(records.map(record => _outlinerParentPath(record.path)));
-    if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
-      await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
-    }
   };
   const entry = historyPush(label,
     async () => {
-      const targets = records.map(record => ({ path: record.path, kind: record.kind }));
+      // 一部だけ移せた時も、成功した画像のごみ箱参照を保持して残りだけを再試行する。
+      const pending = records.filter(record => !record.trashRef);
+      if (!pending.length) { await refresh(); return; }
+      const targets = pending.map(record => ({ path: record.path, kind: record.kind }));
       const warning = typeof MeldexDeleteImpactWarning !== 'undefined' ? MeldexDeleteImpactWarning : null;
       const confirmation = warning?.authorizeReversibleDelete ? await warning.authorizeReversibleDelete(targets) : { confirmed: true, operation: 'trash' };
       if (!confirmation) throw new Error('参照の確認ができなかったため取り消しを中止しました');
-      const results = await _deleteOutlinerTargetsSequentially(targets, { confirmation });
+      const results = await _deleteOutlinerTargetsSequentially(targets, { confirmation, silentError: true });
       const failures = [];
-      results.forEach((outcome, index) => {
+      pending.forEach((record, index) => {
+        const outcome = results[index];
         const ref = outcome?.status === 'fulfilled' ? _outlinerTrashRefFromResponse(outcome.value) : null;
-        if (ref) records[index].trashRef = ref; else failures.push(records[index]);
+        if (ref) record.trashRef = ref; else failures.push(record);
       });
       await refresh();
       if (failures.length) throw new Error(`${failures.length} 件をゴミ箱へ移せませんでした`);
@@ -956,7 +1248,7 @@ function _pushCreatedOutlinerItemsHistory(createdItems, label, scope, options = 
           const restored = await apiPost('/outliner/restore', {
             trash_name: record.trashRef.trash_name,
             ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
-          });
+          }, { silentError: true });
           record.path = restored?.restored_to || restored?.restored_path || record.path;
           record.trashRef = null;
         } catch (error) { failures.push(error); }
@@ -1424,6 +1716,20 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       });
       addSep();
     }
+  }
+
+  if (isMulti) {
+    addMenuItem(`プロパティ（${selectedCount}件）`, () => {
+      closeTreeContextMenu();
+      return showFolderSelectionProperties(treeSelection.getNodeData(), nodeEl);
+    }, null, 'info');
+    if (window.isAutoTagRuntimeAvailable?.() === true && contextOperationItems.length) {
+      addMenuItem(`自動タグ付け（${selectedCount}件）`, () => {
+        closeTreeContextMenu();
+        fvBulkAutoTag(contextOperationItems);
+      }, null, 'tags');
+    }
+    addSep();
   }
 
   // --- 新規作成サブメニュー ---（作成先が押した1項目で決まるため、複数選択時は出さない）

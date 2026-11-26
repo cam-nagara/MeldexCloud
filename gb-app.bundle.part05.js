@@ -1,3 +1,311 @@
+  return true;
+}
+
+function _repairStartupDatabaseViewTabs() {
+  try {
+    if (!state.currentDbPath || typeof _renderDbViewTabsSafely !== 'function') return;
+    const tabs = document.getElementById('db-view-tabs') || document.querySelector('.db-view-tabs');
+    if (!tabs) return;
+    if (tabs.querySelector('[data-e2e-id^="db-view-add-"]')) return;
+    _renderDbViewTabsSafely(typeof _currentPaneState === 'function' ? _currentPaneState() : null);
+  } catch {}
+}
+
+function _scheduleStartupDatabaseViewTabsRepair() {
+  [0, 80, 250].forEach(delay => setTimeout(_repairStartupDatabaseViewTabs, delay));
+}
+
+async function _restoreStartupBoardView(label, path, opts) {
+  const openOpts = opts || {};
+  const boardLabel = label || String(path || '').split(/[\\/]/).pop() || '';
+  if (typeof GBPaneBridge !== 'undefined'
+    && GBPaneBridge?.initialized
+    && typeof GBLayout !== 'undefined'
+    && typeof GBTabs !== 'undefined'
+    && typeof navPush === 'function') {
+    state.view = 'board';
+    state.currentBoardPath = path;
+    navPush({ type: 'board', label: boardLabel, path });
+    if (typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
+      GBPaneBridge.refreshPaneAfterTabSwitch(GBLayout.activePane, { force: true });
+    }
+    if (!openOpts.skipSaveLastView) saveLastView({ type: 'board', label: boardLabel, path });
+    if (!openOpts.skipRecent && typeof addRecent === 'function') addRecent(boardLabel, path, 'board');
+    if (!openOpts.skipHighlight && typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
+    if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
+    return true;
+  }
+  const opened = typeof openBoard === 'function' ? await openBoard(boardLabel, path, openOpts) : false;
+  return opened !== false;
+}
+
+// 特定フォルダ内のパスに対するロールを取得
+function getMyRoleForPath(filePath) {
+  if (!filePath) return _myTeamRole;
+  const normFile = String(filePath).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  let matchedRole = '';
+  let matchedLength = -1;
+  for (const [folder, role] of Object.entries(_myTeamRoles)) {
+    const norm = String(folder || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!norm) continue;
+    if ((normFile === norm || normFile.startsWith(norm + '/')) && norm.length > matchedLength) {
+      matchedRole = role;
+      matchedLength = norm.length;
+    }
+  }
+  return matchedRole || _myTeamRole;
+}
+
+// doLogin / ログイン画面は廃止（チーム方式に移行）
+
+// localStorage移行（旧CrossFolio → Meldex、一度だけ実行）
+(function migrateLocalStorage() {
+  if (localStorage.getItem('gb:migrated')) return;
+  const migrations = {
+    'crossfolio-auth-token': 'meldex-auth-token',
+    'crossfolio-user': 'meldex-user',
+    'crossfolio-recent': 'meldex-recent',
+    'crossfolio-theme-vars': 'meldex-theme-vars',
+    'crossfolio-favorites': 'meldex-favorites',
+    'cf-cal-start-day': 'gb-cal-start-day',
+  };
+  for (const [oldKey, newKey] of Object.entries(migrations)) {
+    const val = localStorage.getItem(oldKey);
+    if (val !== null && localStorage.getItem(newKey) === null) {
+      localStorage.setItem(newKey, val);
+    }
+  }
+  // cf-cal-mode-*, cf-cal-date-* のプレフィックス移行
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('cf-cal-')) {
+      const newKey = key.replace('cf-cal-', 'gb-cal-');
+      if (localStorage.getItem(newKey) === null) {
+        localStorage.setItem(newKey, localStorage.getItem(key));
+      }
+    }
+  }
+  localStorage.setItem('gb:migrated', '1');
+  if (typeof _refreshOutlinerStorageViewsAfterMigration === 'function') {
+    _refreshOutlinerStorageViewsAfterMigration();
+  }
+})();
+
+// 起動時に正本「スタッフ管理シート」へ自分の行を fill-only 登録する
+// （ユーザーアカウント一元管理 計画書 Phase 2、§5.6）。行が既に存在するなら
+// 一切上書きしない（管理者がシートで編集した値は同期に負けない契約）。
+// 正本シート自体が未設定の場合はここで無ダイアログ自動作成される
+// （計画書§5.1「起動時同期」が自動作成のトリガーの一つ）。
+async function _primeStaffRegistrySelfUpsert() {
+  if (!window.MeldexUserRegistry) return;
+  const me = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
+  if (!me || me === 'anonymous') return;
+  try {
+    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true, silentError: true });
+  } catch (e) {
+    // ソースフォルダ未設定・オフライン等では起動処理を止めない。
+    console.warn('[staff-registry] 起動時のプロフィール登録を保留しました:', e);
+  }
+}
+
+async function init() {
+  const initStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+  // チームプロフィール同期は権限情報の更新用途。起動表示は待たず、裏で完了させる。
+  _runStartupBackground('team-profile-sync', _syncMyTeamProfile());
+  _runStartupBackground('staff-registry-self-upsert', _primeStaffRegistrySelfUpsert());
+
+  try {
+    const initialFetchStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+    const [vault, roots, homeRes] = await Promise.all([
+      _withStartupTimeout('vault', apiFetch('/vault'), 5000, { path: '', name: '' }),
+      _withStartupTimeout('outliner-roots', apiFetch('/outliner-roots').catch(() => []), 5000, []),
+      _withStartupTimeout('home-folder', apiFetch('/home-folder').catch(() => ({ exists: false })), 5000, { exists: false }),
+    ]);
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.initial-fetches', initialFetchStartedAt, {
+        rootsCount: Array.isArray(roots) ? roots.length : 0,
+        hasHome: !!homeRes?.exists,
+      });
+    }
+    state.vaultPath = vault.path;
+    window.MeldexRegisteredSourceRoots = Array.isArray(roots)
+      ? roots.filter(root => root?.path).map(root => ({ ...root }))
+      : [];
+    try {
+      if (homeRes?.path && typeof _homeFolderPath !== 'undefined') _homeFolderPath = homeRes.path;
+    } catch (e) {}
+
+    const hasRoots = roots.length > 0 && roots.some(r => r.visible);
+    const hasHome = homeRes.exists;
+    const onboardingShown = !!window.MeldexOnboarding?.handleStartupState?.({
+      vaultPath: vault.path || '',
+      hasRoots,
+      hasHome,
+      homePath: homeRes?.path || '',
+    });
+    if (!vault.path && !hasRoots && !hasHome) {
+      // ソースフォルダもルートもホームもない場合はウェルカム画面
+      // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
+      showView('welcome');
+    }
+
+    // ホームフォルダの版間共有: 起動時の共有警告・引き継ぎ提案チェック。
+    // オンボーディングウィザードが出る場合はダイアログの重なりを避けて後回しにする
+    // （設定画面を開いた時に loadHomeFolderSharingStatusForSettings() 経由で再チェックされる）。
+    if (!onboardingShown && window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings) {
+      _runStartupBackground(
+        'home-folder-sharing-check',
+        window.MeldexHomeFolderSharing.loadHomeFolderSharingStatusForSettings()
+      );
+    }
+
+    document.getElementById('sb-work').textContent = vault.path ? ('ソースフォルダ: ' + vault.name) : '';
+    document.getElementById('current-title').textContent = '';
+
+    // file_id マイグレーションは初回のみだが、起動表示を止めないよう背景化する。
+    const rawMigrationPromise = _migratePathsToFileIds();
+    const migrationPromise = _withStartupTimeout('file-id-migration', rawMigrationPromise, 5000, null);
+
+    // 廃止された非表示機能の localStorage を一度だけ除去
+    if (!localStorage.getItem('_folder-hidden-removed')) {
+      localStorage.removeItem('folder-files-hidden');
+      localStorage.setItem('_folder-hidden-removed', '1');
+    }
+
+    // フォルダツリーとビュー復元を並行実行
+    const outlinerStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+    const outlinerPromise = Promise.resolve(loadOutliner()).finally(() => {
+      if (typeof _logPerfEvent === 'function') _logPerfEvent('startup.loadOutliner.promise', outlinerStartedAt);
+    });
+    const linkDictPromise = loadLinkDict();
+
+    // URLパラメータによる初期表示（新しいタブ/ウィンドウで開く用）
+    let restored = onboardingShown;
+    let openedCloudStartupHome = false;
+    const restoredByPaneLayout = _paneLayoutRestoredFromStorage();
+    const urlParams = new URLSearchParams(window.location.search);
+    const openType = urlParams.get('open');
+    const openPath = urlParams.get('path');
+    const openLabel = urlParams.get('label') || (openPath ? openPath.split('/').pop() : '');
+    const isUrlOpen = !!(openType && openPath);
+    if (isUrlOpen && _isCloudPhase1UnsupportedOpenType(openType)) {
+      _showCloudPhase1UnsupportedOpen(openType);
+      restored = true;
+    } else if (isUrlOpen) {
+      const _urlOpenOpts = { skipAutoAppLayout: true, skipSaveLastView: true };
+      // URLパラメータ経由の場合、lastViewを上書きしないフラグを設定
+      const previousSkipLastView = window._skipLastViewSave;
+      window._skipLastViewSave = true;
+      try {
+        if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
+        else if (openType === 'form-app') { restored = (await openFormApp(openPath, openLabel, _urlOpenOpts)) !== false; }
+        else if (openType === 'map') { restored = (await openMapApp(openPath, openLabel, _urlOpenOpts)) !== false; }
+        else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
+        else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
+          const mt = urlParams.get('mediaType') || (openType === 'media' ? 'image' : openType);
+          openMedia(openLabel, openPath, mt, _urlOpenOpts);
+          restored = true;
+        }
+        else if (openType === 'document') {
+          if (typeof openViewer === 'function') {
+            const viewerUrl = /\.pdf(?:[?#]|$)/i.test(openPath)
+              ? '/viewer?pdf=' + encodeURIComponent(openPath)
+              : '/viewer?file=' + encodeURIComponent(openPath);
+            openViewer(viewerUrl, _urlOpenOpts);
+            restored = true;
+          }
+        }
+        else if (openType === 'html') { openHtmlFile(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'csv') { if (typeof openCsvFile === 'function') { openCsvFile(openLabel, openPath, _urlOpenOpts); restored = true; } }
+        else if (openType === 'folder') { openFolder(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'calendar') { await openCalendarFile(openLabel, openPath, _urlOpenOpts); restored = true; }
+        else if (openType === 'chat') {
+          if (typeof openSavedChat === 'function') {
+            await openSavedChat(openPath);
+            restored = true;
+          }
+        }
+        else if (openType === 'scriptnote' || openType === 'scenario') {
+          if (typeof openScenarioInScriptNote === 'function') {
+            openScenarioInScriptNote(openPath, openLabel, _urlOpenOpts);
+            restored = true;
+          }
+        }
+      } finally {
+        window._skipLastViewSave = previousSkipLastView;
+      }
+    }
+
+    // Cloud starts at Home even when an older document/layout is remembered.
+    // Keep saved tabs and unsaved drafts available for explicit recovery.
+    if (!restored) {
+      openedCloudStartupHome = await _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown);
+      restored = openedCloudStartupHome;
+    }
+
+    // v5.0 ペイン配置が復元済みなら、旧 lastView 復元でアクティブペインを上書きしない。
+    if (!restored && restoredByPaneLayout) restored = true;
+
+    // 前回のビューを即座に復元（URLパラメータがなかった場合）
+    if (!restored) {
+      const restoreStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+      try {
+        let last = _readLastViewFromStorage();
+        if (last && _isCloudPhase1UnsupportedOpenType(last.type)) {
+          localStorage.removeItem('lastView');
+          _showCloudPhase1UnsupportedOpen(last.type);
+          last = null;
+        }
+        const _expOpts = { fromExplorer: true, skipAutoAppLayout: true };
+        if (last) {
+          if (last.type === 'pivot' && last.dbPath) { await selectDatabase(last.dbPath, null, _expOpts); restored = true; }
+          else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
+          else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
+          else if (last.type === 'form-app' && last.path) { restored = (await openFormApp(last.path, last.label || '', _expOpts)) !== false; }
+          else if (last.type === 'map' && last.path) { restored = (await openMapApp(last.path, last.label || '', _expOpts)) !== false; }
+          else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
+          else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
+          else if (last.type === 'scriptnote' && last.path && typeof openScenarioInScriptNote === 'function') { openScenarioInScriptNote(last.path, last.label || '', _expOpts); restored = true; }
+          else if (last.type === 'folder' && last.path) { openFolder(last.label || '', last.path, _expOpts); restored = true; }
+          else if (last.type === 'calendar' && last.path) { await openCalendarFile(last.label || '', last.path, _expOpts); restored = true; }
+        }
+      } catch (e) {}
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.restore-last-view', restoreStartedAt, { restored });
+      }
+    } // if (!restored) from URL params
+
+    if (!restored && !_isDesktopStartupLaunch()) {
+      const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
+      if (startupFolder?.path) {
+        const _startupOpts = { fromExplorer: true, skipAutoAppLayout: true };
+        await openFolder(startupFolder.label || _pathTailLabel(startupFolder.path, 'フォルダ'), startupFolder.path, _startupOpts);
+        restored = true;
+      }
+    }
+
+    // v5.0 ペインシステムがタブを復元している場合は welcome にフォールバックしない。
+    // lastView ベースの復元が hit しなくても、ペイン配置が残っていれば画面は埋まっている。
+    if (!restored) {
+      const _paneHasTabs = _paneLayoutHasAnyTabs();
+      if (!_paneHasTabs) showView('welcome');
+    }
+
+    // 起動後の重い補助処理は背景で継続し、表示を先に返す。
+    _scheduleStartupDatabaseViewTabsRepair();
+    _hideStartupSplash();
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.visible', initStartedAt, { restored });
+    }
+    _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
+      if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
+        _refreshDbViewConfigAfterHistory(state.currentDbPath);
+      }
+    });
     _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
       initGlobalFilterBar();
       _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
@@ -590,311 +898,3 @@ function _buildCfDialogBodyNodes(message, idBase) {
 }
 
 // 短い問いかけ用の .gb-confirm 表示を保ちつつ、生成・閉鎖・フォーカス・
-// モバイル変換を GBUI.createModal へ統一する。
-// - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
-// - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
-function _cfIsDeleteMessage(text) {
-  // 破壊的操作を示唆するキーワード。
-  // 「元に戻す」(= undo) は破壊的でないため「デフォルト.*戻」のみ (リセット系) を拾う。
-  // 「を空に」は「ゴミ箱を空にする/します/しますか」を両活用形でカバーする。
-  return /削除|破棄|除去|消去|初期化|リセット|を空に|デフォルト.{0,8}戻/.test(String(text || ''));
-}
-
-let _cfDialogSeq = 0;
-function _cfRestoreFocusTarget() {
-  return document.activeElement instanceof HTMLElement ? document.activeElement : null;
-}
-
-function _cfIsTopmostDialog(dialog) {
-  const managed = window.GBDialogKeyboard?.topmostDialog?.();
-  if (managed) return managed === dialog;
-  const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')]
-    .filter(node => node.isConnected && !node.hidden);
-  return !dialogs.length || dialogs[dialogs.length - 1] === dialog;
-}
-
-function _configureCfModal(modalApi, kind, label, role, messageNodes, idBase) {
-  modalApi.overlay.classList.add('modal-overlay');
-  modalApi.overlay.dataset.e2eId = `${kind}-overlay`;
-  modalApi.modal.classList.add('gb-confirm');
-  modalApi.modal.dataset.e2eId = `${kind}-dialog`;
-  modalApi.modal.dataset.dialogType = kind;
-  modalApi.modal.id = `${idBase}-dialog`;
-  modalApi.modal.setAttribute('role', role);
-  modalApi.modal.setAttribute('aria-label', label);
-  const closeButton = modalApi.header.querySelector('.gb-modal-close');
-  if (closeButton) closeButton.dataset.e2eId = `${kind}-close`;
-  if (messageNodes.length) {
-    modalApi.modal.setAttribute('aria-describedby', messageNodes.map(node => node.id).join(' '));
-  }
-  modalApi.footer.classList.add('gb-confirm-actions');
-  return modalApi;
-}
-
-function _completeCfModalPromise(modalApi, resolve, value) {
-  const settle = () => {
-    if (modalApi?.overlay?.isConnected) {
-      setTimeout(settle, 40);
-      return;
-    }
-    // GBUI.createModal のフォーカス復帰は、モバイル下端シートの閉じるアニメーション後に
-    // 同じ40ms周期で実行される。onClose時点で先にPromiseを解決すると、直後に開いた
-    // ダイアログから旧ダイアログの復帰処理がフォーカスを奪うため、次タスクまで待つ。
-    setTimeout(() => resolve(value), 0);
-  };
-  settle();
-}
-
-// カスタムalertダイアログ（alert()の代替、画面中央モーダル）
-function cfAlert(message, options) {
-  const opts = options || {};
-  const okLabel = opts.okLabel || 'OK';
-  const showSupport = opts.support !== false && /HTTP\s+\d{3}|Error|エラー|失敗|例外/.test(String(message || ''));
-  if (typeof window.GBUI?.createModal !== 'function') {
-    if (typeof window.alert === 'function') window.alert(String(message || ''));
-    return Promise.resolve();
-  }
-  return new Promise(resolve => {
-    const restoreFocusTo = _cfRestoreFocusTarget();
-    const idBase = `gb-cf-alert-${++_cfDialogSeq}`;
-    const messageNodes = _buildCfDialogBodyNodes(message, idBase);
-    const supportButton = document.createElement('button');
-    supportButton.type = 'button';
-    supportButton.id = '_gb-support';
-    supportButton.className = 'gb-btn gb-btn-sm';
-    supportButton.textContent = 'サポートに送信';
-    const ok = document.createElement('button');
-    ok.type = 'button';
-    ok.id = '_gb-ok';
-    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
-    ok.textContent = okLabel;
-    let modalApi = null;
-    const onDocumentKeydown = event => {
-      if (event.key !== 'Enter' || !_cfIsTopmostDialog(modalApi?.modal)) return;
-      const active = document.activeElement;
-      const interactive = active?.closest?.('button, a[href], input, select, textarea, [contenteditable="true"], [role="button"]');
-      if (interactive && modalApi.modal.contains(interactive)) return;
-      event.preventDefault();
-      modalApi.close('submit');
-    };
-    modalApi = _configureCfModal(window.GBUI.createModal({
-      id: idBase,
-      titleId: `${idBase}-title`,
-      title: 'お知らせ',
-      body: messageNodes,
-      footer: showSupport ? [supportButton, ok] : [ok],
-      variant: 'standard',
-      extraClass: 'gb-confirm',
-      geometryKey: 'cf-alert',
-      initialFocus: () => ok,
-      returnFocus: () => restoreFocusTo,
-      closeLabel: 'お知らせを閉じる',
-      closeOnEsc: true,
-      closeOnOverlay: true,
-      onClose: () => {
-        document.removeEventListener('keydown', onDocumentKeydown);
-        _completeCfModalPromise(modalApi, resolve);
-      },
-    }), 'cf-alert', 'お知らせ', 'alertdialog', messageNodes, idBase);
-    ok.addEventListener('click', () => modalApi.close('submit'));
-    supportButton.addEventListener('click', () => {
-      window.MeldexDiagnostics?.showSupportDialog?.(new Error(String(message || '')), { kind: 'cfAlert' });
-    });
-    document.addEventListener('keydown', onDocumentKeydown);
-    modalApi.open();
-  });
-}
-
-// カスタムconfirmダイアログ（confirm()の代替、画面中央モーダル）
-// options: { danger?: boolean, okLabel?: string, cancelLabel?: string, extraNode?: Node }
-// extraNode: メッセージ本文とボタン列の間に挿入する追加DOM要素（呼び出し元が
-// textContent等で安全に組み立てたNodeを渡す想定。innerHTML文字列連結はしない。
-// ファイル参照整合性計画 Phase 4: 削除確認ダイアログへの被参照警告表示に使う
-// （app/gb-delete-impact-warning.js 参照）。
-function cfConfirm(message, options) {
-  if (typeof window.cfConfirm === 'function' && window.cfConfirm !== cfConfirm) {
-    return window.cfConfirm(message, options);
-  }
-  const opts = options || {};
-  const extraNode = opts.extraNode instanceof Node ? opts.extraNode : null;
-  const autoDanger = _cfIsDeleteMessage(message);
-  const isDanger = opts.danger !== undefined ? !!opts.danger : autoDanger;
-  const defaultOk = isDanger ? (autoDanger && /削除/.test(String(message)) ? '削除' : '実行') : '決定';
-  const okLabel = opts.okLabel || defaultOk;
-  const cancelLabel = opts.cancelLabel || 'キャンセル';
-  const okVariant = isDanger ? 'gb-btn-danger' : 'gb-btn-primary';
-  if (typeof window.GBUI?.createModal !== 'function') {
-    const nativeValue = typeof window.confirm === 'function' ? window.confirm(String(message || '')) : false;
-    return Promise.resolve(nativeValue);
-  }
-  return new Promise(resolve => {
-    const restoreFocusTo = _cfRestoreFocusTarget();
-    const idBase = `gb-cf-confirm-${++_cfDialogSeq}`;
-    const messageNodes = _buildCfDialogBodyNodes(message, idBase);
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.id = '_gb-cancel';
-    cancel.className = 'gb-btn gb-btn-sm';
-    cancel.textContent = cancelLabel;
-    const ok = document.createElement('button');
-    ok.type = 'button';
-    ok.id = '_gb-ok';
-    ok.className = `gb-btn gb-btn-sm ${okVariant}`;
-    ok.textContent = okLabel;
-    let result = false;
-    let modalApi = null;
-    let decisionTaken = false;
-    const finish = (value, reason) => {
-      if (decisionTaken) return;
-      decisionTaken = true;
-      result = value;
-      if (value && typeof opts.onAccept === 'function') opts.onAccept();
-      modalApi.close(reason);
-    };
-    const onDocumentKeydown = event => {
-      // 通常モードは Enter = OK のショートカット。
-      // danger モードは誤操作防止のため Enter のショートカットを無効化し、
-      // フォーカスされたボタン (初期は cancel) の自然な Enter 起動に任せる。
-      if (event.key === 'Enter' && !isDanger && _cfIsTopmostDialog(modalApi?.modal)) {
-        const active = document.activeElement;
-        const interactive = active?.closest?.('button, a[href], input, select, textarea, [contenteditable="true"], [role="button"]');
-        if (interactive && modalApi.modal.contains(interactive)) return;
-        event.preventDefault();
-        finish(true, 'submit');
-      }
-    };
-    modalApi = _configureCfModal(window.GBUI.createModal({
-      id: idBase,
-      titleId: `${idBase}-title`,
-      title: '確認',
-      body: extraNode ? [...messageNodes, extraNode] : messageNodes,
-      footer: [cancel, ok],
-      variant: 'standard',
-      extraClass: 'gb-confirm',
-      geometryKey: 'cf-confirm',
-      initialFocus: () => isDanger ? cancel : ok,
-      returnFocus: () => restoreFocusTo,
-      closeLabel: '確認をキャンセル',
-      closeOnEsc: true,
-      closeOnOverlay: true,
-      onClose: () => {
-        document.removeEventListener('keydown', onDocumentKeydown);
-        _completeCfModalPromise(modalApi, resolve, result);
-      },
-    }), 'cf-confirm', '確認', 'alertdialog', messageNodes, idBase);
-    ok.addEventListener('click', () => finish(true, 'submit'));
-    cancel.addEventListener('click', () => finish(false, 'cancel'));
-    document.addEventListener('keydown', onDocumentKeydown);
-    modalApi.open();
-  });
-}
-// カスタムpromptダイアログ（prompt()の代替）
-function cfPrompt(message, defaultValue, options) {
-  const opts = options || {};
-  const okLabel = opts.okLabel || '決定';
-  const cancelLabel = opts.cancelLabel || 'キャンセル';
-  if (typeof window.GBUI?.createModal !== 'function') {
-    const nativeValue = typeof window.prompt === 'function'
-      ? window.prompt(String(message || ''), String(defaultValue ?? ''))
-      : null;
-    return Promise.resolve(nativeValue);
-  }
-  return new Promise(resolve => {
-    const restoreFocusTo = _cfRestoreFocusTarget();
-    const idBase = `gb-cf-prompt-${++_cfDialogSeq}`;
-    const messageNodes = _buildCfDialogBodyNodes(message, idBase);
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.id = '_gb-prompt-input';
-    input.className = 'gb-confirm-input';
-    input.value = String(defaultValue ?? '');
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.id = '_gb-cancel';
-    cancel.className = 'gb-btn gb-btn-sm';
-    cancel.textContent = cancelLabel;
-    const ok = document.createElement('button');
-    ok.type = 'button';
-    ok.id = '_gb-ok';
-    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
-    ok.textContent = okLabel;
-    let result = null;
-    let modalApi = null;
-    const finish = (value, reason) => {
-      result = value;
-      modalApi.close(reason);
-    };
-    modalApi = _configureCfModal(window.GBUI.createModal({
-      id: idBase,
-      titleId: `${idBase}-title`,
-      title: '入力',
-      body: [...messageNodes, input],
-      footer: [cancel, ok],
-      variant: 'standard',
-      extraClass: 'gb-confirm',
-      geometryKey: 'cf-prompt',
-      initialFocus: () => input,
-      returnFocus: () => restoreFocusTo,
-      closeLabel: '入力をキャンセル',
-      closeOnEsc: true,
-      closeOnOverlay: true,
-      onClose: () => _completeCfModalPromise(modalApi, resolve, result),
-    }), 'cf-prompt', '入力', 'dialog', messageNodes, idBase);
-    ok.addEventListener('click', () => finish(input.value, 'submit'));
-    cancel.addEventListener('click', () => finish(null, 'cancel'));
-    input.addEventListener('keydown', event => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        finish(input.value, 'submit');
-      }
-    });
-    modalApi.open();
-    requestAnimationFrame(() => input.select());
-  });
-}
-
-// showStatus() は meldex-core.js で定義済み（nullチェック付き）
-
-// xlsx取込: ファイル選択 → 新規台本作成 → 台本エディタで開く
-function importXlsxToOutliner() {
-  document.getElementById('xlsx-import-input').click();
-}
-
-function _readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function handleXlsxImportToOutliner(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  e.target.value = '';
-  if (!/\.xlsx$/i.test(file.name)) {
-    showStatus('xlsx取込は .xlsx ファイルを選択してください', true);
-    return;
-  }
-
-  // ファイル名（拡張子なし）を台本名にする
-  const baseName = file.name.replace(/\.xlsx$/i, '');
-
-  try {
-    const data = await _readFileAsDataUrl(file);
-    const res = await apiPost('/import-xlsx-scriptnote', {
-      filename: file.name,
-      title: baseName,
-      data,
-    });
-    const scriptnotePath = res.path || res.node?.path;
-    const label = res.label || baseName;
-
-    // 台本エディタで開く
-    if (scriptnotePath && typeof openScenarioInScriptNote === 'function') {
-      openScenarioInScriptNote(scriptnotePath, label);
-    }
-
-    // フォルダツリーをリロード
-    await loadOutliner();

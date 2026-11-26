@@ -451,7 +451,8 @@ function inlinemd(text) {
   });
   let s = esc(protectedText);
   // キーキャップ記法: [[Ctrl]] → <kbd>Ctrl</kbd>（インラインコードの前に処理）
-  s = s.replace(/\[\[([^\]]+?)\]\]/g, '<kbd>$1</kbd>');
+  // `![[パス]]`（ファイルの埋め込み記法）はキーキャップにしない
+  s = s.replace(/(^|[^!])\[\[([^\]]+?)\]\]/g, '$1<kbd>$2</kbd>');
   // インラインコード
   s = s.replace(/`([^`]+)`/g, '<code style="background:var(--bg3);padding:1px 4px;border-radius:2px;font-size:0.9em;">$1</code>');
   // 太字+斜体
@@ -588,6 +589,10 @@ function htmlToMd(html) {
     if (node.classList?.contains('copy-btn') || node.classList?.contains('table-add-row') || node.classList?.contains('table-add-col')) return '';
     // 動画・ポストの埋め込みは表示専用（元のURL行だけを保存する）
     if (node.classList?.contains('gb-web-embed')) return '';
+    // ファイルの埋め込み表示は、元の `![[パス]]` 行だけを保存する（表示内容は保存しない）
+    if (node.classList?.contains('meldex-file-embed') && typeof MeldexNoteFileEmbed !== 'undefined') {
+      return MeldexNoteFileEmbed.markdownForElement(node) + '\n';
+    }
     if (node.classList?.contains('cell-edit')) return node.value || '';
     // DETAILS/SUMMARY/H1-H6は子ノードを個別に走査するため、childrenの事前計算をスキップ
     const _needsChildren = !['DETAILS','SUMMARY','H1','H2','H3','H4','H5','H6','KBD','BLOCKQUOTE','LI'].includes(tag);
@@ -1417,6 +1422,9 @@ function _consumeUnifiedLinkEvent(e, linkTarget) {
 
 document.addEventListener('click', (e) => {
   if (e.button !== 0) return;
+  // プロパティのフォルダボタンは自身の処理で即時に開く。本文リンクの
+  // ダブルクリック判定（320ms）へ渡すと専用処理へクリックが届かない。
+  if (e.target?.closest?.('[data-file-info-folder-action="true"]')) return;
   if (_suppressLinkContextLongPressFollowup(e)) return;
   const linkTarget = _resolveContextLinkTarget(e.target);
   if (!_consumeUnifiedLinkEvent(e, linkTarget)) return;
@@ -1436,6 +1444,7 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('dblclick', (e) => {
   if (e.button !== 0) return;
+  if (e.target?.closest?.('[data-file-info-folder-action="true"]')) return;
   const linkTarget = _resolveContextLinkTarget(e.target);
   if (!_consumeUnifiedLinkEvent(e, linkTarget)) return;
   ++_linkActivationToken;

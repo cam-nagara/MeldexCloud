@@ -131,7 +131,8 @@
 .gb-palette-slider-row .gb-slider-val::-webkit-inner-spin-button,
 .gb-palette-slider-row .gb-slider-val::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .gb-palette-picker-row {
-  width: 100%; display: flex; align-items: center; gap: 8px;
+  /* 48+28+28+24×3=176px と5か所の間隔を、色見本8列の内幅213px以内へ収める（8pxでは216pxで右端のOS色が切れた）。 */
+  width: 100%; display: flex; align-items: center; gap: 6px;
   padding-top: 6px; margin-top: 2px; border-top: 1px solid var(--border);
 }
 .gb-palette-picker-row input[type="color"] {
@@ -176,17 +177,29 @@
     max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
     overflow-y: auto;
   }
+  /* 公式変種（共通ルール「色選択」）: テーマの色は1行8色の並びに意味があるため、電話幅でも8列を保つ。
+     44pxの8列が入らない幅では、8列に収まる大きさ（390px幅で約40px）まで縮める。
+     7列の幅に8色を入れると、各行の8色目だけが次の行へ落ちていた（2026-11-24）。 */
   .gb-palette {
-    width: min(calc(100vw - 32px), calc(44px * 7 + 3px * 6 + 16px));
+    width: min(calc(100vw - 32px), calc(44px * 8 + 3px * 7 + 16px));
   }
+  .gb-palette-matrix { width: 100%; }
   .gb-palette-grid,
-  .gb-palette-matrix,
   .gb-palette-row-swatches {
-    width: min(calc(100vw - 48px), calc(44px * 7 + 3px * 6));
+    width: 100%;
+    display: grid;
+    gap: 2px;
+    grid-template-columns: repeat(8, minmax(0, 44px));
   }
   .gb-swatch {
     width: 44px;
     height: 44px;
+  }
+  .gb-palette-grid > .gb-swatch,
+  .gb-palette-row-swatches > .gb-swatch {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
   }
   .gb-palette-standard-toggle,
   .gb-palette-reset-btn,
@@ -307,7 +320,24 @@ function _saveCustomColors(colors, options) {
   const before = (typeof captureLocalStorageSettings === 'function')
     ? captureLocalStorageSettings([GB_CUSTOM_COLORS_KEY])
     : null;
-  try { localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors)); } catch {}
+  const previousColors = before ? null : getCustomColors();
+  try {
+    localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors));
+  } catch (_) {
+    // 保存できなかった時は黙って捨てず、原因を知らせて履歴・同期も進めない。
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存できませんでした（端末内の保存先に書けません）', true);
+    return false;
+  }
+  if (!before && options?.skipHistory !== true && typeof window !== 'undefined' && window.MeldexViewerHistory?.push) {
+    // 本体の設定履歴を持たない単独版ビューワーでは、評価・メモと同じ閲覧の履歴で取り消す。
+    const nextColors = getCustomColors();
+    const apply = list => {
+      _saveCustomColors(list, { skipHistory: true });
+      document.querySelectorAll('.gb-palette').forEach(palette => palette.remove());
+    };
+    window.MeldexViewerHistory.push(options?.label || '設定: カスタムカラー変更',
+      () => apply(previousColors), () => apply(nextColors));
+  }
   if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
     pushLocalStorageSettingsHistory(
       options?.label || '設定: カスタムカラー変更',
@@ -323,6 +353,7 @@ function _saveCustomColors(colors, options) {
   if (options?.skipServerSync !== true && typeof _queuePersonalColorsSync === 'function') {
     _queuePersonalColorsSync();
   }
+  return true;
 }
 function saveCustomColor(color) {
   const next = _normalizeCustomColor(color);
@@ -804,7 +835,11 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
-    anchor.focus({ preventScroll: true });
+    // 狭い画面で起点のボタンがツールバーの「▼」にしまわれている時は、その「▼」へ戻す
+    // （見えないボタンへは戻せず、フォーカスが画面全体へ外れていた）。
+    const hidden = typeof anchor.getClientRects === 'function' && anchor.getClientRects().length === 0;
+    const overflow = hidden ? anchor.closest?.('.gb-toolbar-overflow-host')?.querySelector?.('.gb-toolbar-overflow-button') : null;
+    (overflow || anchor).focus({ preventScroll: true });
   }
 }
 
@@ -854,6 +889,8 @@ function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
     if (ev.key !== 'Escape') return;
     if (document.querySelector('.gb-palette-context-menu, .gb-ctx-menu')) return;
     ev.preventDefault();
+    // 色選択を閉じるEscapeを、開いている画面（閲覧のアノテート等）の「閉じる」へ渡さない。
+    ev.stopPropagation();
     closeColorPalette({ restoreFocus: true });
   };
   requestAnimationFrame(() => {
@@ -1104,6 +1141,33 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const customGrid = document.createElement('div'); customGrid.className = 'gb-palette-grid';
   palette.appendChild(customGrid);
 
+  // 共有先への保存が失敗している間は、操作した場所（色選択の中）に案内と再試行を出す。
+  // 右上の案内だけでは、電話幅で色選択に覆われて見えなかった。
+  const syncNotice = document.createElement('div');
+  syncNotice.className = 'gb-palette-sync-notice';
+  syncNotice.dataset.e2eId = 'color-palette-sync-error';
+  syncNotice.hidden = true;
+  palette.appendChild(syncNotice);
+  const renderSyncNotice = (failed) => {
+    if (!failed || !window.GBUI?.createInlineError) { syncNotice.replaceChildren(); syncNotice.hidden = true; return; }
+    if (syncNotice.firstChild) { syncNotice.hidden = false; return; }
+    syncNotice.replaceChildren(window.GBUI.createInlineError({
+      message: 'カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します。',
+      onRetry: async () => {
+        if (typeof _retryPersonalColorsSyncNow === 'function' && !(await _retryPersonalColorsSyncNow())) {
+          throw new Error('カスタムカラーを保存できませんでした。時間をおいて、もう一度お試しください。');
+        }
+      },
+    }));
+    syncNotice.hidden = false;
+  };
+  const onSyncState = (event) => {
+    if (!palette.isConnected) { window.removeEventListener('meldex-personal-colors-sync-state', onSyncState); return; }
+    renderSyncNotice(!!event?.detail?.failed);
+  };
+  window.addEventListener('meldex-personal-colors-sync-state', onSyncState);
+  renderSyncNotice(typeof _personalColorsFailureShown !== 'undefined' && _personalColorsFailureShown);
+
   let dragIdx = -1;
 
   function renderCustomGrid() {
@@ -1170,6 +1234,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
           renderCustomGrid(); updateSwatchHighlights();
+          // 削除した色の位置（無ければ追加ボタン）へフォーカスを残し、色選択の外へ外さない。
+          const swatches = customGrid.querySelectorAll('.gb-swatch');
+          (swatches[Math.min(i, swatches.length - 1)] || saveBtn)?.focus?.({ preventScroll: true });
         });
         menu.appendChild(del);
         document.body.appendChild(menu);
@@ -1268,11 +1335,14 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   picker.type = 'color'; picker.value = selectedHex; picker.title = 'カラーピッカー';
   picker.dataset.e2eId = 'color-palette-picker';
   picker.setAttribute('aria-label', 'カラーピッカー');
-  const onPickerChange = () => {
+  const onPickerChange = (event) => {
+    // 入力中の input と確定の change が同じ色を2回適用し、取り消しの区切りを増やさない。
+    if (event?.type === 'change' && !selectedIsTransparent && selectedHex === picker.value) return;
     if (selectedIsTransparent) selectedAlpha = 1;
     selectedHex = picker.value;
     hsb = _hexToHsb(picker.value);
-    selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
+    // 選んだカスタムカラーの調整中は選択を保ち、＋で上書きできるようにする（下の saveBtn 参照）。
+    selectedIsTransparent = false; selectedPresetIdx = -1;
     selectedOsAccentTone = '';
     updateSliders(); updateSwatchHighlights();
     applyLive();

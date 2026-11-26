@@ -386,12 +386,13 @@ function highlightOutlinerNode(targetPath, opts) {
   }
   document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
   if (!targetPath) return;
-  const noScroll = opts && opts.noScroll;
+  // 通常の「開いた項目の強調」は位置を動かさない。明示的な表示要求だけ移動できる。
+  const noScroll = opts?.noScroll !== false;
   // まず既に表示されているノードを探す
   let found = _findAndHighlight(targetPath, noScroll);
   if (found) return;
   // 見つからない場合、パスを分解して親フォルダを順に展開
-  _autoExpandToPath(targetPath, noScroll);
+  if (!noScroll) _autoExpandToPath(targetPath, noScroll);
 }
 
 function _findAndHighlight(targetPath, noScroll) {

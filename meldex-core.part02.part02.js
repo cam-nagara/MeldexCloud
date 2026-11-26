@@ -279,7 +279,7 @@
       _ann.targetPath = msg.targetPath || '';
       svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
       svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
+      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)';
       else svg.style.outline = '';
       hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
       _updateSize();

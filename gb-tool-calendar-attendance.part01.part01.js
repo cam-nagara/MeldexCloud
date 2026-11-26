@@ -88,9 +88,7 @@
   }
 
   function _calAttWriteHiddenSourceFolders(hidden) {
-    try {
-      localStorage.setItem(ATTENDANCE_SOURCE_HIDDEN_KEY, JSON.stringify([...hidden].filter(item => item !== null && item !== undefined)));
-    } catch {}
+    localStorage.setItem(ATTENDANCE_SOURCE_HIDDEN_KEY, JSON.stringify([...hidden].filter(item => item !== null && item !== undefined)));
   }
 
   function _calAttRefreshSourceSettingsAfterHistory() {
@@ -161,7 +159,10 @@
 
   function _calAttCalendarSection(component, cal) {
     const folder = _calAttDefaultFolder(cal);
-    if (!_calAttIsTeamCalendar(cal)) return { key: folder || DEFAULT_CALENDAR_FOLDER, label: folder || DEFAULT_CALENDAR_FOLDER };
+    if (!_calAttIsTeamCalendar(cal)) return {
+      key: folder || DEFAULT_CALENDAR_FOLDER,
+      label: folder === 'production-task' ? '制作予定' : (folder || DEFAULT_CALENDAR_FOLDER),
+    };
     const labelMap = component?._calTeamFolderLabels;
     const mapped = labelMap instanceof Map ? labelMap.get(String(cal?.folder || '')) : '';
     const fallback = folder && folder !== SHIFT_CALENDAR_FOLDER && folder !== ATTENDANCE_CALENDAR_FOLDER
@@ -343,14 +344,20 @@
     const end = this._localDateTimeStr(new Date(y, m + 2, 0, 23, 59));
     if (typeof this._guardUndoLoadWindow === 'function') this._guardUndoLoadWindow(start + '|' + end);
     const seq = (this._loadEventsSeq = (this._loadEventsSeq || 0) + 1);
+    const editingAtStart = new Set(this._savingEventIds || []);
     try {
       const events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
       if (seq !== this._loadEventsSeq) return; // 古い読み込み窓の応答は破棄（連打時の巻き戻り防止）
       // 全置換すると保存確定前（楽観追加/確認中/再試行中）のイベントが消えるため、
       // サーバー未反映の保存未確定分だけを保持してマージする。
-      this._events = window.MeldexCalendarSaveQueue
+      const pending = new Set([...editingAtStart, ...(this._savingEventIds || [])]);
+      const editing = new Map((this._events || []).filter(event => pending.has(event.id)).map(event => [event.id, event]));
+      const merged = window.MeldexCalendarSaveQueue
         ? window.MeldexCalendarSaveQueue.mergeServerEvents(events, this._events)
         : events;
+      this._events = merged.map(event => editing.get(event.id) || event);
+      const receivedIds = new Set(merged.map(event => event.id));
+      for (const [id, event] of editing) if (!receivedIds.has(id)) this._events.push(event);
     } catch {
       if (seq !== this._loadEventsSeq) return;
       // 取得失敗時に表示中の予定を消さない（既存表示を維持してエラーを知らせる）
@@ -443,10 +450,12 @@
       this._showStatus?.(_calAttFailureMessage('カレンダー一覧の読み込みに失敗しました', error), true);
       return false;
     }
+    let defaultReady = true;
     try {
       calendars = await _calAttEnsureOwnLocalCalendar(user, calendars);
     } catch (error) {
-      this._showStatus?.(_calAttFailureMessage('マイカレンダーを作成できませんでした', error), true);
+      defaultReady = false;
+      this._showStatus?.('マイカレンダーを作成できませんでした。再読み込みで再試行してください', true);
     }
     this._calendars = calendars;
     this._visibleCalIds = new Set(calendars.filter(c => c.visible).map(c => c.id));
@@ -456,7 +465,7 @@
     } catch (error) {
       console.error('[calendar] calendar list render failed:', error);
     }
-    return true;
+    return defaultReady;
   };
 
   // 表示切り替えは先に画面へ反映し、保存に失敗したら元の表示へ戻して原因を知らせる。

@@ -271,6 +271,7 @@
     isPaneVisible,
     isPaneLocked,
     isFixedRailPane,
+    isFixedRailTab,
     ensureFixedRailDefaults,
     hasLockedPane,
     findFirstUnlockedPane,

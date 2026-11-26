@@ -1044,7 +1044,19 @@ class ScriptNoteComponent extends ToolComponent {
             }
             // 2) タイトル＝ファイル名。保存済みの状態でファイル名を新しいタイトルへ変える。
             let switchedAfterFileRename = false;
+            let releaseFileRename = null;
+            try {
             if (needsFileRename) {
+              // ファイル名の変更中に旧名へ保存すると、移動と重なって見つからない・版の不一致（競合）になる。
+              // 先にこのエディタの保存を落ち着かせ、変更中に来た保存は変更後のパスと版の印で送る
+              // （save() が _fileRenamePending を待つ）。
+              const saveCoordinator = window.MeldexDocumentSaveCoordinator;
+              const renameKey = saveCoordinator?.documentKeyForPath?.(oldPath);
+              for (let waited = 0; renameKey && waited < 5000
+                && saveCoordinator.hasUnsettledSaveFrom?.(renameKey, editor); waited += 50) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+              }
+              editor._fileRenamePending = new Promise(resolve => { releaseFileRename = resolve; });
               res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: newTitle, type: 'scriptnote' });
               if (editor._path !== oldPath) {
                 if (typeof showStatus === 'function') {
@@ -1064,6 +1076,19 @@ class ScriptNoteComponent extends ToolComponent {
                 if (editor._historyScopeId) _sn2Editors[editor._historyScopeId] = editor;
               }
               editor._path = res.new_path;
+              if (res.new_path !== oldPath) {
+                // ファイル名の変更で版の印が変わる。この後の保存の基準を新しい印へ合わせ、保存の調整役にも
+                // 新しいパスで登録する。改名の追従（onPathRename）は、ここで先にパスを付け替えたエディタを
+                // 「追従済み」として飛ばすため、印を古いまま残すと次の保存（取り消しを含む）が誤って競合になる。
+                if (res.etag) {
+                  editor._lastSavedEtag = res.etag;
+                  if (editor._lastSavedTransportRevision) editor._lastSavedTransportRevision = res.transport_revision || res.etag;
+                }
+                try {
+                  const coordinator = window.MeldexDocumentSaveCoordinator;
+                  if (coordinator?.registerParticipant) coordinator.registerParticipant(coordinator.documentKeyForPath(res.new_path), editor);
+                } catch (_) {}
+              }
               if (!switchedAfterFileRename) this.state.scenarioPath = res.new_path;
               window.dispatchEvent(new CustomEvent('meldex:file-path-renamed', {
                 detail: { oldPath, newPath: res.new_path, type: 'scriptnote' },
@@ -1085,6 +1110,13 @@ class ScriptNoteComponent extends ToolComponent {
                   _renameTreeNode(aliasPath, (cut >= 0 ? aliasPath.slice(0, cut + 1) : '') + newBase, newTitle, res.file_id);
                 });
                 if (!treeAliases.length) _renameTreeNode(oldPath, res.new_path, newTitle, res.file_id);
+              }
+            }
+            } finally {
+              // パスと版の印を付け替えた後（失敗時も）に、待たせていた保存を通す。
+              if (releaseFileRename) {
+                editor._fileRenamePending = null;
+                releaseFileRename();
               }
             }
           } catch (e) {

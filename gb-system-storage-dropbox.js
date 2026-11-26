@@ -570,13 +570,19 @@
       }
       return entries;
     }
-    async listDocuments(kind) {
+    async listDocuments(kind, options) {
       const contract = _contract();
+      // documentIdPrefix: 名前の先頭が一致する記録だけを読む。編集履歴は対象パスの
+      // ハッシュが名前の先頭に入るので、保存の前処理はその1パス分だけ読めば足りる。
+      // 指定しないと全件（実データで3199件・307MB）を読むため、スマホの送信が
+      // 終わらなかった（2026-11-26）。
+      const prefix = String(options?.documentIdPrefix || '');
       const entries = await this._listFolderEntries(this._folderFor(kind));
       const documents = [];
       for (const entry of entries) {
         if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
         const documentId = String(entry.name).slice(0, -5);
+        if (prefix && !documentId.startsWith(prefix)) continue;
         try {
           contract.sanitizeDocumentId(documentId);
         } catch {
@@ -600,7 +606,8 @@
         }
       });
       // 一覧から消えた記録の控えを端末内から片付ける（待たせない）。
-      _envelopeStorePrune(
+      // 絞り込んだ一覧では他の記録の控えまで消してしまうので行わない。
+      if (!prefix) _envelopeStorePrune(
         `${await _envelopeCacheAccount()}|${this._namespaceKind}|${this._folderFor(kind)}/`,
         new Set(documents.map(({ documentId }) => `${documentId}.json`.toLowerCase())),
       );
@@ -823,7 +830,8 @@
           });
         }
         this._audit('error', 'save', kind, docId, { message: `書込に失敗しました: ${error && error.message}` });
-        throw new contract.SystemStorageWriteError(`管理データの書込に失敗しました: ${error && error.message}`);
+        // 失敗番号を保ち、権限不足や通信失敗を「未対応の操作」へ変換させない。
+        throw Object.assign(new contract.SystemStorageWriteError(`管理データの書込に失敗しました: ${error && error.message}`), { status: error?.status || error?.status_code || error?.httpStatus });
       }
       record.revision = String((uploadMeta && uploadMeta.rev) || currentRevision || '');
       this._audit('info', 'save', kind, docId, { message: '保存しました' });
@@ -843,7 +851,7 @@
       } catch (error) {
         if (_isNotFoundError(error)) return false;
         this._audit('error', 'delete', kind, docId, { message: `削除に失敗しました: ${error && error.message}` });
-        throw new contract.SystemStorageWriteError(`管理データの削除に失敗しました: ${error && error.message}`);
+        throw Object.assign(new contract.SystemStorageWriteError(`管理データの削除に失敗しました: ${error && error.message}`), { status: error?.status || error?.status_code || error?.httpStatus });
       }
     }
 

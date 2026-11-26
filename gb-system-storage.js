@@ -493,7 +493,7 @@
       throw new SystemStorageError('load() は未実装です');
     }
 
-    async listDocuments(_kind) {
+    async listDocuments(_kind, _options) {
       throw new SystemStorageError('listDocuments() は未実装です');
     }
 
@@ -532,8 +532,8 @@
       return this._inner.load(kind, documentId);
     }
 
-    async listDocuments(kind) {
-      return this._inner.listDocuments(kind);
+    async listDocuments(kind, options) {
+      return this._inner.listDocuments(kind, options);
     }
 
     async listDocumentHeaders(kind, options) {

@@ -42,8 +42,8 @@
 
   function setPreference(mode) {
     const norm = normalizeMode(mode);
+    localStorage.setItem(STORAGE_KEY, norm);
     try {
-      localStorage.setItem(STORAGE_KEY, norm);
       if (typeof document !== 'undefined' && typeof document.dispatchEvent === 'function') {
         document.dispatchEvent(new CustomEvent('meldex:production-time-format-changed', { detail: { format: norm } }));
       }

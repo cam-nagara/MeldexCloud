@@ -104,7 +104,7 @@
       async list(kind, itemId) {
         const ctx = await context(kind, itemId);
         return {
-          itemKind: kind, itemId: String(itemId), currentRevision: await revision(ctx.current),
+          itemKind: kind, itemId: String(itemId), currentRevision: await revision(ctx.current), current: clone(ctx.current),
           versions: ctx.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
         };
       },
@@ -646,7 +646,7 @@
   async function listHistory(doc, kind, itemId) {
     const context = historyContext(doc, kind, itemId);
     return {
-      itemKind: kind, itemId: String(itemId), currentRevision: await revision(context.current),
+      itemKind: kind, itemId: String(itemId), currentRevision: await revision(context.current), current: clone(context.current),
       versions: context.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
     };
   }

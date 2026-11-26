@@ -28,7 +28,7 @@
   .folder-toolbar-create-menu, .pt-type-menu, .tb-new-dropdown,
   .gf-filter-popup, .el-chart-popup, .el-edit-popup, .el-field-picker,
   .el-preset-popup, .el-tab-menu, .topic-layout-cell-style-popup,
-  .meldex-chat-listbox-popup, .settings-theme-preview-popup,
+  .meldex-chat-listbox-popup,
   #chat-title-dropdown, #slash-menu, [role="menu"], [role="listbox"]
 ) {
   padding-inline: var(--ui-popup-padding-inline) !important;

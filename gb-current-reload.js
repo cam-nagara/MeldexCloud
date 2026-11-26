@@ -289,6 +289,8 @@
 
   async function reloadOpenFilesAfterExternalMutation(paths) {
     const normalized = _normalizedMutationPaths(paths);
+    // AIなど画面の外で変わったファイルを、ノートに埋め込んだ表示へも知らせる（その埋め込みだけ描き直す）。
+    window.MeldexNoteFileEmbed?.refreshPaths?.([...normalized]);
     const paneIds = [...new Set(Array.from(document.querySelectorAll('.gb-pane[data-pane-id]'))
       .map(pane => pane.dataset.paneId).filter(Boolean))];
     const targets = paneIds.map(paneId => ({ paneId, tab: _tabFromPaneId(paneId) }))

@@ -1,3 +1,17 @@
+          return { x: clientX - r.left, y: clientY - r.top };
+        })();
+    let lx = local.x;
+    let ly = local.y;
+    if (typeof bd !== 'undefined' && bd.rotation) {
+      const cx = targetCanvas.clientWidth / 2;
+      const cy = targetCanvas.clientHeight / 2;
+      lx -= cx;
+      ly -= cy;
+      const rad = -bd.rotation * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const rx = lx * cos - ly * sin;
+      const ry = lx * sin + ly * cos;
       lx = rx + cx;
       ly = ry + cy;
     }
@@ -884,17 +898,3 @@
             startY: h / 2,
             endX: w / 2,
             endY: h + 40,
-            target: null,
-          };
-          data.tail = newTail;
-          delete data.tailX;
-          delete data.tailY;
-          if (note._annTailCtx) {
-            note._annTailCtx.data.tail = newTail;
-            delete note._annTailCtx.data.tailX;
-            delete note._annTailCtx.data.tailY;
-          }
-          AnnotationStickyTail.setTail(note, newTail, null);
-        }
-        persistTailState();
-      };

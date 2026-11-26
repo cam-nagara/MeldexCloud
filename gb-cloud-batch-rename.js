@@ -22,7 +22,7 @@
     }
     if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-batch-rename' });
     if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
-      await openFolder(basename(_folderPath), _folderPath, { silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true });
+      await openFolder(basename(_folderPath), _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}), silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true });
     }
   }
 

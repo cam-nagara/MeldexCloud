@@ -104,6 +104,8 @@
   }
 
   function ocr(media, result, path) {
+    const ocrKey = JSON.stringify([path, result]);
+    if (layers.get(media)?.ocrKey === ocrKey) return layers.get(media);
     // The existing annotation scene uses the displayed image's intrinsic size,
     // which may be a smaller preview. Keep cached source boxes unchanged.
     if (media.tagName === 'IMG' && media.naturalWidth && media.naturalHeight) {
@@ -112,6 +114,7 @@
         lines: result.lines.map(line => ({ ...line, box: [line.box[0] * sx, line.box[1] * sy, line.box[2] * sx, line.box[3] * sy] })) };
     }
     const entry = mount(media, { ...result, path });
+    entry.ocrKey = ocrKey;
     for (const line of result.lines) {
       const span = document.createElement('span');
       const glyphs = document.createElement('span'); glyphs.textContent = line.text;
@@ -140,6 +143,15 @@
     entry.observer = new ResizeObserver(fit); entry.observer.observe(media); fit();
     updateIndicator();
     return entry;
+  }
+
+  function refitPdf(media, doc, pageNumber, zoom, path = '') {
+    const entry = layers.get(media);
+    // Derived OCR is already expressed in source-page percentages, and its
+    // ResizeObserver fits the glyphs. Rebuilding native text here discards the
+    // accepted OCR/corrections and the user's selection on resize or zoom.
+    if (entry?.ocrKey && entry.path === path && entry.page === pageNumber) return Promise.resolve(entry);
+    return pdf(media,doc,pageNumber,zoom,path);
   }
 
   function visibleEntries() {
@@ -262,5 +274,5 @@
     if (window.parent !== window) window.parent.postMessage({ type: 'meldex-viewer-text-selection', selection: detail }, location.origin);
   });
   document.getElementById('btn-text-layer')?.addEventListener('click', toggleBoxes);
-  window.MeldexViewerTextLayer = { pdf, ocr, getSelection, selectQuery, search, orderedContent, toggleBoxes, updateIndicator, dispose, disposeIn };
+  window.MeldexViewerTextLayer = { pdf, refitPdf, ocr, getSelection, selectQuery, search, orderedContent, toggleBoxes, updateIndicator, dispose, disposeIn };
 })();

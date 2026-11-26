@@ -287,7 +287,7 @@
   display: block !important;
   position: absolute;
   inset: 0;
-  background: color-mix(in srgb, var(--bd-selection-color, #4a90d9) 70%, transparent);
+  background: color-mix(in srgb, var(--bd-selection-color, var(--ui-selection-bg, var(--ui-accent, var(--accent)))) 70%, transparent);
   pointer-events: none;
   z-index: 6;
   border-radius: inherit;
@@ -295,7 +295,7 @@
 .bd-selection-rect {
   position: absolute;
   pointer-events: none;
-  border: 2px solid var(--bd-selection-color, #4a90d9);
+  border: 2px solid var(--bd-selection-color, var(--ui-selection-bg, var(--ui-accent, var(--accent))));
   border-radius: 4px;
   box-sizing: border-box;
   display: none;
@@ -307,7 +307,7 @@
 /* 編集中はネイティブキャレットを透明化し、カスタムキャレット (.bd-custom-caret) を表示する。
    これでカーソル太さ (--bd-caret-width) が設定可能になる。 */
 .bd-node.bd-editing .bd-text { outline: none; cursor: text; user-select: text; caret-color: transparent; }
-.bd-node.bd-editing .bd-text::selection { background: color-mix(in srgb, var(--bd-selection-color, #4a90d9) 70%, transparent); color: var(--bd-selection-fg, var(--ui-selection-fg)); }
+.bd-node.bd-editing .bd-text::selection { background: color-mix(in srgb, var(--bd-selection-color, var(--ui-selection-bg, var(--ui-accent, var(--accent)))) 70%, transparent); color: var(--bd-selection-fg, var(--ui-selection-fg)); }
 .bd-node.bd-editing .bd-selection-ring { opacity: 0 !important; }
 /* カスタムキャレット (横書き想定、縦線で点滅)
    v0.5.250: --bd-caret-width が 0 / 空でも必ず見えるよう min-width を保証。
@@ -482,6 +482,13 @@
 /* 画像 (.bd-img) は border-radius 50% を継承させて image 自体を楕円に切り抜く (v0.5.248)。
    背景色は `background-clip: border-box` 既定 + `border-radius: 50%` で楕円形にクリップされる。 */
 .bd-node[data-shape="ellipse"] .bd-img { border-radius: 50%; }
+/* カード（左帯）: 左枠線を帯として使い、1行目を役割色の見出し、2行目以降を読みやすい本文にする。
+   見出し色は役割色と文字色を混ぜ、明るいテーマでも黄色などが読めるようにする。 */
+.bd-node[data-shape="accent-card"] { padding: 10px 14px 12px 12px; text-align: left; }
+.bd-node[data-shape="accent-card"] > .bd-text { text-align: left; line-height: 1.55; }
+.bd-node[data-shape="accent-card"] .bd-text-title { display: block; font-weight: 700; font-size: 1.15em; line-height: 1.4;
+  color: color-mix(in srgb, var(--bd-accent-color, var(--accent)) 82%, currentColor); }
+.bd-node[data-shape="accent-card"] .bd-text-body { display: block; margin-top: 6px; font-weight: 400; }
 .bd-node:hover .bd-card-menu-btn,
 .bd-card-menu-btn:focus-visible { opacity: 1; }
 /* カードのしっぽの端点ハンドル (.ann-tail-handle は gb-tools.part01.part01.css の注釈と共有)。
@@ -609,7 +616,7 @@
 [data-bd-role="canvas"].bd-endpoint-dragging .bd-anchor-hud { display: none !important; }
 
 /* 選択グループの bbox を囲むアンカー容器 (位置のみ役割、pointer-events はアンカーに委ねる) */
-.bd-selection-group-anchors { position: absolute; pointer-events: none; z-index: 11; }
+.bd-selection-group-anchors { position: absolute; pointer-events: none; z-index: 13; }
 
 /* マルチ選択 bbox の 4 辺中央アンカー。2026-04-18: 四隅を廃止 + 内側透明 + カラーはスタイルタブで設定可 */
 .bd-group-anchor {

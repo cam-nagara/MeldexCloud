@@ -1,8 +1,10 @@
-/* gb-icon-assets.js - Lucide / Noto Emoji shared picker and renderer */
+/* gb-icon-assets.js - Lucide / Material Symbols / Noto Emoji shared picker and renderer */
 (function(global) {
   'use strict';
 
   const HEX_SEQ_RE = /^[0-9a-f]{1,6}(?:[-_][0-9a-f]{1,6})*$/i;
+  const MATERIAL_NAME_RE = /^[a-z0-9][a-z0-9_]{0,79}$/;
+  const PACK_SPEC_RE = /^pack:([0-9a-f]{12})\/([a-z0-9][a-z0-9_-]{0,63})$/;
 
   function _esc(value) {
     return MeldexEscape.html(value);
@@ -200,6 +202,14 @@
       const name = raw.slice(raw.indexOf(':') + 1).trim();
       return name ? 'lucide:' + name : '';
     }
+    if (lower.startsWith('material:')) {
+      const name = raw.slice(raw.indexOf(':') + 1).trim().toLowerCase();
+      return MATERIAL_NAME_RE.test(name) ? 'material:' + name : '';
+    }
+    if (lower.startsWith('pack:')) {
+      const value = 'pack:' + raw.slice(5).trim().toLowerCase();
+      return PACK_SPEC_RE.test(value) ? value : '';
+    }
     if (lower.startsWith('noto:') || lower.startsWith('emoji:') || lower.startsWith('twemoji:')) {
       const code = _normalizeCode(raw.slice(raw.indexOf(':') + 1));
       return code ? 'noto:' + code : '';
@@ -221,6 +231,16 @@
       return { type: 'lucide', spec: 'lucide:' + name, name, label: _toKebab(name), search: name + ' ' + _toKebab(name) };
     }
     if (spec.toLowerCase().startsWith('noto:')) return _findNoto(spec.slice(5));
+    if (spec.startsWith('pack:')) {
+      const match = PACK_SPEC_RE.exec(spec);
+      const info = global.MeldexIconPacks?.describe?.(spec) || { state: 'missing' };
+      return { type: 'pack', spec, packId: match[1], iconId: match[2], label: info.icon?.name || match[2],
+        search: (info.icon?.name || '') + ' ' + match[2] };
+    }
+    if (spec.startsWith('material:')) {
+      const name = spec.slice(9);
+      return { type: 'material', spec, name, label: name.replace(/_/g, ' '), search: name + ' ' + name.replace(/_/g, ' ') };
+    }
     if (hasLucideName(spec)) return parseSpec('lucide:' + spec);
     return { type: 'text', spec, label: spec, search: spec };
   }
@@ -247,6 +267,26 @@
       if (typeof global.lucide === 'function' && hasLucideName(parsed.name)) {
         return global.lucide(parsed.name, px);
       }
+    }
+    if (parsed.type === 'pack') {
+      // 利用者が登録した素材集。読み込み前・見つからない時は仮の絵を置き、素材集の状態が変わると描き直される。
+      const info = global.MeldexIconPacks?.describe?.(parsed.spec) || { state: 'missing' };
+      const base = `class="gb-icon-render gb-icon-pack${className}" data-icon="${_escAttr(parsed.spec)}" data-pack-state="${info.state}"`
+        + (options.className ? ` data-extra-class="${_escAttr(options.className)}"` : '');
+      if (info.state === 'ready') {
+        const url = global.MeldexIconPacks.iconDataUrl(info.icon);
+        if (info.icon.tint) {
+          return `<span ${base} role="img" aria-label="${_escAttr(info.icon.name)}" style="--gb-icon-size:${px}px;--gb-icon-pack-mask:url(&quot;${_escAttr(url)}&quot;);" data-tint="1"></span>`;
+        }
+        return `<span ${base} role="img" aria-label="${_escAttr(info.icon.name)}" style="--gb-icon-size:${px}px;"><img src="${_escAttr(url)}" alt="" width="${px}" height="${px}" decoding="async" draggable="false"></span>`;
+      }
+      const glyph = info.state === 'pending' ? '' : (typeof global.lucide === 'function' ? global.lucide('image-off', Math.round(px * 0.8)) : '?');
+      const label = info.state === 'pending' ? '読み込み中' : 'アイコンの素材集が見つかりません';
+      return `<span ${base} role="img" aria-label="${label}" style="--gb-icon-size:${px}px;">${glyph}</span>`;
+    }
+    if (parsed.type === 'material') {
+      // 合字で描くため、名前→文字コードの対応表なしで描ける（一覧の読み込みは選択画面を開いた時だけ）。
+      return `<span class="gb-icon-render gb-material-symbol${className}" data-icon="${_escAttr(parsed.spec)}" role="img" aria-label="${_escAttr(parsed.label)}" translate="no" style="--gb-icon-size:${px}px;">${_esc(parsed.name)}</span>`;
     }
     if (parsed.type === 'noto') {
       const label = parsed.label || parsed.code;
@@ -294,6 +334,53 @@
     });
   }
 
+  // Material Symbols の名前・分類・検索語は大きいので、選択画面を開いた時に一度だけ読む。
+  let _materialIndexPromise = null;
+  function _materialIndexUrl() {
+    const script = document.querySelector('script[src*="gb-icon-assets.js"]');
+    const base = script ? script.src.replace(/gb-icon-assets\.js(?:\?.*)?$/, '') : '';
+    return base + 'vendor/material-symbols-index.js';
+  }
+  function loadMaterialIndex() {
+    if (global.MATERIAL_SYMBOLS_INDEX) return Promise.resolve(global.MATERIAL_SYMBOLS_INDEX);
+    if (_materialIndexPromise) return _materialIndexPromise;
+    _materialIndexPromise = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = _materialIndexUrl();
+      el.async = true;
+      el.dataset.meldexAsset = 'material-symbols-index';
+      el.onload = () => global.MATERIAL_SYMBOLS_INDEX ? resolve(global.MATERIAL_SYMBOLS_INDEX)
+        : reject(new Error('Material Symbols の一覧を読み込めませんでした'));
+      el.onerror = () => { el.remove(); reject(new Error('Material Symbols の一覧を読み込めませんでした')); };
+      document.head.appendChild(el);
+    }).catch((error) => { _materialIndexPromise = null; throw error; });
+    return _materialIndexPromise;
+  }
+
+  let _materialItems = null;
+  let _materialItemsSource = null;
+  function listMaterialSymbols() {
+    const index = global.MATERIAL_SYMBOLS_INDEX;
+    if (!index || !Array.isArray(index.icons)) return [];
+    if (_materialItems && _materialItemsSource === index) return _materialItems;
+    const categories = Array.isArray(index.categories) ? index.categories : [];
+    _materialItemsSource = index;
+    _materialItems = index.icons.map(([name, cats, tags]) => {
+      const catLabels = (cats || []).map(i => categories[i]).filter(Boolean);
+      const spaced = String(name).replace(/_/g, ' ');
+      return {
+        type: 'material',
+        spec: 'material:' + name,
+        name,
+        label: spaced,
+        categories: catLabels.map(([key]) => key),
+        search: [name, spaced, tags || '', catLabels.map(([key, ja]) => key + ' ' + ja).join(' '),
+          _japaneseKeywords(String(name).replace(/_/g, '-'), tags || '')].filter(Boolean).join(' '),
+      };
+    });
+    return _materialItems;
+  }
+
   function listNotoEmoji() {
     return _notoEntries();
   }
@@ -317,6 +404,8 @@
     const includeNoto = options.includeNoto !== false;
     const items = [];
     if (includeLucide) items.push(...listLucideIcons());
+    if (options.includeMaterial) items.push(...listMaterialSymbols());
+    if (options.includePacks) items.push(...(global.MeldexIconPacks?.pickerItems?.() || []));
     if (includeNoto) items.push(...listNotoEmoji());
     const seen = new Set();
     for (const item of options.imageItems || []) {
@@ -330,7 +419,7 @@
     return items;
   }
 
-  function _normalizeSourceDefs(options, includeLucide, includeNoto) {
+  function _normalizeSourceDefs(options, includeLucide, includeNoto, includeMaterial, includePacks) {
     const custom = Array.isArray(options.sources) ? options.sources : [];
     if (custom.length) {
       return custom.map((source) => {
@@ -353,7 +442,9 @@
       defs.push({ id: 'all', label: 'すべて' });
     }
     if (includeLucide) defs.push({ id: 'lucide', label: 'Lucide', type: 'lucide' });
+    if (includeMaterial) defs.push({ id: 'material', label: 'Material', type: 'material', description: 'Google Material Symbols（丸型・塗りつぶし）' });
     if (includeNoto) defs.push({ id: 'noto', label: 'Noto Emoji', type: 'noto' });
+    if (includePacks) defs.push({ id: 'packs', label: '素材集', type: 'pack', description: '設定の「アイコン素材集」で登録したアイコン' });
     if (options.onUploadImage) defs.push({ id: 'image', label: '登録画像', type: 'image' });
     return defs;
   }
@@ -376,10 +467,21 @@
     }
     const includeLucide = options.includeLucide !== false;
     const includeNoto = options.includeNoto !== false;
+    // Material Symbols は線画アイコンの仲間なので、Lucide を出す選択画面に既定で並べる。
+    const includeMaterial = options.includeMaterial ?? includeLucide;
+    // 利用者の素材集も同じ所に並べる（使う設定の素材集が1つも無ければタブを出さない）。
+    const includePacks = (options.includePacks ?? includeLucide)
+      && (global.MeldexIconPacks?.pickerItems?.() || []).length > 0;
+    options = { ...options, includeMaterial, includePacks };
+    // 絵文字の種類を押してから大きなフォントを初めて解決しないよう、選択画面を開いた時に準備する。
+    if (includeNoto) {
+      try { document.fonts?.load?.('22px "Meldex Noto Emoji"', '😀')?.catch?.(() => {}); } catch (_) {}
+    }
     let allItems = null;
+    const cellNodes = new WeakMap();
     const presets = _makePresetItems(options.presets);
     const current = normalizeSpec(options.current || '');
-    const sourceDefs = _normalizeSourceDefs(options, includeLucide, includeNoto);
+    const sourceDefs = _normalizeSourceDefs(options, includeLucide, includeNoto, includeMaterial, includePacks);
     const defaultSource = includeLucide && includeNoto ? 'all' : includeNoto ? 'noto' : 'lucide';
     let activeSource = options.defaultSource || defaultSource;
     if (!sourceDefs.some((source) => source.id === activeSource)) {
@@ -516,6 +618,56 @@
     search.setAttribute('aria-label', options.searchLabel || 'アイコンを検索');
     picker.appendChild(search);
 
+    let materialCategory = '';
+    let materialCategorySelect = null;
+    if (sourceDefs.some(def => def.id === 'material')) {
+      materialCategorySelect = document.createElement('select');
+      materialCategorySelect.className = 'gb-input gb-icon-picker-category';
+      materialCategorySelect.dataset.e2eId = 'icon-picker-material-category';
+      materialCategorySelect.setAttribute('aria-label', 'Material Symbols の分類');
+      materialCategorySelect.hidden = activeSource !== 'material';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'すべての分類';
+      materialCategorySelect.appendChild(allOption);
+      materialCategorySelect.addEventListener('change', () => {
+        materialCategory = materialCategorySelect.value;
+        resetAndRenderGrid();
+      });
+      picker.appendChild(materialCategorySelect);
+    }
+    let packFilter = '';
+    let packSelect = null;
+    if (sourceDefs.some(def => def.id === 'packs')) {
+      packSelect = document.createElement('select');
+      packSelect.className = 'gb-input gb-icon-picker-category';
+      packSelect.dataset.e2eId = 'icon-picker-pack-filter';
+      packSelect.setAttribute('aria-label', '素材集');
+      packSelect.hidden = activeSource !== 'packs';
+      const allPacks = document.createElement('option');
+      allPacks.value = '';
+      allPacks.textContent = 'すべての素材集';
+      packSelect.appendChild(allPacks);
+      for (const pack of global.MeldexIconPacks.list().filter(p => p.enabled)) {
+        const option = document.createElement('option');
+        option.value = pack.id;
+        option.textContent = pack.name;
+        packSelect.appendChild(option);
+      }
+      packSelect.addEventListener('change', () => { packFilter = packSelect.value; resetAndRenderGrid(); });
+      picker.appendChild(packSelect);
+    }
+    function fillMaterialCategories() {
+      const cats = global.MATERIAL_SYMBOLS_INDEX?.categories;
+      if (!materialCategorySelect || !Array.isArray(cats) || materialCategorySelect.options.length > 1) return;
+      for (const [key, label] of cats) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = label;
+        materialCategorySelect.appendChild(option);
+      }
+    }
+
     let imageRegistration = null;
     if (typeof options.onUploadImage === 'function') {
       const form = document.createElement('div'); form.className = 'gb-icon-image-register';
@@ -559,9 +711,8 @@
     footer.className = 'gb-icon-picker-footer';
     const credit = document.createElement('div');
     credit.className = 'gb-icon-picker-credit';
-    credit.textContent = includeLucide && includeNoto
-      ? 'Lucide (ISC) / Noto Emoji (OFL 1.1)'
-      : includeNoto ? 'Noto Emoji (OFL 1.1)' : 'Lucide (ISC)';
+    credit.textContent = [includeLucide ? 'Lucide (ISC)' : '', includeMaterial ? 'Material Symbols (Apache-2.0)' : '',
+      includeNoto ? 'Noto Emoji (OFL 1.1)' : ''].filter(Boolean).join(' / ');
     const actions = document.createElement('div');
     actions.className = 'gb-icon-picker-actions';
     if (options.allowReset) {
@@ -598,33 +749,46 @@
       return _sourceDefMatches(sourceDef, item);
     }
 
-    function renderGrid() {
+    function renderGrid(appendPage = false) {
       if (!picker.isConnected) return;
       if (imageRegistration) imageRegistration.hidden = activeSource !== 'image';
+      if (materialCategorySelect) materialCategorySelect.hidden = activeSource !== 'material';
+      if (packSelect) packSelect.hidden = activeSource !== 'packs';
       const qRaw = search.value.trim();
       const q = _normalizeSearch(qRaw);
       const exactEmoji = qRaw && qRaw.length <= 8 ? qRaw : '';
       const filtered = getAllItems().filter((item) => {
         if (!sourceMatches(item)) return false;
+        if (materialCategory && activeSource === 'material' && !(item.categories || []).includes(materialCategory)) return false;
+        if (packFilter && activeSource === 'packs' && item.packId !== packFilter) return false;
         if (!q) return true;
         if (exactEmoji && item.emoji === exactEmoji) return true;
         return _normalizeSearch(item.search || item.label || item.spec).includes(q);
       });
-      grid.textContent = '';
+      const previousMore = appendPage === true ? grid.querySelector('.gb-icon-picker-more') : null;
+      const keepFocus = previousMore && document.activeElement === previousMore;
+      const start = previousMore ? grid.querySelectorAll('.gb-icon-picker-cell').length : 0;
+      if (!previousMore) grid.textContent = '';
       const fragment = document.createDocumentFragment();
-      filtered.slice(0, visibleLimit).forEach((item) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'gb-icon-picker-cell';
-        // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
-        btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
-        btn.title = _itemTooltip(item);
-        btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
-        btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
-        if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
-        btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
-        btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
-        btn.addEventListener('click', () => selectItem(item));
+      let firstAdded = null;
+      filtered.slice(start, visibleLimit).forEach((item) => {
+        let btn = cellNodes.get(item);
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'gb-icon-picker-cell';
+          // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
+          btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
+          btn.title = _itemTooltip(item);
+          btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
+          btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
+          if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
+          btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
+          btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
+          btn.addEventListener('click', () => selectItem(item));
+          cellNodes.set(item, btn);
+        }
+        if (!firstAdded) firstAdded = btn;
         fragment.appendChild(btn);
       });
       if (!filtered.length) {
@@ -634,19 +798,26 @@
         fragment.appendChild(empty);
       }
       if (filtered.length > visibleLimit) {
-        const more = document.createElement('button');
+        const more = previousMore || document.createElement('button');
         more.type = 'button';
         more.className = 'gb-icon-picker-more';
         more.dataset.e2eId = 'icon-picker-more';
         more.textContent = 'さらに表示（残り' + (filtered.length - visibleLimit) + '件）';
         more.setAttribute('aria-label', more.textContent);
-        more.addEventListener('click', () => {
-          visibleLimit += pageSize;
-          renderGrid();
-        });
-        fragment.appendChild(more);
+        if (!previousMore) {
+          more.addEventListener('click', () => {
+            visibleLimit += pageSize;
+            renderGrid(true);
+          });
+          fragment.appendChild(more);
+        }
+      } else if (previousMore) {
+        previousMore.remove();
       }
-      grid.appendChild(fragment);
+      if (previousMore?.isConnected) grid.insertBefore(fragment, previousMore);
+      else grid.appendChild(fragment);
+      // 最後のページで「さらに表示」が消えても、キーボードの行き先を失わない。
+      if (keepFocus && !previousMore.isConnected) firstAdded?.focus();
     }
 
     function resetAndRenderGrid() {
@@ -676,17 +847,37 @@
     else if (typeof global.clampPopupToViewport === 'function') global.clampPopupToViewport(picker);
     search.focus();
     scheduleInitialRender();
+    if (includeMaterial) {
+      loadMaterialIndex().then(() => {
+        if (!picker.isConnected) return;
+        fillMaterialCategories();
+        allItems = null;
+        renderGrid();
+      }).catch((error) => {
+        if (picker.isConnected && activeSource === 'material') grid.textContent = error.message;
+      });
+    }
     if (global.MeldexCloudAssets) {
       global.MeldexCloudAssets.load('icons').then(() => {
         allItems = null;
         renderGrid();
       }).catch(error => {
         if (picker.isConnected) {
-          grid.textContent = error.message;
+          // 一覧（grid）は直後の描画・検索・種類の切替で作り直されるため、失敗の案内は一覧の外の
+          // 共通の領域内エラーへ出す（一覧の中に置くと、直後の描画で消えて再試行できなかった）。
+          picker.querySelector('.gb-icon-picker-load-error')?.remove();
+          const failure = document.createElement('div');
+          failure.className = 'gb-inline-error gb-icon-picker-load-error';
+          failure.setAttribute('role', 'alert');
+          const message = document.createElement('span');
+          message.textContent = error?.message || 'アイコン素材を読み込めませんでした';
           const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'gb-btn';
           retry.textContent = '再試行';
           retry.onclick = () => { removePicker(); openPicker(options); };
-          grid.appendChild(retry);
+          failure.append(message, retry);
+          grid.parentNode?.insertBefore(failure, grid);
         }
       });
     }
@@ -741,7 +932,66 @@
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
 
+  // Material Symbols は合字フォントなので、<img> 用の画像が要る所（画像セル・ユーザーアイコン）では
+  // 読み込み済みのフォントをキャンバスへ描いて PNG にする。
+  const MATERIAL_FONT = '"Meldex Material Symbols Rounded"';
+  function _materialFontReady(name, px) {
+    try { return !!document.fonts?.check?.(`${px}px ${MATERIAL_FONT}`, name); } catch { return false; }
+  }
+  function _drawMaterialPng(name, options) {
+    const size = Math.max(16, Math.min(512, Number(options.size) || 128));
+    const glyph = Math.round(size * (options.scale || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    if (options.bg) {
+      ctx.fillStyle = options.bg;
+      ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = options.color || '#9aa0a6';
+    ctx.font = `${glyph}px ${MATERIAL_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const metrics = ctx.measureText(name);
+    const asc = metrics.actualBoundingBoxAscent || glyph * 0.9;
+    const desc = metrics.actualBoundingBoxDescent || 0;
+    ctx.fillText(name, size / 2, (size + asc - desc) / 2);
+    return canvas.toDataURL('image/png');
+  }
+  // フォントが読み込み済みなら即座に返す。未読込なら '' を返す（非同期版を使う）。
+  function materialImageDataUrlSync(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') {
+      // 塗らない素材（色付きのSVG・PNG）はそのまま使える。塗る素材は非同期版で色を付ける。
+      const info = global.MeldexIconPacks?.describe?.(spec);
+      return info?.state === 'ready' && !info.icon.tint ? global.MeldexIconPacks.iconDataUrl(info.icon) : '';
+    }
+    if (parsed.type !== 'material') return '';
+    return _materialFontReady(parsed.name, 24) ? _drawMaterialPng(parsed.name, options) : '';
+  }
+  async function materialImageDataUrl(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') return (await global.MeldexIconPacks?.imageDataUrl?.(spec, options)) || '';
+    if (parsed.type !== 'material') return '';
+    try { await document.fonts?.load?.(`24px ${MATERIAL_FONT}`, parsed.name); } catch (_) {}
+    return _drawMaterialPng(parsed.name, options);
+  }
+  async function toAvatarDataUrlAsync(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') {
+      return (await global.MeldexIconPacks?.imageDataUrl?.(spec, { size: 128, scale: 0.55, bg: _avatarColor(options.bg, '#000000'),
+        color: _avatarColor(options.fg || options.color, '#d4d4d4') })) || toAvatarDataUrl(spec, options);
+    }
+    if (parsed.type !== 'material') return toAvatarDataUrl(spec, options);
+    return materialImageDataUrl(spec, { size: 128, scale: 0.5, bg: _avatarColor(options.bg, '#000000'),
+      color: _avatarColor(options.fg || options.color, '#d4d4d4') });
+  }
+
   global.GBIconAssets = {
+    materialImageDataUrl,
+    materialImageDataUrlSync,
+    toAvatarDataUrlAsync,
     normalizeSpec,
     parseSpec,
     sameSpec,
@@ -749,6 +999,8 @@
     renderInto,
     listLucideIcons,
     listNotoEmoji,
+    listMaterialSymbols,
+    loadMaterialIndex,
     codeToEmoji,
     hasLucideName,
     openPicker,

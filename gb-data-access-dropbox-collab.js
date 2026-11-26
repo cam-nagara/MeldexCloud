@@ -239,7 +239,9 @@
         } catch {}
       }
     }
-    const payload = { ...meta, count: entries.length, last };
+    const identity = typeof provider.getMetadata === 'function'
+      ? String((await provider.getMetadata(_roomDir(meta.path, sourceFolder)))?.id || '') : '';
+    const payload = { ...meta, id: identity, count: entries.length, last };
     if (meta.type === 'dm') payload.members = _roomMembers(meta.path);
     if (meta.type === 'group') payload.members = await _groupMembers(provider, meta.path, sourceFolder);
     return payload;
@@ -286,10 +288,20 @@
     return rooms.sort((a, b) => String(a.path || '').localeCompare(String(b.path || ''), 'ja'));
   }
 
-  async function _writeGroupMembers(provider, roomPath, sourceFolder, user, body) {
+  async function _writeGroupMembers(provider, roomPath, sourceFolder, user, body, stagingDirectory = null) {
     const members = Array.isArray(body?.members) ? body.members : [];
     const clean = Array.from(new Set([user, ...members.map(member => String(member || '').trim()).filter(Boolean)]));
-    await provider.writeText(_groupMembersPath(roomPath, sourceFolder), JSON.stringify({ members: clean }, null, 2));
+    if (typeof provider.uploadBytesConditional !== 'function') throw new Error('この保存先は部屋を安全に新規作成できません');
+    await provider.uploadBytesConditional(stagingDirectory ? _joinPath(stagingDirectory, GROUP_MEMBERS_FILE) : _groupMembersPath(roomPath, sourceFolder),
+      new TextEncoder().encode(JSON.stringify({ members: clean }, null, 2)), null);
+  }
+
+  function _newGroupCreationStage(sourceFolder) {
+    if (typeof window.crypto?.getRandomValues !== 'function') throw new Error('安全な部屋作成IDを利用できません');
+    const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+    const token = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    // The reserved llm container is excluded from collaboration room lists.
+    return _joinPath(sourceFolder, CHAT_DIR, 'llm', '.room-create-' + token);
   }
 
   function _messageMarkdown(roomPath, from, text, timestamp) {
@@ -331,11 +343,42 @@
       return _listRooms(provider, user, sourceFolder);
     }
     if (pathname === '/collab/rooms' && method === 'POST') {
-      const roomPath = _roomPathFromCreateBody(body || {}, user);
-      await _directoryHandle(provider, _roomDir(roomPath, sourceFolder), true);
-      if (_roomMeta(roomPath).type === 'group') await _writeGroupMembers(provider, roomPath, sourceFolder, user, body || {});
-      return { ok: true, path: roomPath };
+      const basePath = _roomPathFromCreateBody(body || {}, user);
+      const group = _roomMeta(basePath).type === 'group';
+      const autoName = group && body?.auto_name === true;
+      let index = 1;
+      let stagingDirectory = null;
+      while (true) {
+        const roomPath = index === 1 ? basePath : basePath + ' (' + index + ')';
+        const target = _roomDir(roomPath, sourceFolder);
+        const existed = await _pathExists(provider, target);
+        if (existed && group) {
+          if (autoName) { index = Math.max(2, index + 1); continue; }
+          await _assertRoomAccess(provider, roomPath, user, sourceFolder);
+          throw new Error('同名のルームが既に存在します');
+        }
+        if (!group) {
+          await _directoryHandle(provider, target, true);
+        } else {
+          if (!stagingDirectory) {
+            stagingDirectory = _newGroupCreationStage(sourceFolder);
+            await _directoryHandle(provider, stagingDirectory, true);
+            await _writeGroupMembers(provider, roomPath, sourceFolder, user, body || {}, stagingDirectory);
+          }
+          try {
+            // Dropbox movePath publishes atomically with autorename:false.
+            // Never delete a competing directory based on an old listing.
+            await _moveEntry(provider, stagingDirectory, target);
+          } catch (error) {
+            if (autoName && /(?:to|path)\/conflict(?:\/|$)/i.test(String(error?.message || ''))) { index = Math.max(2, index + 1); continue; }
+            // Retain the unpublished stage: Dropbox has no empty-directory CAS delete.
+            throw error;
+          }
+        }
+        return { ok: true, path: roomPath };
+      }
     }
+
     if (pathname === '/collab/rooms/rename' && method === 'POST') {
       const oldPath = _requireRoomPath(body?.path || '');
       _assertMutableRoomPath(oldPath);

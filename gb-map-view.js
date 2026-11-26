@@ -469,15 +469,25 @@
       if (this._painting) { this._painting = null; this._terrainData = null; this._terrain(); if (this.container.hasPointerCapture(this._paintingId)) this.container.releasePointerCapture(this._paintingId); }
     }
     _indicators() {
-      if (!this.map || !this.scaleLabel || !this.container.clientWidth) return;
-      this.container.classList.toggle('gb-map-atlas-small', this.doc?.coordinate_system === 'local' && this.map.getZoom() < -.4);
-      const center = [this.container.clientWidth / 2, this.container.clientHeight / 2];
+      if (!this.map || !this.scaleLabel) return;
+      const width = this.container.clientWidth;
+      if (!width) return;
+      // Read geometry before changing styles. A rename must not invalidate the
+      // entire mobile layout through unchanged scale/compass text nodes.
+      const center = [width / 2, this.container.clientHeight / 2];
       const points = [-50, 50].map(x => this.xy(this.map.containerPointToLatLng(this.interaction.native([center[0] + x, center[1]]))));
       const bar = D().scaleBar(D().distance(points, this.doc));
-      this.scaleLabel.textContent = D().distanceLabel(bar.distance, this.doc); this.scaleLine.style.width = bar.pixels + 'px';
-      this.scaleNote.textContent = this.doc.coordinate_system === 'local' && !this.doc.scale.distance_per_unit ? '縮尺未設定' : '';
-      this.compass.style.transform = `rotate(${(this.doc.coordinate_system === 'world' ? 0 : this.doc.scale.north_degrees) + this.rotation}deg)`;
-      this.compass.parentElement.title = this.doc.coordinate_system === 'world' ? `北方向（表示の回転: ${Math.round(this.rotation)}°）` : `北方向: ${this.doc.scale.north_degrees}°（表示の回転: ${Math.round(this.rotation)}°）`;
+      const small = this.doc?.coordinate_system === 'local' && this.map.getZoom() < -.4;
+      const label = D().distanceLabel(bar.distance, this.doc), line = bar.pixels + 'px';
+      const note = this.doc.coordinate_system === 'local' && !this.doc.scale.distance_per_unit ? '縮尺未設定' : '';
+      const rotation = `rotate(${(this.doc.coordinate_system === 'world' ? 0 : this.doc.scale.north_degrees) + this.rotation}deg)`;
+      const title = this.doc.coordinate_system === 'world' ? `北方向（表示の回転: ${Math.round(this.rotation)}°）` : `北方向: ${this.doc.scale.north_degrees}°（表示の回転: ${Math.round(this.rotation)}°）`;
+      if (this.container.classList.contains('gb-map-atlas-small') !== small) this.container.classList.toggle('gb-map-atlas-small', small);
+      if (this.scaleLabel.textContent !== label) this.scaleLabel.textContent = label;
+      if (this.scaleLine.style.width !== line) this.scaleLine.style.width = line;
+      if (this.scaleNote.textContent !== note) this.scaleNote.textContent = note;
+      if (this.compass.style.transform !== rotation) this.compass.style.transform = rotation;
+      if (this.compass.parentElement.title !== title) this.compass.parentElement.title = title;
     }
     _atlasTileBox(coords){const g=this._atlasTileGeometry,a=this._atlasTileAtlas,size=g.tileSize/(2**coords.z);return [coords.x*size/g.cw*a.width,coords.y*size/g.ch*a.height,size/g.cw*a.width,size/g.ch*a.height];}
     _paintAtlasTile(tile,coords,resolution){const g=this._atlasTileGeometry;tile.src=root.MeldexMapAzgaar.url(this._atlasTileAtlas,{bounds:this._atlasTileBox(coords),resolution:resolution||g.tileSize*g.pixelRatio,display:this._atlasTileDisplay,style:this._atlasTileStyle?.theme,contours:!!this._atlasTileStyle?.contours,contourInterval:this._atlasTileStyle?.contour_interval||10});}

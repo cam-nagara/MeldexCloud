@@ -34,10 +34,6 @@
     return DEFAULT_MODES[edge] || 'auto';
   }
 
-  function storageSet(key, value) {
-    try { localStorage.setItem(key, value); } catch { /* 保存不可時は現在の画面だけへ適用する。 */ }
-  }
-
   function boardState() {
     if (root.bd && Array.isArray(root.bd.nodes)) return root.bd;
     try {
@@ -116,11 +112,32 @@
 
   function setMode(instance, edge, mode) {
     instance.modes[edge] = mode === 'pinned' ? 'pinned' : 'auto';
-    storageSet(STORAGE_PREFIX + instance.kind + ':' + edge, instance.modes[edge]);
+    const writes = [[STORAGE_PREFIX + instance.kind + ':' + edge, instance.modes[edge]]];
     if (instance.kind === 'standalone' && LEGACY_STANDALONE_TOOLBAR_KEYS[edge]) {
-      storageSet(LEGACY_STANDALONE_TOOLBAR_KEYS[edge], instance.modes[edge] === 'pinned' ? '0' : '1');
+      writes.push([LEGACY_STANDALONE_TOOLBAR_KEYS[edge], instance.modes[edge] === 'pinned' ? '0' : '1']);
+    }
+    const completed = [];
+    let saved = true;
+    try {
+      for (const [key, value] of writes) {
+        const previous = localStorage.getItem(key);
+        localStorage.setItem(key, value);
+        completed.push([key, previous, value]);
+      }
+    } catch {
+      saved = false;
+      // 現在値と旧版互換値の片方だけを変更したままにしない。
+      for (const [key, previous, attempted] of completed.reverse()) {
+        try {
+          if (localStorage.getItem(key) !== attempted) continue;
+          if (previous === null) localStorage.removeItem(key);
+          else localStorage.setItem(key, previous);
+        } catch { /* 保存先自体が使用不能でも、現在の表示は下書きとして保つ。 */ }
+      }
+      root.showStatus?.('固定表示の設定を保存できませんでした。現在の表示は保っています。もう一度切り替えて保存してください。', true);
     }
     apply(instance);
+    return saved;
   }
 
   function apply(instance) {

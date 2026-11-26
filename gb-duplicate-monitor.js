@@ -14,6 +14,7 @@
   let settingsRenderSeq = 0;
   const folderStateCache = new Map();
   const FOLDER_STATE_CACHE_MS = 15000;
+  let folderStateGeneration = 0;
 
   // 表示整形は gb-duplicate-monitor-format.js が持つ（先に読み込まれる前提）。
   const {
@@ -365,7 +366,7 @@
   async function refreshFolder(folderPath) {
     if (typeof renderFolderGrid === 'function' && folderPath
       && typeof _folderPath !== 'undefined' && _folderPath === folderPath) {
-      _folderItems = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true');
+      if (!globalThis.MeldexFolderLarge?.active?.()) _folderItems = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true'); // 大きなフォルダは全件を取らない
       renderFolderGrid();
     } else if (typeof loadOutliner === 'function') {
       await loadOutliner();
@@ -657,16 +658,16 @@
 
   async function loadFolderState(path, force) {
     const key = safeText(path);
+    const generation = folderStateGeneration;
     const cached = folderStateCache.get(key);
     if (!force && cached && Date.now() - cached.at < FOLDER_STATE_CACHE_MS) return cached.value;
     const value = await apiFetch('/duplicate-detection/folder-state?path=' + encodeURIComponent(key), {
       silentError: true,
     });
-    folderStateCache.set(key, { at: Date.now(), value });
+    if (generation === folderStateGeneration) folderStateCache.set(key, { at: Date.now(), value });
     return value;
   }
-
-  function invalidateFolderStateCache() { folderStateCache.clear(); }
+  function invalidateFolderStateCache() { folderStateGeneration++; folderStateCache.clear(); }
   function notifyTargetChange(path) {
     invalidateFolderStateCache();
     const broadcast = (typeof MeldexBroadcast !== 'undefined' && MeldexBroadcast) || window.GBBroadcast || null;
@@ -675,7 +676,6 @@
       detail: { path: safeText(path) },
     }));
   }
-
   function folderStateLabel(state) {
     if (state?.automatic_available === false) return '自動処理の対象外（ネットワーク上のフォルダ）';
     if (state?.reason) return safeText(state.reason);
@@ -689,12 +689,10 @@
     notifyTargetChange(path);
     return response?.state || null;
   }
-
   function createFolderTargetRow(item, options) {
     const row = document.createElement('div');
     row.className = options?.compact ? 'dup-folder-target-row dup-folder-target-row-compact' : 'dup-folder-target-row';
     row.dataset.path = safeText(item?.path);
-
     const disclosure = document.createElement('button');
     disclosure.type = 'button';
     disclosure.className = 'dup-folder-disclosure';
@@ -703,7 +701,6 @@
     disclosure.disabled = !item?.has_children;
     disclosure.classList.toggle('dup-folder-disclosure-empty', !item?.has_children);
     disclosure.innerHTML = item?.has_children ? lucide('chevronRight', 14) : '';
-
     const label = document.createElement('label');
     label.className = 'dup-folder-target-check';
     const checkbox = document.createElement('input');
@@ -716,7 +713,6 @@
     name.className = 'dup-folder-target-name';
     name.textContent = safeText(item?.name || displayPath(item?.path, 2) || 'フォルダ');
     label.append(checkbox, name);
-
     let help = null;
     if (options?.compact && typeof fieldHelp === 'function') {
       const holder = document.createElement('span');
@@ -937,13 +933,17 @@
   }
   async function refreshOutlinerBadges(root) {
     if (!isLocalDuplicateMode()) return;
+    const generation = folderStateGeneration;
     const nodes = [...(root || document).querySelectorAll?.('.tree-node[data-path]') || []].slice(0, 100);
     await Promise.allSettled(nodes.map(async node => {
       if (node._nodeData?.type !== 'folder') return;
       const row = node.querySelector(':scope > .tree-node-row');
       if (!row || row.querySelector(':scope > .dup-folder-excluded-badge')) return;
-      const state = await loadFolderState(node.dataset.path, false);
-      if (!row.isConnected || state?.enabled !== false) return;
+      const path = node.dataset.path;
+      const state = await loadFolderState(path, false);
+      if (generation !== folderStateGeneration || node.dataset.path !== path
+          || !row.isConnected || state?.enabled !== false
+          || row.querySelector(':scope > .dup-folder-excluded-badge')) return;
       const badge = document.createElement('span');
       badge.className = 'dup-folder-excluded-badge';
       badge.textContent = '対象外';

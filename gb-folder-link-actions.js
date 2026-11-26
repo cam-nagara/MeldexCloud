@@ -61,6 +61,29 @@
       );
       const failures = [];
       let processed = 0;
+      // 件数が多い時は、戻し先のフォルダごとに、まとめての移動（/outliner/move-batch）へ分けて送る
+      // （結果は1件ずつ受け取る。成功した分だけ状態を進めるのは従来と同じ）。
+      const destinationOf = move => (undo ? move.oldParent : move.newParent);
+      const pendingByDestination = new Map();
+      ordered.forEach(move => {
+        if (move.applied !== undo) return;
+        const destination = destinationOf(move);
+        if (!pendingByDestination.has(destination)) pendingByDestination.set(destination, []);
+        const source = { path: move.currentPath };
+        move._historySource = source;
+        pendingByDestination.get(destination).push(source);
+      });
+      const movers = new Map();
+      pendingByDestination.forEach((sources, destination) => {
+        if (typeof _folderCreateMover === 'function') movers.set(destination, _folderCreateMover(sources, destination));
+      });
+      let unappliedMoves = [];
+      const applyMovesToView = (mover, source) => {
+        if (!unappliedMoves.length || (mover?.batched && !mover.isChunkEnd(source))) return;
+        const batch = unappliedMoves;
+        unappliedMoves = [];
+        if (typeof _folderApplyCommittedMoves === 'function') _folderApplyCommittedMoves(batch);
+      };
       for (const move of ordered) {
         const expectedApplied = undo;
         if (move.applied !== expectedApplied) {
@@ -69,13 +92,18 @@
           continue;
         }
         const from = move.currentPath;
+        const destination = destinationOf(move);
+        const mover = movers.get(destination) || null;
+        const historySource = move._historySource;
+        delete move._historySource;
         try {
-          const destination = undo ? move.oldParent : move.newParent;
-          const response = await apiPost('/outliner/move', {
-            path: from,
-            dest_folder: destination,
-            conflict_policy: 'error',
-          });
+          const response = mover && historySource
+            ? await mover.post(historySource, destination)
+            : await apiPost('/outliner/move', {
+              path: from,
+              dest_folder: destination,
+              conflict_policy: 'error',
+            });
           move.currentPath = response?.new_path || ((destination ? destination + '/' : '') + from.split('/').pop());
           move.applied = !undo;
           try {
@@ -87,19 +115,34 @@
               });
             }
             if (typeof handleRelocateResponse === 'function') handleRelocateResponse(response);
+            // 1件戻すごとに、開いているパネルとツリーへすぐ反映する（全部の後の読み直しまで待たせない。
+            // 待たせると、取り消しの途中ではファイルが消えたままに見えていた: 2026-11-24 利用者の報告）。
+            const label = response?.new_name || move.name || move.item?.name || '';
+            // まとめて送った分は、塊ごとに1回だけ表示へ反映する（ツリーは最後に戻し先・戻し元のフォルダを読み直す）
+            unappliedMoves.push({ oldPath: from, newPath: move.currentPath, name: label,
+              item: { ...(move.item || {}), name: label, type: move.type || move.item?.type || 'file', path: move.currentPath } });
+            applyMovesToView(mover, historySource);
+            if (!mover?.batched && typeof _outlinerApplyCommittedMove === 'function') {
+              _outlinerApplyCommittedMove(from, move.currentPath, label, response?.file_id || move.fileId || move.item?.file_id);
+            }
           } catch (error) { console.warn('[Meldex] 履歴操作後のパス更新に失敗しました', error); }
         } catch (error) {
           failures.push({ path: from, error });
+          if (mover?.batched && mover.isChunkEnd(historySource)) applyMovesToView(null, null);
         }
         processed += 1;
         global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
       }
-      const refreshOutcome = await refreshHistoryView(options);
+      applyMovesToView(null, null);
+      // 移動はここで終わっている。一覧の照合を待たずに結果を出す。
       global.MeldexImportProgress?.finishOperation?.(progress, {
         failed: failures.length,
-        summary: `${processed - failures.length}件移動・${failures.length}件失敗`,
+        label: undo ? 'ファイル移動の取り消し' : 'ファイル移動のやり直し',
+        summary: undo ? `${processed - failures.length}件を元の場所へ戻しました` + (failures.length ? `・${failures.length}件は戻せませんでした` : '')
+          : `${processed - failures.length}件をもう一度移動しました` + (failures.length ? `・${failures.length}件は移動できませんでした` : ''),
         details: failures,
       });
+      const refreshOutcome = await refreshHistoryView(options);
       if (refreshOutcome?.historyWarning && typeof showStatus === 'function') showStatus(refreshOutcome.historyWarning, true);
       if (failures.length) throw new Error(`${failures.length}件の移動に失敗しました。成功分は保持し、残りを再試行できます`);
       // 共通履歴は戻り値の historyWarning を最後の表示に使う。返さないと「↩ 操作名」で
@@ -317,8 +360,28 @@
     );
     let processed = 0;
 
-    // 複数移動でも、最初の保存を待つ前に全対象を操作中の表示へ移す。
-    if (mode === 'cut') for (const item of items) {
+    // 件数が多い切り取り貼り付けは、まとめての移動（/outliner/move-batch）へ分けて送る（結果は1件ずつ受け取る）。
+    // まとめて送らない項目（同じフォルダ・自分の中・編集ロック中）は、下の1件ずつの処理が従来どおり断る。
+    const cutSkip = item => {
+      const parent = item.parent || (typeof _folderToolbarParentPath === 'function' ? _folderToolbarParentPath(item.path) : '');
+      const destination = typeof _folderToolbarNormalizePath === 'function' ? _folderToolbarNormalizePath(destFolder) : destFolder;
+      return parent === destination || (typeof _folderToolbarPathWithin === 'function' && _folderToolbarPathWithin(destFolder, item.path));
+    };
+    const mover = mode === 'cut' && typeof _folderCreateMover === 'function'
+      ? _folderCreateMover(items, destFolder, { skip: cutSkip })
+      : { batched: false, uncertain: false, post: item => apiPost('/outliner/move', { path: item.path, dest_folder: destFolder, conflict_policy: 'error' }), isChunkEnd: () => true, unclaimed: () => [] };
+    // 表示への反映は、まとめて送った分は塊ごとに1回
+    let unappliedMoves = [];
+    const applyMovesToView = item => {
+      if (!unappliedMoves.length || (mover.batched && !mover.isChunkEnd(item))) return;
+      const moves = unappliedMoves;
+      unappliedMoves = [];
+      if (typeof _folderApplyCommittedMoves === 'function') _folderApplyCommittedMoves(moves);
+    };
+
+    // 複数移動でも、最初の保存を待つ前に全対象を操作中の表示へ移す
+    // （まとめて送る件数の時は行わない: 1件ごとに一覧を描き直すので、件数の2乗で遅くなる）。
+    if (mode === 'cut' && !mover.batched) for (const item of items) {
       const parent = item.parent || (typeof _folderToolbarParentPath === 'function' ? _folderToolbarParentPath(item.path) : '');
       const destination = typeof _folderToolbarNormalizePath === 'function' ? _folderToolbarNormalizePath(destFolder) : destFolder;
       if (parent === destination || (typeof _folderToolbarPathWithin === 'function' && _folderToolbarPathWithin(destFolder, item.path))) continue;
@@ -356,9 +419,7 @@
           const finishPending = pendingPreviews.get(item) || (() => {});
           let res;
           try {
-            res = await apiPost('/outliner/move', {
-              path: item.path, dest_folder: destFolder, conflict_policy: 'error',
-            });
+            res = await mover.post(item, destFolder);
           } finally { finishPending(); }
           try {
             if (res?.new_path && typeof renameAppPathReferences === 'function') renameAppPathReferences(oldPath, res.new_path, { preserveMountedViews: true, label: res.new_name || item.name, fileId: res.file_id, type: item.type || 'page' });
@@ -368,8 +429,10 @@
           const newPath = res?.new_path || item.path;
           pastedPaths.push(newPath);
           executedMoves.push({ oldPath, newPath, currentPath: newPath, applied: true, item, oldParent: itemParent, fileId: res?.file_id || item.file_id });
-          if (typeof _folderApplyCommittedMoves === 'function') _folderApplyCommittedMoves(executedMoves.slice(-1));
-          if (typeof _outlinerApplyCommittedMove === 'function') _outlinerApplyCommittedMove(oldPath, newPath, res?.new_name || item.name, res?.file_id);
+          unappliedMoves.push(executedMoves[executedMoves.length - 1]);
+          applyMovesToView(item);
+          // ツリーは、まとめて送った時は最後に移動元・移動先のフォルダを差分で読み直す（下の refresh）
+          if (!mover.batched && typeof _outlinerApplyCommittedMove === 'function') _outlinerApplyCommittedMove(oldPath, newPath, res?.new_name || item.name, res?.file_id);
         } else {
           const res = typeof _outlinerPostCopyWithPreview === 'function'
             ? await _outlinerPostCopyWithPreview('/outliner/save-as', { path: item.path, dest_folder: destFolder }, item, options)
@@ -387,18 +450,31 @@
             } catch (error) { console.warn('[paste] 保存済みの表示反映に失敗', error); }
           }
         }
-      } catch (_) {
+      } catch (error) {
+        item._pasteError = error;
         failed.push(item);
+        if (mover.batched && mover.isChunkEnd(item)) applyMovesToView(item);
       } finally {
         processed += 1;
         global.MeldexImportProgress?.updateOperation?.(processed, null, progress);
       }
     }
+    // 送ったのに結果を受け取っていない項目（通常は無い）も、移動済みなら履歴と表示へ入れる
+    mover.unclaimed().forEach(({ source, res }) => {
+      const newPath = res?.new_path || source.path;
+      pastedPaths.push(newPath);
+      executedMoves.push({ oldPath: source.path, newPath, currentPath: newPath, applied: true, item: source,
+        oldParent: source.parent || '', fileId: res?.file_id || source.file_id });
+      unappliedMoves.push(executedMoves[executedMoves.length - 1]);
+    });
+    if (unappliedMoves.length && typeof _folderApplyCommittedMoves === 'function') { const moves = unappliedMoves; unappliedMoves = []; _folderApplyCommittedMoves(moves); }
     global.MeldexImportProgress?.finishOperation?.(progress, {
       failed: failed.length,
       summary: `${pastedPaths.length}件完了・${failed.length}件失敗`,
-      details: failed.map(item => ({ path: item.path || item.name || '', message: '処理できませんでした' })),
+      details: failed.map(item => ({ path: item.path || item.name || '',
+        message: String(item._pasteError?.userMessage || item._pasteError?.message || '処理できませんでした') })),
     });
+    failed.forEach(item => { delete item._pasteError; });
 
     if (mode === 'cut') {
       if (typeof options.onCutResult === 'function') {

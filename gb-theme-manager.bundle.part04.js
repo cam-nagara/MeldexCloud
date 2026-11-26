@@ -1,20 +1,3 @@
-    const canvas = canvasEl || document.getElementById('bd-canvas');
-    const world = worldEl || document.getElementById('bd-world');
-    applyBoardThemeCssVars(board, canvas, world, themeDef);
-    if (canvas) {
-      const fileStyle = board?._fileStyle && typeof board._fileStyle === 'object' ? board._fileStyle : {};
-      const fileStyleBg = String(fileStyle['--bd-bg'] || '').trim();
-      const documentBg = typeof global.getCssVar === 'function' ? (global.getCssVar('--bd-bg') || '').trim() : '';
-      const bg = fileStyleBg || (boardUsesDocumentTheme(board)
-        ? (documentBg || themeDef?.board?.backgroundColor || '')
-        : (themeDef?.ui?.cssVars?.['--bd-bg'] || themeDef?.board?.backgroundColor || ''));
-      if (typeof global.bdApplyCanvasBackground === 'function') {
-        global.bdApplyCanvasBackground(canvas, bg);
-      } else {
-        canvas.style.background = board?._bgColor || bg;
-      }
-      canvas.style.setProperty('--bd-theme-line-color', themeDef?.board?.lineColor || '');
-    }
     if (world) world.style.filter = themeDef?.board?.globalFilter || '';
     // ファイル固有値が未設定のキーは、テーマ変数を bd プロパティに再同期する
     // （bd._showShadow / bd.autoAlign は JS 側で参照されるため、CSS 変数の追従だけでは不十分）
@@ -272,6 +255,10 @@
     const whiteTextDefaults = clone(previous);
     whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
     legacyDefaults.push(whiteTextDefaults);
+    const unshadedTabsDefaults = clone(whiteTextDefaults);
+    unshadedTabsDefaults['panel-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    unshadedTabsDefaults['inner-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    legacyDefaults.push(unshadedTabsDefaults);
     // v1/v2 could stamp the original sequential defaults without upgrading them.
     // Treat that exact snapshot like the unversioned original; a current save
     // (including an intentional auto-color choice) is still returned above.

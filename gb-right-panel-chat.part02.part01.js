@@ -422,6 +422,7 @@ async function _chatSwitchSourceFolderForOpen(sourceFolder, options = {}) {
 // ファイル紐づきチャットを開始/復元
 async function openFileChat(targetPath) {
   if (!targetPath) return false;
+  window.GBChatDrafts?.flush?.();
   const restoreGuard = typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.restoreGuard === 'function'
     ? GBChatRestore.restoreGuard()
     : null;
@@ -555,6 +556,7 @@ async function openFileChat(targetPath) {
     _chatState.targetPath = targetPath;
     _chatState.lastImplicitTargetPath = '';
     _setChatSessionTitle('');
+    window.GBChatDrafts?.restore?.();
     const container = _chatLiveMessagesContainer();
     if (container) {
       container.innerHTML = '';
@@ -588,6 +590,7 @@ async function openFileChat(targetPath) {
 }
 
 function _createFileChat(targetPath) {
+  window.GBChatDrafts?.flush?.();
   const previousQueueScope = typeof _chatCurrentQueueScope === 'function' ? _chatCurrentQueueScope() : null;
   const previousWasStreaming = !!_chatState.streaming;
   _chatState.messages = [];
@@ -614,6 +617,7 @@ function _createFileChat(targetPath) {
   chatAddSystem(`「${fileName}」のチャットを作成しました`);
   _showChatTargetBadge(targetPath);
   if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+  window.GBChatDrafts?.restore?.();
 }
 
 function _showChatTargetBadge(targetPath) {

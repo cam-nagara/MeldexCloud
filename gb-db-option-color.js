@@ -9,6 +9,157 @@
 const _dbPendingColorSaves = new Map();
 const _dbColorSaveQueues = new Map();
 
+function _dbReorderedKeys(keys, source, target) {
+  const next = [...keys];
+  const from = next.indexOf(source), to = next.indexOf(target);
+  if (from < 0 || to < 0 || from === to) return next;
+  next.splice(from, 1);
+  next.splice(to, 0, source);
+  return next;
+}
+
+function _dbOrderedGroupKeys(keys, saved) {
+  const present = new Set(keys);
+  return [...new Set([...(Array.isArray(saved) ? saved : []).filter(key => present.has(key)), ...keys])];
+}
+
+function _dbOrderTagOptions(tags, config) {
+  const order = _dbOrderedGroupKeys(tags.map(tag => String(tag.id)), config?.tagOrder);
+  const byId = new Map(tags.map(tag => [String(tag.id), tag]));
+  return order.map(id => byId.get(id));
+}
+
+function _dbApplyChipTypeTheme(el, dbPath, ctx) {
+  const metadata = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath, ctx) : null;
+  const vars = typeof _expandFileStyleVars === 'function' ? _expandFileStyleVars(metadata?.style || metadata?.theme || {}, 'db-view-container') : {};
+  Object.entries(vars).forEach(([key, value]) => { if (key.startsWith('--db-option-')) el.style.setProperty(key, value); });
+}
+
+function renderDbTagOptionOrderField(optDiv, scope) {
+  const info = _ptState(scope), config = info.current || {};
+  const field = document.createElement('div');
+  field.className = 'field';
+  field.innerHTML = '<label>タグの並び順</label>';
+  const list = document.createElement('div');
+  list.className = 'pt-tag-option-order';
+  field.appendChild(list);
+  optDiv.appendChild(field);
+  const source = String(window.MeldexAutoTagSourceFolder?.(info.dbPath) || '').trim();
+  window.MeldexGlobalTags?.loadTagsCached(source).then(data => {
+    if (!field.isConnected) return;
+    const tags = window.MeldexGlobalTags.sortTagsByGroupOrder(data.tags || [], data.groups || []);
+    const sorted = _dbOrderTagOptions(tags, config);
+    const keys = sorted.map(tag => String(tag.id));
+    scope._dbTagOrderBuffer = [...keys];
+    sorted.forEach(tag => {
+      const row = document.createElement('div');
+      row.className = 'pt-tag-option-row';
+      row.dataset.reorderKey = String(tag.id);
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'gb-btn gb-btn-sm gb-btn-icon gb-btn-quiet';
+      handle.innerHTML = lucide('gripVertical', 14);
+      handle.disabled = Boolean(data.mutation_blocked || checkColumnEditable(info.dbPath, info.propName, info.ctx));
+      _dbBindReorderHandle(handle, {
+        label: tag.name, key: String(tag.id), root: list, selector: '.pt-tag-option-row',
+        keys: () => scope._dbTagOrderBuffer, disabled: () => handle.disabled,
+        commit: next => {
+          const nodes = new Map([...list.children].map(node => [node.dataset.reorderKey, node]));
+          next.forEach(id => list.appendChild(nodes.get(id)));
+          scope._dbTagOrderBuffer = next;
+          scope.dispatchEvent(new Event('input', { bubbles: true }));
+          handle.focus({ preventScroll: true });
+        },
+      });
+      row.append(handle, document.createTextNode(tag.name));
+      list.appendChild(row);
+    });
+  }).catch(error => { list.textContent = 'タグの読み込みに失敗しました'; console.warn(error); });
+}
+
+// 同じ操作でマウス・指・キーボードを扱う。ドラッグ中は印だけを動かし、寸法は変えない。
+function _dbBindReorderHandle(handle, options) {
+  handle.dataset.dbReorderHandle = '1';
+  if (!handle.dataset.e2eId) handle.dataset.e2eId = `db-reorder-handle-${options.key}`;
+  handle.tabIndex = 0;
+  handle.setAttribute('role', 'button');
+  handle.setAttribute('aria-label', options.label + 'を並べ替え');
+  handle.setAttribute('aria-description', 'ドラッグ、またはAltと矢印キーで並べ替え。Escapeで中止');
+  handle.style.touchAction = 'none';
+  handle.style.cursor = 'grab';
+  handle.addEventListener('keydown', event => {
+    if (event.key === 'Alt') { event.stopPropagation(); return; }
+    const delta = ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : ['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : 0;
+    if (!event.altKey || !delta || options.disabled?.()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const keys = options.keys(), index = keys.indexOf(options.key);
+    if (index + delta >= 0 && index + delta < keys.length) options.commit(_dbReorderedKeys(keys, options.key, keys[index + delta]));
+  });
+  handle.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || options.disabled?.()) return;
+    event.stopPropagation();
+    const origin = { x: event.clientX, y: event.clientY }, keys = options.keys();
+    let target = options.key, active = false, marked = null;
+    handle.setPointerCapture?.(event.pointerId);
+    const clearMark = () => { if (marked) marked.style.removeProperty('outline'); marked = null; };
+    const hitItem = e => {
+      const direct = document.elementFromPoint(e.clientX, e.clientY)?.closest(options.selector);
+      if (direct && options.root.contains(direct)) return direct;
+      const bounds = options.root.getBoundingClientRect();
+      if (e.clientX < bounds.left - 32 || e.clientX > bounds.right + 32 || e.clientY < bounds.top - 32 || e.clientY > bounds.bottom + 32) return null;
+      // 自動スクロール端の余白へ指を置いたままでも、最寄りの項目へ移せる。
+      const horizontal = options.axis === 'x';
+      let nearest = null, distance = Infinity;
+      options.root.querySelectorAll(options.selector).forEach(item => {
+        const r = item.getBoundingClientRect();
+        const d = Math.abs((horizontal ? e.clientX - (r.left + r.right) / 2 : e.clientY - (r.top + r.bottom) / 2));
+        if (d < distance) { distance = d; nearest = item; }
+      });
+      return nearest;
+    };
+    const move = e => {
+      if (e.pointerId !== event.pointerId) return;
+      if (!handle.isConnected) { finish(null); return; }
+      if (!active && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) < 6) return;
+      if (!active) window.MeldexDragAutoScroll?.beginPointerSession?.(e.clientX, e.clientY);
+      active = true;
+      e.preventDefault();
+      window.MeldexDragAutoScroll?.updatePointer?.(e.clientX, e.clientY);
+      const item = hitItem(e);
+      if (!item) return;
+      target = item.dataset.reorderKey;
+      clearMark();
+      marked = item;
+      marked.style.outline = '2px solid var(--accent)';
+    };
+    const cancelKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(null); } };
+    const finish = e => {
+      if (e && e.pointerId !== event.pointerId) return;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', cancelKey, true);
+      window.removeEventListener('blur', cancel);
+      if (active) window.MeldexDragAutoScroll?.endPointerSession?.();
+      clearMark();
+      if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      if (active && e?.type === 'pointerup') {
+        e.preventDefault();
+        const item = hitItem(e);
+        if (item) target = item.dataset.reorderKey;
+        if (target !== options.key) options.commit(_dbReorderedKeys(keys, options.key, target));
+      }
+    };
+    const cancel = () => finish(null);
+    document.addEventListener('pointermove', move, { passive: false });
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', cancel);
+    window.addEventListener('keydown', cancelKey, true);
+    window.addEventListener('blur', cancel);
+  });
+}
+
 function _dbColorSavePathKey(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
 }
@@ -635,6 +786,18 @@ function renderDbSelectOptionRows(container, scope) {
       const row = document.createElement('div');
       row.className = 'pt-select-option-row';
       row.dataset.e2eId = `pt-select-option-row-${optionIndex}`;
+      row.dataset.reorderKey = option;
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'gb-btn gb-btn-sm gb-btn-icon gb-btn-quiet pt-option-drag-handle';
+      handle.innerHTML = lucide('gripVertical', 14);
+      handle.disabled = Boolean(protectionReason || current.optionSource);
+      _dbBindReorderHandle(handle, {
+        label: option, key: option, root: container, selector: '.pt-select-option-row',
+        keys: readOptions, disabled: () => handle.disabled,
+        commit: next => { writeOptions(next); renderRows(option); },
+      });
+      row.appendChild(handle);
 
       const input = document.createElement('input');
       input.type = 'text';
@@ -784,10 +947,9 @@ function collectDbOptionColors(scope, prevColors, currentOptions) {
 }
 
 // --- 選択肢・チップの書式（背景色・文字色・枠線色・太字・斜体・取消線）: 2026-11-09 ---
-// セレクト/マルチセレクトは選択肢ごとに optionStyles[選択肢] へ、タグ・リレーション・
-// ロールアップは列全体の chipStyle へ保存する。背景色の16進数は旧版互換のため
-// optionColors にも書き続ける（旧版は optionStyles を無視して背景色だけ表示する）。
-const DB_CHIP_FORMAT_FIELDS = ['textColor', 'borderColor', 'bold', 'italic', 'strike', 'bgColor'];
+// 値別の変更は色だけ。旧い optionStyles / chipStyle の非色指定は、元データを読み取って
+// タイプ別テーマへ移行する。背景色の16進数は旧版互換の optionColors にも書き続ける。
+const DB_CHIP_FORMAT_FIELDS = ['textColor', 'borderColor', 'bgColor'];
 const DB_CHIP_STYLE_TYPES = new Set(['relation', 'multi-relation', 'common-tags', 'rollup']);
 
 function _dbChipCssColorValid(value) {
@@ -815,11 +977,45 @@ function _dbChipStyleIsEmpty(style) {
 function getDbOptionStyle(ptc, value) {
   if (!ptc || value == null) return {};
   const style = normalizeDbChipStyle(ptc.optionStyles?.[String(value)]);
+  delete style.fontWeight;
+  delete style.fontStyle;
+  delete style.strike;
   if (!style.bgColor) {
     const hex = getDbOptionColor(ptc, value);
     if (hex) style.bgColor = hex;
   }
   return style;
+}
+
+// 旧い値・列別書式は元データを残し、未指定のタイプ別テーマへ一度だけ引き継ぐ。
+// 同タイプで異なる指定は列・候補の表示順で最初の指定を採る（元の指定は消さない）。
+function _dbLegacyChipTheme(metadata) {
+  const current = metadata?.style || metadata?.theme || {};
+  if (current.__chipTypeMigration) return {};
+  const migrated = {};
+  const ids = { select: 'select', 'multi-select': 'multi', relation: 'relation',
+    'multi-relation': 'multi-relation', 'multi-source-relation': 'multi-source-relation',
+    rollup: 'rollup', 'common-tags': 'tag', user: 'user', 'multi-user': 'multi-user', status: 'status' };
+  const suffixes = { bgColor: 'bg', textColor: 'fg', borderColor: 'border-color',
+    fontWeight: 'bold', fontStyle: 'italic', strike: 'strike' };
+  Object.values(metadata?.property_types || {}).forEach(config => {
+    const id = ids[config?.type];
+    if (!id) return;
+    if (id === 'multi-relation') {
+      ['fg', 'bg', 'bold', 'italic', 'strike', 'font-size', 'radius', 'padding-x', 'border-color', 'border-width'].forEach(suffix => {
+        const key = `--db-option-multi-relation-${suffix}`;
+        if (current[key] == null && current[`--db-option-relation-${suffix}`] != null) migrated[key] = current[`--db-option-relation-${suffix}`];
+      });
+    }
+    const styles = [config.chipStyle, ...(Array.isArray(config.options) ? config.options : []).map(value => config.optionStyles?.[value]), ...Object.values(config.optionStyles || {})];
+    styles.forEach((raw, index) => Object.entries(normalizeDbChipStyle(raw)).forEach(([prop, value]) => {
+      if (index > 0 && ['bgColor', 'textColor', 'borderColor'].includes(prop)) return;
+      const key = `--db-option-${id}-${suffixes[prop]}`;
+      if (current[key] == null && migrated[key] == null) migrated[key] = prop === 'strike' ? 'line-through' : value;
+      if (prop === 'borderColor' && current[`--db-option-${id}-border-width`] == null) migrated[`--db-option-${id}-border-width`] = '1px';
+    }));
+  });
+  return migrated;
 }
 
 // チップ要素へ書式を直接適用する。文字色の指定が無く背景色が16進数なら、従来どおり読みやすい白/黒を選ぶ。
@@ -834,16 +1030,15 @@ function applyDbChipStyle(el, rawStyle) {
     const fg = dbOptionTextColorFor(style.bgColor);
     if (fg) el.style.color = fg;
   }
-  if (style.borderColor) el.style.boxShadow = `inset 0 0 0 1px ${style.borderColor}`;
-  if (style.fontWeight) el.style.fontWeight = style.fontWeight;
-  if (style.fontStyle) el.style.fontStyle = style.fontStyle;
-  if (style.strike) el.style.textDecoration = 'line-through';
+  if (style.borderColor) el.style.setProperty('--db-value-border-color', style.borderColor);
+  else el.style.removeProperty('--db-value-border-color');
 }
 
 // タグ・リレーション・ロールアップ: 値の外枠へCSS変数を置き、中のチップ／行へCSSで反映する。
 function applyDbColumnChipStyle(el, ptc) {
   if (!el) return;
-  const style = normalizeDbChipStyle(ptc?.chipStyle);
+  // 旧い列全体の書式はタイプ別テーマへ移行済み。値側からは上書きしない。
+  const style = {};
   const vars = {
     '--db-chip-bg': style.bgColor || '',
     '--db-chip-fg': style.textColor || (style.bgColor ? dbOptionTextColorFor(style.bgColor) : ''),
@@ -901,13 +1096,15 @@ function _dbCreateOptionPreviewChip(scope, option, optionIndex, multi, protectio
   chip.className = `${multi ? 'multi-select-tag' : 'cell-select-val'} pt-select-option-preview`;
   chip.dataset.e2eId = `pt-select-option-preview-${optionIndex}`;
   chip.textContent = option;
-  chip.title = protectionReason || `${option} の書式を設定`;
-  chip.setAttribute('aria-label', protectionReason ? `${option}の書式は変更できません。${protectionReason}` : `${option}の書式を設定`);
+  const info = typeof _ptState === 'function' ? _ptState(scope) : {};
+  _dbApplyChipTypeTheme(chip, info.dbPath, info.ctx);
+  chip.title = protectionReason || `${option} の色を設定`;
+  chip.setAttribute('aria-label', protectionReason ? `${option}の色は変更できません。${protectionReason}` : `${option}の色を設定`);
   if (protectionReason) chip.disabled = true;
   const currentStyle = () => {
     const colors = scope._dbOptionColorBuffer || {};
     const styles = scope._dbOptionStyleBuffer || {};
-    const style = normalizeDbChipStyle(styles[option]);
+    const style = getDbOptionStyle({ optionStyles: styles, optionColors: colors }, option);
     if (!style.bgColor && _dbOptionColorIsValidHex(colors[option])) style.bgColor = colors[option].trim();
     return style;
   };
@@ -951,66 +1148,6 @@ function collectDbColumnChipStyle(scope, prevStyle) {
 // 列設定パネル: タグ・リレーション・ロールアップ列の「表示」欄。列内の実際の値を
 // チップの見た目どおりに並べ、クリックで列全体のチップ書式を設定する。
 function renderDbColumnChipStyleField(optDiv, scope, type) {
-  if (!optDiv || !scope || !DB_CHIP_STYLE_TYPES.has(type)) return null;
-  const stateInfo = typeof _ptState === 'function' ? _ptState(scope) : {};
-  const current = stateInfo?.current || {};
-  const protectionLevel = typeof _dbSchemaProtectionLevel === 'function'
-    ? _dbSchemaProtectionLevel(stateInfo?.dbPath, stateInfo?.propName) : null;
-  const protectionReason = _dbOptionColorProtectionReason(protectionLevel);
-  scope._dbChipStyleBuffer = normalizeDbChipStyle(current.chipStyle);
-
-  const field = document.createElement('div');
-  field.className = 'field pt-chip-style-field';
-  field.dataset.e2eId = 'pt-chip-style-field';
-  const label = document.createElement('label');
-  label.textContent = '表示';
-  if (typeof fieldHelp === 'function') {
-    label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('値をクリックすると書式（背景色・文字色・枠線・太字など）を設定できます。この列のすべての値に反映されます'));
-  }
-  const host = document.createElement('div');
-  host.className = 'pt-chip-style-preview';
-  host.dataset.e2eId = 'pt-chip-style-preview';
-  applyDbColumnChipStyle(host, { chipStyle: scope._dbChipStyleBuffer });
-
-  // 見本は列内の実際の値から最大3件。共通タグはタグIDで保存されるため名前が出せず、種類名で代替する。
-  const samples = [];
-  const seen = new Set();
-  if (type !== 'common-tags' && type !== 'rollup') {
-    (stateInfo?.existing || []).forEach(raw => {
-      String(raw ?? '').split(',').map(v => v.trim()).filter(Boolean).forEach(v => {
-        const text = v.replace(/^\[\[|\]\]$/g, '').split('|').pop().split('/').pop();
-        if (samples.length >= 3 || !text || seen.has(text)) return;
-        seen.add(text);
-        samples.push(text);
-      });
-    });
-  }
-  const fallback = { 'common-tags': ['タグ'], rollup: ['ロールアップの値'], relation: ['リンク先'], 'multi-relation': ['リンク先'] }[type];
-  (samples.length ? samples : fallback).forEach((text, index) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = type === 'rollup'
-      ? 'db-rollup-line pt-chip-style-sample'
-      : type === 'common-tags'
-        ? 'gb-tag-chip gb-tag-chip--compact multi-select-tag common-tags-tag pt-chip-style-sample'
-        // relation-link はリンク先を開く全体のクリック処理に横取りされるため、見た目だけ専用クラスでそろえる
-        : 'pt-chip-style-sample pt-chip-style-sample--relation';
-    chip.dataset.e2eId = `pt-chip-style-sample-${index}`;
-    chip.textContent = text;
-    chip.title = protectionReason || '書式を設定';
-    if (protectionReason) chip.disabled = true;
-    chip.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openDbChipFormatPopup(chip, scope._dbChipStyleBuffer, (style) => {
-        scope._dbChipStyleBuffer = style;
-        applyDbColumnChipStyle(host, { chipStyle: style });
-        try { scope.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
-      });
-    });
-    host.appendChild(chip);
-  });
-  field.append(label, host);
-  optDiv.appendChild(field);
-  return field;
+  // 形と書式の入口はテーマパネルのタイプ別見本に統一する。
+  return null;
 }

@@ -494,7 +494,9 @@ function _chatRevealLatest(mode = _chatMode) {
     ? _chatLiveElement('team-messages')
     : mode === 'llm' ? _chatLiveMessagesContainer() : null;
   if (!container) return false;
-  const scroll = () => _chatScrollToBottom(container);
+  const scroll = () => mode === 'llm'
+    ? _chatFollowScrollToBottom(_chatState.sessionId, container)
+    : _chatScrollToBottom(container);
   scroll();
   requestAnimationFrame(() => {
     scroll();
@@ -634,15 +636,20 @@ const CHAT_CLI_MODEL_CATALOG = {
     { id: 'haiku', name: 'Haiku（最新版）' },
     { id: 'fable', name: 'Fable（最新版）' },
   ],
+  // 下の一覧は取得できない時の控え。起動後は各CLIが示す最新の一覧（/api/cli-chat/models、
+  // meldex_cli_chat_model_lineup.py）へ差し替わる。efforts はそのモデルで選べる思考の深さ。
   codex: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
-    { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
-    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
-    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
-    { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
-    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
-    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
-    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
+    { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast', 'ultrafast'] },
+    { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast', 'ultrafast'] },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast'] },
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast', 'ultrafast'] },
+    { id: 'gpt-6-astra', name: 'GPT-6 Astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast', 'ultrafast'] },
+    { id: 'gpt-6-sol', name: 'GPT-6 Sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast'] },
+    { id: 'gpt-6-luna', name: 'GPT-6 Luna', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], speeds: ['fast'] },
+    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast'] },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], speeds: ['fast'] },
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], speeds: ['fast'] },
   ],
   // Antigravity CLI が受け付けるモデル名は公式Headless Modeの `agy models` 例と対。
   // CLIのモデル名は末尾に思考の深さを含む（例: gemini-3.6-flash-high）が、ここでは系統名だけを
@@ -650,12 +657,17 @@ const CHAT_CLI_MODEL_CATALOG = {
   // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
   antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
-    { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
-    { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
-    { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
-    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
-    { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
-    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
+    { id: 'gemini-4-neon', name: 'Gemini 4 Neon', efforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', efforts: ['low', 'medium', 'high'] },
+    { id: 'gemini-4-argon', name: 'Gemini 4 Argon（終了予定）', efforts: ['low', 'medium', 'high'], leaving_soon: true },
+    { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', efforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gemini-pro-orchestrator-neon', name: 'Orchestrator (Neon)', efforts: [] },
+    { id: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)', efforts: [] },
+    { id: 'gemini-pro-orchestrator-argon', name: 'Orchestrator (Argon)', efforts: [] },
+    { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash（終了予定）', efforts: ['low', 'medium', 'high'], leaving_soon: true },
+    { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', efforts: ['low', 'medium', 'high'] },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B', efforts: ['medium'] },
   ],
 };
 
@@ -1278,7 +1290,15 @@ async function loadProviderModels(provider, options = {}) {
   }
   try {
     const localQuery = key === 'local_llm' ? '&local_base_url=' + encodeURIComponent(chatLocalLlmBaseUrl()) : '';
-    const data = await apiFetch('/chat/models?provider=' + encodeURIComponent(key) + '&refresh=' + (force ? 'true' : 'false') + localQuery);
+    // デスクトップ版はAPIキーを端末内に保存するため、送信時と同じく一覧取得にもその鍵を渡す。
+    const desktop = !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+    const clientKeys = desktop && key !== 'local_llm' && typeof _chatClientApiKeysForRequest === 'function'
+      ? await _chatClientApiKeysForRequest().catch(() => ({})) : {};
+    const data = desktop && Object.keys(clientKeys || {}).length
+      ? await apiPost('/chat/models', { provider: key, refresh: force, client_api_keys: clientKeys })
+      : await apiFetch('/chat/models?provider=' + encodeURIComponent(key) + '&refresh=' + (force ? 'true' : 'false') + localQuery);
+    // 明示の更新で接続先から取得できなかった時は、既定の一覧へ差し替えず失敗として返す。
+    if (force && data?.fallback && data?.error) throw new Error(String(data.error));
     const models = _chatNormalizeModels(data?.models, key);
     _chatState.modelsByProvider[key] = models;
     if (!data?.fallback) {
@@ -1311,10 +1331,51 @@ function _currentChatModelSelection(provider, models, options = {}) {
   return { value: selected, model: selected };
 }
 
+let _chatPreferenceSaveFailed = false;
+function _chatPersistPreferences(values) {
+  const before = new Map(), written = [];
+  try {
+    for (const key of Object.keys(values)) before.set(key, localStorage.getItem(key));
+    for (const [key, value] of Object.entries(values)) {
+      const next = value == null ? null : String(value);
+      if (before.get(key) === next) continue;
+      if (next == null) localStorage.removeItem(key);
+      else localStorage.setItem(key, next);
+      written.push(key);
+    }
+    if (_chatPreferenceSaveFailed && typeof showStatus === 'function') showStatus('チャット設定を保存しました');
+    _chatPreferenceSaveFailed = false;
+    return true;
+  } catch (_) {
+    _chatPreferenceSaveFailed = true;
+    let restored = true;
+    for (const key of written.reverse()) {
+      try {
+        const current = localStorage.getItem(key);
+        if (current === before.get(key)) continue;
+        const ownValue = values[key] == null ? null : String(values[key]);
+        if (current !== ownValue) { restored = false; continue; }
+        if (before.get(key) == null) localStorage.removeItem(key);
+        else localStorage.setItem(key, before.get(key));
+      } catch (_) { restored = false; }
+    }
+    if (typeof showStatus === 'function') showStatus(restored
+      ? 'チャット設定を保存できません。変更前の選択を保持しています'
+      : 'チャット設定を保存できません。送信前に選択を確認してください', true);
+    window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+      op: 'chat.preferences.save', endpoint: 'localStorage', method: 'SET', errorType: 'Error',
+      rollbackRestored: restored,
+    });
+    return false;
+  }
+}
+
 function _renderChatModelOptions(models, options = {}) {
   const provider = _chatProviderKey(_chatState.provider);
+  _chatSyncModelRefreshButtons();
   const sel = document.getElementById('chat-model');
   if (!sel) return;
+  const previousModel = _chatState.model, previousPending = _chatState.pendingModel;
   const normalized = _chatNormalizeModels(models, provider);
   const selection = _currentChatModelSelection(provider, normalized, options);
   sel.innerHTML = '';
@@ -1325,13 +1386,23 @@ function _renderChatModelOptions(models, options = {}) {
     sel.appendChild(o);
   });
   sel.value = selection.value;
-  const previousModel = _chatState.model;
-  _chatState.model = sel.value || selection.model || _chatDefaultModel(provider);
-  if (previousModel !== _chatState.model && typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
-  if (!options.skipGlobalPersist) {
-    localStorage.setItem('chat-model', _chatState.model || '');
-    localStorage.setItem('chat-model:' + provider, _chatState.model || '');
+  const nextModel = sel.value || selection.model || _chatDefaultModel(provider);
+  if (!options.skipGlobalPersist && !_chatPersistPreferences({
+    'chat-model': nextModel, ['chat-model:' + provider]: nextModel,
+  })) {
+    if (previousModel && ![...sel.options].some(option => option.value === previousModel)) {
+      const option = document.createElement('option');
+      option.value = previousModel;
+      option.textContent = previousModel;
+      sel.appendChild(option);
+    }
+    sel.value = previousModel;
+    _chatState.pendingModel = previousPending;
+    if (typeof _chatRefreshReasoningControl === 'function') _chatRefreshReasoningControl();
+    return;
   }
+  _chatState.model = nextModel;
+  if (previousModel !== _chatState.model && typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
   if (!options.skipRoomPersist) _chatSaveCurrentRoomModelSettings();
   if (typeof _chatRefreshReasoningControl === 'function') _chatRefreshReasoningControl();
 }
@@ -1345,9 +1416,15 @@ function _renderChatModelOptions(models, options = {}) {
   el.addEventListener('pointerdown', refreshAvailability);
   el.onchange = function() {
     if (typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
+    const provider = _chatProviderKey(this.value);
+    const nextModel = localStorage.getItem('chat-model:' + provider) || _chatDefaultModel(provider);
+    if (!_chatPersistPreferences({ 'chat-provider': this.value,
+      'chat-model': nextModel, ['chat-model:' + provider]: nextModel })) {
+      this.value = _chatState.provider;
+      return;
+    }
     _chatState.provider = this.value;
-    localStorage.setItem('chat-provider', this.value);
-    _chatState.model = localStorage.getItem('chat-model:' + _chatProviderKey(this.value)) || _chatDefaultModel(this.value);
+    _chatState.model = nextModel;
     _chatState.pendingModel = _chatState.model;
     updateChatModels();
     _chatRefreshApiKeyState().catch(() => {});
@@ -1372,16 +1449,35 @@ function updateChatModels(options = {}) {
   el.onchange = function() {
     if (typeof _closeChatGenerationSettingsMenu === 'function') _closeChatGenerationSettingsMenu();
     const provider = _chatProviderKey(_chatState.provider);
-    _chatState.model = this.value || _chatDefaultModel(provider);
-    localStorage.setItem('chat-model', _chatState.model || '');
-    localStorage.setItem('chat-model:' + provider, _chatState.model || '');
+    const nextModel = this.value || _chatDefaultModel(provider);
+    if (!_chatPersistPreferences({ 'chat-model': nextModel, ['chat-model:' + provider]: nextModel })) {
+      this.value = _chatState.model;
+      return;
+    }
+    _chatState.model = nextModel;
     _chatState.pendingModel = '';
     _chatSaveCurrentRoomModelSettings();
     if (typeof _chatRefreshReasoningControl === 'function') _chatRefreshReasoningControl();
   };
 })();
 
+// Cloudではモデル一覧を接続先から取り直せないため、押しても変わらない更新ボタンは出さない。
+function _chatSyncModelRefreshButtons() {
+  const cloud = !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  // ボタンには表示方法が直接書かれているため、hidden属性だけでは隠れない。表示指定ごと切り替える。
+  document.querySelectorAll('button[data-action="chatRefreshModels()"]').forEach(button => {
+    button.hidden = cloud;
+    if (cloud) button.style.setProperty('display', 'none', 'important');
+    else button.style.setProperty('display', 'flex');
+  });
+}
+
 function chatRefreshModels() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    // Cloudは主要モデルの既定一覧を使う。最新一覧の取得はデスクトップ版だけ。
+    if (typeof showStatus === 'function') showStatus('Cloudでは主要モデルの一覧を使います。最新の一覧はデスクトップ版で取得できます');
+    return false;
+  }
   const provider = _chatProviderKey(_chatState.provider);
   loadProviderModels(provider, { force: true }).then(models => {
     if (_chatProviderKey(_chatState.provider) === provider) _renderChatModelOptions(models);
@@ -1531,14 +1627,16 @@ async function _chatApplySessionTitle(title, scope) {
 })();
 
 // チャットモード切替
-function switchChatMode(mode) {
+function switchChatMode(mode, options = {}) {
   const requestedMode = mode;
+  const preferences = { 'chat-mode': mode === 'cli' ? 'history' : mode };
+  if (mode === 'cli') preferences['chat-history-view'] = 'cli';
+  if (!options.skipModePersist && !_chatPersistPreferences(preferences)) return false;
+  if (_chatMode !== mode && typeof GBPaneBridge !== 'undefined') GBPaneBridge.rememberChatViewport?.();
   if (mode === 'cli') {
     mode = 'history';
-    try { localStorage.setItem('chat-history-view', 'cli'); } catch {}
   }
   _chatMode = mode;
-  localStorage.setItem('chat-mode', mode);
   clearInterval(_teamPollTimer); // タイマー蓄積防止
   _teamPollTimer = null;
   if (typeof _chatSearchClose === 'function') _chatSearchClose(); // 検索バーを閉じる
@@ -1566,6 +1664,7 @@ function switchChatMode(mode) {
   if (mode === 'llm') {
     _syncChatSessionTitleInput();
     if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+    if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.restoreChatViewport?.();
     _chatRevealLatest('llm');
   }
   if (mode === 'history') {
@@ -1633,6 +1732,7 @@ function _teamRoomByPath(roomPath) {
 
 function _clearTeamRoomSelection() {
   _chatSaveCurrentRoomModelSettings();
+  window.GBTeamChatDrafts?.switchRoom?.('');
   _teamCurrentRoom = '';
   _teamLastTimestamp = '';
   _teamSessionGen++;

@@ -20,9 +20,11 @@ async function hydrateCommonTagsValueElement(container) {
     groups,
     sourceFolder,
   ) || resolvedTags;
-  const orderedTags = typeof api.sortTagsByGroupOrder === 'function'
+  const defaultTags = typeof api.sortTagsByGroupOrder === 'function'
     ? api.sortTagsByGroupOrder(visibleTags, groups)
     : visibleTags;
+  const config = getPropertyTypes(container.dataset.dbPath)?.[container.dataset.propName];
+  const orderedTags = _dbOrderTagOptions(defaultTags, config);
   const displayLimit = window.MeldexTagDisplayPreferences?.sheetTagDisplayLimit?.(
     container.dataset.dbPath || '',
   ) || api.getCompactTagDisplayLimit?.() || 10;
@@ -97,6 +99,7 @@ function createCommonTagsValueElement(rawValue, entityPath, propName, dbPath) {
   container.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;cursor:pointer;min-height:16px;';
   container._commonTagIds = tagIds;
   container.dataset.dbPath = String(dbPath || '');
+  container.dataset.propName = String(propName || '');
   container.dataset.tagSourceFolder = String(
     dbPath && window.MeldexAutoTagSourceFolder?.(dbPath) || '',
   ).trim();
@@ -116,6 +119,102 @@ function createCommonTagsValueElement(rawValue, entityPath, propName, dbPath) {
     }
   });
   return container;
+}
+
+function _multiSelectValueTokens(value) {
+  return String(value || '').split(',').map(part => part.trim()).filter(Boolean);
+}
+
+function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,options={}){
+  const dbPath=options.dbPath||_valueEditorDbPath(entityPath,anchor);
+  const ctx=options.ctx||_valueEditorContext(entityPath,anchor,dbPath);
+  const blocked=options.readOnly?'読み取り専用です':_valueEditorLockMessage(dbPath,propName,ctx);
+  if(blocked){showStatus(blocked,true);return;}
+  closeAllDropdowns(ctx||anchor);
+  const historyOptions={dbPath,ctx,historyScope:typeof options.historyScope==='function'?options.historyScope():options.historyScope,
+    onHistoryChanged:options.onHistoryChanged};
+  const selected=new Set(_multiSelectValueTokens(val.value||''));
+  const entity=options.entityData||{};
+  const dynamic=window.MeldexDbDynamicOptions?.resolve?.(config,entity);
+  const columnValues=!dynamic&&typeof collectDbColumnValues==='function'?collectDbColumnValues(ctx?.pivotData,propName,{splitCsv:true}):[];
+  const candidates=new Set([...(config.options||[]),...(dynamic?.options||[]),...columnValues,...selected]);
+  const popup=document.createElement('div');popup.className='cell-inline-dd status-dropdown db-multi-select-value-popup';
+  popup.setAttribute('role','dialog');popup.setAttribute('aria-label',propName+'の複数選択');
+  if(ctx?.paneId)popup.dataset.dbPaneId=ctx.paneId;
+  popup.style.cssText='max-height:300px;overflow-y:auto;min-width:180px;';
+  popup.addEventListener('pointerdown',event=>event.stopPropagation());
+  popup.addEventListener('click',event=>event.stopPropagation());
+  const search=document.createElement('input');search.type='search';search.className='gb-input';
+  search.placeholder='検索...';search.setAttribute('aria-label',propName+'の選択肢を検索');
+  const list=document.createElement('div'),error=document.createElement('div');
+  let busy=false,closed=false,pointerCloser=null;
+  function close(restoreFocus=false){
+    if(closed)return;closed=true;
+    const hadFocus=popup.contains(document.activeElement);
+    if(pointerCloser)document.removeEventListener('pointerdown',pointerCloser);
+    popup.remove();
+    if(restoreFocus&&hadFocus&&anchor.isConnected)anchor.focus?.({preventScroll:true});
+  }
+  function render(){
+    list.replaceChildren();const query=search.value.trim(),visible=[...candidates].filter(value=>value&&value.toLowerCase().includes(query.toLowerCase()));
+    if(query&&!candidates.has(query))visible.push(query);
+    for(const value of visible){
+      const row=document.createElement('label');row.className='dd-nav-item status-dropdown-item';
+      const input=document.createElement('input');input.type='checkbox';input.checked=selected.has(value);input.disabled=busy;
+      input.setAttribute('aria-label',value);
+      input.addEventListener('change',()=>{if(busy)return;if(input.checked)selected.add(value);else selected.delete(value);candidates.add(value);});
+      const caption=document.createElement('span');caption.textContent=value;
+      row.append(input,caption);
+      row._ddActivate=()=>{if(busy)return;input.checked=!input.checked;input.dispatchEvent(new Event('change',{bubbles:true}));};
+      list.appendChild(row);
+    }
+    if(!visible.length){const empty=document.createElement('p');empty.className='gb-section-desc';empty.textContent='選択肢がありません';list.appendChild(empty);}
+  }
+  const footer=document.createElement('div');footer.style.cssText='display:flex;gap:4px;flex-wrap:wrap;';
+  const button=(label,handler)=>{const element=document.createElement('button');element.type='button';element.className='gb-btn gb-btn-xs status-dropdown-item';element.textContent=label;element.addEventListener('click',handler);return element;};
+  const cancel=button('キャンセル',()=>{if(!busy)close(true);});
+  const clear=button('選択を解除',()=>{if(busy)return;selected.clear();render();void commit();});
+  const apply=button('確定',()=>void commit());apply.classList.add('gb-btn-primary');
+  footer.append(clear,cancel,apply);
+  const setBusy=value=>{busy=value;popup.setAttribute('aria-busy',String(value));for(const input of popup.querySelectorAll('input,button'))input.disabled=value;};
+  async function commit(){
+    if(busy||closed)return;
+    const next=[...selected].join(', '),before=String(val.value||'');
+    if(next===before){close(true);return;}
+    const lock=options.readOnly?'読み取り専用です':_valueEditorLockMessage(dbPath,propName,ctx);
+    if(lock){error.replaceChildren(GBUI.createInlineError({message:lock}));return;}
+    const ref={...val,entry_path:entityPath,property:propName};
+    setBusy(true);error.replaceChildren();
+    let saved=false;
+    try{
+      await _apiPutValue(ref,{new_value:next});
+      saved=true;
+    }catch(failure){
+      if(popup.isConnected)error.replaceChildren(GBUI.createInlineError({message:propName+'を保存できません。選択は保持しています。'+(failure?.userMessage||failure?.message||failure),onRetry:commit}));
+    }finally{setBusy(false);}
+    if(!saved)return;
+    val.value=next;
+    if(typeof _syncValueRefAfterSave==='function')_syncValueRefAfterSave(ref,val);
+    _dbUndoValue(propName+': '+before+' → '+next,val,before,next,undefined,undefined,historyOptions);
+    if(anchor.isConnected)options.onSaved?.(next);
+    close(true);
+  }
+  popup.addEventListener('db-dropdown-cancel',()=>close());
+  popup.addEventListener('keydown',event=>{
+    if(event.isComposing)return;
+    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();if(!busy)close(true);}
+    else if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();event.stopPropagation();void commit();}
+  });
+  search.addEventListener('input',render);render();popup.append(search,list,error,footer);
+  _positionCellDropdown(popup,anchor,{gap:2,minWidth:180});
+  if(typeof _enableDropdownKeyNav==='function')_enableDropdownKeyNav(popup,'.dd-nav-item');
+  search.focus({preventScroll:true});
+  setTimeout(()=>{
+    if(closed)return;
+    pointerCloser=event=>{if(!popup.contains(event.target)&&!busy)close();};
+    document.addEventListener('pointerdown',pointerCloser);
+  },0);
+  return popup;
 }
 
 function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeConfig, options = {}) {
@@ -242,6 +341,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   const row = document.createElement('div');
+  row.dataset.chipType = type;
   row.className = 'cell-value' + (getStatusEnabled(dbPath) && val.status === 'ボツ' ? ' status-botsu' : '');
   _setupCellValueDrag(row, val, entityPath, propName);
   // タグ・リレーション列の列全体のチップ書式（列設定の「表示」）
@@ -319,9 +419,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       if (saving) return;
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
+      const historyScope = typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope;
       const oldChecked = checked;
       // Undoでは論理値だけでなく、旧データの表現（「はい」「1」「yes」等）も忠実に戻す。
-      const oldValue = v;
+      const oldValue = typeof _cellUiValueToString === 'function'
+        ? _cellUiValueToString(val.value) : (val.value == null ? '' : String(val.value));
       const nv = oldChecked ? 'false' : 'true';
       checked = !oldChecked;
       saving = true;
@@ -331,7 +433,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
         const hasExistingValue = val?.file && val.candidate_index != null;
         if (hasExistingValue) {
           await _apiPutValue(val, { new_value: nv });
-          _dbUndoValue('チェック: ' + oldValue + ' → ' + nv, val, oldValue, nv, undefined, undefined, { dbPath, ctx: valueCtx });
+          _dbUndoValue('チェック: ' + oldValue + ' → ' + nv, val, oldValue, nv, undefined, undefined, { dbPath, ctx: valueCtx, historyScope, onHistoryChanged: options.onHistoryChanged });
         } else {
           const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
           val.file = result?.path || entityPath;
@@ -351,11 +453,12 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
               file: val.file, entry_path: entityPath, property: propName,
               candidate_id: val?.candidate_id, entry_id: val?.entry_id, candidate_index: val.candidate_index,
             };
-            const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
+            const scope = typeof historyScope === 'string' ? historyScope : typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
             historyPush('チェック: false → true',
               async () => {
                 await _apiPutValue(currentRef, { _delete: true });
-                if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
+                if (typeof options.onHistoryChanged === 'function') await options.onHistoryChanged();
+                else if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
               },
               async () => {
                 const redo = await _apiPostValue(entityPath, propName, nv, '採用', '');
@@ -365,7 +468,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
                   property: redo?.property || propName,
                   candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
                 };
-                if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
+                if (typeof options.onHistoryChanged === 'function') await options.onHistoryChanged();
+                else if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
               },
               scope
             );
@@ -546,7 +650,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     const span = document.createElement('span');
     span.className = 'cell-number value-text';
     span.textContent = v;
-    span.addEventListener('click', () => _startNumberValueEdit(span, val, entityPath, propName, dbPath));
+    span.addEventListener('click', () => _startNumberValueEdit(span, val, entityPath, propName, dbPath, options));
     row.appendChild(span);
     if (propTypeConfig.unit) {
       const unit = document.createElement('span');
@@ -595,11 +699,12 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   if (type === 'multi-select') {
-    const tags = v.split(',').map(s => s.trim()).filter(Boolean);
     const tagContainer = document.createElement('div');
     tagContainer.className = 'multi-select-tags';
     tagContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;cursor:pointer;';
-    tags.forEach(t => {
+    const renderTags = value => {
+      tagContainer.replaceChildren();
+      _multiSelectValueTokens(value).forEach(t => {
       const tag = document.createElement('span');
       tag.className = 'multi-select-tag';
       tag.textContent = t;
@@ -609,7 +714,10 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
         applyDbOptionChipColor(tag, getDbOptionColor(propTypeConfig, t));
       }
       tagContainer.appendChild(tag);
-    });
+      });
+      if (!tagContainer.childElementCount) tagContainer.textContent = '選択...';
+    };
+    renderTags(v);
     tagContainer.addEventListener('click', (e) => {
       e.stopPropagation();
       const td = tagContainer.closest('td[data-prop-name]');
@@ -622,8 +730,22 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       if (td && tr && typeof startCellInlineAdd === 'function') {
         const rowEntityName = tr.dataset.entityName || entityPath.replace(/\.md$/, '').split('/').pop();
         startCellInlineAdd(td, entityPath, rowEntityName, propName);
+        return;
       }
+      const latestConfig = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, valueCtx)?.[propName] : null;
+      showMultiSelectValueDropdown(tagContainer, val, entityPath, propName, latestConfig || propTypeConfig,
+        { ...options, dbPath, ctx: valueCtx, onSaved: renderTags });
     });
+    {
+      tagContainer.tabIndex = 0;
+      tagContainer.setAttribute('role', 'button');
+      tagContainer.setAttribute('aria-label', propName + 'の複数選択を編集');
+      tagContainer.addEventListener('keydown', event => {
+        if (!tagContainer.closest('td') && !event.isComposing && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault(); event.stopPropagation(); tagContainer.click();
+        }
+      });
+    }
     row.appendChild(tagContainer);
     return row;
   }
@@ -636,7 +758,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   if (type === 'user') {
     const span = document.createElement('span');
     span.className = 'cell-user-val';
-    span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:2px 6px;border-radius:3px;font-size:12px;';
+    span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;cursor:pointer;';
     if (v) {
       span.innerHTML = _userAvatarSmall(v) + ' ' + esc(v);
     } else {
@@ -667,7 +789,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     users.forEach(u => {
       const tag = document.createElement('span');
       tag.className = 'multi-user-tag';
-      tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:10px;font-size:11px;background:var(--bg3);border:1px solid var(--border);';
+      tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;';
       tag.innerHTML = _userAvatarSmall(u) + ' ' + esc(u);
       container.appendChild(tag);
     });

@@ -52,7 +52,11 @@ function _chatSpeedOptions(provider, model = _chatGenerationModel(provider)) {
   const options = [['default', '既定'], ['standard', '標準']];
   if (provider === 'codex') {
     options.push(['fast', '高速']);
-    if (/^gpt-6(?:\.1-sol|-astra)(?:$|-)/.test(name)) options.push(['ultrafast', '超高速']);
+    const entry = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && Array.isArray(CHAT_CLI_MODEL_CATALOG.codex))
+      ? CHAT_CLI_MODEL_CATALOG.codex.find(item => item && String(item.id || '').toLowerCase() === name)
+      : null;
+    const ultrafast = Array.isArray(entry?.speeds) ? entry.speeds.includes('ultrafast') : /^gpt-6(?:\.1-sol|-astra)(?:$|-)/.test(name);
+    if (ultrafast) options.push(['ultrafast', '超高速']);
     return options;
   }
   if (provider === 'claude_code'
@@ -66,7 +70,7 @@ function _chatGenerationSpeedRowHtml() {
   const provider = _chatGenerationCurrentProvider();
   const options = _chatSpeedOptions(provider);
   if (!options.length) return '';
-  const selected = _chatNativeGenerationSettings().speed_mode;
+  const selected = _chatNativeGenerationSettings(undefined, undefined, { readOnly: true }).speed_mode;
   return _chatGenerationSettingsRow('応答速度', `<select id="chat-menu-speed-mode" class="gb-input" style="max-width:150px;">${options.map(([value, label]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`).join('')}</select>`)
     + `<div data-chat-speed-notice ${['fast', 'ultrafast'].includes(selected) ? '' : 'hidden'} style="font-size:11px;color:var(--fg2);line-height:1.5;">高速・超高速は利用枠の消費や料金が増えます。対応モデル・契約でのみ利用できます。</div>`;
 }
@@ -122,8 +126,9 @@ function _chatGenerationCurrentProvider() {
 // 思考の深さ（reasoning）はサーバ実装（meldex_chat_stream_support.py / meldex_api_cli_chat.py）で
 // anthropic/openai/gemini の3プロバイダ（API経由）に加え、claude_code/codex/antigravity_cli
 // （CLI経由、--effort注入）でも生成オプションへ反映される。local_llm は未対応のまま。
-// antigravity_cli は low/medium/high の3段階のみ受け付けるため、それ以上はhighへ丸める
+// antigravity_cli は原則 low/medium/high の3段階で、それ以上はhighへ丸める
 // （meldex_cli_chat_model_args.py の _cli_chat_reasoning_effort_for_antigravity 参照）。
+// Gemini 4 Neon だけは xhigh 変種を持つため「最高」まで選べる。
 const CHAT_REASONING_SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'claude_code', 'codex', 'antigravity_cli']);
 
 function _chatGenerationReasoningSupported(provider) {
@@ -142,8 +147,20 @@ function _chatReasoningLevelOptions(provider, model = _chatGenerationModel(provi
     ['max', '最大'],
   ];
   const name = String(model || '').toLowerCase();
+  // CLIが示すモデル一覧に深さの一覧があれば、それだけを出す（Codex / Antigravity CLI）。
+  const catalogEntry = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && Array.isArray(CHAT_CLI_MODEL_CATALOG[provider]))
+    ? CHAT_CLI_MODEL_CATALOG[provider].find(item => item && String(item.id || '').toLowerCase() === name)
+    : null;
+  if (['codex', 'antigravity_cli'].includes(provider) && Array.isArray(catalogEntry?.efforts)) {
+    const efforts = catalogEntry.efforts.map(value => String(value));
+    const extra = [['ultra', 'Ultra']];
+    return [base[0], ...base.slice(1).filter(([value]) => efforts.includes(value)), ...extra.filter(([value]) => efforts.includes(value))];
+  }
   if (provider === 'antigravity_cli') {
-    const variants = name === 'gemini-3.1-pro' ? ['low', 'high'] : name === 'gpt-oss-120b' ? ['medium'] : ['low', 'medium', 'high'];
+    const variants = name === 'gemini-3.1-pro' ? ['low', 'high']
+      : name === 'gpt-oss-120b' ? ['medium']
+      : name === 'gemini-4-neon' ? ['low', 'medium', 'high', 'xhigh']
+      : ['low', 'medium', 'high'];
     return base.filter(([value]) => value === 'off' || variants.includes(value));
   }
   if (provider === 'openai') return base.filter(([value]) => value !== 'max' || /^gpt-6/.test(name));
@@ -191,10 +208,17 @@ function _chatBindReasoningControl() {
   select.addEventListener('change', () => {
     const provider = select.dataset.generationProvider || _chatGenerationCurrentProvider();
     const model = select.dataset.generationModel ?? _chatGenerationModel(provider);
-    const current = _chatNativeGenerationSettings(provider, model);
+    const current = _chatNativeGenerationSettings(provider, model, { readOnly: true });
     const level = select.value || 'off';
-    _chatStoreNativeGenerationSettings({ ...current, reasoning_level: level }, provider, model);
-    localStorage.setItem('chat-reasoning-level', level);
+    const map = _chatReadNativeGenerationMap();
+    map[_chatNativeGenerationKey(provider, model)] = { ...current, reasoning_level: level };
+    if (!_chatPersistPreferences({
+      [CHAT_NATIVE_GENERATION_STORAGE_KEY]: JSON.stringify(map),
+      'chat-reasoning-level': level,
+    })) {
+      _chatRefreshReasoningControl();
+      return;
+    }
     if (typeof _chatSaveCurrentRoomModelSettings === 'function') _chatSaveCurrentRoomModelSettings();
   });
 }
@@ -261,7 +285,7 @@ function _chatGenerationCliSessionControlsHtml() {
   return `
     <div data-chat-cli-session-controls style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
       <label class="gb-check" style="margin:0;min-width:0;"><input id="chat-menu-cli-session-continuity" type="checkbox" ${checked}><span>CLIの会話を継続</span></label>
-      <button type="button" data-chat-cli-session-reset title="このチャットのCLI会話継続をリセット" style="display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--fg);font-size:12px;cursor:pointer;white-space:nowrap;">${resetIcon}<span>リセット</span></button>
+      <button type="button" data-chat-cli-session-reset data-e2e-id="chat-menu-cli-session-reset" title="このチャットのCLI会話継続をリセット" style="display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--fg);font-size:12px;cursor:pointer;white-space:nowrap;">${resetIcon}<span>リセット</span></button>
     </div>
   `;
 }
@@ -292,39 +316,71 @@ function _scheduleChatGenerationSettingsReposition(menu, anchor) {
   setTimeout(run, 80);
 }
 
+function _restoreChatGenerationSettingsControls(menu) {
+  for (const id of ['allow-web-search', 'auto-compress', 'cli-session-continuity', 'allow-code-execution']) {
+    const input = menu.querySelector('#chat-menu-' + id);
+    if (input) input.checked = ['cli-session-continuity', 'allow-web-search'].includes(id)
+      ? localStorage.getItem('chat-' + id) !== '0'
+      : localStorage.getItem('chat-' + id) === '1';
+  }
+  const speed = menu.querySelector('#chat-menu-speed-mode');
+  if (speed) speed.value = _chatNativeGenerationSettings(menu.dataset.generationProvider, menu.dataset.generationModel, { readOnly: true }).speed_mode;
+  const preset = menu.querySelector('#chat-menu-param-preset');
+  if (preset) preset.value = _chatGenerationSettingValue('chat-param-preset', 'standard');
+  for (const id of Object.keys(CHAT_GENERATION_NUMERIC_SETTINGS)) {
+    const input = menu.querySelector('#chat-menu-' + id);
+    if (input) input.value = _chatGenerationStoredNumberValue(id);
+  }
+}
+
 function _persistChatGenerationSettings(menu, options = {}) {
-  const web = menu.querySelector('#chat-menu-allow-web-search');
-  if (web) localStorage.setItem('chat-allow-web-search', web.checked ? '1' : '0');
-  const compress = menu.querySelector('#chat-menu-auto-compress');
-  if (compress) localStorage.setItem('chat-auto-compress', compress.checked ? '1' : '0');
-  const cliSession = menu.querySelector('#chat-menu-cli-session-continuity');
-  if (cliSession) localStorage.setItem('chat-cli-session-continuity', cliSession.checked ? '1' : '0');
-  const code = menu.querySelector('#chat-menu-allow-code-execution');
-  if (code) localStorage.setItem('chat-allow-code-execution', code.checked ? '1' : '0');
+  const values = {}, normalizedNumbers = [];
+  for (const id of ['allow-web-search', 'auto-compress', 'cli-session-continuity', 'allow-code-execution']) {
+    const input = menu.querySelector('#chat-menu-' + id);
+    if (input) values['chat-' + id] = input.checked ? '1' : '0';
+  }
   const speed = menu.querySelector('#chat-menu-speed-mode');
   if (speed) {
-    const current = _chatNativeGenerationSettings(menu.dataset.generationProvider, menu.dataset.generationModel);
-    _chatStoreNativeGenerationSettings({
-      ...current,
-      speed_mode: speed.value || 'default',
-    }, menu.dataset.generationProvider, menu.dataset.generationModel);
+    const provider = menu.dataset.generationProvider, model = menu.dataset.generationModel;
+    const current = _chatNativeGenerationSettings(provider, model, { readOnly: true });
+    const map = _chatReadNativeGenerationMap();
+    map[_chatNativeGenerationKey(provider, model)] = { ...current, speed_mode: speed.value || 'default' };
+    values[CHAT_NATIVE_GENERATION_STORAGE_KEY] = JSON.stringify(map);
   }
   const preset = menu.querySelector('#chat-menu-param-preset');
-  if (preset) localStorage.setItem('chat-param-preset', preset.value || 'standard');
+  if (preset) values['chat-param-preset'] = preset.value || 'standard';
   Object.entries(CHAT_GENERATION_NUMERIC_SETTINGS).forEach(([id, config]) => {
     const input = menu.querySelector('#chat-menu-' + id);
     if (!input) return;
-    const value = input.value.trim();
-    const normalized = _normalizeChatGenerationNumberValue(value, config);
-    if (normalized) {
-      localStorage.setItem(config.key, normalized);
-      if (options.normalizeNumbers && input.value !== normalized) input.value = normalized;
-    } else {
-      localStorage.removeItem(config.key);
-      if (options.normalizeNumbers && input.value) input.value = '';
-    }
+    const normalized = _normalizeChatGenerationNumberValue(input.value.trim(), config);
+    values[config.key] = normalized || null;
+    normalizedNumbers.push([input, normalized]);
   });
-  if (typeof _chatSaveCurrentRoomModelSettings === 'function') _chatSaveCurrentRoomModelSettings();
+  // A team room stores the same settings separately; commit both copies together.
+  if (typeof _chatMode !== 'undefined' && _chatMode === 'team' && _teamCurrentRoom) {
+    const key = _chatRoomSettingsKey(_teamCurrentRoom);
+    if (key) {
+      const generation = _chatGenerationStorageSnapshot();
+      for (const [name, value] of Object.entries(values)) {
+        if (!CHAT_ROOM_GENERATION_STORAGE_KEYS.includes(name)) continue;
+        if (value == null) delete generation[name];
+        else generation[name] = value;
+      }
+      values[key] = JSON.stringify({
+        provider: _chatProviderKey(_chatState.provider), model: String(_chatState.model || '').trim(),
+        generation, savedAt: Date.now(),
+      });
+    }
+  }
+  if (!_chatPersistPreferences(values)) {
+    // Restore existing nodes: rebuilding the menu loses focus and details state.
+    _restoreChatGenerationSettingsControls(menu);
+    return false;
+  }
+  if (options.normalizeNumbers) for (const [input, normalized] of normalizedNumbers) {
+    if (input.value !== normalized) input.value = normalized;
+  }
+  return true;
 }
 
 function showChatGenerationSettingsMenu(event) {

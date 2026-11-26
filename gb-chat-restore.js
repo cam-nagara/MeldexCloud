@@ -83,7 +83,13 @@
     }
   }
 
-  function _save(patch = {}) {
+  const _hadInitialRestoreState = !!_load();
+  let _initialRestoreConsidered = false;
+
+  function _save(patch = {}, options = {}) {
+    // Mobile panes bind lazily. Default mode/target synchronization must not
+    // replace the previous session before restoreOnOpen can read it.
+    if (_hadInitialRestoreState && !_initialRestoreConsidered && !options.userInitiated) return _load();
     try {
       const prev = _load() || _emptyMeta();
       const next = {
@@ -96,7 +102,11 @@
         rooms: patch.rooms ? { ...prev.rooms, ...patch.rooms } : { ...prev.rooms },
         savedAt: Date.now(),
       };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      if (options.preferences && typeof _chatPersistPreferences === 'function') {
+        if (!_chatPersistPreferences({ ...options.preferences, [STORAGE_KEY]: JSON.stringify(next) })) return null;
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      }
       return next;
     } catch {
       return null;
@@ -136,19 +146,20 @@
     }
   }
 
-  function _saveMode(mode) {
-    const normalized = VALID_MODES.has(String(mode || '')) ? String(mode) : 'team';
+  function _saveMode(mode, options = {}) {
+    const normalized = mode === 'cli' ? 'history' : VALID_MODES.has(String(mode || '')) ? String(mode) : 'team';
+    const deferredPath = !_llmContentRestored ? (_load()?.ai?.savedPath || '') : '';
     return _save({
       mode: normalized,
-      historyView: _currentHistoryView(),
+      historyView: mode === 'cli' ? 'cli' : _currentHistoryView(),
       ai: {
-        savedPath: normalized === 'llm' ? _currentSavedPath() : (_load()?.ai?.savedPath || ''),
+        savedPath: normalized === 'llm' ? (_currentSavedPath() || deferredPath) : (_load()?.ai?.savedPath || ''),
         ...(normalized === 'llm' && window.GBChatStorageContext?.peekHistory?.()
           ? { historySourceFolder: _chatState.historySourceFolder || window.GBChatStorageContext.peekHistory().sourceFolder } : {}),
       },
       storage: _currentStorage(),
       target: _currentTarget(),
-    });
+    }, options);
   }
 
   function _saveCurrentLlmRestore() {
@@ -171,11 +182,13 @@
     return _save({ mode: 'team', storage, rooms, target: _currentTarget() });
   }
 
-  function saveTargetState(snapshot) {
-    if (_restorePending && !_restoreApplying) _cancelRestoreForUserAction();
+  function saveTargetState(snapshot, options = {}) {
+    const userInitiated = options.userInitiated !== false;
+    if (!userInitiated && isRestoreSuspended()) return _load();
+    if (userInitiated && _restorePending && !_restoreApplying) _cancelRestoreForUserAction();
     const rawMode = String(snapshot?.mode || '');
     const mode = VALID_TARGET_MODES.has(rawMode) ? rawMode : 'follow-main';
-    return _save({
+    const saved = _save({
       target: {
         mode,
         path: mode === 'detached' ? '' : _cleanPath(snapshot?.path || ''),
@@ -183,7 +196,9 @@
         targets: Array.isArray(snapshot?.targets) ? snapshot.targets.map(item => ({ path: _cleanPath(item.path), kind: String(item.kind || '') })) : [],
         started: !!snapshot?.started,
       },
-    });
+    }, { userInitiated });
+    if (saved && userInitiated) _initialRestoreConsidered = true;
+    return saved;
   }
 
   function saveStorageState() {
@@ -297,6 +312,7 @@
     if (_restorePending) return true;
     if (isRestoreSuspended()) return false;
     const meta = _load();
+    _initialRestoreConsidered = true;
     if (!meta?.mode || typeof switchChatMode !== 'function') return false;
     const token = ++_restoreGeneration;
     _restorePending = true;
@@ -343,14 +359,20 @@
   _patch('openSavedChat', original => async function() {
     _cancelRestoreForUserAction();
     const result = await _withSuspendedRestoreAsync(() => original.apply(this, arguments));
-    if (!isRestoreSuspended()) _saveCurrentLlmRestore();
+    if (!isRestoreSuspended()) {
+      if (result !== false && (_initialRestoreConsidered || !_hadInitialRestoreState)) _llmContentRestored = true;
+      _saveCurrentLlmRestore();
+    }
     return result;
   });
 
   _patch('openFileChat', original => async function() {
     _cancelRestoreForUserAction();
     const result = await _withSuspendedRestoreAsync(() => original.apply(this, arguments));
-    if (!isRestoreSuspended()) _saveCurrentLlmRestore();
+    if (!isRestoreSuspended()) {
+      if (result !== false && (_initialRestoreConsidered || !_hadInitialRestoreState)) _llmContentRestored = true;
+      _saveCurrentLlmRestore();
+    }
     return result;
   });
 
@@ -360,9 +382,18 @@
     return result;
   });
 
-  _patch('chatClear', original => function() {
+  _patch('chatClear', original => function(options = {}) {
     _cancelRestoreForUserAction();
+    // 利用者の「新しいチャット」は、再起動時に戻る先を先に保存する。保存できない時は
+    // 元の会話・下書き・添付を保ち、もう一度押せるようにする（部屋の切り替えと同じ扱い）。
+    if (!options?.preserveComposer && !isRestoreSuspended()
+        && !_save({ mode: 'llm', ai: { savedPath: '' }, storage: _currentStorage(), target: _currentTarget() }, { userInitiated: true })) {
+      if (typeof showStatus === 'function') showStatus('新しいチャットを保存できません。元の会話を保持しています。もう一度押してください', true);
+      return false;
+    }
     const result = original.apply(this, arguments);
+    if (result !== false && !isRestoreSuspended() && (_initialRestoreConsidered || !_hadInitialRestoreState)
+        && !_chatState.sessionId) _llmContentRestored = true;
     _save({ mode: 'llm', ai: { savedPath: '' }, storage: _currentStorage(), target: _currentTarget() });
     return result;
   });
@@ -374,24 +405,43 @@
     return result;
   });
 
+  _patch('_renameTeamRoom', original => async function() {
+    const result = await original.apply(this, arguments);
+    if (result === true && !isRestoreSuspended() && _chatMode === 'team') _saveRoom(_teamCurrentRoom);
+    return result;
+  });
+
   _patch('selectTeamRoom', original => async function(roomPath) {
     _cancelRestoreForUserAction();
+    // 本文・添付・描画を切り替える前に、復元先の保存を確定する。
+    if (!isRestoreSuspended() && (!roomPath || _roomExists(roomPath)) && !_saveRoom(roomPath)) {
+      if (typeof _syncTeamRoomSelect === 'function') _syncTeamRoomSelect(_teamRoomsCache);
+      if (typeof showStatus === 'function') showStatus('部屋の選択を保存できません。元の部屋を保持しています。もう一度選択してください', true);
+      return false;
+    }
     const result = await original.apply(this, arguments);
-    if (!isRestoreSuspended()) _saveRoom(roomPath);
     return result;
   });
 
   _patch('switchChatMode', original => function(mode) {
     _cancelRestoreForUserAction();
-    const result = original.apply(this, arguments);
-    if (!isRestoreSuspended()) _saveMode(mode === 'cli' ? 'history' : mode);
+    const suspended = isRestoreSuspended();
+    const preferences = { 'chat-mode': mode === 'cli' ? 'history' : mode };
+    if (mode === 'cli') preferences['chat-history-view'] = 'cli';
+    if (!suspended && !_saveMode(mode, { preferences })) return false;
+    const result = original.call(this, mode, { ...(arguments[1] || {}), skipModePersist: !suspended });
+    if (result === false) return false;
+    if (!isRestoreSuspended()) {
+      if (mode === 'llm' && _initialRestoreConsidered && !_llmContentRestored && _load()?.ai?.savedPath) restoreOnOpen();
+    }
     return result;
   });
 
   _patch('switchChatHistoryView', original => function(view) {
     _cancelRestoreForUserAction();
-    const result = original.apply(this, arguments);
-    if (!isRestoreSuspended()) _save({ mode: 'history', historyView: view === 'cli' ? 'cli' : 'saved' });
+    const suspended = isRestoreSuspended(), current = view === 'cli' ? 'cli' : 'saved';
+    if (!suspended && !_save({ mode: 'history', historyView: current }, { preferences: { 'chat-history-view': current } })) return false;
+    const result = original.call(this, view, { ...(arguments[1] || {}), skipViewPersist: !suspended });
     return result;
   });
 

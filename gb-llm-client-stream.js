@@ -17,6 +17,7 @@
       lower.includes('invalid api key') ||
       lower.includes('incorrect api key') ||
       lower.includes('api key is invalid') ||
+      lower.includes('http 401') ||
       (lower.includes('401') && (lower.includes('auth') || lower.includes('unauthorized')))
     ) {
       return 'APIキーが無効、またはこのモデルを使う権限がありません。設定 > LLMで該当APIキーを保存し直し、モデルを選び直してから再送信してください。';
@@ -56,6 +57,66 @@
 
   function _attachmentDataUrl(part) {
     return String(part?.dataUrl || (String(part?.url || '').startsWith('data:') ? part.url : '') || '');
+  }
+
+  function _base64ByteLength(data) {
+    return Math.max(0,Math.floor(data.length*3/4)-(data.endsWith('==')?2:data.endsWith('=')?1:0));
+  }
+
+  async function _hydrateClientAttachments(body,signal) {
+    const cache=new Map();
+    let bytes=0;
+    const reserve=size=>{bytes+=size;if(size>32*1024*1024||bytes>64*1024*1024)throw new Error('添付ファイルが大きすぎます。1件32MB、合計64MB以下にしてください');};
+    const current=()=>{if(signal?.aborted)throw new DOMException('操作を中止しました','AbortError');};
+    const read=async part=>{
+      current();
+      if(!part||!['image','document'].includes(part.type))return part;
+      const inline=_dataUrlParts(_attachmentDataUrl(part));
+      if(inline){reserve(_base64ByteLength(inline.data));return part;}
+      const path=String(part.path||'').replace(/\\/g,'/');
+      const valid=part.type==='document'?/\.pdf$/i.test(path):/\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(path);
+      if(!path||!valid||/^(?:https?:|file:|data:|blob:|javascript:|\/\/)/i.test(path)
+        ||path.split('/').some(item=>item==='.'||item==='..')
+        ||!window.MeldexLlmTools?.isProtectedPath||window.MeldexLlmTools.isProtectedPath(path,{chatAttachment:true}))
+        throw new Error('添付ファイルの保存先を確認できません。添付し直してください');
+      if(!cache.has(path))cache.set(path,(async()=>{
+        const base=typeof API_BASE==='string'?API_BASE:'/api';
+        let blob;
+        try {
+          const response=await fetch(base+'/file-raw?path='+encodeURIComponent(path),{signal});
+          if(!response.ok)throw new Error('attachment read failed');
+          blob=await response.blob();
+        } catch(error) {
+          if(signal?.aborted||_isAbortError(error))throw new DOMException('操作を中止しました','AbortError');
+          throw new Error('添付ファイルを読み込めません。保存先を確認して再試行してください');
+        }
+        current();
+        if(blob.size>32*1024*1024)throw new Error('添付ファイルは1件32MB以下にしてください');
+        const mime=String(part.mimeType||part.mime_type||blob.type||'');
+        if(part.type==='document'?mime!=='application/pdf':!mime.startsWith('image/'))throw new Error('添付ファイルの種類を確認できません');
+        return new Promise((resolve,reject)=>{
+          const reader=new FileReader();
+          const abort=()=>reader.abort();
+          const finish=(fn,value)=>{signal?.removeEventListener('abort',abort);fn(value);};
+          reader.onload=()=>finish(resolve,String(reader.result));
+          reader.onerror=()=>finish(reject,new Error('添付ファイルを読み込めません'));
+          reader.onabort=()=>finish(reject,new DOMException('操作を中止しました','AbortError'));
+          signal?.addEventListener('abort',abort,{once:true});
+          reader.readAsDataURL(blob.type===mime?blob:blob.slice(0,blob.size,mime));
+        });
+      })());
+      const dataUrl=await cache.get(path);current();
+      reserve(_base64ByteLength(_dataUrlParts(dataUrl).data));
+      return {...part,dataUrl};
+    };
+    const messages=[];
+    for(const message of body.messages||[]){
+      if(!Array.isArray(message?.content)){messages.push(message);continue;}
+      const content=[];
+      for(const part of message.content)content.push(await read(part));
+      messages.push({...message,content});
+    }
+    return {...body,messages};
   }
 
   function _attachmentName(part) {
@@ -115,6 +176,10 @@
       const data = _dataUrlParts(_attachmentDataUrl(part));
       if (data && String(data.mimeType || '').startsWith('image/')) {
         result.push({ type: 'image_url', image_url: { url: data.dataUrl } });
+        return;
+      }
+      if (data && (part.type === 'document' || data.mimeType === 'application/pdf')) {
+        result.push({ type: 'file', file: { filename: String(part.name || 'document.pdf'), file_data: data.dataUrl } });
         return;
       }
       result.push({ type: 'text', text: `[${part.type === 'document' ? 'PDF' : '添付'}: ${_attachmentName(part)}]` });
@@ -314,7 +379,15 @@
   function _estimatedInputTokens(body) {
     const text = _chatMessages(body).map(message => message.text || '').join('\n')
       + (body?._meldexToolTurns?.length ? JSON.stringify(body._meldexToolTurns) : '');
-    return Math.max(1, Math.ceil(text.length / 4));
+    let attachmentTokens=0;
+    for(const message of _chatMessages(body))for(const part of message.parts){
+      if(!['image','document'].includes(part?.type))continue;
+      const data=_dataUrlParts(_attachmentDataUrl(part));
+      const size=data?_base64ByteLength(data.data):0;
+      attachmentTokens+=part.type==='image'?Math.max(2048,Math.min(200000,Math.ceil(size/256)))
+        :Math.max(1024,Math.min(5000000,Math.ceil(size/4)));
+    }
+    return Math.max(1, Math.ceil(text.length / 4))+attachmentTokens;
   }
 
   function _assertClientBudget(body, provider, model) {
@@ -548,7 +621,7 @@
     } catch {
       try { text = await response.text(); } catch {}
     }
-    return _friendlyProviderErrorMessage(text || `HTTP ${response.status}`);
+    return _friendlyProviderErrorMessage(`HTTP ${response.status}${text ? ': ' + text : ''}`);
   }
 
   function _providerStreamError(data, eventType) {
@@ -718,6 +791,7 @@
         if(!completed||stopReason!=='tool_use')throw new Error('道具を実行する前に応答が切断されました');
         send({type:'meldex_tool_turn',format:'anthropic',assistant,calls});
       }
+      if (!completed) throw new Error('Anthropicの応答が完了前に切断されました。接続を確認して再送信してください。');
     };
     let lastError = null;
     for (let retry = 0; retry < 4; retry += 1) {
@@ -845,6 +919,7 @@
         if(finishReason!=='tool_calls')throw new Error('道具を実行する前に応答が切断されました');
         send({type:'meldex_tool_turn',format:'chat',text:assistantText,calls:[...toolCalls.values()]});
       }
+      if (!finishReason) throw new Error('OpenAIの応答が完了前に切断されました。接続を確認して再送信してください。');
     };
     let lastError = null;
     for (let retry = 0; retry < 6; retry += 1) {
@@ -975,6 +1050,7 @@
         const calls=[...toolCalls.values()].map(item=>({id:item.call_id,name:item.name,arguments:item.arguments}));
         send({type:'meldex_tool_turn',format:'responses',assistant,calls});
       }
+      if (!completed) throw new Error('OpenAIの応答が完了前に切断されました。接続を確認して再送信してください。');
       return sawEvent;
     };
     let lastError = null;
@@ -1057,8 +1133,9 @@
     }
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model)
       + ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(apiKey);
-    const assistantParts=[];let completed=false;
+    const assistantParts=[];let completed=false,finishReason='';
     const handleData = data => {
+      if(data.candidates?.[0]?.finishReason)finishReason=String(data.candidates[0].finishReason);
       if(data.candidates?.[0]?.finishReason==='STOP')completed=true;
       const parts = data.candidates?.[0]?.content?.parts || [];
       assistantParts.push(...parts);
@@ -1098,6 +1175,7 @@
         if(!completed)throw new Error('道具を実行する前に応答が切断されました');
         send({type:'meldex_tool_turn',format:'gemini',assistant:{role:'model',parts:assistantParts},calls});
       }
+      if (!finishReason) throw new Error('Geminiの応答が完了前に切断されました。接続を確認して再送信してください。');
     };
     let lastError = null;
     for (let retry = 0; retry < 4; retry += 1) {
@@ -1131,6 +1209,7 @@
   }
 
   async function streamChatAsResponse(body, options = {}) {
+    if(options.signal?.aborted)throw new DOMException('操作を中止しました','AbortError');
     const augmentedBody = await window.MeldexKnowledgePromptBuilder?.augmentChatBody?.(body || {}).catch(() => body) || body;
     const provider = _providerKey(augmentedBody?.provider);
     const apiKey = await window.MeldexLlmKeys?.getForProvider?.(provider);
@@ -1141,9 +1220,10 @@
       });
     }
     return _sseResponse(async send => {
-      const requestBody = _prepareClientStreamBody(augmentedBody, send);
+      let requestBody = _prepareClientStreamBody(augmentedBody, send);
       const model = _defaultModel(provider, requestBody.model);
       _assertClientBudget(requestBody, provider, model);
+      requestBody=await _hydrateClientAttachments(requestBody,options.signal);
       let latestUsage = null;
       const trackedSend = payload => {
         if (payload?.type === 'usage' && payload.usage) latestUsage = {...latestUsage,...payload.usage};

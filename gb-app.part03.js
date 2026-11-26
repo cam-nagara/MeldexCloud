@@ -560,6 +560,8 @@ async function openBoard(label, path, opts) {
 
 function openMedia(label, path, type, opts) {
   const openOpts = opts || {};
+  // 音声は共有の #media-content へ直接描くため、ここでも表示の世代を進める（gb-folder.part02.js の _gbOpenViewerIframe 参照）。
+  window.GBViewerOpenGeneration = (Number(window.GBViewerOpenGeneration) || 0) + 1;
   // 画像/PDF/動画はビューワー（html-view の #html-iframe）で表示するため、media-view を
   // 経由する showView('media') は行わない（openViewer 側の showView('html') に一本化）。
   // media-view を一瞬マウントすると html-view が退避（DOM移動）され、iframe が強制

@@ -24,6 +24,15 @@
   function _user() { return SceneEngine().viewerAnnotationUser(); }
 
   function _clampMin(value, min) { return Math.max(min, Number(value) || 0); }
+  function _copyData(data) { return JSON.parse(JSON.stringify(data || {})); }
+
+  function _syncRetryButton(scene, entry) {
+    // SVG内のCSS寸法も画像と一緒に縮むため、操作部品だけは画面上の大きさを保つ。
+    const length = px => SceneEngine().localLengthForScreenPx(scene.svg, px);
+    entry.retryButton.style.minWidth = Math.ceil(length(44)) + 'px';
+    entry.retryButton.style.minHeight = Math.ceil(length(44)) + 'px';
+    entry.retryButton.style.fontSize = length(12) + 'px';
+  }
 
   function _setSaveState(entry, state) {
     entry.note.dataset.saveState = state;
@@ -111,17 +120,24 @@
     if (!entry.annId) return;
     const intent = ++entry.saveIntent;
     _setSaveState(entry, 'saving');
-    const before = entry.historyRow ? { ...entry.historyRow, data: { ...(entry.historyRow.data || {}) } } : null;
-    const after = { ...(before || {}), id: entry.annId, target_path: entry.targetPath, type: 'comment', shape: 'sticky', color: entry.color, data: { ...entry.data } };
+    const before = entry.historyRow ? { ...entry.historyRow, data: _copyData(entry.historyRow.data) } : null;
+    const after = { ...(before || {}), id: entry.annId, target_path: entry.targetPath, type: 'comment', shape: 'sticky', color: entry.color, data: _copyData(entry.data) };
     try {
-      const result = await window.apiPut('/annotations/' + encodeURIComponent(entry.annId), { data: { ...entry.data } });
+      const result = await window.apiPut('/annotations/' + encodeURIComponent(entry.annId), { data: _copyData(entry.data) });
       if (intent !== entry.saveIntent) return;
       after.modified = result?.modified || after.modified || '';
       entry.historyRow = after;
       window.__viewerAnnotationReportSave?.(true, 'update', null, result, { before, after });
       _setSaveState(entry, 'saved');
+      if (entry.hadSaveFailure) {
+        entry.hadSaveFailure = false;
+        const message = 'この付箋を保存しました';
+        window.showStatus?.(message);
+        window.MeldexViewerScene?.flashStatus?.(message, 1500);
+      }
     } catch (error) {
       if (intent !== entry.saveIntent) return;
+      entry.hadSaveFailure = true;
       _saveFailed(error);
       window.__viewerAnnotationReportSave?.(false, 'update', error);
       _setSaveState(entry, 'unsaved');
@@ -130,6 +146,7 @@
 
   function _scheduleSave(entry) {
     clearTimeout(entry.saveTimer);
+    _setSaveState(entry, 'saving');
     entry.saveTimer = setTimeout(() => _persist(entry), 250);
   }
 
@@ -146,7 +163,7 @@
 
   function _installTailDrag(scene, entry) {
     entry.note.addEventListener('pointerdown', (e) => {
-      if (!e.altKey || e.button !== 0 || e.target.closest('textarea')) return;
+      if (!e.altKey || e.button !== 0 || e.target.closest('textarea,button')) return;
       e.preventDefault(); e.stopPropagation();
       const start = SceneEngine().clientToLocal(scene.svg, e.clientX, e.clientY);
       const draft = { startX: start.x, startY: start.y, endX: start.x, endY: start.y };
@@ -192,7 +209,12 @@
 
   function _installDrag(scene, entry) {
     entry.note.addEventListener('pointerdown', (e) => {
-      if (e.altKey || e.target.closest('textarea') || e.button !== 0) return;
+      if (e.target.closest('textarea,button')) {
+        // 本文入力・サイズ変更・再試行を下の描画面へ伝えると、別の付箋／線が作られる。
+        e.stopPropagation();
+        return;
+      }
+      if (e.altKey || e.button !== 0) return;
       if (SceneEngine().ann().tool === 'eraser') {
         e.preventDefault(); e.stopPropagation();
         _deleteEntry(scene, entry);
@@ -232,9 +254,17 @@
       _persist(entry);
     });
     const resizeObserver = new ResizeObserver(() => {
-      const width = _clampMin(entry.textarea.offsetWidth + 16, 60);
-      const height = _clampMin(entry.textarea.offsetHeight + 16, 40);
-      if (width === entry.data.width && height === entry.data.height) return;
+      _syncRetryButton(scene, entry);
+      if (!entry.textarea.offsetWidth || !entry.textarea.offsetHeight) return;
+      const style = getComputedStyle(entry.note);
+      const size = key => parseFloat(style[key]) || 0;
+      // textareaは付箋の内容領域いっぱい。枠線も足さないと、再配置のたびに2px縮む。
+      const width = _clampMin(entry.textarea.offsetWidth + size('paddingLeft') + size('paddingRight')
+        + size('borderLeftWidth') + size('borderRightWidth'), 60);
+      const height = _clampMin(entry.textarea.offsetHeight + size('paddingTop') + size('paddingBottom')
+        + size('borderTopWidth') + size('borderBottomWidth'), 40);
+      // offsetWidth/Heightは整数へ丸める。旧座標の表示用変換の端数を編集と誤認しない。
+      if (Math.abs(width - entry.data.width) < 1 && Math.abs(height - entry.data.height) < 1) return;
       entry.data.width = width;
       entry.data.height = height;
       entry.fo.setAttribute('width', width);
@@ -242,12 +272,13 @@
       _scheduleSave(entry);
     });
     resizeObserver.observe(entry.textarea);
+    resizeObserver.observe(scene.svg);
     entry.resizeObserver = resizeObserver;
   }
 
-  async function _deleteEntry(scene, entry) {
+  async function _deleteEntry(scene, entry, reportSave = window.__viewerAnnotationReportSave) {
     try {
-      const before = entry.historyRow ? { ...entry.historyRow, data: { ...(entry.historyRow.data || {}) } } : null;
+      const before = entry.historyRow ? { ...entry.historyRow, data: _copyData(entry.historyRow.data) } : null;
       const result = entry.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(entry.annId)) : null;
       entry.resizeObserver?.disconnect();
       entry.fo.remove();
@@ -255,22 +286,22 @@
       entry.handleStart.remove();
       entry.handleEnd.remove();
       scene.notes = (scene.notes || []).filter(n => n !== entry);
-      window.__viewerAnnotationReportSave?.(true, 'delete', null, result, { before, after: null });
+      reportSave?.(true, 'delete', null, result, { before, after: null });
     } catch (error) {
       _saveFailed(error, '付箋を削除できませんでした');
-      window.__viewerAnnotationReportSave?.(false, 'delete', error);
+      reportSave?.(false, 'delete', error);
     }
   }
 
-  function render(scene, item, data) {
+  function render(scene, item, data, historyData = data) {
     const dom = _buildNoteDom(scene, item.id, data, item.color);
     const entry = {
-      annId: item.id, data: { ...data }, color: item.color,
+      annId: item.id, data: _copyData(data), color: item.color,
       targetPath: scene.path,
-      historyRow: { ...item, target_path: item.target_path || scene.path, data: { ...data } },
+      historyRow: { ...item, target_path: item.target_path || scene.path, data: _copyData(historyData) },
       fo: dom.fo, note: dom.note, textarea: dom.textarea, retryButton: dom.retryButton,
       tailShape: dom.tailShape, handleStart: dom.handleStart, handleEnd: dom.handleEnd,
-      saveTimer: 0, saveIntent: 0,
+      saveTimer: 0, saveIntent: 0, hadSaveFailure: false,
     };
     scene.notesG.appendChild(entry.fo);
     entry.note.style.pointerEvents = SceneEngine().ann().active ? 'auto' : 'none';
@@ -281,6 +312,7 @@
     _setSaveState(entry, 'saved');
     scene.notes = scene.notes || [];
     scene.notes.push(entry);
+    _syncRetryButton(scene, entry);
     return entry;
   }
 
@@ -342,9 +374,9 @@
   }
 
   // 全削除（フロートパネルのゴミ箱）から呼ぶ。1件でも削除できなければ false を返す。
-  async function deleteAll(scene) {
+  async function deleteAll(scene, reportSave = window.__viewerAnnotationReportSave) {
     for (const entry of [...(scene?.notes || [])]) {
-      await _deleteEntry(scene, entry);
+      await _deleteEntry(scene, entry, reportSave);
       if ((scene.notes || []).includes(entry)) return false;
     }
     return true;
@@ -352,7 +384,9 @@
 
   function hasUnsaved() {
     return (SceneEngine().getScenes() || []).some(scene =>
-      (scene.notes || []).some(entry => entry.note?.dataset?.saveState === 'unsaved')
+      (scene.notes || []).some(entry =>
+        ['saving', 'unsaved'].includes(entry.note?.dataset?.saveState)
+        || entry.textarea?.value !== (entry.data?.text || ''))
     );
   }
 

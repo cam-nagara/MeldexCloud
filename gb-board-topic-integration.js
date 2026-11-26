@@ -495,6 +495,14 @@
     // 追加→取り消し→やり直しの後、次の保存でファイルからも消えていた。
     const createdNodes = nodes.filter(node => !existingNodes.includes(node));
     board.nodes = [...existingNodes, ...createdNodes];
+    if (board._provisionalBoardViewId && board._provisionalBoardViewId === beforeViewId) {
+      // 初回読込中に開いた選択画面は仮IDを保持する。正式IDへ結び直しても同じビューを指せるようにする。
+      if (beforeViewId && activeId && beforeViewId !== activeId) {
+        board._boardViewRefAliases ||= Object.create(null);
+        board._boardViewRefAliases[beforeViewId] = activeId;
+      }
+      board._provisionalBoardViewId = null;
+    }
     board.topicViewDocument = document;
     board.activeBoardViewId = activeId;
     // 写しのビューへ手元の配置・ライン・グループを写してから表示へ当てる（古い写しで手元の配置を戻さない）。
@@ -534,6 +542,7 @@
       // made since the saved view snapshot, including geometry and camera.
       captureRuntime(board, { commitEdits: false });
     }
+    const previousViewId = board.activeBoardViewId;
     const placementsChanged = reconcileBoardPlacements(board, detail);
     const displayChanged = updateBoardRecordDisplays(board, detail);
     // 保存先の管理番号を結び直してもカードID・見た目は変わらない。
@@ -544,6 +553,11 @@
       const mountPoint = global._bdToolbarRoot?.()?.querySelector?.('.bd-mixed-sheet-mount');
       if (active?.surface === 'sheet' && mountPoint) renderMixedSheet(board, active.viewId, mountPoint,
         !!(board.readOnly || board.readonly || board.isReadOnly));
+    }
+    if (previousViewId !== board.activeBoardViewId
+        && (!global.bdIsActiveBoardState || global.bdIsActiveBoardState(board))) {
+      // 初回の正式IDへの切替後も、表示中の操作列を仮IDのまま残さない。
+      mountToolbar(board);
     }
     return { replacementCount: replacements.size, placementsChanged, displayChanged };
   }
@@ -677,6 +691,9 @@
       : createDocument(board, path);
     board.activeBoardViewId = board.topicViewDocument.activeBoardViewId
       || board.topicViewDocument.boardViews[0]?.boardViewId || null;
+    // ファイルを開き直した後へ、以前の選択画面の参照を持ち越さない。
+    board._boardViewRefAliases = Object.create(null);
+    board._provisionalBoardViewId = parsed?.topicRuntime?.topicViewDocument ? null : board.activeBoardViewId;
     applyView(board, activeView(board));
     const bridge = global.GbTopicLiveBridge;
     if (bridge?.migrateOpenedSheet) {
@@ -1387,17 +1404,26 @@
     const refreshToolbars = () => toolbars.forEach((item) => item?.refresh?.());
     const controller = views.createController({
       readOnly,
+      resolveViewRef: ref => {
+        if (ref?.surface !== 'board' || board.topicViewDocument.boardViews.some(view => view.boardViewId === ref.viewId)) return ref;
+        const resolved = board._boardViewRefAliases?.[ref.viewId];
+        return resolved && board.topicViewDocument.boardViews.some(view => view.boardViewId === resolved)
+          ? { ...ref, viewId: resolved } : ref;
+      },
       getDocument: () => {
         if (board.topicViewDocument.activeViewRef?.surface !== 'sheet') captureRuntime(board);
         return board.topicViewDocument;
       },
       setDocument: (document) => { board.topicViewDocument = document; },
       pushUndo: (label) => global.bdPushUndo?.(label),
-      onChange: (_document, result) => {
-        const nextRef = result?.activeViewRef
-          || (result?.activeBoardViewId ? { surface: 'board', viewId: result.activeBoardViewId } : board.topicViewDocument.activeViewRef);
-        if (nextRef) switchMixedView(board, nextRef, { skipUndo: true, skipCapture: true });
-        else showMixedViewEmptyState(board);
+      onChange: (_document, result, change) => {
+        // 名前・図柄・順序だけの更新では、保存待ちの本文と配置へ同じビューを再適用しない。
+        if (!['view-icon', 'view-name', 'view-order'].includes(change?.kind)) {
+          const nextRef = result?.activeViewRef
+            || (result?.activeBoardViewId ? { surface: 'board', viewId: result.activeBoardViewId } : board.topicViewDocument.activeViewRef);
+          if (nextRef) switchMixedView(board, nextRef, { skipUndo: true, skipCapture: true });
+          else showMixedViewEmptyState(board);
+        }
         global.bdDirty?.();
         refreshToolbars();
       },

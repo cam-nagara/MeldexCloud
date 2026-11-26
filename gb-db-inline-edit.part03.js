@@ -282,7 +282,7 @@ function renderPivotFooter(visibleProps, entitiesMap, entityNames, pinnedCols, s
   tdLabel.setAttribute('aria-label', '集計');
   tdLabel.textContent = '集計';
   tdLabel.style.fontStyle = 'italic';
-  const _footerEntW = entityWidth || (savedWidths && savedWidths['__entity__']) || 120;
+  const _footerEntW = entityWidth || (savedWidths && savedWidths['__entity__']) || 150;
   tdLabel.style.width = _footerEntW + 'px';
   tdLabel.style.minWidth = _footerEntW + 'px';
   tdLabel.style.maxWidth = _footerEntW + 'px';

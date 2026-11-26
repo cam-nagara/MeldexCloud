@@ -1,4 +1,4 @@
-/* gb-icon-assets.css - shared Lucide / Noto Emoji picker */
+/* gb-icon-assets.css - shared Lucide / Material Symbols / Noto Emoji picker */
 
 @font-face {
   font-family: 'Meldex Noto Emoji';
@@ -23,6 +23,77 @@
   font-family: 'Meldex Noto Emoji', 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
   font-size: var(--gb-icon-size, 20px);
   color: initial;
+}
+
+/* Material Symbols Rounded（塗りつぶし・太さ400に固定した同梱フォント）。
+   文字の名前を合字で絵に変える。読み込み前に名前の文字列が見えないよう block にする。 */
+@font-face {
+  font-family: 'Meldex Material Symbols Rounded';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('fonts/MaterialSymbolsRounded-Fill.woff2') format('woff2');
+}
+
+.gb-material-symbol {
+  font-family: 'Meldex Material Symbols Rounded';
+  font-weight: normal;
+  font-style: normal;
+  font-size: var(--gb-icon-size, 20px);
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  overflow: hidden;
+  font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  color: currentColor;
+}
+
+/* 利用者が登録したアイコン素材集。黒・現在の色だけのSVGは文字色で塗る（形をマスクにする）。 */
+.gb-icon-pack {
+  color: currentColor;
+  overflow: hidden;
+}
+.gb-icon-pack > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.gb-icon-pack[data-tint="1"] {
+  background-color: currentColor;
+  -webkit-mask: var(--gb-icon-pack-mask) center / contain no-repeat;
+  mask: var(--gb-icon-pack-mask) center / contain no-repeat;
+}
+.gb-icon-pack[data-pack-state="missing"] { opacity: 0.6; }
+
+/* 設定の「アイコン素材集」 */
+.gb-icon-packs-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.gb-icon-packs-status { font-size: 12px; color: var(--fg2); min-height: 0; }
+.gb-icon-packs-status:empty { display: none; }
+.gb-icon-packs-where { font-size: 11px; color: var(--fg2); }
+.gb-icon-packs-where:empty { display: none; }
+.gb-icon-packs-list { display: flex; flex-direction: column; gap: 6px; }
+.gb-icon-packs-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg3);
+}
+.gb-icon-packs-preview { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; overflow: hidden; max-height: 44px; }
+.gb-icon-packs-name { min-width: 0; }
+.gb-icon-packs-count { font-size: 12px; color: var(--fg2); white-space: nowrap; }
+.gb-icon-packs-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+@media (max-width: 640px) {
+  .gb-icon-packs-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .gb-icon-packs-preview { grid-column: 1 / -1; }
+  .gb-icon-packs-toggle, .gb-icon-packs-actions .gb-btn, .gb-icon-packs-row .gb-btn { min-height: var(--ui-h-touch, 44px); }
 }
 
 .gb-icon-text {
@@ -116,7 +187,10 @@
   border-color: var(--ui-inner-tab-active-border, var(--border));
 }
 
-.gb-icon-picker-search {
+.gb-icon-picker-category[hidden] { display: none; }
+
+.gb-icon-picker-search,
+.gb-icon-picker-category {
   width: 100%;
   box-sizing: border-box;
   flex-shrink: 0;
@@ -290,6 +364,10 @@
   }
 
   .gb-icon-picker-search {
+    min-height: 44px;
+  }
+
+  .gb-icon-picker-category {
     min-height: 44px;
   }
 

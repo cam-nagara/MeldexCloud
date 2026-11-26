@@ -106,6 +106,22 @@ function bdDrawConns(options) {
       w: Math.max(1, Number(group.w) || 160), h: Math.max(1, Number(group.h) || 80),
       shape: group.shape || 'rounded', _boardGroupEndpoint: true };
   };
+  // 線やラベルを書き換える前に、対象端点の寸法と形状を一度だけ読む。
+  // 以後の幾何計算へは、DOMを書き換えない測定値だけを渡す。
+  const endpointIds = new Set();
+  for (const connection of bd.connections) {
+    if (partialConnIds && !partialConnIds.has(connection.id)) continue;
+    if (connection.from) endpointIds.add(connection.from);
+    if (connection.to) endpointIds.add(connection.to);
+  }
+  const endpointMeasurements = new Map();
+  endpointIds.forEach(id => {
+    const element = document.getElementById('bdn-' + id);
+    if (element) endpointMeasurements.set(id, {
+      offsetWidth:element.offsetWidth, offsetHeight:element.offsetHeight,
+      dataset:{shape:element.dataset?.shape || ''},
+    });
+  });
   bd.connections.forEach(c => {
     if (partialConnIds && !partialConnIds.has(c.id)) return;
     // 選択 UI (端点ハンドル / 中央ハンドル) を hit append の後に持ち上げるための一時バッファ。
@@ -119,8 +135,8 @@ function bdDrawConns(options) {
     if (bd.displayFilters && bd.displayFilters.showConnections === false) return; // 非表示
     const fromGroup = groupEndpointNode(c.fromEndpoint);
     const toGroup = groupEndpointNode(c.toEndpoint);
-    const fe = c.from && !fromGroup ? document.getElementById('bdn-'+c.from) : null;
-    const te = c.to && !toGroup ? document.getElementById('bdn-'+c.to) : null;
+    const fe = c.from && !fromGroup ? endpointMeasurements.get(c.from) || null : null;
+    const te = c.to && !toGroup ? endpointMeasurements.get(c.to) || null : null;
     const fn = fromGroup || (c.from ? bd.nodes.find(n=>n.id===c.from) : null);
     const tn = toGroup || (c.to ? bd.nodes.find(n=>n.id===c.to) : null);
     const rawFromPoint = bdNormalizeConnectionPoint(c.fromPoint);
@@ -725,7 +741,8 @@ function bdDrawConns(options) {
       }
       const _enterLabelEditMode = () => {
         labelDiv.contentEditable = 'true';
-        labelDiv.focus();
+        // ボードは表示位置を自前で持つ。入力欄へ移る時に画面送りでボード全体をずらさない。
+        try { labelDiv.focus({ preventScroll: true }); } catch (_) { labelDiv.focus(); }
         const s = window.getSelection(), r = document.createRange();
         r.selectNodeContents(labelDiv); s.removeAllRanges(); s.addRange(r);
         labelDiv.style.pointerEvents = 'auto';
@@ -890,7 +907,8 @@ function bdEditNode(id) {
   // 選択色・カーソル色はボード全体の CSS 変数が継承されるので、個別セット不要。
   const txt = el.querySelector('.bd-text');
   txt.innerHTML = esc(n.text).replace(/\n/g,'<br>');
-  txt.contentEditable = 'true'; txt.focus();
+  txt.contentEditable = 'true';
+  try { txt.focus({ preventScroll: true }); } catch (_) { txt.focus(); }
   txt.oninput = () => {
     if (bd.editing !== id || n._topicCanonicalOnly || !window.MeldexDraftRecovery?.reserveDraft) return;
     const snapshot = { ...bd, editing: null,

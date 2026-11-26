@@ -348,9 +348,15 @@
   }
 
   function setSyncEnabled(enabled) {
-    try { localStorage.setItem(SYNC_ENABLED_KEY, enabled ? '1' : '0'); } catch {}
+    try { localStorage.setItem(SYNC_ENABLED_KEY, enabled ? '1' : '0'); }
+    catch {
+      global.showStatus?.('キー設定の連動を保存できませんでした。もう一度操作してください', true);
+      _refreshOpenSettings();
+      return false;
+    }
     if (enabled) syncNow();
     _refreshOpenSettings();
+    return true;
   }
 
   // 設定変更後に、開いている全部のショートカット一覧（設定ダイアログ／オプションパネル）を描き直す
@@ -368,7 +374,12 @@
     const before = (typeof global.captureLocalStorageSettings === 'function')
       ? global.captureLocalStorageSettings([STORAGE_KEY])
       : null;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); } catch { /* 保存できない環境では変更を持ち越さない */ }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); }
+    catch {
+      // ローカルで拒否された変更を履歴・共有設定へ成功として登録しない。
+      global.showStatus?.('ショートカットキーを保存できませんでした。もう一度操作してください', true);
+      return false;
+    }
     if (typeof global.updateNoteShortcutStatusbar === 'function') global.updateNoteShortcutStatusbar();
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
@@ -391,8 +402,17 @@
         options?.detail || '',
         refreshAfterHistory
       );
+    } else if (options?.skipHistory !== true && global.MeldexViewerHistory?.push) {
+      const savedCustom = structuredClone(custom || {});
+      const restore = value => {
+        if (!saveCustom(value, { skipHistory: true })) throw new Error('ショートカットキーを保存できませんでした');
+        _refreshOpenSettings();
+      };
+      global.MeldexViewerHistory.push(options?.label || '設定: ショートカット変更',
+        () => restore(previousCustom), () => restore(savedCustom));
     }
     if (options?.skipSync !== true) _recordLocalChanges(previousCustom, custom || {});
+    return true;
   }
 
   function effective() {

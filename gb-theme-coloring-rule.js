@@ -196,6 +196,12 @@
     if (!hasOwn(node, 'bgColor') && color && applyTo !== 'border') base.bgColor = color;
     else if (!hasOwn(node, 'bgColor') && !base.bgColor && boardTheme.nodeBgColor) base.bgColor = boardTheme.nodeBgColor;
 
+    // テーマの色分けで背景だけを塗り替えた場合、既定スタイルの文字色（暗いテーマ用の明るい文字など）が
+    // 残ると淡い背景の上で読めなくなる。トピック自身が文字色を持たない限り、塗った色に合わせる。
+    const autoBackground = !hasOwn(node, 'bgColor') && color && applyTo !== 'border';
+    if (!hasOwn(node, 'textColor') && autoBackground && theme?.builtIn && base.textColor) {
+      base.textColor = automaticTextColor(color) || base.textColor;
+    }
     if (!hasOwn(node, 'textColor') && !base.textColor) {
       // Starter palettes contain both light and dark fills. Preserve explicit text,
       // but keep an automatically colored card readable without a custom style.

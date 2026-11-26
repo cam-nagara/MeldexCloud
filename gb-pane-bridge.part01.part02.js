@@ -332,7 +332,7 @@
   }
 
   function _versionFollowLabel(path) {
-    return path ? 'バージョン: ' + (path.split('/').pop() || path) : 'バージョン管理';
+    return path ? 'バージョン: ' + (path.replace(/\\/g, '/').split('/').pop() || path) : 'バージョン管理';
   }
 
   // 1タブ分の追従先を確定する。
@@ -344,7 +344,11 @@
     if (!newPath) return false;
     const curPath = tab.state?.versionPath || tab.path || '';
     const curType = tab.state?.versionType || 'file';
-    if (newPath === curPath && newType === curType) return false;
+    // 同じファイルの間は、利用者が選んだ種類（注釈の保存点など）を保つ。種類だけを既定へ戻すと、
+    // 注釈の保存点を開いて保存した直後に「ファイルの版」の表示へ切り替わっていた（2026-11-24）。
+    // PDFの注釈は「ファイル#page=N」を対象にするため、ページ指定を除いたファイルで比べる。
+    const fileOf = value => String(value || '').replace(/#page=\d+$/i, '');
+    if (newPath === curPath || fileOf(newPath) === fileOf(curPath)) return false;
     tab.label = _versionFollowLabel(newPath);
     tab.path = newPath;
     tab.state = { ...(tab.state || {}), versionType: newType, versionPath: newPath, versionFollow: true };

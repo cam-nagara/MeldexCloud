@@ -66,9 +66,15 @@
   }
 
   function _detailText(operation) {
-    if (operation.error) return operation.error;
-    if (operation.summary) return operation.summary;
+    const state = _statusLabel(operation);
+    const outcome = operation.error || operation.summary;
+    if (outcome) return state && !_text(outcome).includes(state) ? state + ' · ' + outcome : outcome;
     const parts = [];
+    // 状態と説明は名前の下だけに表示する。同じ工程をmessageが説明して
+    // いる場合はmessageを使い、停滞などの状態だけを残す。
+    const phase = _text(operation.phase).replace(/^(?:停滞|外部待機):\s*/, '');
+    const messageHasPhase = phase && _text(operation.message).includes(phase);
+    if (state && !messageHasPhase) parts.push(state);
     if (operation.mode === 'determinate' && operation.total > 0) {
       if (operation.kind === 'download') {
         parts.push((Math.min(operation.processed, operation.total) / 1048576).toFixed(1)
@@ -78,7 +84,10 @@
       parts.push(operation.processed + '件確認済み');
     }
     if (operation.currentItem) parts.push(operation.currentItem);
-    if (operation.message) parts.push(operation.message);
+    if (operation.message) {
+      const prefix = messageHasPhase ? _text(operation.phase).match(/^(?:停滞|外部待機):\s*/) : null;
+      parts.push((prefix ? prefix[0] : '') + operation.message);
+    }
     if (operation.eta) parts.push('残り約' + _formatEta(operation.eta));
     return parts.join(' · ');
   }
@@ -303,13 +312,30 @@
     let actionTop = window.innerHeight;
     // 個々のボタンではなく操作面全体を避ける。ビューワーの #controls のように
     // ボタン同士に隙間があるフッターでも、トレイが隙間へ重ならないようにする。
-    for (const action of _collectTrayAvoidRects()) {
+    const obstacles = _collectTrayAvoidRects();
+    for (const action of obstacles) {
       if (action.width && action.height && action.left < box.right && action.right > box.left
           && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
     }
     if (actionTop > 112 && actionTop < window.innerHeight) {
       tray.style.bottom = ((window.innerHeight - actionTop + 8) / zoom) + 'px';
       tray.style.setProperty('--meldex-operation-available-height', ((actionTop - 16) / zoom) + 'px');
+    }
+    // A tall menu can start near the top edge, leaving no vertical space.
+    // Use a free side of the viewport before covering its retry/undo controls.
+    const placed = tray.getBoundingClientRect();
+    const overlaps = (candidate, other) => other.width && other.height && candidate.left < other.right
+      && candidate.right > other.left && candidate.top < other.bottom && candidate.bottom > other.top;
+    if (obstacles.some(other => overlaps(placed, other))) {
+      const candidates = [8, ...obstacles.map(other => other.left - placed.width - 8),
+        ...obstacles.map(other => other.right + 8)];
+      for (const left of candidates) {
+        if (left < 8 || left + placed.width > window.innerWidth - 8) continue;
+        const candidate = {left, right: left + placed.width, top: placed.top, bottom: placed.bottom};
+        if (obstacles.some(other => overlaps(candidate, other))) continue;
+        tray.style.right = ((window.innerWidth - candidate.right) / zoom) + 'px';
+        break;
+      }
     }
   }
 
@@ -374,10 +400,7 @@
     const label = document.createElement('span');
     label.className = 'meldex-operation-label';
     label.textContent = operation.label;
-    const state = document.createElement('span');
-    state.className = 'meldex-operation-state';
-    state.textContent = _statusLabel(operation);
-    heading.append(ring, label, state);
+    heading.append(ring, label);
     row.appendChild(heading);
 
     if (operation.status === 'running' || operation.status === 'queued' || operation.status === 'cancelling') {
@@ -575,7 +598,9 @@
     }
     const list = document.createElement('div');
     list.className = 'meldex-operation-list';
-    visible.slice(0, 6).forEach(function (operation) {
+    // The scrollable tray must retain every retry/cancel action. Truncating
+    // the first six records made a seventh failed job impossible to retry.
+    visible.forEach(function (operation) {
       const row = _operationRow(operation, false);
       const details = row.querySelector('details');
       if (details && expanded.has(operation.id)) details.open = true;

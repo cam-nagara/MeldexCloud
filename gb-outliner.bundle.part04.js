@@ -1,3 +1,76 @@
+    }
+    // 移動先のフォルダの名前の変更が保存中なら、終わるのを待って新しい場所へ移動する（2026-11-24 利用者の報告）。
+    if (destFolder && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
+      try { destFolder = await _outlinerAwaitPendingRenameForTarget(destFolder); }
+      catch (error) { showStatus(String(error?.message || '移動先の名前の変更を確認できません'), true); return; }
+    }
+    if (destFolder && isItemLocked(destFolder)) {
+      showStatus('編集ロック中のフォルダには移動できません', true);
+      return;
+    }
+
+    // シートの中に置けるのはエントリだけ。ボード・シナリオ・画像などを
+    // 落とすと「シートの中にボードがある」状態になるため、通常移動ではなく
+    // シート全ファイル取込（MeldexSheetEntryAttachments）へルーティングしてエントリ化する。
+    if (position === 'inside' && isDB) {
+      const nonEntries = nodes.filter(n => !_outlinerItemFitsInSheet(n._nodeData));
+      if (e.altKey || nonEntries.length > 0) {
+        if (typeof MeldexSheetEntryAttachments !== 'undefined') {
+          await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
+          return;
+        }
+      }
+    }
+
+
+    // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
+    // フォルダをまたぐ移動の履歴の枠はドロップの時点で取る（移動の往復とツリーの読み直しの前に Ctrl+Z を押すと、
+    // 移動ではなくその前の操作が取り消されていた: 2026-11-22 M-014 フォルダツリー網羅テスト）。
+    const crossesFolders = nodes.some(n => {
+      const path = n._nodeData?.path || '';
+      return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
+    });
+    const moveReservation = crossesFolders && typeof historyReserve === 'function'
+      ? historyReserve(`フォルダツリー: ${nodes.length} 件を移動`, '')
+      : null;
+    const pendingMoves = new Map();
+    const finishPendingMove = (node, failed) => {
+      const pending = pendingMoves.get(node);
+      if (!pending) return;
+      node.dataset.path = pending.path;
+      node.inert = pending.inert;
+      node.removeAttribute('aria-busy');
+      if (failed && pending.parent?.isConnected) {
+        pending.parent.insertBefore(node, pending.next?.parentElement === pending.parent ? pending.next : null);
+      }
+      pendingMoves.delete(node);
+    };
+    if (crossesFolders) nodes.forEach(node => pendingMoves.set(node, {
+      path: node.dataset.path, parent: node.parentElement, next: node.nextSibling, inert: node.inert,
+    }));
+    // フォルダをまたぐ移動は、保存の往復を待たずに先に移動先へ行を移す（app/AGENTS.md の0.3秒。以前は保存の往復と
+    // 読み直しの後に出て0.4秒を超えていた: 2026-11-22 M-014 横断の検査）。移動先が読み込み済みで仮想化していない時だけ。
+    // 保存の後の差分の反映（下の _outlinerSyncFoldersOrReload）が、成功・失敗のどちらでも保存先の状態へ揃える。
+    if (crossesFolders) {
+      // フォルダの中へ落とした時は、そのフォルダを開く（以前の全体の読み直しと同じ見え方。閉じていれば開き、
+      // 未読込なら読み込みを始める＝保存の往復と並行して読み込む）
+      if (position === 'inside' && (isFolder || isDB) && toggle && childrenDiv) {
+        if (childrenDiv.dataset.loaded === 'true') {
+          childrenDiv.classList.remove('collapsed');
+          toggle.classList.add('expanded');
+          toggle.dataset.expanded = 'true';
+          saveExpandedState(item.path, true);
+        } else if (toggle.dataset.expanded !== 'true') {
+          toggle.click();
+        }
+      }
+      const optimisticContainer = position === 'inside' && (isFolder || isDB) ? childrenDiv : div.parentElement;
+      const containerReady = () => optimisticContainer && optimisticContainer.isConnected && optimisticContainer.classList.contains('tree-children')
+        && optimisticContainer.dataset.loaded === 'true' && optimisticContainer.dataset.virtual !== 'true'
+        && !optimisticContainer.classList.contains('collapsed');
+      const placeOptimistically = () => {
+        nodes.forEach(n => {
+          if (!pendingMoves.has(n)) return;
           if (!n.isConnected || !n.parentElement || n.parentElement.dataset.virtual === 'true' || n.contains(optimisticContainer)) return;
           if (n.parentElement === optimisticContainer) return;
           // 開いたフォルダの一覧に同じ名前の行が既に出ていれば（保存の往復が先に終わった）、重ねて置かない
@@ -280,6 +353,236 @@ function _outlinerSheetTreeItems(item, pivotData) {
   return items;
 }
 
+/// ---- 子が多いフォルダの分割読み込み（2026-11-24） ----
+// 展開した時に全件を /browse で取らず、/browse-page でページごとに取る。読み込み済みの範囲は連続した1区間で、
+// 見えている範囲がその端へ近づいたら前後のページを継ぎ足す。スクロールバーなどで遠くへ飛んだ時は、
+// 間を順に読まず、飛んだ先のページを位置（at）で直接取って、読み込み済みの範囲を入れ替える（末尾へ飛んでも要求は1回）。
+// 読み込んでいない前後の行は高さだけ確保する。並びはサーバーの順（名前・更新日時・作成日時。手動の並びは使えない）。
+const OUTLINER_PAGED_CHILDREN_PAGE = 500;
+const OUTLINER_PAGED_CHILDREN_AHEAD_PX = 1500;
+// 見えている範囲が読み込み済みの範囲からこの行数より離れたら、継ぎ足しではなく飛んだ先を直接取る
+const OUTLINER_PAGED_CHILDREN_JUMP_ROWS = 1000;
+let _outlinerPagedChildrenThreshold = 2000;
+const _outlinerPagedFolders = new Set();
+let _outlinerPagedCheckQueued = false;
+let _outlinerPagedScrollBound = false;
+const _outlinerPagedStats = { requests: 0 };
+
+function _outlinerPagedWait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function _outlinerFetchChildrenPage(url, isCurrent) {
+  // 読み取り待ちの知らせの後は、最初は短い間隔で聞き直す（読み取りは 0.2〜0.3 秒で終わることが多い）
+  for (let tries = 0; ; tries += 1) {
+    _outlinerPagedStats.requests += 1;
+    const result = await apiFetch(url, { silentError: true });
+    if (!result || result.pending !== true) return result;
+    await _outlinerPagedWait(tries === 0 ? 100 : tries === 1 ? 200 : 300);
+    if (isCurrent && !isCurrent()) return null;
+  }
+}
+
+function _outlinerPreparePagedChildren(record, items) {
+  const list = (Array.isArray(items) ? items : [])
+    .filter(child => child && !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child.path)));
+  registerFileTypes(list);
+  _registerOutlinerConflictPaths(list);
+  if (typeof _registerFileIds === 'function') _registerFileIds(list);
+  list.forEach(child => { if (record.item.sourceId && !child.sourceId) child.sourceId = record.item.sourceId; });
+  return list;
+}
+
+async function _outlinerLoadPagedFolderChildren(childrenDiv, item, folderNode, rootPath, apiSort, order) {
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.() || !item?.path) return false;
+  if (globalThis.localStorage?.getItem?.('tree-layout') === 'grid') return false;
+  const base = '/browse-page?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + order
+    + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '') + '&all_files=true';
+  const isCurrent = () => childrenDiv.isConnected;
+  let probe;
+  try { probe = await _outlinerFetchChildrenPage(base + '&limit=1&at=0', isCurrent); } catch { return false; }
+  if (!probe || !(Number(probe.total) > _outlinerPagedChildrenThreshold)) return false;
+  const first = await _outlinerFetchChildrenPage(base + '&limit=' + OUTLINER_PAGED_CHILDREN_PAGE + '&at=0', isCurrent);
+  if (!first) return false;
+  // start = 読み込み済みの範囲の先頭の位置（サーバーの並びでの番号）、fetched = サーバーから受け取った行数
+  // （削除待ちで外した行も数える。次のページの位置の計算に使う）、loaded = ツリーへ足した行数。
+  const record = {
+    childrenDiv, item, rootPath, base, total: Number(first.total) || 0, start: 0, fetched: 0, loaded: 0,
+    lastPath: '', loading: false, failedAt: 0, atEnd: false, signature: String(first.signature || ''),
+  };
+  const items = _outlinerPreparePagedChildren(record, first.items);
+  await _appendOrVirtualizeOutlinerChildren(childrenDiv, items, rootPath, { folderItem: item, folderNode, kind: 'folder' });
+  record.fetched = Array.isArray(first.items) ? first.items.length : 0;
+  record.loaded = items.length;
+  record.lastPath = items.length ? items[items.length - 1].path : '';
+  _outlinerPagedUpdateRecord(record, first);
+  childrenDiv._outlinerPagedRecord = record;
+  _outlinerPagedFolders.forEach(other => { if (other.childrenDiv === childrenDiv) _outlinerPagedFolders.delete(other); });
+  if (!record.atEnd) {
+    _outlinerPagedFolders.add(record);
+    _outlinerBindPagedScroll();
+    _outlinerQueuePagedCheck();
+  }
+  return true;
+}
+
+// 読み込み済みの範囲の後ろに残っている行数
+function _outlinerPagedTailRows(record) {
+  return Math.max(0, record.total - (record.start + record.fetched));
+}
+
+function _outlinerPagedUpdateRecord(record, result) {
+  if (result && Number.isFinite(Number(result.total))) record.total = Number(result.total);
+  record.atEnd = record.start === 0 && _outlinerPagedTailRows(record) === 0;
+  record.childrenDiv.dataset.pagedTotal = String(record.total);
+  record.childrenDiv.dataset.pagedLoaded = String(record.loaded);
+  record.childrenDiv.dataset.pagedStart = String(record.start);
+  _outlinerReservePagedRows(record);
+}
+
+// まだ読み込んでいない続きの分の高さを確保する（スクロールバーが、読み込み済みの分ではなく全体の長さを表す）
+function _outlinerReservePagedRows(record) {
+  window.GBOutlinerVirtualRender?.setPendingRows?.(record.childrenDiv, _outlinerPagedTailRows(record));
+}
+
+function _outlinerBindPagedScroll() {
+  if (_outlinerPagedScrollBound) return;
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  _outlinerPagedScrollBound = true;
+  scroller.addEventListener('scroll', _outlinerQueuePagedCheck, { passive: true });
+  window.addEventListener('resize', _outlinerQueuePagedCheck, { passive: true });
+}
+
+function _outlinerQueuePagedCheck() {
+  if (_outlinerPagedCheckQueued) return;
+  _outlinerPagedCheckQueued = true;
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    _outlinerPagedCheckQueued = false;
+    _outlinerCheckPagedFolders();
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  setTimeout(run, 60);
+}
+
+function _outlinerPagedLoadedBottom(record) {
+  const vr = window.GBOutlinerVirtualRender;
+  if (vr?.isVirtualContainer?.(record.childrenDiv)) {
+    const bottom = vr.bottomOfItem?.(record.childrenDiv, record.lastPath);
+    if (bottom != null) return bottom;
+  }
+  return record.childrenDiv.getBoundingClientRect().bottom;
+}
+
+// 見えている範囲に対して、次に取るもの。null = 取るものは無い。
+//   { kind: 'jump', at }      読み込み済みの範囲から遠い: 飛んだ先を直接取って、範囲を入れ替える
+//   { kind: 'append' }        末尾へ近い: 続きを継ぎ足す
+//   { kind: 'prepend' }       先頭へ近い（前に読み込んでいない行がある）: 前を継ぎ足す
+function _outlinerPagedNextStep(record) {
+  const vr = window.GBOutlinerVirtualRender;
+  const virtual = !!vr?.isVirtualContainer?.(record.childrenDiv);
+  const tail = _outlinerPagedTailRows(record);
+  const metrics = virtual ? vr.windowMetrics?.(record.childrenDiv) : null;
+  if (!metrics) {
+    // 仮想の一覧でない時（絞り込みで件数が少ない等）は、従来どおり末尾へ近づいたら続きを足すだけ
+    if (!tail) return null;
+    const scroller = document.getElementById('tree-scroll-container');
+    if (!scroller || virtual) return null;
+    return _outlinerPagedLoadedBottom(record) - scroller.getBoundingClientRect().bottom > OUTLINER_PAGED_CHILDREN_AHEAD_PX
+      ? null : { kind: 'append' };
+  }
+  const row = metrics.rowHeight || 22;
+  if (metrics.viewBottom < 0 || metrics.viewTop > metrics.height) return null; // 一覧が画面に掛かっていない
+  const viewTop = Math.max(0, metrics.viewTop), viewBottom = Math.min(metrics.height, metrics.viewBottom);
+  const jumpPx = OUTLINER_PAGED_CHILDREN_JUMP_ROWS * row;
+  const jumpTo = () => {
+    // 入れ替えた後は、読み込んでいない行はすべて同じ高さで並ぶ。見えている範囲の少し上から1ページ取る。
+    const index = Math.floor(viewTop / row) - Math.floor(OUTLINER_PAGED_CHILDREN_PAGE / 4);
+    return { kind: 'jump', at: Math.max(0, Math.min(Math.max(0, record.total - OUTLINER_PAGED_CHILDREN_PAGE), index)) };
+  };
+  if (tail && viewTop - metrics.loadedBottom > jumpPx) return jumpTo();
+  if (record.start > 0 && metrics.loadedTop - viewBottom > jumpPx) return jumpTo();
+  if (tail && metrics.loadedBottom - viewBottom <= OUTLINER_PAGED_CHILDREN_AHEAD_PX) return { kind: 'append' };
+  if (record.start > 0 && viewTop - metrics.loadedTop <= OUTLINER_PAGED_CHILDREN_AHEAD_PX) return { kind: 'prepend' };
+  return null;
+}
+
+function _outlinerCheckPagedFolders() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  _outlinerPagedFolders.forEach(record => {
+    if (!record.childrenDiv.isConnected || record.childrenDiv._outlinerPagedRecord !== record || record.atEnd) {
+      if (!record.childrenDiv.isConnected || record.atEnd) _outlinerPagedFolders.delete(record);
+      return;
+    }
+    if (record.loading || (record.failedAt && Date.now() - record.failedAt < 2000)) return;
+    if (record.childrenDiv.closest('.collapsed')) return;
+    const step = _outlinerPagedNextStep(record);
+    if (step) void _outlinerLoadChildrenStep(record, step);
+  });
+}
+
+async function _outlinerLoadChildrenStep(record, step) {
+  record.loading = true;
+  try {
+    const isCurrent = () => record.childrenDiv.isConnected && record.childrenDiv._outlinerPagedRecord === record;
+    const vr = window.GBOutlinerVirtualRender;
+    const page = OUTLINER_PAGED_CHILDREN_PAGE;
+    let at, limit;
+    if (step.kind === 'jump') { at = step.at; limit = page; }
+    else if (step.kind === 'prepend') { at = Math.max(0, record.start - page); limit = record.start - at; }
+    else { at = record.start + record.fetched; limit = page; }
+    const result = await _outlinerFetchChildrenPage(record.base + '&limit=' + limit + '&at=' + at, isCurrent);
+    if (!result || !isCurrent()) return;
+    const received = Array.isArray(result.items) ? result.items.length : 0;
+    const startAt = Number.isFinite(Number(result.start)) ? Number(result.start) : at;
+    const items = _outlinerPreparePagedChildren(record, result.items);
+    const virtual = !!vr?.isVirtualContainer?.(record.childrenDiv);
+    // 一覧が変わっていたら（他の操作で項目が増減した）、継ぎ足す位置がずれるので、受け取ったページで範囲を入れ替える
+    const signature = String(result.signature || '');
+    const changed = !!signature && !!record.signature && signature !== record.signature;
+    record.signature = signature || record.signature;
+    if (Number.isFinite(Number(result.total))) record.total = Number(result.total);
+    if (virtual && (step.kind === 'jump' || changed)) {
+      record.start = startAt;
+      record.fetched = received;
+      record.loaded = items.length;
+      vr.replaceWindow(record.childrenDiv, items, record.start, _outlinerPagedTailRows(record));
+    } else if (step.kind === 'prepend' && virtual) {
+      record.start = startAt;
+      record.fetched += received;
+      record.loaded += items.length;
+      vr.prependItems(record.childrenDiv, items, record.start);
+    } else if (step.kind !== 'jump' && step.kind !== 'prepend') {
+      if (virtual) vr.appendItems(record.childrenDiv, items);
+      else await _appendOutlinerChildrenChunked(record.childrenDiv, items, record.rootPath);
+      record.fetched += received;
+      record.loaded += items.length;
+    }
+    if (items.length && step.kind !== 'prepend') record.lastPath = items[items.length - 1].path;
+    _outlinerPagedUpdateRecord(record, result);
+    record.failedAt = 0;
+  } catch (error) {
+    record.failedAt = Date.now();
+    console.warn('[フォルダツリー] 続きの読み込みに失敗:', record.item.path, error);
+  } finally {
+    record.loading = false;
+    if (!record.atEnd) _outlinerQueuePagedCheck();
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.MeldexOutlinerPagedChildren = {
+    threshold: () => _outlinerPagedChildrenThreshold,
+    setThreshold(value) { _outlinerPagedChildrenThreshold = Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 2000; },
+    check: _outlinerCheckPagedFolders,
+    records: () => Array.from(_outlinerPagedFolders, record => ({ path: record.item.path, total: record.total, start: record.start,
+      loaded: record.loaded, atEnd: record.atEnd, loading: record.loading })),
+    requests: () => _outlinerPagedStats.requests,
+  };
+}
+
 const _outlinerWarmQueue = [];
 const _outlinerWarmKeys = new Set();
 let _outlinerWarmRunning = false;
@@ -317,6 +620,8 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
       while (_outlinerWarmQueue.length) {
         const next = _outlinerWarmQueue.shift();
         try {
+          // 子が多いフォルダは全件の読み取りを裏で始めない（開いた時にページごとに取る）
+          if (next.path.startsWith('/browse?') && await _outlinerWarmTargetIsLarge(next.path)) continue;
           if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
             background: true, silentError: true,
             ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
@@ -326,6 +631,17 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
       }
     } finally { _outlinerWarmRunning = false; }
   }, 0);
+}
+
+async function _outlinerWarmTargetIsLarge(browsePath) {
+  try {
+    const query = new URLSearchParams(browsePath.slice(browsePath.indexOf('?') + 1));
+    const probe = await apiFetch('/browse-page?path=' + encodeURIComponent(query.get('path') || '')
+      + (query.get('root') ? '&root=' + encodeURIComponent(query.get('root')) : '')
+      + '&sort=' + (query.get('sort') || 'name') + '&order=' + (query.get('order') || 'asc') + '&limit=1&at=0&all_files=true',
+    { background: true, silentError: true });
+    return probe?.pending === true || Number(probe?.total) > _outlinerPagedChildrenThreshold;
+  } catch (_) { return false; }
 }
 
 function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {
@@ -535,7 +851,7 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
             expected_entry_name: item.name || undefined } : {}),
         })),
         ...confirmationPayload,
-      });
+      }, { silentError: options.silentError === true });
       const batchResults = Array.isArray(payload?.results) ? payload.results : [];
       if (batchResults.length === batchTargets.length) {
         return batchResults.map((entry, index) => {
@@ -577,324 +893,8 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
         ...((item.entry_id || item.entryId) ? { expected_entry_id: item.entry_id || item.entryId,
           expected_entry_name: item.name || undefined } : {}),
         ...confirmationPayload,
-      });
+      }, { silentError: options.silentError === true });
       results.push({ status: 'fulfilled', value });
       const trashRef = _outlinerTrashRefFromResponse(value);
       if (trashRef && typeof options.onSuccess === 'function') {
         try { options.onSuccess(item, value); } catch {}
-      }
-    } catch (reason) {
-      results.push({ status: 'rejected', reason });
-      if (typeof options.onFailure === 'function') {
-        try { options.onFailure(item, reason); } catch {}
-      }
-    }
-  }
-  return results;
-}
-
-function _removeOutlinerNodesForPaths(paths) {
-  const deletedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
-  if (!deletedPaths.length) return;
-  // 同じ項目はホーム、ワークスペース、固定ソース、仮想化ツリーなど複数面に
-  // 現れ得る。コンテナIDを限定すると削除中の複製だけが残るため、安定pathを
-  // 持つ全ツリーノードを同時に隠す。
-  if (typeof GBOutlinerVirtualRender !== 'undefined') {
-    GBOutlinerVirtualRender.removeMatchingPaths?.(path => {
-      const normalizedPath = _normalizeOutlinerPathForCompare(path);
-      return deletedPaths.some(dp => _isOutlinerPathWithin(normalizedPath, dp)
-        || normalizedPath.endsWith('/' + dp) || normalizedPath.includes('/' + dp + '/'));
-    });
-  }
-  const allTreeNodes = document.querySelectorAll('.tree-node');
-  allTreeNodes.forEach(nodeEl => {
-    const path = nodeEl?._nodeData?.path || nodeEl?.dataset?.path || nodeEl?._virtualPath || '';
-    if (!path) return;
-    const normalizedPath = _normalizeOutlinerPathForCompare(path);
-    if (deletedPaths.some(dp => (
-      _isOutlinerPathWithin(normalizedPath, dp)
-      || normalizedPath.endsWith('/' + dp)
-      || normalizedPath.includes('/' + dp + '/')
-    ))) {
-      if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(nodeEl);
-      nodeEl.remove();
-    }
-  });
-}
-
-function _removeFolderItemsForPaths(paths) {
-  const canonical = value => {
-    const path = _normalizeOutlinerPathForCompare(value);
-    const absolute = input => /^(?:[a-z]:\/|\/)/i.test(input);
-    const base = _normalizeOutlinerPathForCompare(typeof state !== 'undefined' ? state.vaultPath : '');
-    const resolved = path && !absolute(path) && base && absolute(base) ? base + '/' + path : path;
-    return /^[a-z]:\//i.test(resolved) ? resolved.toLowerCase() : resolved;
-  };
-  const deletedPaths = (paths || []).map(canonical).filter(Boolean);
-  if (!deletedPaths.length) return;
-  const matches = path => deletedPaths.some(dp => _isOutlinerPathWithin(canonical(path), dp));
-
-  document.querySelectorAll('#folder-grid .fv-item').forEach(itemEl => {
-    const path = itemEl?.dataset?.path || '';
-    if (path && matches(path)) itemEl.remove();
-  });
-
-  if (typeof _folderItems !== 'undefined' && Array.isArray(_folderItems)) {
-    _folderItems = _folderItems.filter(item => !matches(item?.path));
-  }
-  if (typeof _folderVisibleItems !== 'undefined' && Array.isArray(_folderVisibleItems)) {
-    _folderVisibleItems = _folderVisibleItems.filter(item => !matches(item?.path));
-  }
-  if (typeof _folderSelectedItems !== 'undefined' && Array.isArray(_folderSelectedItems)) {
-    _folderSelectedItems = _folderSelectedItems.filter(item => !matches(item?.path));
-  }
-  if (typeof _folderSelected !== 'undefined' && _folderSelected && matches(_folderSelected.path)) {
-    _folderSelected = _folderSelectedItems?.[_folderSelectedItems.length - 1] || null;
-  }
-
-  const countEl = document.getElementById('folder-item-count');
-  if (countEl && typeof _folderVisibleItems !== 'undefined' && typeof _folderItems !== 'undefined') {
-    countEl.textContent = _folderVisibleItems.length + (_folderItems.length !== _folderVisibleItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
-  }
-  if (typeof _syncFolderCheckboxes === 'function') _syncFolderCheckboxes();
-  if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
-  if (typeof _scheduleWaterfallLayout === 'function') _scheduleWaterfallLayout();
-}
-
-function _markOutlinerDeletePending(paths, options = {}) {
-  const pendingPaths = _setOutlinerDeletePending(paths, true);
-  if (!pendingPaths.length) return pendingPaths;
-  _removeOutlinerNodesForPaths(pendingPaths);
-  _removeFolderItemsForPaths(pendingPaths);
-  if (!options.preserveReferences && typeof purgeAppPathReferences === 'function') {
-    purgeAppPathReferences(pendingPaths);
-  }
-  return pendingPaths;
-}
-
-function _clearOutlinerDeletePending(paths) {
-  return _setOutlinerDeletePending(paths, false);
-}
-
-function _outlinerTrashRefFromResponse(response) {
-  if (!response?.trash_name) return null;
-  return { trash_name: response.trash_name, trash_root: response.trash_root || '' };
-}
-
-function _outlinerTrashRefsToNames(refs) {
-  return (refs || []).map(ref => ref?.trash_name).filter(Boolean);
-}
-
-async function _restoreOutlinerDeleteRecords(records) {
-  const restored = [];
-  const failures = [];
-  for (const record of records || []) {
-    if (!record?.deleted || !record.trashRef?.trash_name) continue;
-    try {
-      const result = await apiPost('/outliner/restore', {
-        trash_name: record.trashRef.trash_name,
-        ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
-      });
-      record.currentPath = result?.restored_to || result?.restored_path || record.item.path;
-      record.deleted = false;
-      restored.push(result);
-    } catch (error) {
-      failures.push({ record, error });
-    }
-  }
-  return { restored, failures };
-}
-
-async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result, refreshSuccessfulRedo = false) {
-  // Successful Redo already updated the tree model and DOM through pending deletion.
-  if (phase === 'redo' && !result?.failedCount && !result?.skippedCount && !refreshSuccessfulRedo) return;
-  if (typeof refresh === 'function') {
-    await refresh(phase, result);
-    return;
-  }
-  const jobs = [];
-  if (typeof loadOutliner === 'function') jobs.push(Promise.resolve(loadOutliner()).catch(() => {}));
-  if (typeof renderHomeFolderTree === 'function') jobs.push(Promise.resolve(renderHomeFolderTree()).catch(() => {}));
-  if (typeof renderWorkspaceSidebar === 'function') jobs.push(Promise.resolve(renderWorkspaceSidebar()).catch(() => {}));
-  if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
-    jobs.push(Promise.resolve(openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, {
-      skipShowView: true,
-      skipSaveLastView: true,
-      skipNavPush: true,
-      skipHighlight: true,
-      skipGlobalUi: true,
-    })).catch(() => {}));
-  }
-  await Promise.allSettled(jobs);
-}
-
-// ファイル・フォルダ・シートを作る操作（新規作成・別名で保存・複製）を取り消せるようにする（2026-11-21 ユーザー決定）。
-// 取り消しは作ったものをゴミ箱へ移し、やり直しはゴミ箱から戻す（通常の削除と同じ参照の確認を通す）。
-function pushCreatedOutlinerItemHistory(item, label, options = {}) {
-  if (typeof historyPush !== 'function' || !item?.path) return null;
-  const current = { ...item };
-  let trashRef = null;
-  // 種類の決め方は通常の削除（_deleteOutlinerTargetsSequentially）と同じ（シートは file として扱う）
-  const kind = current.kind === 'folder' || current.type === 'folder' ? 'folder' : 'file';
-  const refresh = async (phase) => {
-    if (typeof options.refresh === 'function') { await options.refresh(phase, current); return; }
-    await _runOutlinerDeleteHistoryRefresh(null, 'undo', {});
-  };
-  const entry = historyPush(label,
-    async () => {
-      const warning = typeof MeldexDeleteImpactWarning !== 'undefined' ? MeldexDeleteImpactWarning : null;
-      const confirmation = warning?.authorizeReversibleDelete
-        ? await warning.authorizeReversibleDelete([{ path: current.path, kind }])
-        : { confirmed: true, operation: 'trash' };
-      if (!confirmation) throw new Error('参照の確認ができなかったため取り消しを中止しました');
-      const [result] = await _deleteOutlinerTargetsSequentially([{ ...current, kind }], { confirmation });
-      if (result?.status !== 'fulfilled') throw new Error(String(result?.reason?.message || result?.reason || '作ったものをゴミ箱へ移せませんでした'));
-      trashRef = _outlinerTrashRefFromResponse(result.value);
-      if (!trashRef) throw new Error('作ったものをゴミ箱へ移せませんでした');
-      if (typeof options.onUndo === 'function') { try { await options.onUndo(current); } catch {} }
-      await refresh('undo');
-    },
-    async () => {
-      if (!trashRef) throw new Error('ゴミ箱の項目が見つかりません');
-      const restored = await apiPost('/outliner/restore', {
-        trash_name: trashRef.trash_name,
-        ...(trashRef.trash_root ? { trash_root: trashRef.trash_root } : {}),
-      });
-      current.path = restored?.restored_to || restored?.restored_path || current.path;
-      trashRef = null;
-      await refresh('redo');
-    },
-    options.scope ?? (typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : ''));
-  // 取り消すと作ったファイルを消す。別の画面からの Ctrl+Z で消さないための印（共通履歴の守りが使う）。
-  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: [current.path] });
-  return entry;
-}
-
-async function deleteOutlinerItemsWithHistory(items, options = {}) {
-  const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
-  if (requestedTargets.some(item => item.linked)) {
-    if (typeof showStatus === 'function') showStatus('リンク表示中の項目は実ファイルとして削除できません。表示中のフォルダからリンク解除してください', true);
-    return { targets: [], requestedTargets, succeeded: [], skipped: requestedTargets, failed: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
-  }
-  const targets = _prepareOutlinerDeleteTargets(requestedTargets);
-  if (!targets.length) {
-    return { targets: [], requestedTargets, succeeded: [], skipped: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [] };
-  }
-
-  const targetPaths = targets.map(item => item.path).filter(Boolean);
-  // 履歴の枠は操作の時点で取る（画面からは先に消えるので、保存の完了を待たずに Ctrl+Z を押すと、
-  // 削除ではなくその前の操作が取り消されていた: 2026-11-22 M-014 フォルダツリー網羅テスト。v0.7.529 のシートと同じ型）。
-  // 枠は取り消し・やり直しの側で中身が入るまで待たれる。削除できなかった時は枠を外す。
-  const historyReservation = typeof historyReserve === 'function'
-    ? historyReserve(options.label || (targets.length + ' 件を削除'), options.scope || '', options.detail || targetPaths.join(', '))
-    : null;
-  try {
-  _markOutlinerDeletePending(targetPaths, { preserveReferences: true });
-  if (typeof options.onOptimisticDelete === 'function') {
-    try { options.onOptimisticDelete(targets); } catch {}
-  }
-
-  const confirmation = options.confirmation || (typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(targets.map(item => ({
-      path: item.path, kind: item.type === 'folder' || item.kind === 'folder' ? 'folder' : 'file',
-      ...(item.assetId ? { assetId: item.assetId } : {}),
-    }))) : { confirmed: true, operation: 'trash' });
-  if (!confirmation) {
-    _clearOutlinerDeletePending(targetPaths);
-    const failed = targets.map(item => ({ ...item, error: '参照の確認に失敗したため削除を中止しました' }));
-    await _runOutlinerDeleteHistoryRefresh(options.refresh, 'failure', { failed, failedPaths: targetPaths });
-    historyReservation?.cancel();
-    return { targets, requestedTargets, succeeded: [], skipped: [], failed, failedCount: targets.length, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
-  }
-  // 確認が済むまでは、未保存のエディタやタブの参照を保つ。
-  if (typeof purgeAppPathReferences === 'function') purgeAppPathReferences(targetPaths);
-
-  const results = await _deleteOutlinerTargetsSequentially(targets, {
-    confirmation,
-    onSuccess: (item, response) => {
-      if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
-    },
-    onFailure: (item, reason) => {
-      if (typeof options.onItemDeleteFailed === 'function') options.onItemDeleteFailed(item, reason);
-    },
-  });
-  const succeeded = [];
-  const skipped = [];
-  const failed = [];
-  results.forEach((result, index) => {
-    const trashRef = result.status === 'fulfilled' ? _outlinerTrashRefFromResponse(result.value) : null;
-    if (!trashRef) {
-      if (result.status === 'fulfilled' && result.value?.ok) skipped.push(targets[index]);
-      else failed.push({ ...targets[index], error: result.reason });
-      return;
-    }
-    succeeded.push({ ...targets[index], ...trashRef });
-  });
-  const deletedPaths = succeeded.map(item => item.path);
-  const deletedCount = requestedTargets.filter(item => deletedPaths.some(path => _isOutlinerPathWithin(item.path, path))).length || succeeded.length;
-  const failedCount = targets.length - succeeded.length - skipped.length;
-  _clearOutlinerDeletePending(targetPaths);
-  if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
-    purgeAppPathReferences(deletedPaths);
-  }
-  if (failed.length) {
-    await _runOutlinerDeleteHistoryRefresh(options.refresh, 'failure', {
-      succeeded,
-      skipped,
-      failed,
-      deletedPaths,
-      failedPaths: failed.map(item => item.path),
-    });
-  }
-
-  const deleteRecords = succeeded.map(item => ({
-    item,
-    currentPath: item.path,
-    deleted: true,
-    trashRef: _outlinerTrashRefFromResponse(item),
-  }));
-  let trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
-  let trashNames = _outlinerTrashRefsToNames(trashRefs);
-  if (succeeded.length && typeof historyPush === 'function') {
-    const label = options.label || (succeeded.length + ' 件を削除');
-    const detail = options.detail || succeeded.map(item => item.path).join(', ');
-    const pushDeleteEntry = () => historyPush(
-      label,
-      async () => {
-        const { restored, failures: restoreFailures } = await _restoreOutlinerDeleteRecords(deleteRecords);
-        trashRefs = deleteRecords.filter(record => record.deleted).map(record => record.trashRef).filter(Boolean);
-        trashNames = _outlinerTrashRefsToNames(trashRefs);
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', {
-          succeeded,
-          deletedPaths: deleteRecords.filter(record => record.deleted).map(record => record.currentPath),
-          trashNames,
-          failedCount: restoreFailures.length,
-        });
-        if (restoreFailures.length) {
-          throw new Error(`${restoreFailures.length} 件を復元できませんでした。成功した項目は再試行しません`);
-        }
-        if (typeof showStatus === 'function') showStatus(restored.length + ' 件を復元しました');
-      },
-      async () => {
-        const pendingRecords = deleteRecords.filter(record => !record.deleted);
-        if (!pendingRecords.length) return true;
-        const redoTargets = pendingRecords.map(record => ({
-          path: record.currentPath,
-          kind: record.item.type === 'folder' || record.item.kind === 'folder' ? 'folder' : 'file',
-          ...(record.item.assetId ? { assetId: record.item.assetId } : {}),
-        }));
-        const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-          ? await MeldexDeleteImpactWarning.authorizeReversibleDelete(redoTargets)
-          : { confirmed: true, operation: 'trash' };
-        if (!confirmed) throw new Error('削除の参照確認に失敗しました');
-        const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
-          ? MeldexDeleteImpactWarning.confirmationPayload(confirmed)
-          : {};
-        const redoFailures = [];
-        let redoSkippedCount = 0;
-        const pendingPaths = pendingRecords.map(record => record.currentPath);
-        if (pendingPaths.length) _markOutlinerDeletePending(pendingPaths);
-        for (const record of pendingRecords) {
-          const item = record.item;
-          const res = await apiPost('/outliner/delete', {
-            path: record.currentPath,

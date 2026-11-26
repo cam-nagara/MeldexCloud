@@ -1,3 +1,32 @@
+// 複数選択管理
+// 「現在選択中」の色は、ツリー本体と最近使った項目／お気に入りを横断して一つだけにする。
+// data-active-workspace は接続先を表す別状態なので、ここでは変更しない。
+function clearSidebarShortcutSelection() {
+  document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
+    .forEach(el => el.classList.remove('selected'));
+  window._meldexSidebarShortcutSelectionPath = '';
+}
+
+function clearTreeVisibleSelection() {
+  if (typeof treeSelection !== 'undefined') treeSelection.clear();
+  document.querySelectorAll('.tree-node-row.active').forEach(row => row.classList.remove('active'));
+}
+
+function beginTreeVisibleSelection(options) {
+  clearSidebarShortcutSelection();
+  // Ctrl/Meta/Shift はツリー内の複数選択を保つため、ツリー選択そのものは呼出元へ任せる。
+  if (!options?.preserveTreeSelection) clearTreeVisibleSelection();
+}
+
+window.MeldexVisibleSelection = Object.freeze({
+  clearShortcuts: clearSidebarShortcutSelection,
+  clearTree: clearTreeVisibleSelection,
+  beginTree: beginTreeVisibleSelection,
+});
+
+const treeSelection = {
+  items: new Set(),  // Set of .tree-node elements
+  _lastClicked: null,
   // lastClickedの安定パス（ファイルパス）。仮想化フォルダ(150件超)ではスクロールで
   // lastClickedがDOMからアンマウントされ得るため（gb-outliner-virtual-render.js）、
   // DOM参照が切れてもrangeTo()が復元できるよう、代入のたびに併記保持する
@@ -237,8 +266,11 @@ async function _linkExternalItemsIntoOutlinerFolder(items, targetItem) {
 }
 
 async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
-  const targetPath = targetItem?.path || '';
   if (!targetItem || !Array.isArray(items) || items.length === 0) return 0;
+  // 移動先のフォルダの名前の変更が保存中なら、終わるのを待って新しい場所へ移動する（2026-11-24 利用者の報告）。
+  let targetPath = targetItem?.path || '';
+  try { targetPath = await _outlinerAwaitPendingRenameForTarget(targetPath); }
+  catch (error) { showStatus(String(error?.message || '移動先の名前の変更を確認できません'), true); return 0; }
   const placement = { position: 'inside', ...targetItem, path: targetPath };
   const moveReservation = typeof historyReserve === 'function'
     ? historyReserve(`フォルダツリー: ${items.length} 件を移動`, '') : null;
@@ -261,30 +293,47 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   const selectedPaths = typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems.map(item => item.path) : [];
   pendingPaths.forEach(path => _folderPendingMovePaths.add(path));
   if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+  // 件数が多い時は、まとめての移動（/outliner/move-batch）へ分けて送る（結果は1件ずつ受け取る）。
+  // 下の1件ずつの処理が自分で断る・別の処理をする項目（リンク・編集ロック中・同じフォルダ・画像の取り出し）は、まとめて送らない。
+  const sameParentOf = source => {
+    const oldPath = String(source.path || '').replace(/\\/g, '/');
+    return oldPath.substring(0, Math.max(0, oldPath.lastIndexOf('/'))) === targetPath;
+  };
+  const targetLocked = isItemLocked(targetPath);
+  const mover = typeof _folderCreateMover === 'function'
+    ? _folderCreateMover(items, targetPath, {
+      skip: source => targetLocked || source.sourceSurface === 'sheet-image' || source.linked || isItemLocked(source.path) || sameParentOf(source),
+    })
+    : { batched: false, uncertain: false, post: source => apiPost('/outliner/move', { path: source.path, dest_folder: targetPath, conflict_policy: 'error' }), isChunkEnd: () => true, unclaimed: () => [] };
+  // 表示への反映は、まとめて送った分は塊ごとに1回
+  let unappliedMoves = [];
+  const applyMovesToView = source => {
+    if (!unappliedMoves.length || (mover.batched && !mover.isChunkEnd(source))) return;
+    const moves = unappliedMoves;
+    unappliedMoves = [];
+    if (typeof _folderApplyCommittedMoves === 'function') _folderApplyCommittedMoves(moves);
+  };
   try {
     for (const source of items) {
       try {
-        await _outlinerAwaitPendingRename(source);
+        if (!mover.batched) await _outlinerAwaitPendingRename(source);
         const copySource = source.sourceSurface === 'sheet-image';
         if (source.linked || isItemLocked(source.path) || isItemLocked(targetPath)) {
           throw new Error('リンクファイルや編集ロック中の項目は移動できません');
         }
-        const oldPath = String(source.path || '').replace(/\\/g, '/');
-        const sameParent = oldPath.substring(0, Math.max(0, oldPath.lastIndexOf('/'))) === targetPath;
-        const res = sameParent && !copySource ? { new_path: source.path, new_name: source.name }
-          : await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+        const sameParent = sameParentOf(source);
+        const sourcePath = source.path;
+        const post = dest => (copySource ? apiPost('/outliner/save-as', {
           path: source.path,
-          dest_folder: targetPath,
-        } : {
-          path: source.path,
-          dest_folder: targetPath,
-          conflict_policy: 'error',
-        });
+          dest_folder: dest,
+        }) : mover.post(source, dest));
+        const res = sameParent && !copySource ? { new_path: source.path, new_name: source.name } : await post(targetPath);
         movedItems.push({ ...source, oldPath: copySource ? '' : source.path, path: res.new_path || source.path, name: res.new_name || source.name });
         succeeded += 1;
         if (!copySource && typeof _folderApplyCommittedMoves === 'function') {
-          _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
-          _folderApplyCommittedMoves([{ oldPath: source.path, newPath: res.new_path || source.path, name: res.new_name || source.name, item: source }]);
+          _folderPendingMovePaths.delete(_folderMembershipKey(sourcePath));
+          unappliedMoves.push({ oldPath: source.path, newPath: res.new_path || source.path, name: res.new_name || source.name, item: source });
+          applyMovesToView(source);
         }
         try {
           if (!copySource && res?.new_path && res.new_path !== source.path && typeof renameAppPathReferences === 'function') {
@@ -302,13 +351,24 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
       } catch (error) {
         if (typeof _folderPendingMovePaths !== 'undefined') {
           _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
-          if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+          // 失敗した項目を一覧へ戻す。まとめて送った分は、塊の終わりに1回だけ描き直す
+          if (pendingPaths.length && (!mover.batched || mover.isChunkEnd(source))) {
+            applyMovesToView(source);
+            renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+          }
         }
         failures.push({ source, error });
       }
       processed += 1;
       progress?.updateOperation?.(processed, null, progressToken);
     }
+    // 送ったのに結果を受け取っていない項目（通常は無い）も、移動済みなら履歴と表示へ入れる
+    mover.unclaimed().forEach(({ source, res }) => {
+      movedItems.push({ ...source, oldPath: source.path, path: res?.new_path || source.path, name: res?.new_name || source.name });
+      succeeded += 1;
+      unappliedMoves.push({ oldPath: source.path, newPath: res?.new_path || source.path, name: res?.new_name || source.name, item: source });
+    });
+    if (unappliedMoves.length && typeof _folderApplyCommittedMoves === 'function') { const moves = unappliedMoves; unappliedMoves = []; _folderApplyCommittedMoves(moves); }
   } finally {
     pendingPaths.forEach(path => _folderPendingMovePaths.delete(path));
     progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${succeeded}件移動・${failures.length}件失敗`, details: failures });
@@ -321,7 +381,7 @@ async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
   await refreshOutliner({ force: true, reason: 'external-drop-move' });
   if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
     const label = document.getElementById('folder-title')?.textContent || _folderPath;
-    await openFolder(label, _folderPath, {
+    await openFolder(label, _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
       silent: true,
       skipShowView: true,
       skipNavPush: true,
@@ -838,63 +898,3 @@ function _syncOutlinerConflictBadgeToNode(nodeEl) {
 }
 
 function refreshVisibleOutlinerConflictState() {
-  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')
-    .forEach(node => _syncOutlinerConflictBadgeToNode(node));
-}
-
-window.addEventListener('meldex-save-conflicts-change', () => {
-  refreshVisibleOutlinerConflictState();
-});
-
-function _createOutlinerAddHoverButton(nodeEl, item) {
-  const addBtn = document.createElement('span');
-  addBtn.className = 'tree-hover-btn';
-  addBtn.innerHTML = lucide('plus', 14);
-  addBtn.title = '追加';
-  addBtn.dataset.gbTooltip = 'このフォルダ内に項目を追加します';
-  addBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const r = addBtn.getBoundingClientRect();
-    const z = parseFloat(document.documentElement.style.zoom) || 1;
-    _showTreeAddMenu(r.left / z, r.bottom / z, nodeEl, item);
-  });
-  return addBtn;
-}
-
-function _syncOutlinerAddHoverButton(nodeEl, item, locked) {
-  const row = nodeEl?.querySelector?.(':scope > .tree-node-row');
-  const hoverBtns = row?.querySelector?.('.tree-hover-btns');
-  if (!hoverBtns || item?.type === 'entity') return;
-  const addButton = hoverBtns.querySelector('.tree-hover-btn[title="追加"]');
-  if (locked) {
-    addButton?.remove();
-    return;
-  }
-  if (!addButton) hoverBtns.appendChild(_createOutlinerAddHoverButton(nodeEl, item));
-}
-
-function refreshVisibleOutlinerLockState() {
-  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')
-    .forEach(node => _applyOutlinerLockStateToNode(node));
-}
-
-let _fileLockOutlinerRefreshPending = false;
-function _scheduleFileLockRefreshForOutliner() {
-  if (_fileLockOutlinerRefreshPending || typeof _ensureLocksLoaded !== 'function') return;
-  _fileLockOutlinerRefreshPending = true;
-  Promise.resolve(_ensureLocksLoaded({ force: !_fileLockLoaded }))
-    .then(() => {
-      refreshVisibleOutlinerLockState();
-      if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
-      window.MeldexFileLockBadge?.refreshAll?.();
-    })
-    .catch(() => {})
-    .finally(() => { _fileLockOutlinerRefreshPending = false; });
-}
-
-const NODE_COLORS_KEY = 'outliner-node-colors';
-function getNodeColors() {
-  try { return JSON.parse(localStorage.getItem(NODE_COLORS_KEY)) || {}; } catch { return {}; }
-}
-function getNodeColor(path) {
-  const colors = getNodeColors();

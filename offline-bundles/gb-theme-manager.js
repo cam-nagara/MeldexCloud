@@ -49,35 +49,6 @@
       return acc;
     }, {})
   );
-  const OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS = Object.freeze(new Set([
-    'テストテーマ',
-    '旧テーマカラー',
-    'ネイビー',
-    'ネイビーカスタム',
-    'ネイビー カスタム',
-    'セピア',
-    'セピアカスタム',
-    'セピア カスタム',
-    'フォレスト',
-    'フォレストカスタム',
-    'フォレスト カスタム',
-    'ローズ',
-    'ローズカスタム',
-    'ローズ カスタム',
-    'ガーリー',
-    'ガーリーカスタム',
-    'ガーリー カスタム',
-    'グレースケール',
-    'グレースケールカスタム',
-    'グレースケール カスタム',
-    'レインボーブランチ',
-    'レインボー',
-    'レインボーカスタム',
-    'レインボー カスタム',
-    'ゲーミング',
-    'ゲーミングカスタム',
-    'ゲーミング カスタム',
-  ].map(_themeNameKey)));
   let _initialThemeCleanupDone = false;
   let _initialThemeCleanupRunning = false;
   let _activeThemeColorSet = null;
@@ -1397,14 +1368,6 @@
     }
   }
 
-  function _isObsoleteInitialCustomTheme(theme, options = {}) {
-    // A user's saved preset must survive even when its name matches a builtin.
-    if (_promotedInitialThemeIdFromName(theme?.name)) return false;
-    if (options.force !== true && _initialCustomThemeCleanupVersionApplied()) return false;
-    const label = _themeNameKey(theme?.name);
-    return !!_promotedInitialThemeIdFromName(theme?.name) || OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS.has(label);
-  }
-
   function _promotedInitialThemeIdFromCustomId(id) {
     const rawId = String(id || '');
     if (!rawId) return '';
@@ -1420,7 +1383,7 @@
     const rawId = String(id || '');
     if (!rawId || rawId === 'OSに合わせる') return true;
     if (BUILT_IN_THEMES.some(t => t.id === rawId)) return true;
-    return _readRawCustomThemes().some(t => String(t.id || '') === rawId && !_isObsoleteInitialCustomTheme(t));
+    return _readRawCustomThemes().some(t => String(t.id || '') === rawId);
   }
 
   function _normalizeDefaultThemeId(id) {
@@ -1532,7 +1495,9 @@
         _writePromotedInitialThemeSources(Array.from(sourceByTarget, ([targetId, theme]) => ({ targetId, theme })));
       }
 
-      const nextThemes = rawThemes.filter(theme => !_isObsoleteInitialCustomTheme(theme, { force: true }));
+      // 利用者のカスタムテーマは読み込みでは決して削除しない（以前は表示名の一致だけで
+      // 毎回削除しており、旧テーマカラーの移行結果まで次の読み込みで消えていた）。
+      const nextThemes = rawThemes.slice();
       // Older releases moved named custom presets into this archive. Restore
       // their original identity without replacing any currently saved preset.
       sourceByTarget.forEach(theme => {
@@ -1613,7 +1578,22 @@
     return normalized || 'builtin-dark';
   }
 
+  // 組み込みテーマは定数なので、整えた結果を1回だけ作り、呼ばれるたびに複製して返す。
+  // ボードはトピックの色を決めるたびにテーマを探し、そのたびに全テーマを複製・整形していた
+  // （2026-11-25 応答時間検査: ボードの長い処理の約4分の1）。
+  let _builtInThemeJsonCache = null;
+  function _builtInThemeJsonList() {
+    if (!_builtInThemeJsonCache) {
+      _builtInThemeJsonCache = _buildBuiltInThemes().map(theme => [theme.id, JSON.stringify(theme)]);
+    }
+    return _builtInThemeJsonCache;
+  }
+
   function getBuiltInThemes() {
+    return _builtInThemeJsonList().map(([, json]) => JSON.parse(json));
+  }
+
+  function _buildBuiltInThemes() {
     // All four starter themes use the current shipped defaults.
     return clone(BUILT_IN_THEMES).map(theme => {
       Object.assign(theme.ui.cssVars, {
@@ -1693,6 +1673,9 @@
     const resolved = resolveThemeId(id);
     const legacy = getCustomThemes().find(theme => theme.id === resolved);
     if (legacy) return clone(legacy);
+    // 組み込みなら該当する1つだけを複製する（全テーマの複製はしない）
+    const builtIn = _builtInThemeJsonList().find(([themeId]) => themeId === resolved);
+    if (builtIn) return JSON.parse(builtIn[1]);
     const themes = getAllThemes();
     return clone(themes.find(t => t.id === resolved) || themes[0] || BUILT_IN_THEMES[0]);
   }
@@ -2966,6 +2949,10 @@
     const whiteTextDefaults = clone(previous);
     whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
     legacyDefaults.push(whiteTextDefaults);
+    const unshadedTabsDefaults = clone(whiteTextDefaults);
+    unshadedTabsDefaults['panel-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    unshadedTabsDefaults['inner-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    legacyDefaults.push(unshadedTabsDefaults);
     // v1/v2 could stamp the original sequential defaults without upgrading them.
     // Treat that exact snapshot like the unversioned original; a current save
     // (including an intentional auto-color choice) is still returned above.

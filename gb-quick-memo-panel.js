@@ -70,8 +70,12 @@
         opened.focus();
         return true;
       }
-      // 単独ホストは別originで起動するため、本体の現在のプロフィールを先に保存する。
-      if (typeof _saveUiConfigToServer === 'function') await _saveUiConfigToServer();
+      // 表示は保存を待たない。待機中の単独ホストは設定の変更を検知して
+      // プロフィールだけを更新するため、画面や下書きを読み直す必要がない。
+      if (typeof _saveUiConfigToServer === 'function') {
+        Promise.resolve().then(() => _saveUiConfigToServer())
+          .catch(error => console.warn('[quick-memo] profile save failed', error));
+      }
       const result = await apiPost('/quick-memo/open', {});
       if (result?.ok !== true) throw new Error('クイックメモの単独アプリを起動できませんでした');
       return true;

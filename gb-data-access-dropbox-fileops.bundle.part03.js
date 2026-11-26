@@ -1,3 +1,24 @@
+    }
+    saveOptions = { expectedRevision: current.revision };
+  }
+  await adapter.save(kind, docId, record, saveOptions);
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+}
+
+// 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
+// 読んだ版を条件に復元するので、取り消し後の他画面の更新を上書きしない。
+async function _restoreAnnotationRecord(provider, body) {
+  const id = _safeId(body.id, 'annotation id');
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, body.target_path || '');
+  const matches = await _findAnnotationRecordsById(provider, id);
+  const match = matches[0];
+  const current = match?.stored || null;
+  const existing = current?.payload || null;
+  const reject = () => { const error = new Error('他の画面で更新されたためアノテートを復元できません'); error.status = 409; throw error; };
+  if (match && match.scope.adapter.describe().boundary !== adapter.describe().boundary) reject();
+  if (body.expected_absent && existing && !_annotationDeleted(existing)) reject();
   if (body.expected_modified && (!existing || _annotationDeleted(existing) || existing.modified !== body.expected_modified)) reject();
   const record = _mergeAnnotationRecord(existing, body, { id, now: _nowIso() });
   if (body.created) { record.created = body.created; record.created_at = body.created_at || body.created; }
@@ -620,7 +641,8 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = options.records || await adapter.listDocuments(kind);
+  const records = options.records || await adapter.listDocuments(kind,
+    options.documentIdPrefix ? { documentIdPrefix: options.documentIdPrefix } : undefined);
   const visible = records.filter(row => {
     const payload = row?.payload || {};
     const currentPath = _normalizeFolderPath(payload.original_relative_path || '');
@@ -660,12 +682,21 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
 }
 const _verifiedIntegrityMemo = new Map();
 
+// 保存の前処理が読む編集履歴は、対象パスのものだけ（記録名の先頭が対象パスのハッシュ）。
+// 種別全体を読むと、無関係な履歴・フォルダの控え（実データで3199件・307MB）を保存のたびに
+// ダウンロードし、スマホのクイックメモ送信が終わらなかった（2026-11-26）。
+// 移動で付け替えた記録は元の名前のままなので、ここでは読まない（直前の編集者の判定と
+// 未確定の記録の回収が、移動後の最初の1回だけ効かない。内容は失われない）。
+function _editRecordPrefix(path) {
+  return `edit-${_fnvFileId(_normalizeFolderPath(path))}-`;
+}
+
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
   await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = await adapter.listDocuments(kind);
+  const records = await adapter.listDocuments(kind, { documentIdPrefix: _editRecordPrefix(normalized) });
   const currentHash = _contentHistoryHash(currentContent);
   let changed = false;
   for (const row of records) {
@@ -704,7 +735,9 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
   if (_stableHistoryContent(currentContent) === _stableHistoryContent(nextContent)) {
     return { adapter, kind, skipped: true, eventId: '', documentId: '', payload: null };
   }
-  const latest = (await _listSharedEditRecords(provider, normalized, false, { skipIntegrity: true, records }))[0]?.payload || {};
+  const latest = (await _listSharedEditRecords(provider, normalized, false, {
+    skipIntegrity: true, records, documentIdPrefix: _editRecordPrefix(normalized),
+  }))[0]?.payload || {};
   const previous = latest.actor_id ? latest : actor;
   const transition = !!(latest.actor_id && actor.actor_id && latest.actor_id !== actor.actor_id);
   const eventId = `edit-${_versionTimestamp()}-${_randomId('e').slice(-8)}`;
@@ -865,36 +898,3 @@ async function _trackCloudEdit(provider, options, mutation) {
 
 window.MeldexSharedEditHistory = {
   actor: _versionActor,
-  prepare: _prepareCloudFileEdit,
-  commit: _commitCloudFileEdit,
-  settled: _awaitPendingEditFinalizations,
-  abort: _abortCloudFileEdit,
-  track: _trackCloudEdit,
-  fileKind: _historyFileKind,
-  stableContent: _stableHistoryContent,
-};
-
-function _versionTimestamp() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  const ms = String(d.getMilliseconds()).padStart(3, '0');
-  return `${y}${m}${day}T${hh}${mm}${ss}_${ms}_${_randomId('v').replace(/[^a-z0-9]/gi, '').slice(-6)}`;
-}
-
-function _fileVersionDir(path) {
-  const normalized = _normalizeFolderPath(path);
-  return _joinPath(LEGACY_VERSION_FILE_DIR, _fnvFileId(normalized));
-}
-
-function _folderVersionDir(path) {
-  const normalized = _normalizeFolderPath(path);
-  return _joinPath(LEGACY_VERSION_FOLDER_DIR, _fnvFileId(normalized || '.'));
-}
-
-async function _fileEtag(provider, path, entry, writeMeta) {
-  const meta = writeMeta?.meta || writeMeta || {};

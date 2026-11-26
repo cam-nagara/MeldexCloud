@@ -674,8 +674,10 @@ async function _chatApplyMessagesSnapshot(messages, options = {}) {
     if (typeof renderChatHistory === 'function') renderChatHistory();
     return true;
   } catch (e) {
-    _chatState.messages = previous;
-    _chatRenderStoredMessages();
+    if (!options.scope || _chatSessionScopeMatches(options.scope)) {
+      _chatState.messages = previous;
+      _chatRenderStoredMessages();
+    }
     throw e;
   }
 }
@@ -699,24 +701,26 @@ async function chatDeleteMessage(index) {
   const beforeMessages = _chatCloneMessages(_chatState.messages);
   const afterMessages = _chatCloneMessages(_chatState.messages);
   afterMessages.splice(idx, 1);
+  const scope = _chatHistoryScope();
+  const label = 'チャット: メッセージ削除';
+  const reservation = typeof historyReserve === 'function'
+    ? historyReserve(label, scope, preview || '', { preserveRedoOnCancel: true }) : null;
+  if (typeof historySetScope === 'function') historySetScope(scope);
 
   try {
     await _chatApplyMessagesSnapshot(afterMessages, { scope: operationScope });
   } catch (e) {
+    reservation?.cancel();
     if (typeof showStatus === 'function') showStatus('メッセージ削除の保存に失敗: ' + (e?.message || e), true);
     return;
   }
 
-  if (typeof historyPush === 'function') {
-    const scope = _chatHistoryScope();
-    if (typeof historySetScope === 'function') historySetScope(scope);
-    historyPush(
-      'チャット: メッセージ削除',
-      () => _chatApplyMessagesSnapshot(beforeMessages, { scope: operationScope }),
-      () => _chatApplyMessagesSnapshot(afterMessages, { scope: operationScope }),
-      scope,
-      preview || ''
-    );
+  const undo = () => _chatApplyMessagesSnapshot(beforeMessages, { scope: operationScope });
+  const redo = () => _chatApplyMessagesSnapshot(afterMessages, { scope: operationScope });
+  if (reservation) {
+    reservation.fill(undo, redo);
+  } else if (typeof historyPush === 'function') {
+    historyPush(label, undo, redo, scope, preview || '');
   }
   if (typeof showStatus === 'function') showStatus('メッセージを削除しました');
 }

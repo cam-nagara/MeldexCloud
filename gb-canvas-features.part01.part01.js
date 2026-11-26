@@ -176,8 +176,10 @@ function bdAutoLayout(rootId) {
     const el = document.getElementById('bdn-'+id);
     const n = layoutCtx.node(id);
     sizes[id] = {
-      w: n?.w || n?._rw || el?.offsetWidth || 160,
-      h: n?.h || n?._rh || el?.offsetHeight || 36,
+      // CSSの最小寸法や階層書式で、保存した指定寸法より実物が大きくなる。
+      // 表示中は実寸、仮想化・非表示中は最後の計測値で隙間を確保する。
+      w: el?.offsetWidth || Math.max(n?._rw || 0, n?.w || 0) || 160,
+      h: el?.offsetHeight || Math.max(n?._rh || 0, n?.h || 0) || 36,
     };
   });
   // 外側 structure-set ノード (= structureIds の中で、祖先に structure-set ノードがいないもの) を

@@ -602,6 +602,17 @@ async function _bdReviewConflict(path, documentKey) {
 }
 
 async function bdSave() {
+  const openSeqBeforeTitle = bd._openSeq;
+  if (bd._titleMutation) {
+    await bd._titleMutation.promise;
+    if (bd._openSeq !== openSeqBeforeTitle) return false;
+  }
+  // 改名と本文保存が、同じファイルの版を互いに古くしないようにする。
+  const operations = bd._saveOperations instanceof Set ? bd._saveOperations : (bd._saveOperations = new Set());
+  let settled;
+  const operation = { path: bd.path, promise: new Promise(resolve => { settled = resolve; }) };
+  operations.add(operation);
+  try {
   // シート欄のフォーカス中の入力も、純粋なスナップショットとは分けて保存前に確定する。
   window.MeldexBoardTopicIntegration?.commitPendingEdits?.(bd);
   if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
@@ -760,6 +771,11 @@ async function bdSave() {
       showStatus('ボードを保存できません: ' + detail, true);
     }
     return false;
+  }
+  } finally {
+    operations.delete(operation);
+    settled();
+    if (bd._saveOperations === operations && !operations.size) delete bd._saveOperations;
   }
 }
 

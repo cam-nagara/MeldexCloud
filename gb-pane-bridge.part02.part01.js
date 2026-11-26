@@ -181,7 +181,13 @@
     const verify = () => {
       // _ensureLegacyTabContent の非同期ロード完了後も、openViewer側のpostMessage高速パス
       // （最大250ms）が残っている可能性があるため、余裕を持たせてから検証する。
-      setTimeout(() => _gbVerifyAndFixMediaContainer(paneId, tabId, expected), 260);
+      // 待つ間に利用者が別の内容を開いた場合は、その新しい内容を古いタブの内容へ戻さない
+      // （電話幅の起動直後に、開いた画像が前回の画像へ戻っていた）。
+      const generation = Number(window.GBViewerOpenGeneration) || 0;
+      setTimeout(() => {
+        if ((Number(window.GBViewerOpenGeneration) || 0) !== generation) return;
+        _gbVerifyAndFixMediaContainer(paneId, tabId, expected);
+      }, 260);
     };
     afterJob.then(verify).catch(verify);
   }
@@ -453,7 +459,7 @@
       return tabPath('dbPath') || (!tab ? statePath('currentDbPath') : '');
     }
     if (tabType === 'folder') {
-      return tabPath('folderPath') || (!tab && typeof _folderPath !== 'undefined' ? _folderPath : '') || '';
+      return tabPath('folderPath') || (!tab && typeof _folderPath !== 'undefined' ? (typeof _folderMainPath === 'function' ? _folderMainPath() : _folderPath) : '') || '';
     }
     if (tabType === 'entity') return tabPath('entityPath') || (!tab ? statePath('currentEntityPath') : '');
     if (tabType === 'page') return tabPath('pagePath') || (!tab ? statePath('currentPagePath') : '');
@@ -778,7 +784,7 @@
       if (id === exceptId) return;
       const el = document.getElementById(id);
       if (el && el.parentNode === contentEl) {
-        _captureLiveChatState(id, el);
+        _captureLiveScrollState(id, el);
         // Keep the already initialized viewer shell beside the active Sheet,
         // only hidden. Reparenting its iframe through #legacy-views forces a
         // full viewer reload and defeats the postMessage fast-open path.
@@ -817,7 +823,7 @@
     const storage = document.getElementById('legacy-views');
     const el = document.getElementById(containerId);
     if (el && storage) {
-      _captureLiveChatState(containerId, el);
+      _captureLiveScrollState(containerId, el);
       if (containerId === 'media-view') _gbPauseMediaContentPlayback();
       el.style.display = 'none';
       storage.appendChild(el);
@@ -1181,15 +1187,24 @@
     GBLayout.saveLayout();
   }
 
+  // チャット欄とサブパネルは補助パネルの置き場ではない（2026-11-24: フォルダの「バージョン管理」が
+  // チャット欄にタブを追加していた）。補助パネルは右サイドバーの固定パネルか、作業領域の補助ペインへ出す。
+  const NON_TOOL_HOST_ROLES = new Set(['chat-sidebar', 'subpanel-workspace']);
+  function _isNonToolHostPane(pane) {
+    return !!pane && NON_TOOL_HOST_ROLES.has(pane.meldexRole || '');
+  }
+
   function _isVersionHostPane(pane) {
     const tabs = pane?.tabs || [];
     if (!tabs.length) return false;
+    if (_isNonToolHostPane(pane)) return false;
     if (tabs.some(t => PRIMARY_TOOL_PANE_TYPES.has(t.type))) return true;
     return tabs.every(t => TOOL_HOST_PANE_TYPES.has(t.type));
   }
 
   function _getVersionHostPaneInfo() {
     const isEligiblePane = (pane) => {
+      if (_isNonToolHostPane(pane)) return false;
       const activeTab = pane.tabs?.[pane.activeTabIndex];
       return !activeTab || !NAV_PANE_TYPES.has(activeTab.type);
     };

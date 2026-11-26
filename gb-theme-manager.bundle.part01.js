@@ -53,35 +53,6 @@
       return acc;
     }, {})
   );
-  const OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS = Object.freeze(new Set([
-    'テストテーマ',
-    '旧テーマカラー',
-    'ネイビー',
-    'ネイビーカスタム',
-    'ネイビー カスタム',
-    'セピア',
-    'セピアカスタム',
-    'セピア カスタム',
-    'フォレスト',
-    'フォレストカスタム',
-    'フォレスト カスタム',
-    'ローズ',
-    'ローズカスタム',
-    'ローズ カスタム',
-    'ガーリー',
-    'ガーリーカスタム',
-    'ガーリー カスタム',
-    'グレースケール',
-    'グレースケールカスタム',
-    'グレースケール カスタム',
-    'レインボーブランチ',
-    'レインボー',
-    'レインボーカスタム',
-    'レインボー カスタム',
-    'ゲーミング',
-    'ゲーミングカスタム',
-    'ゲーミング カスタム',
-  ].map(_themeNameKey)));
   let _initialThemeCleanupDone = false;
   let _initialThemeCleanupRunning = false;
   let _activeThemeColorSet = null;
@@ -898,3 +869,32 @@
     }
     if (changed.has(THEME_UI_APPLICATIONS_KEY) || changed.has(THEME_UI_AUTO_TONE_KEY)) {
       applyThemeUiSettingsFromTheme(getThemeById(getDefaultThemeId()), { preserveStored: true });
+      const apps = getThemeUiApplications();
+      const tone = getThemeUiAutoTone();
+      applyThemeUiApplications(apps, { forceTargets: true });
+      dispatchThemeUiApplicationsChange({ applications: apps, fromHistory: true });
+      dispatchThemeUiAutoToneChange({ tone, fromHistory: true });
+    }
+    if (typeof global._refreshSettingsThemePanel === 'function') global._refreshSettingsThemePanel();
+  }
+
+  function _pushThemeSettingsHistory(label, beforeSnapshot, keys, detail, options = {}) {
+    if (!beforeSnapshot || _themeSettingsHistorySuppressed(options)) return false;
+    if (typeof global.pushLocalStorageSettingsHistory !== 'function') return false;
+    return global.pushLocalStorageSettingsHistory(
+      label,
+      beforeSnapshot,
+      _captureThemeSettingsStorage(keys),
+      detail || '',
+      _refreshThemeSettingsAfterHistory
+    );
+  }
+
+  function saveThemeUiAutoTone(tone, options = {}) {
+    const next = normalizeThemeUiAutoTone(tone);
+    const before = _captureThemeSettingsStorage([THEME_UI_AUTO_TONE_KEY]);
+    try { localStorage.setItem(THEME_UI_AUTO_TONE_KEY, JSON.stringify(next)); } catch {}
+    _pushThemeSettingsHistory('設定: テーマ自動トーン変更', before, [THEME_UI_AUTO_TONE_KEY], '', options);
+    applyThemeUiApplications(getThemeUiApplications());
+    dispatchThemeUiAutoToneChange({ tone: next });
+    return next;

@@ -9,11 +9,16 @@
 .gb-toolbar-overflow-host > :not(.tb-spacer) { flex-shrink: 0; }
 /* メインパネルの旧描画も測定可能な一行にする。非表示のアプリは変更しない。 */
 .gb-toolbar.gb-toolbar-overflow-host:is([style*="display: contents"], [style*="display:contents"]) {
+  --gb-tbo-contents-gap: 4px;
   display:flex !important;
   flex:1 1 100%;
   width:100%;
   align-items:center;
-  gap:4px;
+  gap: var(--gb-tbo-contents-gap);
+}
+/* ファイルアイコンとファイル名の間は共通の --ui-toolbar-file-icon-name-gap だけにする（この行の間隔を足さない）。 */
+.gb-toolbar.gb-toolbar-overflow-host:is([style*="display: contents"], [style*="display:contents"]) > .tb-file-icon + .tb-file-title {
+  margin-left: calc(-1 * var(--gb-tbo-contents-gap));
 }
 /* Item names stay on one line before width measurement and in overflow menus. */
 :is(.gb-toolbar, header.sa-toolbar, .folder-toolbar, #se-toolbar, #sidebar-search-bar,
@@ -131,4 +136,19 @@
   :root:not([data-toolbar-density="desktop"]) .gb-toolbar-main.gb-toolbar-overflow-host > .gb-toolbar-overflow-button { flex-basis: 44px !important; width:44px !important; min-width: var(--ui-h-touch, 44px) !important; height: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
   .gb-toolbar-overflow-popup .gb-tbo-row, .gb-tbo-close { min-height: 44px; }
   .gb-tbo-row > :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-height: 44px; }
+}
+
+/* ツールバーの自動非表示（2026-11-24。UI共通ルール19「ツールバー」。動作は gb-toolbar-overflow.js の
+   MeldexToolbarAutoHide）。メインメニューボタン・ファイルアイコン・ファイル名（と保存状態などの表示）は
+   常にその場所へ残し、それ以外の操作だけを透明にする（押せる状態・フォーカスの順は変えない）。行の高さ・並び・寸法は変えないので本文は動かない。
+   表示: ツールバーへのマウス／キーボードのフォーカス／開いているメニュー（aria-expanded）／
+   ツールバーから開いたポップアップ（.tb-autohide-hold）。隠す時だけ少し待ってから消す。
+   対象外: ビューワー（全体を隠す公式変種）、チャット、アノテートの管理、クイックメモ、スマホ・タッチ操作。 */
+@media (min-width: 641px) and (pointer: fine) {
+  :root:not([data-toolbar-autohide="off"]) body:not([data-cloud-mobile="1"]) .gb-toolbar.gb-toolbar-main:not(.gb-toolbar-viewer, .chat-session-toolbar, [data-annotation-toolbar], .qm-header, [data-tb-autohide="off"], :hover, .tb-autohide-hold, :has(:focus-visible), :has([aria-expanded="true"])) :not(:is(.tb-app-icon, .tb-file-icon, .tb-file-title, .sa-title, .gb-cal-title, .sa-path, .sa-sync-status, [role="status"], [aria-live], [role="menu"], .sa-menu, [data-tb-autohide-keep]), :is(.tb-app-icon, .tb-file-icon, .tb-file-title, .sa-title, .gb-cal-title, .sa-path, .sa-sync-status, [role="status"], [aria-live], [role="menu"], .sa-menu, [data-tb-autohide-keep]) *, :has(.tb-app-icon, .tb-file-icon, .tb-file-title, .sa-title, .gb-cal-title, .sa-path, .sa-sync-status, [role="status"], [aria-live], [role="menu"], .sa-menu, [data-tb-autohide-keep])) {
+    /* 押せる状態は変えない（マウスが行に乗れば表示されるため。自動操作・支援技術の到達も保つ）。 */
+    /* 無効なボタンを濃く保つ共通指定（button:disabled { opacity: 1 !important }）より優先する。 */
+    opacity: 0 !important;
+    transition: opacity 0.18s ease 0.45s;
+  }
 }

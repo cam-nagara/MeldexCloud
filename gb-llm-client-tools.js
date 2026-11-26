@@ -18,10 +18,11 @@
   const protectedFiles=new Set(['_users.json','_permissions.json','.env.chat','_avatars.json',
     '_meldex_team.json','_notion-db.json','notion_config.json','google_calendar_token.json','editor-config.json','meldex.db']);
   const protectedParts=new Set(['credential','credentials','key','keys','secret','secrets','token','tokens']);
-  function protectedPath(path){
+  function protectedPath(path,options={}){
     const parts=path.toLowerCase().split('/');
-    return protectedFiles.has(parts[parts.length-1])||parts.some(part=>part.startsWith('.')
+    return protectedFiles.has(parts[parts.length-1])||parts.some((part,index)=>part.startsWith('.')
       ||protectedParts.has(part)||/^_(?:meldex|chat|permissions)(?:$|\.)/.test(part)
+        && !(options.chatAttachment&&part==='_chat'&&parts[index+1]==='attachments')
       ||/\.env|credentials|secret|token.*\.json$/.test(part));
   }
   function structured(path,content){
@@ -129,5 +130,5 @@
     }
     return {execute};
   }
-  global.MeldexLlmTools=Object.freeze({definitions,declarations,history,parseArguments,resolvePath,create});
+  global.MeldexLlmTools=Object.freeze({definitions,declarations,history,parseArguments,resolvePath,create,isProtectedPath:protectedPath});
 })(window);

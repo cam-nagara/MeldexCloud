@@ -116,7 +116,7 @@
     } finally {
       if (_canvasRenderTasks.get(canvas) === task) _canvasRenderTasks.delete(canvas);
     }
-    if (canvas.isConnected) await window.MeldexViewerTextLayer?.pdf(canvas, doc, pageNum, zoom,
+    if (canvas.isConnected) await window.MeldexViewerTextLayer?.refitPdf(canvas, doc, pageNum, zoom,
       window.MeldexViewerScene?.getPdfPath?.() || '');
     return canvas;
   }

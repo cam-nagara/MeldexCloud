@@ -93,6 +93,8 @@ async function loadTeamRooms() {
     _teamRoomsCache = rooms;
     if (_teamCurrentRoom && !_teamRoomByPath(_teamCurrentRoom)) {
       _clearTeamRoomSelection();
+    } else if (window.GBTeamChatDrafts?.reconcile?.(_teamCurrentRoom)) {
+      _teamSessionGen++;
     }
     _syncTeamRoomSelect(rooms);
     _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom));
@@ -207,7 +209,7 @@ function _beginTeamRoomTitleEdit(room) {
   input.setAttribute('aria-label', 'ルーム名');
   input.title = 'ルーム名';
   input.value = room.name || _roomDisplayName(room) || '';
-  input.style.cssText = 'flex:1;min-width:0;font:inherit;font-weight:bold;background:var(--bg);color:var(--fg);border:1px solid var(--accent);border-radius:3px;padding:2px 6px;';
+  input.style.cssText = 'flex:1;min-width:0;font:inherit;font-weight:bold;background:var(--bg);color:var(--fg);border:1px solid var(--chat-border);border-radius:3px;padding:2px 6px;';
   title.innerHTML = '';
   title.appendChild(input);
   const cancelBtn = document.createElement('button');
@@ -225,7 +227,17 @@ function _beginTeamRoomTitleEdit(room) {
     done = true;
     const nextName = input.value.trim();
     if (commit && nextName && nextName !== room.name) {
-      await _renameTeamRoom(room, nextName);
+      const selection = [input.selectionStart, input.selectionEnd, input.selectionDirection];
+      input.disabled = true;
+      cancelBtn.disabled = true;
+      const renamed = await _renameTeamRoom(room, nextName, { preserveEditor: true });
+      if (!renamed && input.isConnected && _teamCurrentRoom === room.path) {
+        done = false;
+        input.disabled = false;
+        cancelBtn.disabled = false;
+        input.focus({ preventScroll: true });
+        input.setSelectionRange(...selection);
+      }
       return;
     }
     _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom) || room);
@@ -259,7 +271,7 @@ async function _deleteTeamRoom(room) {
   } catch (e) { showStatus('削除に失敗', true); }
 }
 
-async function _renameTeamRoom(room, newName) {
+async function _renameTeamRoom(room, newName, options = {}) {
   if (!room?.path || room.type === 'dm') return;
   if (!_chatRequireSourceFolder()) {
     _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom) || room);
@@ -273,14 +285,17 @@ async function _renameTeamRoom(room, newName) {
   try {
     const res = await apiPost(_chatApiPath('/collab/rooms/rename'), _chatPostPayload({ path: room.path, new_name: name }));
     if (_teamCurrentRoom === room.path && res?.path) {
+      window.GBTeamChatDrafts?.followRename?.(room.path, res.path);
       _teamCurrentRoom = res.path;
     }
     await loadTeamRooms();
     _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom) || { ...room, name, path: res?.path || room.path });
     showStatus('ルームをリネームしました');
+    return true;
   } catch (e) {
-    _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom) || room);
+    if (!options.preserveEditor) _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom) || room);
     showStatus('リネームに失敗', true);
+    return false;
   }
 }
 
@@ -402,6 +417,7 @@ async function selectTeamRoom(roomPath) {
     return;
   }
   _chatSaveCurrentRoomModelSettings();
+  window.GBTeamChatDrafts?.switchRoom?.(roomPath);
   _teamCurrentRoom = roomPath;
   _chatApplyRoomModelSettings(roomPath);
   _teamLastTimestamp = '';
@@ -486,6 +502,7 @@ async function showDirectMessageModal() {
   openBtn.type = 'button';
   openBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
   openBtn.id = 'team-dm-open';
+  openBtn.dataset.e2eId = 'team-dm-open';
   openBtn.textContent = '開く';
   let busy = false;
   const modalApi = window.GBUI.createModal({
@@ -624,7 +641,9 @@ function _buildTeamMessageRow(m, me) {
   // タイムスタンプ
   const timeEl = document.createElement('div');
   timeEl.style.cssText = 'font-size:9px;opacity:0.6;text-align:right;margin-top:2px;';
-  timeEl.textContent = (m.timestamp || '').substring(11, 16);
+  timeEl.textContent = typeof _chatFormatMessageTimestamp === 'function'
+    ? _chatFormatMessageTimestamp(m.timestamp || '').slice(-5)
+    : String(m.timestamp || '').substring(11, 16);
   div.appendChild(timeEl);
   // 右クリックメニュー（コピー） ＋ 長押しで同メニュー（タッチ/ペン）
   row.addEventListener('contextmenu', (e) => {
@@ -712,7 +731,12 @@ async function teamSend() {
   const input = document.getElementById('team-input');
   if (!input) return;
   const roomPath = _teamCurrentRoom;
-  const text = input.value.trim();
+  const generation = _teamSessionGen;
+  if (window.GBTeamChatDrafts?.matchesContext?.() === false) return false;
+  const rawText = input.value;
+  const text = rawText.trim();
+  const draftSelection = { start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection,
+    top: input.scrollTop, left: input.scrollLeft };
   let atts = _teamPendingAttachments || [];
   if (!text && atts.length === 0) return;
   if (atts.length > 0) {
@@ -720,10 +744,14 @@ async function teamSend() {
     if (!readyAttachments) return false;
     atts = readyAttachments;
   }
+  if (_teamSessionGen !== generation || _teamCurrentRoom !== roomPath || input.value !== rawText) return false;
+  const draftKey = window.GBTeamChatDrafts?.beginSubmission?.();
+  const sameComposer = () => _teamSessionGen === generation && _teamCurrentRoom === roomPath;
   const pendingBeforeSend = atts.slice();
   const sendBtn = _teamSendButton();
   const inputWasDisabled = !!input.disabled;
   const sendWasDisabled = !!sendBtn?.disabled;
+  let restoreInputFocus = false;
   // 画像があれば末尾に Markdown 画像として付与
   let finalText = text;
   if (atts.length > 0) {
@@ -738,16 +766,20 @@ async function teamSend() {
   } else {
     input.value = '';
   }
+  window.GBTeamChatDrafts?.syncInputHistory?.();
   _teamPendingAttachments = [];
   _autoGrowTextarea(input, 2, 8);
   if (typeof _renderTeamAttachments === 'function') _renderTeamAttachments();
   try {
     await apiPost(_chatApiPath('/collab/send'), _chatPostPayload({ room: roomPath, text: finalText, from: getUsername() }));
+    if (draftKey) window.GBTeamChatDrafts?.clearSubmitted?.(draftKey);
     if (typeof _chatCommitDraftUploadsForText === 'function') _chatCommitDraftUploadsForText('team-input', text);
-    if (_teamCurrentRoom === roomPath) await pollTeamMessages({ forceLatest: true });
+    if (sameComposer()) await pollTeamMessages({ forceLatest: true });
   } catch(e) {
-    if (_teamCurrentRoom === roomPath) {
-      input.value = text;
+    if (sameComposer()) {
+      window.GBTeamChatDrafts?.restore?.();
+      input.value = rawText;
+      restoreInputFocus = true;
       _teamPendingAttachments = pendingBeforeSend;
       _autoGrowTextarea(input, 2, 8);
       if (typeof _renderTeamAttachments === 'function') _renderTeamAttachments();
@@ -757,6 +789,12 @@ async function teamSend() {
     _teamSending = false;
     if (input.isConnected) input.disabled = inputWasDisabled;
     if (sendBtn?.isConnected) sendBtn.disabled = sendWasDisabled;
+    if (restoreInputFocus && input.isConnected && !input.disabled) {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(draftSelection.start, draftSelection.end, draftSelection.direction);
+      input.scrollTop = draftSelection.top;
+      input.scrollLeft = draftSelection.left;
+    }
   }
 }
 
@@ -1204,7 +1242,8 @@ function _chatDraftStorageKey(scope = _chatComposerDraftScope()) {
   return _CHAT_DRAFT_STORAGE_PREFIX + encodeURIComponent(JSON.stringify(scope));
 }
 
-const _chatDraftManager = (() => {
+function _createChatDraftManager(options) {
+  const storageKey = options.storageKey;
   let dirtyKey = '';
   let debounceTimer = 0;
   let maxTimer = 0;
@@ -1217,7 +1256,7 @@ const _chatDraftManager = (() => {
   let activeFailureMessage = null;
   let activeFailureKey = '';
 
-  const input = () => document.getElementById('chat-input');
+  const input = options.input;
   const cancelTimers = () => {
     if (debounceTimer) clearTimeout(debounceTimer);
     if (maxTimer) clearTimeout(maxTimer);
@@ -1225,7 +1264,7 @@ const _chatDraftManager = (() => {
     maxTimer = 0;
   };
   const renderFailure = () => {
-    const key = _chatDraftStorageKey(), composer = document.getElementById('chat-composer');
+    const key = storageKey(), composer = options.composer();
     const hasFailure = failedKeys.has(key) && pendingDrafts.has(key);
     const text = (failedKeys.get(key) === 'limit'
       ? '下書きの保存上限を超えています。本文を短くしてください。'
@@ -1236,12 +1275,13 @@ const _chatDraftManager = (() => {
       if (activeFailureMessage.textContent !== text) activeFailureMessage.textContent = text;
       return;
     }
-    document.querySelectorAll?.('[data-chat-draft-save-failure]').forEach(row => row.remove());
+    document.querySelectorAll?.(options.team ? '[data-team-draft-save-failure]' : '[data-chat-draft-save-failure]').forEach(row => row.remove());
     activeFailureRow = activeFailureMessage = activeRetryButton = null;
     activeFailureKey = '';
     if (!hasFailure || !composer) return;
     const row = document.createElement('div');
-    row.dataset.chatDraftSaveFailure = '';
+    if (options.team) row.dataset.teamDraftSaveFailure = '';
+    else row.dataset.chatDraftSaveFailure = '';
     row.setAttribute('role', 'alert');
     row.style.cssText = 'color:var(--fg2);font-size:11px;padding:4px;';
     const message = document.createElement('span');
@@ -1249,14 +1289,14 @@ const _chatDraftManager = (() => {
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.className = 'gb-btn gb-btn-sm';
-    retry.dataset.chatDraftSaveRetry = '';
-    retry.dataset.e2eId = 'chat-draft-save-retry';
+    if (options.team) { retry.dataset.teamDraftSaveRetry = ''; retry.dataset.e2eId = 'team-draft-save-retry'; }
+    else { retry.dataset.chatDraftSaveRetry = ''; retry.dataset.e2eId = 'chat-draft-save-retry'; }
     retry.textContent = '下書きの保存を再試行';
     retry.addEventListener('click', () => {
-      if (_chatDraftStorageKey() !== key) { renderFailure(); return; }
+      if (storageKey() !== key) { renderFailure(); return; }
       dirtyKey = key;
       if (flush()) {
-        if (!window.GBChatFormatting?.focusInput?.()) input()?.focus?.();
+        if (options.team || !window.GBChatFormatting?.focusInput?.()) input()?.focus?.();
       } else activeRetryButton?.focus?.();
     });
     row.append(message, retry);
@@ -1271,7 +1311,7 @@ const _chatDraftManager = (() => {
       console.warn('チャット下書きを保存できませんでした。内容は画面内に保持しています');
       if (typeof showStatus === 'function') showStatus('チャットの下書きを保存できません。内容はこの画面に保持しています', true);
       window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
-        op: 'chat.draft.save', endpoint: 'localStorage', method: 'SET', errorType: 'Error',
+        op: options.team ? 'chat.team.draft.save' : 'chat.draft.save', endpoint: 'localStorage', method: 'SET', errorType: 'Error',
       });
     }
     failedKeys.set(key, error instanceof RangeError ? 'limit' : 'storage');
@@ -1321,24 +1361,22 @@ const _chatDraftManager = (() => {
     // 失敗後に本文が戻された場合は、その時点から通常の下書き保存へ戻る。
     if (submissionKey && field.value) submissionKey = '';
     if (submissionKey && !field.value) return;
-    dirtyKey = _chatDraftStorageKey();
+    dirtyKey = storageKey();
     pendingDrafts.set(dirtyKey, String(field.value || ''));
     schedule();
   };
   const beginSubmission = () => {
     const field = input();
     if (!field) return '';
-    dirtyKey = _chatDraftStorageKey();
+    dirtyKey = storageKey();
     flush();
-    submissionKey = dirtyKey || _chatDraftStorageKey();
+    submissionKey = dirtyKey || storageKey();
     return submissionKey;
   };
-  const clearSubmitted = () => {
-    if (!submissionKey) return false;
-    const key = submissionKey;
-    submissionKey = '';
-    if (dirtyKey === key) dirtyKey = '';
-    cancelTimers();
+  const clearSubmitted = (key = submissionKey) => {
+    if (!key) return false;
+    if (submissionKey === key) submissionKey = '';
+    if (dirtyKey === key) { dirtyKey = ''; cancelTimers(); }
     return persist(key, '');
   };
   const restore = () => {
@@ -1348,7 +1386,7 @@ const _chatDraftManager = (() => {
     cancelTimers();
     const field = input();
     if (!field) return false;
-    const key = _chatDraftStorageKey();
+    const key = storageKey();
     let value = '';
     if (pendingDrafts.has(key)) {
       value = pendingDrafts.get(key);
@@ -1363,10 +1401,11 @@ const _chatDraftManager = (() => {
     }
     restoring = true;
     field.value = value;
+    options.onRestore?.(field);
     field.dispatchEvent(new Event('input', { bubbles: true }));
     restoring = false;
-    window.GBChatFormatting?.syncInput?.();
-    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(field, 2, 10);
+    if (!options.team) window.GBChatFormatting?.syncInput?.();
+    if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(field, 2, options.team ? 8 : 10);
     if (dirtyKey) schedule();
     renderFailure();
     return !!value;
@@ -1376,8 +1415,122 @@ const _chatDraftManager = (() => {
     if (document.visibilityState === 'hidden') flush();
   });
   window.addEventListener('pagehide', flush);
-  return { flush, restore, beginSubmission, clearSubmitted, storageKey: _chatDraftStorageKey };
+  return { flush, restore, beginSubmission, clearSubmitted, storageKey, capture: onInput };
+}
+
+const _chatDraftManager = _createChatDraftManager({
+  input: () => document.getElementById('chat-input'),
+  composer: () => document.getElementById('chat-composer'),
+  storageKey: _chatDraftStorageKey,
+});
+
+const _TEAM_DRAFT_STORAGE_PREFIX = 'meldex-team-composer-draft:v1:';
+function _teamComposerDraftScope(roomPath = (typeof _teamCurrentRoom === 'undefined' ? '' : _teamCurrentRoom)) {
+  const scope = _chatComposerDraftScope();
+  delete scope.sessionId;
+  const room = typeof _teamRoomByPath === 'function' ? _teamRoomByPath(roomPath) : null;
+  return { ...scope, roomId: roomPath ? String(room?.id || 'path:' + roomPath) : '' };
+}
+const _teamDraftManager = (() => {
+  let roomPath = typeof _teamCurrentRoom === 'undefined' ? '' : _teamCurrentRoom;
+  let scope = _teamComposerDraftScope(roomPath);
+  const keyFor = value => _TEAM_DRAFT_STORAGE_PREFIX + encodeURIComponent(JSON.stringify(value));
+  const sameBase = (a, b) => ['user', 'workspaceId', 'sourceFolder'].every(key => a[key] === b[key]);
+  // ブラウザのtextarea履歴は部屋切替の代入を区切りにしないため、部屋別に保持する。
+  const histories = new Map();
+  const field = document.getElementById('team-input');
+  const history = () => {
+    const key = keyFor(scope);
+    if (!histories.has(key)) histories.set(key, { undo: [], redo: [], current: snapshot(), pending: null });
+    return histories.get(key);
+  };
+  const snapshot = () => ({ value: field.value, start: field.selectionStart, end: field.selectionEnd });
+  const applyHistory = (redo, event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const state = history(), from = redo ? state.redo : state.undo, to = redo ? state.undo : state.redo;
+    if (!from.length) return;
+    to.push(snapshot());
+    const next = from.pop();
+    field.value = next.value;
+    field.setSelectionRange(next.start, next.end);
+    state.current = snapshot();
+    state.pending = null;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  field?.addEventListener('beforeinput', event => {
+    if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+      applyHistory(event.inputType === 'historyRedo', event);
+      return;
+    }
+    history().pending = snapshot();
+  });
+  field?.addEventListener('input', () => {
+    const state = history(), next = snapshot();
+    // Shift+Enterや添付などアプリが挿入する変更にもinputは発生する。
+    if (next.value !== state.current.value) {
+      state.undo.push(state.pending || state.current);
+      if (state.undo.length > 100) state.undo.shift();
+      state.redo.length = 0;
+    }
+    state.current = next;
+    state.pending = null;
+  });
+  field?.addEventListener('keydown', event => {
+    const key = event.key.toLowerCase();
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.isComposing && (key === 'z' || key === 'y')) {
+      applyHistory(key === 'y' || event.shiftKey, event);
+      return;
+    }
+    history().current = snapshot();
+  }, true);
+  const syncHistory = () => {
+    const state = history();
+    state.current = snapshot();
+    state.pending = null;
+  };
+  const manager = _createChatDraftManager({
+    team: true,
+    input: () => typeof _teamElementById === 'function' ? _teamElementById('team-input') : document.getElementById('team-input'),
+    composer: () => typeof _teamElementById === 'function' ? _teamElementById('team-composer') : document.getElementById('team-composer'),
+    storageKey: () => keyFor(scope),
+    onRestore: syncHistory,
+  });
+  const switchRoom = nextPath => {
+    manager.flush();
+    roomPath = String(nextPath || '');
+    scope = _teamComposerDraftScope(roomPath);
+    return manager.restore();
+  };
+  const preserveIdentity = next => {
+    const previous = keyFor(scope);
+    manager.flush();
+    scope = next;
+    if (histories.has(previous)) {
+      histories.set(keyFor(scope), histories.get(previous));
+      histories.delete(previous);
+    }
+    manager.capture();
+    if (manager.flush()) manager.clearSubmitted(previous);
+  };
+  const reconcile = nextPath => {
+    const next = _teamComposerDraftScope(nextPath);
+    if (keyFor(next) === keyFor(scope)) { roomPath = String(nextPath || ''); return false; }
+    const resolvedSameRoom = sameBase(scope, next) && roomPath === nextPath
+      && scope.roomId.startsWith('path:') && !next.roomId.startsWith('path:');
+    if (resolvedSameRoom) preserveIdentity(next);
+    else switchRoom(nextPath);
+    return !resolvedSameRoom;
+  };
+  const followRename = (oldPath, newPath) => {
+    if (roomPath !== oldPath || !sameBase(scope, _teamComposerDraftScope(oldPath))) return;
+    roomPath = newPath;
+    if (scope.roomId.startsWith('path:')) preserveIdentity({ ...scope, roomId: 'path:' + newPath });
+  };
+  return { ...manager, switchRoom, reconcile, followRename, syncInputHistory: syncHistory,
+    matchesContext: () => sameBase(scope, _teamComposerDraftScope(roomPath)) };
 })();
+window.GBTeamChatDrafts = _teamDraftManager;
 
 window.GBChatDrafts = _chatDraftManager;
 if (document.readyState === 'loading') {
@@ -1424,14 +1577,15 @@ async function createSoloTeamRoom() {
   try {
     const existing = await apiFetch(_chatApiPath('/collab/rooms'));
     const name = _chatUniqueNewRoomName(baseName, (existing || []).filter(r => r.type === 'group'));
-    const res = await apiPost(_chatApiPath('/collab/rooms'), _chatPostPayload({ name, type: 'group', members: [] }));
+    const res = await apiPost(_chatApiPath('/collab/rooms'), _chatPostPayload({ name, type: 'group', members: [], auto_name: true }));
     await loadTeamRooms();
     const roomPath = res?.path || ('group/' + name);
-    showStatus('「' + name + '」を作成しました。管理者AIに依頼すると1対1で相談できます');
+    const roomName = _teamRoomByPath(roomPath)?.name || roomPath.split('/').pop() || name;
+    showStatus('「' + roomName + '」を作成しました。管理者AIに依頼すると1対1で相談できます');
     await selectTeamRoom(roomPath);
     // 作成直後にリネームモードに入る（通常ルーム作成と同じ挙動）
     setTimeout(() => {
-      _beginTeamRoomTitleEdit(_teamRoomByPath(roomPath) || { path: roomPath, name, type: 'group' });
+      _beginTeamRoomTitleEdit(_teamRoomByPath(roomPath) || { path: roomPath, name: roomName, type: 'group' });
     }, 50);
   } catch (e) {
     showStatus('ルーム作成に失敗: ' + (e.message || ''), true);

@@ -9,7 +9,7 @@
   --sa-border: var(--border, #2b323b);
   --sa-fg: var(--fg, #d4d4d4);
   --sa-muted: var(--fg2, #969696);
-  --sa-accent: var(--accent, #569cd6);
+  --sa-accent: var(--ui-accent, var(--accent, #569cd6));
   --sa-danger: var(--red, #f44747);
   --sa-radius: 6px;
 }
@@ -124,8 +124,8 @@ textarea {
 }
 
 .sa-title-input:focus {
-  border-color: var(--accent, #569cd6);
-  outline: 2px solid color-mix(in srgb, var(--accent, #569cd6) 28%, transparent);
+  border-color: var(--sa-accent);
+  outline: 2px solid color-mix(in srgb, var(--sa-accent) 28%, transparent);
   outline-offset: 0;
 }
 
@@ -246,7 +246,7 @@ textarea {
 .sa-option-resizer:hover::before,
 .sa-option-resizer:focus-visible::before,
 body.sa-resizing-option-panel .sa-option-resizer::before {
-  background: var(--accent, var(--sa-accent));
+  background: var(--sa-accent);
 }
 
 body.sa-resizing-option-panel,
@@ -413,7 +413,7 @@ body.sa-resizing-option-panel * {
   width: 18px;
   height: 18px;
   border: 2px solid var(--border, var(--sa-border));
-  border-top-color: var(--accent, var(--sa-accent));
+  border-top-color: var(--sa-accent);
   border-radius: 999px;
   animation: sa-spin 0.8s linear infinite;
 }

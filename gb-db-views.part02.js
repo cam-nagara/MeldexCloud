@@ -71,6 +71,13 @@ function _renderDbViewTabMenuItems(container, itemList) {
       sub.className = 'gb-context-menu gb-context-submenu';
       sub.style.display = 'none';
       _renderDbViewTabMenuItems(sub, item.children || []);
+      // A touch synthesizes mouseenter before click. On a narrow screen the
+      // opened submenu overlaps this trigger and steals that same tap.
+      let touchPointer = false;
+      el.addEventListener('pointerenter', event => { touchPointer = event.pointerType !== 'mouse'; });
+      el.addEventListener('mouseenter', event => {
+        if (touchPointer && event.isTrusted) event.stopImmediatePropagation();
+      });
       if (typeof attachHoverSubmenu === 'function') attachHoverSubmenu(el, sub);
       else {
         el.addEventListener('mouseenter', () => { sub.style.display = 'block'; });
@@ -784,6 +791,7 @@ function _getKanbanConfig(dbPath, ctx) {
     : { cardImageThumbCount: 3, cardPropLineCount: 1 };
   return {
     groupBy: cfg.groupBy || '_status',
+    groupOrders: cfg.groupOrders || {},
     showEntryName: cfg.showEntryName !== false,
     showBodyExcerpt: cfg.showBodyExcerpt === true,
     thumbnailSizePx: Number(cfg.thumbnailSizePx) || 0,
@@ -1010,13 +1018,43 @@ function renderKanban(ctx) {
 
   const statusColors = new Map(_kanbanStatusDefs(dbPath).map(st => [st.name, st.color]));
 
-  columns.forEach((cards, colKey) => {
+  const groupKeys = _dbOrderedGroupKeys([...columns.keys()], kanbanCfg.groupOrders[groupByProp] || propTypes[groupByProp]?.tagOrder);
+  groupKeys.forEach(colKey => {
+    const cards = columns.get(colKey);
     const col = document.createElement('div');
     col.className = 'kanban-column';
+    col.dataset.reorderKey = colKey;
 
     // カラムヘッダー
     const colHeader = document.createElement('div');
     colHeader.className = 'kanban-column-header';
+    _dbBindReorderHandle(colHeader, {
+      label: colKey, key: colKey, root: board, selector: '.kanban-column', axis: 'x', keys: () => groupKeys,
+      disabled: () => board.dataset.reorderSaving === '1',
+      commit: async next => {
+        if (board.dataset.reorderSaving === '1') return;
+        board.dataset.reorderSaving = '1';
+        const nodes = new Map([...board.children].map(node => [node.dataset.reorderKey, node]));
+        next.forEach(key => window.GBPaneKeepAlive?.move ? GBPaneKeepAlive.move(board, nodes.get(key)) : board.appendChild(nodes.get(key)));
+        const cfg = JSON.parse(JSON.stringify(getDbViewConfig(dbPath)));
+        const view = _getCurrentDbViewConfigEntryFromConfig(cfg, { ctx });
+        if (!view) return;
+        if (!view.typeSpecific) view.typeSpecific = {};
+        const specific = view.typeSpecific.kanban || {};
+        view.typeSpecific.kanban = { ...specific, groupOrders: { ...specific.groupOrders, [groupByProp]: next } };
+        try {
+          const saved = await saveDbViewConfigImmediate(dbPath, cfg, {
+            ctx, historyLabel: 'カンバンのグループを並べ替え', onRestore: () => renderKanban(ctx),
+          });
+          if (!saved) throw new Error('保存できませんでした');
+          groupKeys.splice(0, groupKeys.length, ...next);
+          colHeader.focus({ preventScroll: true });
+        } catch (error) {
+          groupKeys.forEach(key => window.GBPaneKeepAlive?.move ? GBPaneKeepAlive.move(board, nodes.get(key)) : board.appendChild(nodes.get(key)));
+          showStatus('グループの並べ替えを保存できませんでした: ' + (error?.message || error), true);
+        } finally { delete board.dataset.reorderSaving; }
+      },
+    });
     let optionHeaderColor = '';
     if (groupByProp === '_status') {
       const dot = document.createElement('span');

@@ -12,7 +12,8 @@
 :focus-visible:not(td.active-cell):not(input):not(textarea):not(select):not([contenteditable="true"]):not(.chat-rich-input):not(.gb-input):not(.gb-input-sm):not(.gb-textarea):not(.tb-input):not(.gb-map-places .gb-btn) {
   outline: 2px solid var(--a11y-focus-ring) !important;
   outline-offset: 2px !important;
-  box-shadow: 0 0 0 3px var(--a11y-focus-shadow) !important;
+  /* 四辺のフォーカス枠は outline だけで描き、影で二重にしない。 */
+  box-shadow: none !important;
 }
 
 .bd-node:focus-visible,

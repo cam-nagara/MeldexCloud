@@ -3,6 +3,10 @@
 const DB_FORM_UNSUPPORTED_TYPES = new Set(['formula', 'rollup', 'button', 'chat']);
 const DB_FORM_PUBLIC_HIDDEN_TYPES = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation']);
 
+function _dbFormIsAutomaticColumn(config) {
+  return config?.type === 'multi-source-relation' && config.mode === 'auto';
+}
+
 function makeDefaultFormViewConfig(props, propTypes) {
   const fields = (props || []).filter(p => !DB_FORM_UNSUPPORTED_TYPES.has(propTypes?.[p]?.type));
   return {
@@ -30,11 +34,11 @@ function normalizeDbFormConfig(config, props, propTypes) {
     ...base,
     ...src,
     fields,
-    required: Array.isArray(src.required) ? src.required.filter(p => fields.includes(p)) : [],
-    descriptions: src.descriptions && typeof src.descriptions === 'object' ? src.descriptions : {},
-    placeholders: src.placeholders && typeof src.placeholders === 'object' ? src.placeholders : {},
-    labels: src.labels && typeof src.labels === 'object' ? src.labels : {},
-    entityNameProp: fields.includes(src.entityNameProp) ? src.entityNameProp : '',
+    required: Array.isArray(src.required) ? src.required.filter(p => fields.includes(p) && !_dbFormIsAutomaticColumn(propTypes?.[p])) : [],
+    descriptions: Object.assign(Object.create(null), src.descriptions && typeof src.descriptions === 'object' ? src.descriptions : {}),
+    placeholders: Object.assign(Object.create(null), src.placeholders && typeof src.placeholders === 'object' ? src.placeholders : {}),
+    labels: Object.assign(Object.create(null), src.labels && typeof src.labels === 'object' ? src.labels : {}),
+    entityNameProp: fields.includes(src.entityNameProp) && !_dbFormIsAutomaticColumn(propTypes?.[src.entityNameProp]) ? src.entityNameProp : '',
   };
 }
 
@@ -130,9 +134,11 @@ function renderDbFormView(ctx) {
   root.style.display = 'flex';
   const pivot = ctx.pivotData || state.pivotData || { properties: [] };
   const propTypes = getPropertyTypes(dbPath, ctx) || {};
+  // Empty/new columns are part of the schema even before any answer uses them.
+  const availableProps = [...new Set([...(pivot.properties || []), ...Object.keys(propTypes)])];
   const formProps = typeof filterDeletedDbProperties === 'function'
-    ? filterDeletedDbProperties(dbPath, pivot.properties || [])
-    : (pivot.properties || []);
+    ? filterDeletedDbProperties(dbPath, availableProps)
+    : availableProps;
   let cfg = getActiveFormConfig(dbPath, formProps, propTypes, ctx);
   root.innerHTML = '';
   root.classList.add('gb-form-view');
@@ -268,6 +274,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx, saveOverri
     const option = document.createElement('option');
     option.value = prop;
     option.textContent = prop || '(自動生成)';
+    option.disabled = _dbFormIsAutomaticColumn(propTypes?.[prop]);
     option.selected = (cfg.entityNameProp || '') === prop;
     entityNameSelect.appendChild(option);
   });
@@ -337,7 +344,8 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx, saveOverri
     foot.className = 'gb-check';
     const required = document.createElement('input');
     required.type = 'checkbox';
-    required.checked = cfg.required.includes(prop);
+    required.disabled = _dbFormIsAutomaticColumn(propTypes?.[prop]);
+    required.checked = !required.disabled && cfg.required.includes(prop);
     _dbFormSetControlIdentity(required, cfg, prop, 'required-checkbox', '必須: ' + prop);
     const requiredText = document.createElement('span');
     requiredText.textContent = '必須';
@@ -353,7 +361,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx, saveOverri
       save();
     });
     row.appendChild(foot);
-    if (globalThis.MeldexDbFormDesigner) MeldexDbFormDesigner.appendRules(row, cfg, prop, type, save);
+    if (globalThis.MeldexDbFormDesigner && !_dbFormIsAutomaticColumn(propTypes?.[prop])) MeldexDbFormDesigner.appendRules(row, cfg, prop, type, save);
     wrap.appendChild(row);
   });
   const submitRow = document.createElement('div');
@@ -511,7 +519,11 @@ function _buildFormInputRow(prop, cfg, ptc) {
   input.dataset.e2eId = _dbFormControlIdentity(cfg, prop, type === 'long-text' ? 'textarea' : type);
   if (cfg.placeholders[prop]) input.placeholder = cfg.placeholders[prop];
   if (cfg.required.includes(prop)) input.required = true;
-  if (globalThis.MeldexDbFormModel) {
+  if (_dbFormIsAutomaticColumn(ptc)) {
+    input.disabled = true; input.required = false;
+    input.placeholder = '自動収集（読み取り専用）';
+  }
+  if (globalThis.MeldexDbFormModel && !_dbFormIsAutomaticColumn(ptc)) {
     const rule = MeldexDbFormModel.ruleFor(cfg, prop);
     for (const key of ['min', 'max'])
       if (rule[key] !== undefined && rule[key] !== '') input[key] = rule[key];
@@ -534,7 +546,7 @@ function _buildFormInputRow(prop, cfg, ptc) {
 }
 
 async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
-  const fields = { ...(options.fixedFields || {}) };
+  const fields = Object.assign(Object.create(null), options.fixedFields || {});
   for (const prop of cfg.fields) {
     const safeName = MeldexEscape.cssIdent(prop);
     const input = form.querySelector(`[name="${safeName}"]`);
@@ -587,9 +599,8 @@ async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
 
 function _isBetaFeedbackFormConfig(cfg) {
   return !!(
-    cfg?.betaFeedbackRelay
+    cfg?.betaFeedbackRelay === true
     || String(cfg?.id || '') === 'meldex-beta-feedback-form'
-    || String(cfg?.headerTitle || '').includes('フィードバック')
   );
 }
 
@@ -644,7 +655,9 @@ function _recordFormCreatedResponse(form, dbPath, result, options) {
     : typeof selectDatabase === 'function' ? selectDatabase(dbPath, options.ctx, { silent: true, skipNavPush: true }) : null;
   historyPush('フォーム: 回答を追加', async () => {
     await before();
-    const removed = await identity.deleteEntries({ dbPath, ctx: options.ctx, entries: [entry], source: 'form-response-undo' });
+    const confirmation = await window.MeldexDeleteImpactWarning?.authorizeReversibleDelete?.([{ path: entry.path, kind: 'file' }]);
+    if (!confirmation?.confirmed) throw new Error('回答を取り消すための参照確認に失敗しました');
+    const removed = await identity.deleteEntries({ dbPath, ctx: options.ctx, entries: [entry], confirmation, source: 'form-response-undo' });
     refs = (removed.trashRefs || []).filter(ref => ref?.trash_name);
     if (removed.failures?.length) throw removed.failures[0].error;
     await refresh();
@@ -675,6 +688,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     // Validate before image upload as well, so invalid sibling fields create no attachments.
     if (globalThis.MeldexDbFormModel) {
       for (const prop of cfg.fields || []) {
+        if (_dbFormIsAutomaticColumn(propTypes[prop])) continue;
         const input = [...form.elements].find(item => item.name === prop);
         if (!input || input.disabled) continue;
         const type = propTypes[prop]?.type || 'text';
@@ -684,7 +698,31 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
         if (error) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); input.reportValidity(); throw new Error(error); }
       }
     }
-    const fields = await _collectDbFormFields(form, cfg, propTypes, { ...options, previewOnly: !!options.previewOnly, dbPath });
+    const reliableCreate = !cfg.betaFeedbackRelay && !cfg.customInstructionsRelay && !options.previewOnly;
+    const controls = Array.from(form.elements || []);
+    const fingerprint = JSON.stringify((cfg.fields || []).map(prop => {
+      const input = controls.find(item => item.name === prop);
+      return [prop, input?.type === 'checkbox' ? !!input.checked : input?.value || '', !!input?.disabled];
+    }));
+    const files = controls.filter(input => input.type === 'file').flatMap(input => Array.from(input.files || []));
+    const pending = reliableCreate ? form._dbFormCreateRequest : null;
+    let sameFiles = !pending || pending.files.length === files.length;
+    if (pending && sameFiles) for (let index = 0; index < files.length; index++) {
+      const before = pending.files[index], after = files[index];
+      if (before === after) continue;
+      if (before.name !== after.name || before.size !== after.size || before.type !== after.type) { sameFiles = false; break; }
+      // Reselecting the original file creates another File object. Compare bytes
+      // only in that case, so ordinary retry reuses the upload without more I/O.
+      const first = new Uint8Array(await crypto.subtle.digest('SHA-256', await before.arrayBuffer()));
+      const second = new Uint8Array(await crypto.subtle.digest('SHA-256', await after.arrayBuffer()));
+      if (first.some((value, byte) => value !== second[byte])) { sameFiles = false; break; }
+    }
+    if (pending && (pending.fingerprint !== fingerprint || !sameFiles)) {
+      throw new Error('前の送信結果が未確認です。入力を元に戻して再試行してください。変更中の入力は保持しています。');
+    }
+    // Reuse already-uploaded attachments while an acknowledgement is uncertain.
+    const fields = pending ? JSON.parse(JSON.stringify(pending.fields))
+      : await _collectDbFormFields(form, cfg, propTypes, { ...options, previewOnly: !!options.previewOnly, dbPath });
     if (globalThis.MeldexDbFormModel) {
       const sheetRules = typeof getValidationRules === 'function' ? getValidationRules(dbPath) : [];
       for (const prop of cfg.fields || []) {
@@ -711,6 +749,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       fields['送信結果・失敗理由'] = '開発者への送信結果を確認しています。';
     }
     for (const prop of cfg.required || []) {
+      if (_dbFormIsAutomaticColumn(propTypes[prop])) continue;
       const type = propTypes[prop]?.type || 'text';
       if (type === 'checkbox') {
         if (fields[prop] !== 'true') throw new Error(prop + ' は必須です');
@@ -732,7 +771,15 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       if (validation?.ok === false) throw new Error(_customInstructionRelayErrorMessage(validation));
     }
     if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
-    const createResult = await apiPost('/entity/create', { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false });
+    // A transport error does not tell us whether the answer was committed.
+    // Keep the same operation until its acknowledgement is received.
+    const createRequest = { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false };
+    if (reliableCreate) {
+      form._dbFormCreateOperation ||= crypto.randomUUID();
+      form._dbFormCreateRequest ||= {fingerprint,files,fields:JSON.parse(JSON.stringify(fields))};
+      createRequest.operation_id = form._dbFormCreateOperation;
+    }
+    const createResult = await apiPost('/entity/create', createRequest);
     if (!cfg.betaFeedbackRelay && !cfg.customInstructionsRelay) _recordFormCreatedResponse(form, dbPath, createResult, options);
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
@@ -758,6 +805,8 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     form.reset();
     form.querySelectorAll('[data-form-dirty]').forEach(input => { input.dataset.formDirty = 'false'; });
     delete form._dbFormPendingName;
+    delete form._dbFormCreateOperation;
+    delete form._dbFormCreateRequest;
     form._dbFormSubmitting = false;
     if (options.onCreated) await options.onCreated(createResult);
     else if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });

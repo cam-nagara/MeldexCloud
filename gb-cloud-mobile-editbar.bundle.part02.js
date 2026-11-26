@@ -1,3 +1,65 @@
+    try {
+      if (typeof ann !== 'undefined' && ann?.tool) return ann.tool;
+    } catch (_err) {
+      // ann is owned by the annotation module.
+    }
+    return 'pen';
+  }
+
+  function _setAnnotationTool(tool) {
+    if (typeof _annotationSelectTool === 'function') {
+      _annotationSelectTool(tool);
+      _syncAnnotationBarState();
+      return true;
+    }
+    const button = Array.from(document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]'))
+      .find(el => el.dataset.tool === tool);
+    if (button) {
+      button.click();
+    } else {
+      try {
+        if (typeof ann !== 'undefined') ann.tool = tool;
+      } catch (_err) {}
+    }
+    _syncAnnotationBarState();
+    return true;
+  }
+
+  function _openAnnotationMobileToolMenu(anchor, group) {
+    const items = _annMobileGroupMembers(group);
+    document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
+    const menu = document.createElement('div');
+    menu.className = 'ann-tool-popup'; menu.setAttribute('role', 'menu');
+    items.forEach(item => {
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'ann-tool-popup-item';
+      option.dataset.annSelectTool = item.tool; option.textContent = item.label;
+      option.addEventListener('click', () => { _setAnnotationTool(item.tool); menu.remove(); });
+      menu.appendChild(option);
+    });
+    document.body.appendChild(menu);
+    positionPopup(menu, anchor.getBoundingClientRect(), { prefer: 'above', gap: 6 });
+    menu.querySelector('button')?.focus();
+  }
+
+  function _annotationWidthInput() {
+    const tool = _currentAnnotationTool();
+    return document.querySelector(`[data-ann-width-tool="${tool}"]`)
+      || document.querySelector('[data-ann-width-tool="pen"]');
+  }
+
+  function _stepAnnotationWidth(delta) {
+    const input = _annotationWidthInput();
+    if (!input) return false;
+    const step = Number(input.step || 1) || 1;
+    const min = Number(input.min || 1);
+    const max = Number(input.max || 64);
+    const current = Number(input.value || input.defaultValue || min);
+    const next = Math.max(min, Math.min(max, current + (delta || 0) * step));
+    input.value = String(next);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }
 
   function _openAnnotationColor() {
     const swatch = document.getElementById('ann-color-swatch');
@@ -634,7 +696,21 @@
     const header = document.createElement('div');
     header.className = 'cloud-mobile-sheet-header';
     const title = document.createElement('strong');
-    title.textContent = 'ボード';
+    const currentBoardTitle = typeof _bdToolbarRoot === 'function'
+      ? _bdToolbarRoot()?.querySelector('[data-bd-control="title"],#bd-title')?.textContent?.trim() : '';
+    title.textContent = currentBoardTitle || (typeof bd !== 'undefined' && bd.label) || 'ボード';
+    title.dataset.cloudMobileBoardTitle = '1';
+    title.setAttribute('role', 'button');
+    title.setAttribute('aria-label', 'ボード名を編集');
+    title.title = 'ボード名を編集';
+    title.tabIndex = 0;
+    const editTitle = () => window._bdStartInlineBoardTitleEdit?.(title);
+    title.addEventListener('click', editTitle);
+    title.addEventListener('keydown', event => {
+      if (event.target !== title || !['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      editTitle();
+    });
     header.appendChild(title);
     const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet);
     closeButton.dataset.cloudMobileMenuAction = 'close';
@@ -822,25 +898,3 @@
       annToolbar.addEventListener('click', () => setTimeout(_scheduleRefresh, 0), true);
       new MutationObserver((records) => {
         if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
-      }).observe(annToolbar, {
-        attributes: true,
-        attributeFilter: ['class', 'style'],
-        attributeOldValue: true,
-        subtree: true,
-      });
-    }
-    document.getElementById('btn-overlay-toggle')?.addEventListener('click', () => setTimeout(_scheduleRefresh, 0), true);
-    _scheduleRefresh();
-  }
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _bind, { once: true });
-  else _bind();
-
-  window.MeldexCloudMobileEditBar = {
-    refresh: _refresh,
-    openMenu: _openMenuSheet,
-    openToolMenu: _openToolMenuSheet,
-    closeMenu: _closeMenuSheet,
-    closeOverflow: _closeOverflowSheet,
-  };
-})();

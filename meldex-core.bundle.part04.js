@@ -1,3 +1,17 @@
+            target: null,
+          };
+          data.tail = newTail;
+          delete data.tailX;
+          delete data.tailY;
+          if (note._annTailCtx) {
+            note._annTailCtx.data.tail = newTail;
+            delete note._annTailCtx.data.tailX;
+            delete note._annTailCtx.data.tailY;
+          }
+          AnnotationStickyTail.setTail(note, newTail, null);
+        }
+        persistTailState();
+      };
 
       const colorItem = createMenuButton({ label: '色を変更', icon: 'palette', action: 'color' });
       colorItem.addEventListener('click', () => {
@@ -470,7 +484,7 @@
       _ann.targetPath = msg.targetPath || '';
       svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
       svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
+      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)';
       else svg.style.outline = '';
       hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
       _updateSize();
@@ -884,17 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
 
   svg.addEventListener('pointerup', async () => {
     if (!_ann.drawing) return;
-    _ann.drawing = false;
-    layer.querySelector('.ann-preview')?.remove();
-    if (_ann.path.length < 2) {
-      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
-      return;
-    }
-    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
-    const data = type === 'rect' ? _saRectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
-    const targetPath = _ann.targetPath || _saCurrentTargetPath();
-    if (!targetPath || _saCurrentTargetPath() !== targetPath) {
-      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
-      return;
-    }
-    try {

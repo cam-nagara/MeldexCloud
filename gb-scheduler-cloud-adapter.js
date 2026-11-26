@@ -961,7 +961,7 @@
       cost: {
         planned: missingRates.length ? null : Math.round(planned * 100) / 100,
         actual: null, currency: 'JPY', missingRates,
-        actualUnavailableReason: '勤怠実績時間を取得できません',
+        actualUnavailableReason: '実績コストはまだ計算していません',
       },
     };
   }

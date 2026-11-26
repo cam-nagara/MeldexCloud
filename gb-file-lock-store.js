@@ -467,13 +467,14 @@
 
   async function _guardRename(provider, body) {
     const oldPath = _normalizeFolderPath(body?.old_path || '');
-    const newName = _validateItemName(body?.new_name || '', 'new_name');
+    const boardTitle = body?.type === 'board' ? window.GBPathUtils?.displayTitle : null;
+    const newName = boardTitle ? boardTitle.storageName(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
     const source = await _resolveEntryHandle(provider, oldPath);
     if (!source) return;
     await requireUnlocked(provider, oldPath, { action: 'rename-source', includeDescendants: source.kind === 'directory' });
     const parentPath = _dirname(oldPath);
     const sourceName = _basename(oldPath);
-    const nextPath = source.kind === 'directory'
+    const nextPath = boardTitle && body?.title_only === true ? oldPath : source.kind === 'directory'
       ? _joinPath(parentPath, newName)
       : _joinPath(parentPath, newName + _splitNameAndExt(sourceName).ext);
     if (nextPath !== oldPath) await requireUnlocked(provider, nextPath, { action: 'rename-destination' });
@@ -584,6 +585,7 @@
       '/outliner/duplicate',
       '/outliner/save-as',
       '/outliner/move',
+      '/outliner/move-batch',
       '/version/restore',
       '/version/restore-folder',
       '/trash/restore',
@@ -620,6 +622,11 @@
       await _guardSaveAs(provider, body || {});
     } else if (pathname === '/outliner/move' && method === 'POST') {
       await _guardMove(provider, body || {});
+    } else if (pathname === '/outliner/move-batch' && method === 'POST') {
+      // まとめての移動は、1件ずつ同じ確認を通す（1件でもロック中なら要求ごと断る）
+      for (const item of Array.isArray(body?.items) ? body.items : []) {
+        await _guardMove(provider, { path: item?.path || '', dest_folder: body?.dest_folder || '' });
+      }
     } else if (pathname === '/version/restore' && method === 'POST') {
       await requireUnlocked(provider, body?.path || '', { action: 'version-restore' });
     } else if (pathname === '/version/restore-folder' && method === 'POST') {

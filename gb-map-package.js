@@ -105,14 +105,18 @@
   }
   async function build(plan, loadAsset, zip, check = () => {}) {
     check();
+    const load = async name => {
+      try { return await loadAsset(name); }
+      catch (error) { throw new Error('閲覧用ファイルを取得できません: ' + name + '（' + error.message + '）', { cause: error }); }
+    };
     // The HTML template is served as text so the app's HTML bootstrap (local
     // session credentials) is never injected into a portable document.
-    const entries = await Promise.all(assets.map(async name => ({ name: name === 'map-package-viewer.txt' ? 'index.html' : name, data: await loadAsset(name) })));
+    const entries = await Promise.all(assets.map(async name => ({ name: name === 'map-package-viewer.txt' ? 'index.html' : name, data: await load(name) })));
     check();
     // 地点に使った記号の画像だけを入れる（全種類は入れない）。
     const display = globalThis.MeldexMapDisplay || require('./gb-map-display.js');
     const stamps = [...new Set((plan.data.maps || []).flatMap(map => (map.doc?.features || []).map(feature => feature.stamp)).filter(id => display.stampIds.has(id)))];
-    for (const id of stamps) entries.push({ name: display.stampURL(id), data: await loadAsset(display.stampURL(id)) });
+    for (const id of stamps) entries.push({ name: display.stampURL(id), data: await load(display.stampURL(id)) });
     check();
     entries.push({ name: 'package-data.js', data: new TextEncoder().encode(dataScript(plan.data)) });
     entries.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify({ fileType: plan.data.fileType, schema_version: 1,

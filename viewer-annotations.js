@@ -48,7 +48,8 @@
         if (!window.parent.MeldexRuntimeAdapter?.isBrowserDataMode?.()) window.parent.MeldexDiagnostics.recordSheetIncident(kind, entry);
       } else if (!window.MeldexStandaloneNative && !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
         window.apiFetch('/diagnostics/sheet-incident', { method: 'POST', body: JSON.stringify(entry),
-          headers: { 'Content-Type': 'application/json' }, silentError: true }).catch(() => {});
+          headers: { 'Content-Type': 'application/json' }, silentError: true,
+          requireRemoteCommit: true }).catch(() => {});
       }
     } catch {}
   }
@@ -160,23 +161,68 @@
   // 「今開いている画像のアノテートを読み込み終えた」タイミングを間接的に把握できる）。
   const localHistory = [], localRedo = [];
   let localHistoryBusy = false;
+  async function applyLocalAnnotationRows(targetRows, previousRows, completed) {
+    const target = targetRows || [], previous = previousRows || [];
+    const targetIds = new Set(target.map(row => String(row.id)));
+    const previousById = new Map(previous.map(row => [String(row.id), row]));
+    try {
+      for (const row of target) {
+        const key = 'restore:' + row.id;
+        if (completed.has(key)) continue;
+        const old = previousById.get(String(row.id));
+        await window.apiPost('/annotations/restore', { ...row,
+          ...(old ? { expected_modified: old.modified || old.created } : { expected_absent: true }) });
+        completed.add(key);
+      }
+      for (const row of previous) {
+        const key = 'delete:' + row.id;
+        if (targetIds.has(String(row.id)) || completed.has(key)) continue;
+        await window.apiDelete('/annotations/' + encodeURIComponent(row.id)
+          + '?expected_modified=' + encodeURIComponent(row.modified || row.created || ''));
+        completed.add(key);
+      }
+    } finally {
+      await SceneEngine().rebuild();
+      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+    }
+  }
+  function localAnnotationBatch(history) {
+    const before = history.beforeRows || [], after = history.afterRows || [];
+    const undoCompleted = new Set(), redoCompleted = new Set();
+    const replay = async (target, previous, completed) => {
+      await applyLocalAnnotationRows(target, previous, completed);
+      undoCompleted.clear(); redoCompleted.clear();
+    };
+    return { undo: () => replay(before, after, undoCompleted), redo: () => replay(after, before, redoCompleted) };
+  }
   async function replayLocalHistory(redo) {
     if (localHistoryBusy || window.parent !== window) return false;
     const from = redo ? localRedo : localHistory, to = redo ? localHistory : localRedo;
     const entry = from.at(-1);
     if (!entry) return false;
     const desired = redo ? entry.after : entry.before, previous = redo ? entry.before : entry.after;
+    if (entry.undo && window.MeldexEmbeddedMetadata?.hasPendingMemos?.()) {
+      Scene()?.flashStatus?.('メモの保存が終わってから履歴を操作してください', 5000);
+      return false;
+    }
     localHistoryBusy = true;
     try {
-      if (desired) await window.apiPost('/annotations/restore', { ...desired,
+      if (entry.undo) await (redo ? entry.redo : entry.undo)();
+      else if (desired) await window.apiPost('/annotations/restore', { ...desired,
         ...(previous ? { expected_modified: previous.modified || previous.created } : { expected_absent: true }) });
       else await window.apiDelete('/annotations/' + encodeURIComponent(previous.id)
         + '?expected_modified=' + encodeURIComponent(previous.modified || previous.created || ''));
       from.pop(); to.push(entry);
-      await SceneEngine().rebuild();
-      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+      if (!entry.undo) {
+        await SceneEngine().rebuild();
+        window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+      }
       return true;
-    } catch (error) { SceneEngine().viewerAnnotationSaveFailed(error, 'アノテートの履歴を適用できませんでした'); return false; }
+    } catch (error) {
+      if (entry.undo) Scene()?.flashStatus?.('履歴を適用できませんでした: ' + (error?.message || error), 5000);
+      else SceneEngine().viewerAnnotationSaveFailed(error, 'アノテートの履歴を適用できませんでした');
+      return false;
+    }
     finally { localHistoryBusy = false; }
   }
   document.addEventListener('keydown', event => {
@@ -187,9 +233,19 @@
     event.preventDefault(); event.stopImmediatePropagation();
     void replayLocalHistory(key === 'y' || event.shiftKey);
   }, true);
+  // 単独版では共通の本体履歴がない。評価・メモも注釈と同じ順序で戻す。
+  window.MeldexViewerHistory = Object.freeze({
+    push(label, undo, redo) {
+      if (window.parent !== window || localHistoryBusy || typeof undo !== 'function' || typeof redo !== 'function') return false;
+      localHistory.push({ label, undo, redo }); localRedo.length = 0;
+      return true;
+    },
+  });
   window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error, result, history) {
     if (ok && history && window.parent === window && !localHistoryBusy) {
-      localHistory.push(structuredClone(history)); localRedo.length = 0;
+      const batch = Array.isArray(history.beforeRows) || Array.isArray(history.afterRows);
+      localHistory.push(batch ? localAnnotationBatch(structuredClone(history)) : structuredClone(history));
+      localRedo.length = 0;
     }
     if (ok) window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
     _postToParent({
@@ -197,7 +253,8 @@
       ok: !!ok,
       action: action || '',
       highlightRequestId: result?.highlightRequestId || '',
-      targetPath: history?.after?.target_path || history?.before?.target_path || _currentTargetPath(),
+      targetPath: history?.after?.target_path || history?.before?.target_path
+        || history?.afterRows?.[0]?.target_path || history?.beforeRows?.[0]?.target_path || _currentTargetPath(),
       pageIndex: _currentPageIndex(),
       annotationRevision: ok ? String(result?.annotationRevision || '') : '',
       invalidatedTargets: ok && Array.isArray(result?.invalidatedTargets) ? result.invalidatedTargets : [],
@@ -205,6 +262,22 @@
       error: error ? String(error?.message || error) : '',
       errorCode: ok ? '' : _classifyErrorCode(error),
     });
+  };
+  // この操作が渡す保存結果だけを束ねる。他の操作の非同期保存を取り込まない。
+  window.__viewerAnnotationWithHistoryBatch = async function withHistoryBatch(run) {
+    const entries = [];
+    const publish = window.__viewerAnnotationReportSave;
+    const report = (ok, action, error, result, history) => {
+      if (ok && history && (history.before?.id || history.after?.id)) entries.push(structuredClone(history));
+      publish(ok, action, error, result, null);
+    };
+    try { return await run(report); }
+    finally {
+      if (entries.length) publish(true, 'delete', null, {}, {
+        beforeRows: entries.map(entry => entry.before).filter(Boolean),
+        afterRows: entries.map(entry => entry.after).filter(Boolean),
+      });
+    }
   };
 
   document.addEventListener('pointerdown', () => { if (_usesParentToolbar()) _postToParent({ type: 'viewer-ann-pointer-target', targetPath: _currentTargetPath() }); }, true);
@@ -252,7 +325,7 @@
     _syncToolbar();
   }
 
-  // 下端ツールバーのアノテートボタンの押下状態を合わせる。
+  // 上端ツールバーのアノテートボタンの押下状態を合わせる。
   function _syncToolbarButton(active) {
     const button = document.getElementById('btn-annotation');
     if (!button) return;
@@ -436,23 +509,26 @@
     appId: 'viewer-metadata',
     getCloseState() {
       const drawing = isDrawing();
+      const pendingNotes = !!window.MeldexViewerAnnotationNotes?.hasUnsaved?.();
+      const pending = drawing || pendingNotes;
       return {
         appId: 'viewer-metadata',
-        state: drawing ? 'editing' : 'clean',
-        pendingLocal: drawing,
+        state: pending ? 'editing' : 'clean',
+        pendingLocal: pending,
         saving: drawing,
         failed: false,
         unnamed: false,
-        hasSnapshot: !drawing,
+        hasSnapshot: !pending,
         hasFinalDestination: true,
-        shouldWarn: drawing,
-        message: drawing ? '描画中のアノテートを確定しています' : '',
+        shouldWarn: pending,
+        message: pendingNotes ? '未保存の付箋があります。本文の編集を終えるか、再試行してください'
+          : drawing ? '描画中のアノテートを確定しています' : '',
       };
     },
     async prepareClose() {
       const flushed = SceneEngine()?.flushDrawing?.();
       if (flushed) await new Promise(resolve => setTimeout(resolve, 0));
-      return !isDrawing();
+      return !isDrawing() && !window.MeldexViewerAnnotationNotes?.hasUnsaved?.();
     },
     flushLocal() {
       return window.MeldexStandaloneOfflineOutbox?.readQueue?.().then(() => true, () => false) ?? true;

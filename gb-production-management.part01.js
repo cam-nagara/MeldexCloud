@@ -289,8 +289,21 @@
   }
 
   async function _pmReadCalendarStore(provider, internals, name) {
-    const rows = await internals._readJsonSafe(provider, _pmCalendarStorePath(internals, name), []);
-    return Array.isArray(rows) ? rows : [];
+    const path = _pmCalendarStorePath(internals, name);
+    let rows;
+    if (typeof provider.readBytesSnapshot === 'function') {
+      // 共有更新ロックの取得後も、通常のreadJsonは他アカウントの更新前の写しを返し得る。
+      // 内容と保存元の版を同じダウンロードで更新し、その版でカレンダーへ書き戻す。
+      try {
+        const snapshot = await provider.readBytesSnapshot(path);
+        rows = JSON.parse(new TextDecoder().decode(snapshot.bytes));
+      } catch (error) {
+        if (Number(error?.status) === 404 || /not_found|ファイルが見つかりません/i.test(String(error?.message || ''))) return [];
+        throw error;
+      }
+    } else rows = await internals._readJsonSafe(provider, path, []);
+    if (!Array.isArray(rows)) throw _pmCloudError(503, 'カレンダー情報を読み込めません。接続を確認して再試行してください');
+    return rows;
   }
 
   async function _pmWriteCalendarStore(provider, internals, name, rows) {

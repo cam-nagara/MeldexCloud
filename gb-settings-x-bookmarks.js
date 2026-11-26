@@ -8,6 +8,8 @@
   let syncInFlight = false;
   let _currentSchedule = null;
   let _scheduleWidget = null;
+  let loadedSettings = {};
+  let saveQueue = Promise.resolve();
 
   function isCloudSurface() {
     return window.isCloudStaticImportSurface?.() === true;
@@ -23,14 +25,23 @@
       token_url: getInputValue('x-bookmarks-token-url'),
       api_base: getInputValue('x-bookmarks-api-base'),
       scheduled_include_folders: document.getElementById('x-bookmarks-scheduled-folders')?.checked === true,
-      scheduled_translate: document.getElementById('x-bookmarks-scheduled-translate')?.checked === true,
+      scheduled_translate: document.getElementById('x-bookmarks-scheduled-translate')?.checked ?? loadedSettings.scheduled_translate === true,
+      manual_include_replies: document.getElementById('x-bookmarks-include-replies')?.checked ?? loadedSettings.manual_include_replies !== false,
+      account_include_replies: document.getElementById('x-account-posts-include-replies')?.checked ?? loadedSettings.account_include_replies === true,
     };
   }
 
   function applySettingsPayload(config) {
     if (!config || typeof config !== 'object') return;
+    loadedSettings = { ...loadedSettings, ...config };
+    config = loadedSettings;
     setInputValue('x-bookmarks-save-dir', config.save_dir || 'Xブックマーク');
-    setInputValue('x-bookmarks-max-results', config.max_results || 100);
+    const count = document.getElementById('x-bookmarks-max-results');
+    const limit = String(config.max_results || 100);
+    if (count && !Array.from(count.options).some(option => option.value === limit)) {
+      count.add(new Option(`最新${limit}件`, limit));
+    }
+    setInputValue('x-bookmarks-max-results', limit);
     setInputValue('x-bookmarks-client-id', config.client_id || '');
     setInputValue('x-bookmarks-redirect-uri', config.redirect_uri || '');
     setInputValue('x-bookmarks-auth-url', config.auth_url || '');
@@ -40,6 +51,10 @@
     if (folders) folders.checked = config.scheduled_include_folders === true;
     const translate = document.getElementById('x-bookmarks-scheduled-translate');
     if (translate) translate.checked = config.scheduled_translate === true;
+    const replies = document.getElementById('x-bookmarks-include-replies');
+    if (replies) replies.checked = config.manual_include_replies !== false;
+    const accountReplies = document.getElementById('x-account-posts-include-replies');
+    if (accountReplies) accountReplies.checked = config.account_include_replies === true;
   }
 
   async function loadSharedSettings() {
@@ -52,12 +67,13 @@
   async function saveSharedSettings(payload) {
     if (typeof apiFetch !== 'function') return { available: false };
     const current = await apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, { silentError: true });
-    const body = { payload };
+    const body = { payload: { ...current?.payload, ...payload } };
     if (current?.available !== false) body.expectedRevision = current?.revision || null;
-    return apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, {
+    const saved = await apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body), silentError: true,
     });
+    return { ...saved, previousPayload: current?.payload || {} };
   }
 
   function icon(name, size) {
@@ -70,9 +86,12 @@
   }
 
   function setStatus(message, isError, options = {}) {
-    const el = document.getElementById('x-bookmarks-status-message');
+    const connectionPage = document.querySelector('.settings-modal')?.dataset.settingsActivePageId === 'x-connection';
+    const el = document.getElementById(connectionPage ? 'x-connection-status-message' : 'x-bookmarks-status-message');
     if (!el) return;
     el.textContent = message || '';
+    if (options.detail) { el.dataset.gbTooltip = options.detail; el.tabIndex = 0; }
+    else { delete el.dataset.gbTooltip; el.removeAttribute('tabindex'); }
     el.style.color = isError ? 'var(--danger)' : 'var(--fg2)';
     const action = document.getElementById('x-bookmarks-credits-action');
     if (!action) return;
@@ -108,6 +127,7 @@
   }
 
   function syncSummary(data, prefix) {
+    if (data?.dry_run_count != null) prefix = `${prefix || ''} フォルダ修復: 書き込み前${data.dry_run_count}件（自動バックアップ済み・設定から取り消し可能）。`;
     const fetched = Number(data?.fetched || 0);
     const requested = Number(data?.requested_limit || 0);
     const pages = Number(data?.pages || 0);
@@ -119,9 +139,10 @@
       : (data?.folder_error ? ' / フォルダ取得失敗' : '');
     const folderStateText = ` / フォルダ未取得${data?.folder_pending || 0} / 再試行待ち${data?.folder_failed || 0}`;
     const itemText = `新規${data?.created || 0} / 更新${data?.updated || 0} / スキップ${data?.skipped || 0} / 画像${data?.downloaded_media || 0} / 投稿者アイコン${data?.downloaded_author_icons || 0} / 画像失敗${data?.media_failed || 0} / アイコン失敗${data?.author_icon_failed || 0}${folderText}`;
+    const completenessText = data?.membership_complete === false ? ' / フォルダ全件確認は未完了（Xから続きの確認情報なし）' : '';
     const reasonText = reason ? ` / 停止: ${reason}` : '';
     const translationText = ` / 今回の翻訳${data?.translated_existing || 0}件・未翻訳${data?.translation_pending_existing || 0}件 / 返信${data?.replies || 0}件・返信翻訳待ち${data?.translation_pending_replies || 0}件・返信取得失敗${data?.reply_unavailable || 0}件`;
-    return `${prefix || ''}${countText}${pageText} / ${itemText}${folderStateText}${translationText}${reasonText}`;
+    return `${prefix || ''}${countText}${pageText} / ${itemText}${folderStateText}${translationText}${completenessText}${reasonText}`;
   }
 
   function openUrl(url) {
@@ -137,22 +158,30 @@
     const container = document.getElementById(rootId);
     if (!container || typeof apiFetch !== 'function') return;
     if (isCloudSurface()) {
+      if (options.connectionOnly) return;
       try {
         const shared = await loadSharedSettings();
         setText('x-bookmarks-connection', 'Cloud版: 共通設定を利用');
         setText('x-bookmarks-client-state', shared?.exists ? 'デスクトップ版と同期済み' : '共通設定は未保存');
-        setStatus('Cloudで接続設定を保存できます。Xの認証と取得は、下の引き継ぎ操作からデスクトップ版で続けてください。', false);
+        setStatus('接続・取得はデスクトップ版で実行します。', false);
       } catch (err) {
         setStatus('共通設定を取得できませんでした: ' + (err.userMessage || err.message || err), true);
       }
       return;
     }
-    if (!options?.preserveStatus) setStatus('X連携の状態を確認しています...', false);
+    if (!options?.preserveStatus && !options.connectionOnly) setStatus('X連携の状態を確認しています...', false);
     try {
       const data = await apiFetch('/x-bookmarks/status', { silentError: true });
       const user = data.user || {};
       setText('x-bookmarks-connection', data.connected ? `接続済み: @${user.username || ''}` : '未接続');
       const config = data.config || {};
+      setText('x-bookmarks-client-state', config.client_id_configured ? 'X接続設定済み' : 'X接続用Client IDが未設定');
+      if (options.connectionOnly) {
+        window.dispatchEvent(new CustomEvent('meldex:x-connection-changed', { detail: { connected: data.connected, user: data.user } }));
+        return;
+      }
+      applySettingsPayload(config);
+      window.dispatchEvent(new CustomEvent('meldex:x-connection-changed', { detail: data }));
       setText('x-bookmarks-client-state', config.client_id_configured ? 'X接続設定済み' : 'X接続用Client IDが未設定');
       const saveDir = document.getElementById('x-bookmarks-save-dir');
       const maxResults = document.getElementById('x-bookmarks-max-results');
@@ -171,16 +200,23 @@
       setText(
         'x-bookmarks-last-sync',
         last?.at
-          ? syncSummary(last, '前回保存: ')
+          ? `前回保存: ${last.at} / 新規${last.created || 0}件・更新${last.updated || 0}件${last.folder_error ? '・フォルダ取得失敗' : ''}`
           : '前回保存: なし'
       );
+      const lastSummary = document.getElementById('x-bookmarks-last-sync');
+      if (lastSummary && last) {
+        lastSummary.dataset.gbTooltip = syncSummary(last, '前回保存: ');
+        lastSummary.tabIndex = 0;
+      }
       _currentSchedule = config.schedule || null;
       _initScheduleWidget(config.schedule, config.schedule_state);
       await loadSharedSettings();
+      // 定期取得の選択は実行元の設定を使う。共有設定の読込だけで変更しない。
+      if (scheduledFolders) scheduledFolders.checked = config.scheduled_include_folders === true;
       if (!options?.preserveStatus) {
         const alert = data.alert;
         setStatus(
-          alert?.message || data.message || 'Xブックマーク保存を使えます。',
+          alert?.message || data.message || '',
           !!alert || !config.client_id_configured,
           { actionUrl: alert?.action_url }
         );
@@ -241,13 +277,35 @@
     const schedulePayload = options.schedule || (_scheduleWidget ? _scheduleWidget.getCommittedConfig() : _currentSchedule);
     try {
       if (schedulePayload) body.schedule = schedulePayload;
-      await saveSharedSettings(settingsPayload());
-      if (!isCloudSurface()) await apiPost('/x-bookmarks/config', body, { silentError: true });
+      // Capture each edit before queuing; a slow earlier save must not overwrite a later choice.
+      const save = saveQueue.catch(() => {}).then(async () => {
+        const sharedPayload = { ...body };
+        delete sharedPayload.schedule;
+        const shared = await saveSharedSettings(sharedPayload);
+        if (shared?.ok === false && shared?.available !== false) throw new Error('共通設定を保存できませんでした。再試行してください。');
+        if (isCloudSurface() && shared?.available === false) throw new Error('共通設定の保存先に接続できません。アカウントへの接続を確認してください。');
+        try {
+          if (!isCloudSurface()) await apiPost('/x-bookmarks/config', body, { silentError: true });
+        } catch (error) {
+          // Restore only our own preference revision; never overwrite a concurrent edit.
+          if (shared?.available !== false && shared?.revision) {
+            await apiFetch(`/personal-preferences/${SHARED_SETTINGS_DOCUMENT}`, {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ payload: shared.previousPayload, expectedRevision: shared.revision }),
+              silentError: true,
+            });
+          }
+          throw error;
+        }
+        loadedSettings = { ...loadedSettings, ...body };
+      });
+      saveQueue = save;
+      await save;
       if (options?.showSuccess) {
         await loadStatus();
         setStatus(isCloudSurface()
           ? '共通設定へ保存しました。続いて「デスクトップ版へ引き継ぐ」を押してください。'
-          : 'X接続設定をデスクトップ版とクラウド版の共通設定へ保存しました。', false);
+          : '設定を保存しました。', false);
       }
       return true;
     } catch (err) {
@@ -262,17 +320,9 @@
     try {
       const saved = await saveConfig({ silentError: false });
       if (!saved) return;
-      const instructions = 'Meldexデスクトップ版を起動 → 設定 → 拡張機能 → Xブックマーク → 「Xに接続」 → Xの許可後に「差分を保存」';
-      let copied = false;
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(instructions);
-          copied = true;
-        }
-      } catch (_) {}
       const panel = document.getElementById('x-bookmarks-desktop-steps');
       if (panel) panel.hidden = false;
-      setStatus(`共通設定を引き継ぎました。${copied ? '続きの手順をクリップボードにもコピーしました。' : '表示された手順をデスクトップ版で続けてください。'}`, false);
+      setStatus('設定を保存しました。表示された手順をデスクトップ版で続けてください。', false);
     } finally {
       if (button) button.disabled = false;
     }
@@ -303,7 +353,7 @@
   }
 
   function setSyncBusy(isBusy) {
-    ['x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations'].forEach(id => {
+    ['x-bookmarks-sync', 'x-bookmarks-maintenance'].forEach(id => {
       const btn = document.getElementById(id);
       if (btn) btn.disabled = !!isBusy;
     });
@@ -371,7 +421,7 @@
         console.warn('Xブックマーク保存先へのテンプレート適用に失敗しました', templateError);
         templateWarning = ' シートテンプレートを適用できませんでした。設定から再試行してください。';
       }
-      setStatus(syncSummary(data, '保存しました。') + templateWarning, !!templateWarning);
+      setStatus(`保存しました。新規${data?.created || 0}件・更新${data?.updated || 0}件。` + templateWarning, !!templateWarning, { detail: syncSummary(data, '保存しました。') });
     } catch (err) {
       const payload = err.errorDetail || err.payload?.detail;
       if (payload?.reason_code === 'x_api_credits_depleted') {
@@ -389,25 +439,43 @@
     }
   }
 
-  async function syncFolders() {
+  async function syncFolders(dryRun = false) {
     if (syncInFlight) return;
-    if (!await confirmCost('Xのフォルダ一覧と各フォルダ内容を追加取得します。従量課金でフォルダ情報を更新しますか？')) return;
+    if (!await confirmCost('この操作では有料のX APIリクエストを使い、Xの全フォルダ一覧と各フォルダの投稿一覧を取得します。フォルダ数・投稿数・ページ数によりリクエスト数と実費が変わるため、事前の件数見積もりはできません。続行しますか？')) return;
     syncInFlight = true;
     setSyncBusy(true);
     try {
       setStatus('フォルダ情報を更新しています...', false);
       const data = await runBackgroundJob(
-        '/x-bookmarks/folders/sync', { ack_cost_notice: true },
+        '/x-bookmarks/folders/sync', { ack_cost_notice: true, dry_run: dryRun },
         { onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件確認済み', defaultPhase: 'フォルダ情報を取得中' }), false) }
       );
       await loadStatus({ preserveStatus: true });
-      setStatus(`フォルダ情報を更新しました。反映${data?.folder_updates || 0} / 未取得${data?.folder_pending || 0} / 再試行待ち${data?.folder_failed || 0}`, false);
+      const incomplete = data?.membership_complete === false;
+      const message = incomplete
+        ? `全件確認は未完了です。Xから続きの確認情報が返らず、一覧の末尾を確認できません。取得できた所属から修復可能${data?.dry_run_count || 0}件 / 所属不明の空欄${Number(data?.blank_without_membership || 0).toLocaleString('ja-JP')}件。${dryRun ? 'シートは変更していません。' : `反映${data?.folder_updates || 0}件。自動バックアップ済み・取り消し可能。`}空欄が「所属なし」と確定したわけではありません。`
+        : (dryRun ? `修復対象${data?.dry_run_count || 0}件。シートは変更していません。「フォルダ列を修復」で反映できます。` : `書き込み前の修復対象${data?.dry_run_count || 0}件 / 反映${data?.folder_updates || 0}件。自動バックアップ済み。「フォルダ修復を取り消す」で戻せます。`);
+      setStatus(message, incomplete);
     } catch (err) {
       setStatus('フォルダ情報を更新できませんでした。再試行できます: ' + (err.userMessage || err.message || err), true);
     } finally {
       syncInFlight = false;
       setSyncBusy(false);
     }
+  }
+
+  async function undoFolders() {
+    if (syncInFlight) return;
+    syncInFlight = true;
+    setSyncBusy(true);
+    try {
+      const data = await runBackgroundJob('/x-bookmarks/folders/undo', {}, {
+        onProgress: progress => setStatus(formatJobProgress(progress, { defaultPhase: '取り消し中' }), false)
+      });
+      setStatus(`フォルダ修復を取り消しました。${data?.folder_updates || 0}件。${data?.conflicts ? '修復後に所属が変わった' + data.conflicts + '件は保持しました。' : ''}`, !!data?.conflicts);
+    } catch (err) {
+      setStatus('取り消せませんでした。再試行できます: ' + (err.userMessage || err.message || err), true);
+    } finally { syncInFlight = false; setSyncBusy(false); }
   }
 
   function _postIdFromEntity(data) {
@@ -613,28 +681,47 @@
     }
   }
 
+  function openMaintenance() {
+    const button = document.getElementById('x-bookmarks-maintenance');
+    if (!button || syncInFlight || isCloudSurface()) return;
+    button.setAttribute('aria-expanded', 'true');
+    const actions = [
+      ['translations', '翻訳を続ける（X追加取得なし）', retryTranslations],
+      ['notes', 'ノートを作成・更新（X追加取得なし）', () => enrichSavedNotes(false)],
+      ['replies', '返信を追加取得（有料）', () => enrichSavedNotes(true)],
+      ['duplicates', '重複を整理', () => showDuplicateRepair({ returnFocus: button })],
+      ['sync-folders', 'フォルダ列を修復（有料）', () => syncFolders()],
+      ['preview-folders', '修復件数だけ確認（有料）', () => syncFolders(true)],
+      ['undo-folders', 'フォルダ修復を取り消す', undoFolders],
+    ];
+    const menu = window.MeldexContextMenuUI.openAt({
+      anchorRect: button.getBoundingClientRect(), restoreFocus: button,
+      ariaLabel: 'Xブックマークのメンテナンス', e2eId: 'x-bookmarks-maintenance-menu',
+      items: actions.map(([id, label, action]) => ({ label, action, e2eId: 'x-bookmarks-' + id })),
+      onClose: () => button.setAttribute('aria-expanded', 'false'),
+    });
+    // Preserve existing action identifiers for automation and focus restoration.
+    menu.querySelectorAll('[data-e2e-id]').forEach(item => { item.id = item.dataset.e2eId; });
+  }
+
   function bind() {
     document.getElementById('x-bookmarks-connect')?.addEventListener('click', connect);
     document.getElementById('x-bookmarks-disconnect')?.addEventListener('click', disconnect);
     document.getElementById('x-bookmarks-sync')?.addEventListener('click', () => sync('incremental'));
-    document.getElementById('x-bookmarks-sync-folders')?.addEventListener('click', syncFolders);
-    document.getElementById('x-bookmarks-notes')?.addEventListener('click', () => enrichSavedNotes(false));
-    document.getElementById('x-bookmarks-replies')?.addEventListener('click', () => enrichSavedNotes(true));
-    document.getElementById('x-bookmarks-translations')?.addEventListener('click', retryTranslations);
+    document.getElementById('x-bookmarks-maintenance')?.addEventListener('click', openMaintenance);
     const consoleLink = document.getElementById('x-bookmarks-console-link');
     if (consoleLink) {
       consoleLink.setAttribute('data-gb-tooltip', X_DEVELOPER_CONSOLE_HELP);
       consoleLink.setAttribute('aria-label', X_DEVELOPER_CONSOLE_HELP);
       consoleLink.addEventListener('click', () => openUrl(X_DEVELOPER_CONSOLE_URL));
     }
-    const duplicatesButton = document.getElementById('x-bookmarks-duplicates');
-    duplicatesButton?.addEventListener('click', () => showDuplicateRepair({ returnFocus: duplicatesButton }));
     document.getElementById('x-bookmarks-save-config')?.addEventListener('click', () => saveConfig({ showSuccess: true }));
     document.getElementById('x-bookmarks-desktop-handoff')?.addEventListener('click', prepareDesktopHandoff);
     document.getElementById('x-bookmarks-save-dir')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-max-results')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-scheduled-folders')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-scheduled-translate')?.addEventListener('change', saveConfig);
+    document.getElementById('x-bookmarks-include-replies')?.addEventListener('change', saveConfig);
     [
       'x-bookmarks-client-id',
       'x-bookmarks-redirect-uri',
@@ -656,33 +743,15 @@
       return;
     }
     container.dataset.rendered = '1';
-    container.innerHTML = `
-      <div class="gb-section-desc">X連携では投稿・フォロー・いいね・DM送信は行いません。 ${fieldHelp('Xに接続すると、自分のXブックマークを画像つきのシートエントリとして保存できます。')}</div>
-      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-        <span class="gb-section-desc">X APIは従量課金です。手動なら最大5,000件まで取得できます。</span>
-        <button type="button" id="x-bookmarks-console-link" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('externalLink', 14)} X Developer Console</button>
-      </div>
-      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-        <span id="x-bookmarks-connection" class="gb-section-desc">状態を確認中...</span>
+    const connection = document.getElementById('x-connection-settings-container');
+    if (connection) connection.innerHTML = `
+      <div class="gb-field-row">
+        <span id="x-bookmarks-connection" role="status">読み込み中...</span>
         <span id="x-bookmarks-client-state" class="gb-section-desc"></span>
       </div>
       <label class="gb-field">
-        <span class="gb-label">保存先シート</span>
-        <input id="x-bookmarks-save-dir" class="gb-input" type="text" value="Xブックマーク">
-      </label>
-      <div class="gb-section gb-section--boxed" data-import-sheet-template="x-bookmarks"></div>
-      <label class="gb-field-row" style="justify-content:flex-start;">
-        <span class="gb-label">取得件数 ${fieldHelp('手動保存は最大5,000件まで選べます。大量取得は有料です。開始前に費用目安を確認します。定期実行は意図しない課金を避けるため最新100件だけを確認し、フォルダ全体は読み直しません。')}</span>
-        <select id="x-bookmarks-max-results" class="gb-select">
-          <option value="100">最新100件</option>
-          <option value="500">最新500件</option>
-          <option value="1000">最新1000件</option>
-          <option value="5000">最大5,000件（有料・大量取得）</option>
-        </select>
-      </label>
-      <label class="gb-field">
-        <span class="gb-label">X接続用Client ID ${fieldHelp('Xブックマークを読むための接続IDです')}</span>
-        <input id="x-bookmarks-client-id" class="gb-input" type="text" autocomplete="off" placeholder="X Developer Portal で発行される接続ID">
+        <span class="gb-label">クライアントID ${fieldHelp('XブックマークとXアカウント保存で共通の接続IDです。X Developer Consoleで発行します。投稿・フォロー・いいね・DM送信は行いません。')}</span>
+        <input id="x-bookmarks-client-id" class="gb-input" type="text" autocomplete="off" placeholder="Xで発行したClient ID">
       </label>
       <details class="gb-section gb-section--boxed" style="margin-top:8px;padding:8px;">
         <summary style="cursor:pointer;color:var(--fg);font-weight:600;">詳細接続設定</summary>
@@ -703,48 +772,53 @@
           <input id="x-bookmarks-api-base" class="gb-input" type="text" autocomplete="off" placeholder="https://api.x.com/2">
         </label>
       </details>
-      <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
-      <div class="gb-section-desc">日本語以外のポストは設定済みCLIでまとめて翻訳し、「ポスト（日本語訳）」列へ保存します（1時間60回まで）。CLI未設定・失敗時も原文は保存します。</div>
-      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-        <button type="button" id="x-bookmarks-translations" class="gb-btn gb-btn-sm">保存済みポストの翻訳を続ける（X追加取得なし）</button>
+      <div class="gb-check-help-row">
+        <label class="gb-check" style="min-height:var(--ui-h-touch,44px);font-size:inherit;color:var(--fg);"><input id="x-bookmarks-scheduled-translate" type="checkbox"><span>定期保存を日本語に翻訳</span></label>
+        ${fieldHelp('ブックマーク・アカウント保存で共通です。初期状態はオフ。設定済みCLIの使用量を消費します。翻訳に失敗しても原文は保存します。')}
       </div>
-      <div class="gb-section-desc">1時間60回の上限に達したら再開時刻まで待ち、残りを自動で翻訳します。待機中は進行中パネルに再開予定時刻を表示し、キャンセルできます。複数ポストをまとめる1回ごとに最長5分待ちます。Xとの接続が切れていても使えます。CLIの使用量を消費します。</div>
-      <label class="gb-field-row" style="justify-content:flex-start;">
-        <input id="x-bookmarks-include-replies" type="checkbox" checked>
-        <span class="gb-label">手動保存時に返信を最大30件追加取得（追加料金あり・開始前に円の概算を確認）</span>
+      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+        <button type="button" id="x-bookmarks-save-config" class="gb-btn gb-btn-sm">${icon('save', 14)} 設定を保存</button>
+        <button type="button" id="x-bookmarks-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Xに接続</button>
+        <button type="button" id="x-bookmarks-disconnect" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('unlink', 14)} 接続を解除</button>
+        <button type="button" id="x-bookmarks-console-link" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('externalLink', 14)} X Developer Console</button>
+      </div>
+      <div id="x-connection-status-message" class="gb-section-desc" role="status" aria-live="polite"></div>
+    `;
+    container.innerHTML = `
+      <label class="gb-field">
+        <span class="gb-label">保存先シート</span>
+        <input id="x-bookmarks-save-dir" class="gb-input" type="text" value="Xブックマーク">
       </label>
-      <div class="gb-section-desc">元ポスト・リポスト／引用元・返信を、各トピックのノートへ保存します。外国語は原文と日本語訳を併記します。定期保存では返信を追加取得しません。</div>
-      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-        <button type="button" id="x-bookmarks-notes" class="gb-btn gb-btn-sm">保存済みのノートを作成・更新（X追加取得なし）</button>
-        <button type="button" id="x-bookmarks-replies" class="gb-btn gb-btn-sm">保存済みの返信を追加取得（有料）</button>
-      </div>
-      <label class="gb-field-row" style="justify-content:flex-start;">
-        <input id="x-bookmarks-scheduled-translate" type="checkbox">
-        <span class="gb-label">定期保存でも日本語に翻訳（Xアカウントの保存と共通・CLI使用量を消費）</span>
+      <div class="gb-section gb-section--boxed" data-import-sheet-template="x-bookmarks"></div>
+      <label class="gb-field-row">
+        <span class="gb-label">取得件数 ${fieldHelp('X APIは従量課金です。手動は最大5,000件、定期保存の本文は最新100件まで。フォルダは全ページを確認します。開始前に費用目安を確認します。')}</span>
+        <select id="x-bookmarks-max-results" class="gb-select">
+          <option value="100">最新100件</option>
+          <option value="500">最新500件</option>
+          <option value="1000">最新1000件</option>
+          <option value="5000">最大5,000件（有料・大量取得）</option>
+        </select>
       </label>
       <div id="x-bookmarks-schedule-container" class="gb-section gb-section--boxed" style="margin-top:8px;padding:8px;"></div>
-      <label class="gb-field-row" style="justify-content:flex-start;">
-        <input id="x-bookmarks-scheduled-folders" type="checkbox">
-        <span class="gb-label">定期保存でもXのフォルダを更新（追加料金あり） ${fieldHelp('フォルダ一覧と各フォルダ内容の追加API取得が発生します。既定はオフです。')}</span>
-      </label>
+      <div class="gb-check-help-row">
+        <label class="gb-check" style="min-height:var(--ui-h-touch,44px);font-size:inherit;color:var(--fg);"><input id="x-bookmarks-include-replies" type="checkbox" checked><span>返信も取得（追加料金）</span></label>
+        ${fieldHelp('手動保存で元ポスト・参照元ごとに返信を最大30件取得します。開始前に日本円の費用目安を確認します。定期保存には適用しません。')}
+      </div>
+      <div class="gb-check-help-row">
+        <label class="gb-check" style="min-height:var(--ui-h-touch,44px);font-size:inherit;color:var(--fg);"><input id="x-bookmarks-scheduled-folders" type="checkbox"><span>定期保存でフォルダも更新（有料）</span></label>
+        ${fieldHelp('初期状態はオフです。オンにすると定期保存のたびにXのフォルダ一覧と各フォルダの投稿一覧を取得するため、有料Xリクエストが発生します。必要な場合だけ手動でオンにしてください。')}
+      </div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-        <button type="button" id="x-bookmarks-save-config" class="gb-btn gb-btn-sm">${icon('save', 14)} 接続設定を保存</button>
-        <button type="button" id="x-bookmarks-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Xに接続</button>
-        <button type="button" id="x-bookmarks-sync" class="gb-btn gb-btn-sm">${icon('download', 14)} 差分を保存</button>
-        <button type="button" id="x-bookmarks-sync-folders" class="gb-btn gb-btn-sm">${icon('refreshCw', 14)} フォルダ情報を更新</button>
-        <button type="button" id="x-bookmarks-duplicates" class="gb-btn gb-btn-sm">${icon('copyCheck', 14)} 重複を整理</button>
-        <button type="button" id="x-bookmarks-disconnect" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('unlink', 14)} 接続を解除</button>
+        <button type="button" id="x-bookmarks-sync" class="gb-btn gb-btn-sm gb-btn-primary">${icon('download', 14)} 差分を保存（有料）</button>
+        <button type="button" id="x-bookmarks-maintenance" class="gb-btn gb-btn-sm gb-btn-quiet" aria-haspopup="menu" aria-expanded="false">${icon('ellipsis', 14)} メンテナンス</button>
       </div>
-      <div id="x-bookmarks-status-message" class="gb-section-desc"></div>
-      <div id="x-bookmarks-desktop-steps" class="gb-section gb-section--boxed" hidden style="margin-top:8px;padding:10px;">
+      <div id="x-bookmarks-last-sync" class="gb-section-desc">前回保存: なし</div>
+      <div id="x-bookmarks-status-message" class="gb-section-desc" role="status" aria-live="polite"></div>
+      <div id="x-bookmarks-desktop-steps" class="gb-section gb-section--boxed" hidden>
         <strong>デスクトップ版で続ける手順</strong>
-        <ol style="margin:6px 0 0 20px;padding:0;">
-          <li>Meldexデスクトップ版を同じアカウントで起動します。</li>
-          <li>設定 → 拡張機能 → Xブックマークを開きます。Cloudで保存したClient IDなどが自動で読み込まれます。</li>
-          <li>「Xに接続」で許可し、戻ったら「差分を保存」を押します。保存先シートはCloudから引き継がれます。</li>
-        </ol>
+        <ol><li>同じアカウントでMeldexデスクトップ版を起動します。</li><li>設定 → Webクリップ → X接続 で「Xに接続」を押します。</li><li>Xブックマークで「差分を保存」を押します。</li></ol>
       </div>
-      <button type="button" id="x-bookmarks-desktop-handoff" class="gb-btn gb-btn-sm gb-btn-primary" hidden>${icon('monitorUp', 14)} 設定を保存してデスクトップ版へ引き継ぐ</button>
+      <button type="button" id="x-bookmarks-desktop-handoff" class="gb-btn gb-btn-sm gb-btn-primary" hidden>${icon('monitorUp', 14)} デスクトップ版へ引き継ぐ</button>
       <button type="button" id="x-bookmarks-credits-action" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>${icon('externalLink', 14)} X Developer Consoleを開く</button>
     `;
     container.querySelectorAll('.gb-field-help').forEach(help => {
@@ -753,13 +827,13 @@
     });
     bind();
     if (isCloudSurface()) {
-      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-sync-folders', 'x-bookmarks-duplicates', 'x-bookmarks-disconnect', 'x-bookmarks-notes', 'x-bookmarks-replies', 'x-bookmarks-translations']
+      ['x-bookmarks-connect', 'x-bookmarks-sync', 'x-bookmarks-maintenance', 'x-bookmarks-disconnect']
         .forEach(id => { const control = document.getElementById(id); if (control) control.hidden = true; });
-      document.getElementById('x-bookmarks-include-replies')?.closest('label')?.setAttribute('hidden', '');
+      document.getElementById('x-bookmarks-include-replies')?.closest('.gb-check-help-row')?.setAttribute('hidden', '');
       const schedule = document.getElementById('x-bookmarks-schedule-container');
       if (schedule) schedule.hidden = true;
       const scheduledFolders = document.getElementById('x-bookmarks-scheduled-folders')?.closest('label');
-      if (scheduledFolders) scheduledFolders.hidden = true;
+      if (scheduledFolders) scheduledFolders.closest('.gb-check-help-row').hidden = true;
       const saveButton = document.getElementById('x-bookmarks-save-config');
       if (saveButton) saveButton.textContent = 'Cloudで接続設定を保存';
       const handoff = document.getElementById('x-bookmarks-desktop-handoff');
@@ -769,6 +843,13 @@
     loadStatus();
   }
 
+  function refreshConnection() {
+    return saveQueue.catch(() => {}).then(() => loadStatus({ connectionOnly: true }));
+  }
+  window.addEventListener('focus', () => {
+    if (document.querySelector('.settings-modal')?.dataset.settingsActivePageId === 'x-connection') refreshConnection();
+  });
+  window.MeldexXSettings = { save: saveConfig, refresh: refreshConnection };
   window.renderXBookmarksSettings = renderXBookmarksSettings;
   window.reimportXBookmarkPost = reimportPost;
   window.reimportXBookmarkEntry = reimportEntry;

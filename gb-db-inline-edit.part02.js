@@ -981,7 +981,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
         listDiv.innerHTML = '';
         const query = String(filter || '').trim().toLowerCase();
         const filtered = query ? allTags.filter(t => String(t.name || '').toLowerCase().includes(query)) : allTags;
-        filtered.forEach(tag => {
+        _dbOrderTagOptions(filtered, ptc).forEach(tag => {
           const item = document.createElement('div');
           item.className = 'dd-nav-item status-dropdown-item';
           item.style.cssText = 'padding:3px 8px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;';

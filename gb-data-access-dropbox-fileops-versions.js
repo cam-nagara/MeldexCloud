@@ -257,7 +257,8 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = options.records || await adapter.listDocuments(kind);
+  const records = options.records || await adapter.listDocuments(kind,
+    options.documentIdPrefix ? { documentIdPrefix: options.documentIdPrefix } : undefined);
   const visible = records.filter(row => {
     const payload = row?.payload || {};
     const currentPath = _normalizeFolderPath(payload.original_relative_path || '');
@@ -297,12 +298,21 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
 }
 const _verifiedIntegrityMemo = new Map();
 
+// 保存の前処理が読む編集履歴は、対象パスのものだけ（記録名の先頭が対象パスのハッシュ）。
+// 種別全体を読むと、無関係な履歴・フォルダの控え（実データで3199件・307MB）を保存のたびに
+// ダウンロードし、スマホのクイックメモ送信が終わらなかった（2026-11-26）。
+// 移動で付け替えた記録は元の名前のままなので、ここでは読まない（直前の編集者の判定と
+// 未確定の記録の回収が、移動後の最初の1回だけ効かない。内容は失われない）。
+function _editRecordPrefix(path) {
+  return `edit-${_fnvFileId(_normalizeFolderPath(path))}-`;
+}
+
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
   await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = await adapter.listDocuments(kind);
+  const records = await adapter.listDocuments(kind, { documentIdPrefix: _editRecordPrefix(normalized) });
   const currentHash = _contentHistoryHash(currentContent);
   let changed = false;
   for (const row of records) {
@@ -341,7 +351,9 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
   if (_stableHistoryContent(currentContent) === _stableHistoryContent(nextContent)) {
     return { adapter, kind, skipped: true, eventId: '', documentId: '', payload: null };
   }
-  const latest = (await _listSharedEditRecords(provider, normalized, false, { skipIntegrity: true, records }))[0]?.payload || {};
+  const latest = (await _listSharedEditRecords(provider, normalized, false, {
+    skipIntegrity: true, records, documentIdPrefix: _editRecordPrefix(normalized),
+  }))[0]?.payload || {};
   const previous = latest.actor_id ? latest : actor;
   const transition = !!(latest.actor_id && actor.actor_id && latest.actor_id !== actor.actor_id);
   const eventId = `edit-${_versionTimestamp()}-${_randomId('e').slice(-8)}`;
@@ -587,18 +599,6 @@ async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
     moved += 1;
   }
   return moved > 0;
-}
-
-async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-  let size = 0;
-  async function walk(current) {
-    for (const entry of await _listDirectoryEntries(provider, current)) {
-      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-      else size += 1;
-    }
-  }
-  await walk(folderPath);
-  return size;
 }
 
 function _fileVersionName(path, options) {
@@ -989,36 +989,6 @@ async function _restoreVersionAnnotations(provider, path, snapshot, expectedRevi
     for(const old of before) if(!desired.some(row=>row.id===old.id)) { await restoreRow(null,old);applied.push([old,null]); }
   }catch(error){await rollback();throw error;}
   return rollback;
-}
-
-async function _deleteFileVersion(provider, path, version) {
-  const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
-  if (!record) throw new Error('バージョンが見つかりません');
-  const token = _deletedVersionToken();
-  await adapter.save(
-    storageKind,
-    record.documentId,
-    { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
-    { expectedRevision: record.revision },
-  );
-  return { ok: true, token, version: name };
-}
-
-async function _undeleteFileVersion(provider, path, token) {
-  const normalized = _normalizeFolderPath(path);
-  const safeToken = _safeVersionName(token);
-  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
-  await _awaitPendingEditFinalizations();
-  const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
-  const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
-  if (!record) throw new Error('削除済みバージョンが見つかりません');
-  await adapter.save(
-    window.MeldexSystemStorage.SystemStorageKind.VERSIONS,
-    record.documentId,
-    { ...record.payload, deleted_at: '', deleted_token: '' },
-    { expectedRevision: record.revision },
-  );
-  return { ok: true, version: record.payload.version_name };
 }
 
 window.MeldexFileVersionProviderOps = Object.freeze({

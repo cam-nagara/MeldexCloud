@@ -688,7 +688,7 @@ function bdInitInteraction(root) {
     if (bd.connecting && nodeEl) {
       const toId = nodeEl.id.replace('bdn-','');
       if (bdCanCreateConnection(bd.connecting, toId)) { bdPushUndo(); bdCreateConnection(bd.connecting, toId, { label: bd._connLabel||'' }); }
-      bd.connecting=null; bd._connLabel=''; bd._connOrigin=null; showStatus('ラインを追加しました'); return;
+      bd.connecting=null; bd._connLabel=''; bd._connOrigin=null; bd._connFromAnchor=null; showStatus('ラインを追加しました'); return;
     }
     // Gap-2 §9.7: アンカー由来の接続モードで空白にドロップ → 新規カード作成 + 接続を
     // 1 操作としてまとめる（bdPushUndo 1 回で undo が両方戻る）。

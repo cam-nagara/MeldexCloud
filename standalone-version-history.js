@@ -3,6 +3,43 @@
   'use strict';
 
   const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
+  let confirmationPending = false;
+
+  async function confirmRestore(message) {
+    if (confirmationPending) return false;
+    if (typeof window.GBUI?.createModal !== 'function') throw new Error('復元の確認画面を開けませんでした');
+    confirmationPending = true;
+    try {
+      return await new Promise(resolve => {
+        const body = document.createElement('p');
+        body.textContent = String(message || '');
+        const cancel = document.createElement('button');
+        cancel.id = '_gb-cancel';
+        cancel.type = 'button';
+        cancel.className = 'gb-btn';
+        cancel.textContent = 'キャンセル';
+        const ok = document.createElement('button');
+        ok.id = '_gb-ok';
+        ok.type = 'button';
+        ok.className = 'gb-btn gb-btn-primary';
+        ok.textContent = '復元';
+        const opener = document.activeElement;
+        let accepted = false;
+        const modal = window.GBUI.createModal({
+          id: 'standalone-version-restore-confirm', title: '復元の確認', body,
+          footer: [cancel, ok], variant: 'standard', extraClass: 'gb-confirm',
+          initialFocus: () => cancel, returnFocus: () => opener,
+          closeOnEsc: true, closeOnOverlay: true, onClose: () => resolve(accepted),
+        });
+        modal.modal.setAttribute('role', 'alertdialog');
+        cancel.addEventListener('click', () => modal.close('cancel'));
+        ok.addEventListener('click', () => { accepted = true; modal.close('confirm'); });
+        modal.open();
+        const parent = opener?.closest?.('.sa-version-overlay');
+        if (parent) modal.overlay.style.zIndex = String(Number(getComputedStyle(parent).zIndex || 0) + 1);
+      });
+    } finally { confirmationPending = false; }
+  }
 
   async function getJson(path) {
     if (typeof window.apiFetch === 'function') return window.apiFetch(path);
@@ -37,18 +74,24 @@
       .sa-version-meta{min-width:0}.sa-version-label{font-weight:600;overflow-wrap:anywhere}.sa-version-date{font-size:12px;color:var(--fg2,#aaa);margin-top:3px}.sa-version-actions{display:flex;gap:6px;align-items:center}
       .sa-version-empty,.sa-version-error{padding:20px;color:var(--fg2,#aaa)}.sa-version-error{color:var(--danger,#ff8b8b)}
       .sa-version-compare{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 12px 14px}.sa-version-pane{min-width:0}.sa-version-pane h3{font-size:13px;margin:0 0 6px}.sa-version-pane pre{margin:0;max-height:45vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg,#171717);padding:10px;border-radius:8px}
-      @media(max-width:640px){.sa-version-row{grid-template-columns:1fr}.sa-version-compare{grid-template-columns:1fr}.sa-version-action{min-height:44px}}
+      @media(max-width:640px){.sa-version-row{grid-template-columns:1fr}.sa-version-compare{grid-template-columns:1fr}}
+      @media(max-width:640px),(pointer:coarse){.sa-version-action,.sa-version-close,[data-dialog-id="standalone-version-restore-confirm"] :is(.gb-modal-close,.gb-btn){min-height:var(--ui-h-touch,44px);min-width:var(--ui-h-touch,44px)}}
     `;
     document.head.appendChild(style);
   }
 
   function closeOverlay(overlay) {
+    const opener = overlay?._versionOpener;
     overlay?.remove();
+    const target = opener?.isConnected ? opener
+      : document.getElementById('btn-viewer-main-menu') || document.getElementById('quickMemoVersionBtn');
+    target?.focus?.({ preventScroll: true });
   }
 
   function makeOverlay(title) {
     installStyles();
     const overlay = document.createElement('div');
+    overlay._versionOpener = document.activeElement;
     overlay.className = 'sa-version-overlay';
     overlay.dataset.e2eId = 'standalone-version-history';
     overlay.setAttribute('role', 'presentation');
@@ -82,12 +125,15 @@
     return { overlay, dialog, body };
   }
 
-  function showError(body, error) {
+  function showError(body, error, keepActions = false) {
     const message = document.createElement('div');
     message.className = 'sa-version-error';
     message.setAttribute('role', 'alert');
     message.textContent = String(error?.message || error || 'バージョンを読み込めませんでした');
-    body.replaceChildren(message);
+    if (keepActions) {
+      body.querySelector('.sa-version-error')?.remove();
+      body.appendChild(message);
+    } else body.replaceChildren(message);
   }
 
   function showComparison(dialog, savedLabel, savedText, currentText) {
@@ -140,7 +186,10 @@
         button.className = 'sa-version-action';
         button.textContent = text;
         button.dataset.e2eId = `standalone-version-${text === '比較' ? 'compare' : 'restore'}`;
-        button.addEventListener('click', () => handler(version, view));
+        button.addEventListener('click', () => {
+          view.body.querySelector('.sa-version-error')?.remove();
+          handler(version, view);
+        });
         actions.appendChild(button);
       });
       row.append(meta, actions);
@@ -161,15 +210,15 @@
             showComparison(
               view.dialog,
               version.label || version.name,
-              JSON.stringify(data.savedAnnotations || [], null, 2),
-              JSON.stringify(data.currentAnnotations || [], null, 2),
+              window.MeldexAnnotationSnapshotText.format(data.savedAnnotations || []),
+              window.MeldexAnnotationSnapshotText.format(data.currentAnnotations || []),
             );
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
         restore: async version => {
           try {
             const current = await getJson('/annotations/versions/read?target=' + encodeURIComponent(target) + '&version=' + encodeURIComponent(version.name));
-            if (!window.confirm('このアノテート復元ポイントへ戻しますか？\n現在のアノテートは復元直前の復元ポイントとして残ります。')) return;
+            if (!await confirmRestore('このアノテート復元ポイントへ戻しますか？\n現在のアノテートは復元直前の復元ポイントとして残ります。')) return;
             await postJson('/annotations/versions/restore', {
               target,
               version: version.name,
@@ -177,7 +226,7 @@
             });
             await window.MeldexViewerAnnotations?.load?.();
             closeOverlay(view.overlay);
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
       });
     } catch (error) { showError(view.body, error); }
@@ -197,12 +246,12 @@
             const data = await getJson('/version/read?path=' + encodeURIComponent(target.path) + '&version=' + encodeURIComponent(version.name));
             const current = typeof data.currentContent === 'string' ? data.currentContent : '';
             showComparison(view.dialog, version.label || version.name, data.content, current);
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
         restore: async version => {
           try {
             const data = await getJson('/version/read?path=' + encodeURIComponent(target.path) + '&version=' + encodeURIComponent(version.name));
-            if (!window.confirm('この復元ポイントへ戻しますか？\n現在の内容は復元直前の復元ポイントとして残ります。')) return;
+            if (!await confirmRestore('この復元ポイントへ戻しますか？\n現在の内容は復元直前の復元ポイントとして残ります。')) return;
             await postJson('/version/restore', {
               path: target.path,
               version: version.name,
@@ -210,7 +259,7 @@
             });
             await api?.reloadCurrentVersion?.();
             closeOverlay(view.overlay);
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
       });
     } catch (error) { showError(view.body, error); }

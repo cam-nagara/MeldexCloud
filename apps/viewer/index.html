@@ -2,7 +2,7 @@
 <html data-standalone-app="viewer" data-standalone-cloud="viewer" data-meldex-cloud-app="viewer" lang="ja" spellcheck="false">
 <head>
   <base href="../../">
-  <meta name="meldex-app-version" content="0.7.651">
+  <meta name="meldex-app-version" content="0.7.819">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="theme-color" content="#0b0d10">
   <meta name="mobile-web-app-capable" content="yes">
@@ -25,6 +25,7 @@
 <link rel="stylesheet" href="standalone-secondary-panel.css">
 <!-- 共通UIトークン・共通ツールバー・共通コンテキストメニュー（.gb-toolbar / .tb-icon-btn / .gb-context-menu 系） -->
 <link rel="stylesheet" href="gb-ui.css">
+<link rel="stylesheet" href="viewer-visual-controls.css">
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-loading-indicators.css">
 <link rel="stylesheet" href="viewer.css">
@@ -48,7 +49,7 @@
 <script src="gb-storage-adapter-localfs.js"></script>
 <script src="offline-bundles/gb-data-access.js"></script>
 <script src="gb-document-identity.js"></script>
-<script src="gb-screenshot-png.js"></script><script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
+<script src="gb-screenshot-png.js"></script><script src="gb-cloud-annotation-target-resolver.js"></script><script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
 <script src="gb-archive-zip-engine.js"></script>
 <script src="gb-cloud-fetch.js"></script>
 <script src="gb-cloud-file-url.js"></script>
@@ -68,7 +69,7 @@
 <aside id="viewer-pages" aria-label="ページ一覧" hidden>
   <div class="viewer-pages-header"><strong>ページ一覧</strong><button id="viewer-pages-close" class="tb-icon-btn" aria-label="ページ一覧を閉じる" title="ページ一覧を閉じる">×</button></div>
   <div class="viewer-pages-settings">
-    <label>表示<select id="viewer-pages-mode" class="tb-select"><option value="single">単体</option><option value="spread">見開き（左→右）</option><option value="manga">見開き（右→左）</option></select></label>
+    <label>表示<select id="viewer-pages-mode" class="tb-select"><option value="single">単ページ</option><option value="spread">見開き_右へ</option><option value="manga">見開き_左へ</option></select></label>
     <label>開始ページ<select id="viewer-pages-first" class="tb-select"><option value="left">左ページ</option><option value="right">右ページ</option></select></label>
   </div>
   <div id="viewer-pages-status" role="status" aria-live="polite"></div>
@@ -108,9 +109,9 @@
   <input type="range" id="seek-bar" min="0" max="0" value="0" title="シークバー">
   <span id="counter">0 / 0</span>
   <select id="sel-mode" class="tb-select" title="表示モード">
-    <option value="single" selected>単体</option>
-    <option value="spread">見開き</option>
-    <option value="manga">マンガ（右→左）</option>
+    <option value="single" selected>単ページ</option>
+    <option value="spread">見開き_右へ</option>
+    <option value="manga">見開き_左へ</option>
   </select>
   <button id="btn-zoom-out" class="tb-icon-btn" title="縮小" aria-label="縮小"><span class="ico ico-zoomOut"></span></button>
   <span class="zoom-label" id="zoom-label">100%</span>
@@ -137,7 +138,7 @@
 
 <script src="viewer-resize.js"></script>
 <script src="vendor/lucide-icons.js"></script>
-<script src="gb-icon-assets.js"></script>
+<script src="gb-icon-assets.js"></script><script src="gb-icon-packs.js"></script>
 <script src="offline-bundles/gb-tooltip.js"></script>
 <script src="gb-shortcut-registry.js"></script>
 <script src="gb-context-menu-ui.js"></script>
@@ -150,6 +151,8 @@
 <script src="viewer-pdf-renderer.js"></script>
 <script src="viewer-text-layer.js"></script>
 <script src="gb-ui.js"></script>
+<script src="meldex-local-model-ui.js"></script>
+<script src="viewer-visual-controls.js"></script>
 <script src="viewer-ocr-controls.js"></script>
 <script src="viewer-media-seek.js"></script>
 <script src="viewer-video.js"></script>
@@ -157,6 +160,7 @@
 <script src="viewer-page-state.js"></script>
 <script src="viewer-scene.js"></script>
 <script src="viewer-cloud-file-open.js"></script>
+<script src="viewer-annotation-entry.js"></script>
 <script src="viewer-open-request.js"></script>
 <script src="standalone-always-on-top.js"></script>
 <script>
@@ -180,6 +184,7 @@
 <script src="viewer-annotation-notes.js"></script>
 <script src="viewer-annotation-legacy.js"></script>
 <script src="viewer-annotations.js"></script>
+<script src="gb-annotation-snapshot-text.js"></script>
 <script src="standalone-version-history.js"></script>
 <script src="viewer-screenshot-source.js"></script><script src="viewer-context-menu.js"></script>
 </body>

@@ -308,6 +308,8 @@ function bdDirtyHasWork(state) {
 function bdDirtyShouldUseFullRender(state) {
   const total = (typeof bd !== 'undefined' && bd?.nodes) ? bd.nodes.length : 0;
   if (!total) return false;
+  // 小さいボードの1個の編集で、変更のない隣の本文まで作り直さない。
+  if (total > 1 && state.dirtyNodeIds.size === 1) return false;
   return state.dirtyNodeIds.size >= Math.max(1, Math.ceil(total * BD_DIRTY_FULL_RENDER_NODE_RATIO));
 }
 

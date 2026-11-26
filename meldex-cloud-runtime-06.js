@@ -1562,10 +1562,13 @@
     warning.className = 'gb-production-bulk-warning';
     warning.hidden = true;
     warning.dataset.e2eId = 'production-bulk-conversion-warning';
-    const result = document.createElement('p');
-    result.className = 'gb-production-bulk-result';
+    const result = window.GBUI.createInlineError('');
     result.setAttribute('role', 'alert');
     result.dataset.e2eId = 'production-bulk-result';
+    const showResult = message => {
+      result.setMessage(message);
+      if (message && result.isConnected) result.scrollIntoView({ block:'nearest',behavior:'instant' });
+    };
     form.append(fields, workList, contentFieldset, summary, warning, result);
     panel.append(form);
 
@@ -1730,7 +1733,7 @@
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
 
-    const onInput = () => { result.textContent = ''; sync(); };
+    const onInput = () => { showResult(''); sync(); };
     const applyWorkStructure = () => {
       const meta = catalog.workMeta.get(work.value.trim());
       const savedPages = Number(meta?.pageCount);
@@ -1763,13 +1766,13 @@
       if (!ensureProductionWritable()) return;
       sync();
       if (submit.disabled || busy) {
-        if (!work.value.trim()) { result.textContent = '作品名を入力してください。'; work.focus(); }
-        else if (!selectedContents(contentGrid).length) result.textContent = '作業内容を1つ以上選んでください。';
-        else if (taskCount() > MAX_TASKS) result.textContent = `一度に作成できるタスクは${MAX_TASKS.toLocaleString('ja-JP')}件までです。`;
+        if (!work.value.trim()) { showResult('作品名を入力してください。'); work.focus(); }
+        else if (!selectedContents(contentGrid).length) showResult('作業内容を1つ以上選んでください。');
+        else if (taskCount() > MAX_TASKS) showResult(`一度に作成できるタスクは${MAX_TASKS.toLocaleString('ja-JP')}件までです。`);
         return;
       }
       setBusy(true);
-      result.textContent = '';
+      showResult('');
       const workTitle = work.value.trim();
       try {
         const usesPanels = unit.value === UNIT_PANEL;
@@ -1805,7 +1808,7 @@
         // 打ち切ると、案内どおり同じ条件で再実行しても全件が重複扱いになり、割り当てが
         // 二度と走らない行き止まりになる。
         if (shown === false) {
-          result.textContent = 'タスクの保存は完了しましたが、一覧を更新できませんでした。同じ条件でもう一度実行すると、作成済み分は重複せず表示を再試行できます。';
+          showResult('タスクの保存は完了しましたが、一覧を更新できませんでした。同じ条件でもう一度実行すると、作成済み分は重複せず表示を再試行できます。');
           notify(result.textContent, true);
           setBusy(false);
           runAutoAssign(workTitle);
@@ -1815,9 +1818,12 @@
         close(true);
         runAutoAssign(workTitle);
       } catch (error) {
-        const message = error?.message || 'タスクを作成できませんでした。入力内容を確認してください。';
+        const translated=window.MeldexErrorMessages?.translate?.(error);
+        const message=translated?.matched ? [translated.message,translated.action].filter(Boolean).join(' ')
+          : 'タスクを作成できませんでした。保存先の空き容量とアクセス権限を確認して、もう一度実行してください。';
+        result.title=String(error?.message || '');
         const resume = '保存途中で止まった場合も、同じ条件でもう一度実行すると不足分だけを再開できます。';
-        result.textContent = `${message} ${resume}`;
+        showResult(`${message} ${resume}`);
         notify(result.textContent, true);
         setBusy(false);
       }
@@ -1845,8 +1851,9 @@
     }).catch(error => {
       if (closed) return;
       catalogFailed = true;
-      result.textContent = '制作管理の設定を読み込めませんでした。通信状態を確認して、もう一度開いてください。';
-      notify(error?.message || result.textContent, true);
+      showResult('制作管理の設定を読み込めませんでした。通信状態を確認して、もう一度開いてください。');
+      result.title=String(error?.message || '');
+      notify(result.textContent, true);
       sync();
     });
     return dialog;
@@ -2438,8 +2445,8 @@
 
   function setPreference(mode) {
     const norm = normalizeMode(mode);
+    localStorage.setItem(STORAGE_KEY, norm);
     try {
-      localStorage.setItem(STORAGE_KEY, norm);
       if (typeof document !== 'undefined' && typeof document.dispatchEvent === 'function') {
         document.dispatchEvent(new CustomEvent('meldex:production-time-format-changed', { detail: { format: norm } }));
       }
@@ -5745,7 +5752,9 @@
       caption.textContent = labelText;
       label.append(control, caption);
       row.appendChild(label);
-      if (helpText) row.insertAdjacentHTML('beforeend', fieldHelp(helpText));
+      if (helpText) row.insertAdjacentHTML('beforeend', fieldHelp(helpText, {
+        e2eId: 'gb-production-field-help-' + encodeURIComponent(name),
+      }));
       return { label: row, value: () => (control.checked ? 'true' : 'false'), controls: [control] };
     }
     const label = document.createElement('label');
@@ -8954,7 +8963,7 @@
       cost: {
         planned: missingRates.length ? null : Math.round(planned * 100) / 100,
         actual: null, currency: 'JPY', missingRates,
-        actualUnavailableReason: '勤怠実績時間を取得できません',
+        actualUnavailableReason: '実績コストはまだ計算していません',
       },
     };
   }
@@ -9503,6 +9512,8 @@
   // 読み取りでは進めない。連続する自分の編集・履歴復元だけが版を引き継ぐ。
   const historyRevisions = new Map();
   let capabilities = null;
+  let capabilitiesLoading = null;
+  let capabilitiesSequence = 0;
   let proposals = [];
   let selectedId = '';
   let loading = null;
@@ -9512,6 +9523,12 @@
   let listIncludesArchived = false;
   let loadingIncludesArchived = false;
   let listLoaded = false;
+
+  function invalidateCapabilities() {
+    capabilities = null;
+    capabilitiesLoading = null;
+    capabilitiesSequence++;
+  }
 
   function user() {
     return String((typeof getUsername === 'function' ? getUsername() : '') || 'anonymous').trim();
@@ -9524,7 +9541,12 @@
   function selectedKey() {
     syncContext();
     const workspaceId = String(capabilities?.workspaceId || rootPath() || 'default');
-    return `meldex:scheduler:selected:${workspaceId}:${user()}`;
+    const workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const scope = [workspace.accountId || workspace.account_id || '',
+      workspace.securityScopeId || workspace.security_scope_id || ''];
+    // 単独利用の保存キーは維持し、認証付きの案選択はアカウント・権限範囲で分ける。
+    return `meldex:scheduler:selected:${workspaceId}:${user()}`
+      + (scope.some(Boolean) ? ':' + JSON.stringify(scope) : '');
   }
 
   function syncContext() {
@@ -9534,12 +9556,14 @@
       typeof state !== 'undefined' ? String(state.vaultPath || '') : '',
       runtime?.getMode?.() || '',
       window.MeldexWorkspaces?.getActiveId?.() || workspace.workspaceId || workspace.workspace_id || '',
-      workspace.path || workspace.folder || '', workspace.access || workspace.role || '']);
+      workspace.path || workspace.folder || '', workspace.access || workspace.role || '',
+      workspace.accountId || workspace.account_id || '',
+      workspace.securityScopeId || workspace.security_scope_id || '']);
     if (key !== contextKey) {
       contextKey = key;
       contextGeneration++;
       mutationGeneration++;
-      capabilities = null; proposals = []; selectedId = ''; loading = null;
+      invalidateCapabilities(); proposals = []; selectedId = ''; loading = null;
       listIncludesArchived = false; listLoaded = false; CACHE.clear(); historyRevisions.clear();
     }
     return contextGeneration;
@@ -9606,10 +9630,22 @@
   }
 
   async function loadCapabilities(force = false) {
-    syncContext();
+    const generation = syncContext();
+    if (capabilitiesLoading && !force) return capabilitiesLoading;
     if (capabilities && !force) return capabilities;
-    capabilities = await request(`/scheduler/capabilities${query({ current_user: user(), root_path: rootPath() })}`);
-    return capabilities;
+    const sequence = ++capabilitiesSequence;
+    const task = request(`/scheduler/capabilities${query({ current_user: user(), root_path: rootPath() })}`).then(result => {
+      assertContext(generation);
+      if (sequence !== capabilitiesSequence) {
+        if (capabilitiesLoading && capabilitiesLoading !== task) return capabilitiesLoading;
+        return capabilities || loadCapabilities();
+      }
+      capabilities = result;
+      return capabilities;
+    });
+    capabilitiesLoading = task;
+    try { return await task; }
+    finally { if (capabilitiesLoading === task) capabilitiesLoading = null; }
   }
 
   async function capabilityPolicy() {
@@ -9617,12 +9653,12 @@
   }
 
   async function patchCapabilityPolicy(patchValue, expectedRevision) {
-    capabilities = null;
+    invalidateCapabilities();
     return request('/scheduler/capability-policy', { method: 'PATCH', body: { patch: patchValue, expectedRevision } });
   }
 
   async function resetCapabilityPolicy(expectedRevision) {
-    capabilities = null;
+    invalidateCapabilities();
     return request('/scheduler/capability-policy/reset', { method: 'POST', body: { expectedRevision } });
   }
 
@@ -9709,9 +9745,20 @@
     const proposalId = String(id || '');
     const proposal = proposalId ? await get(proposalId) : null;
     assertContext(generation);
-    selectedId = proposal?.id || '';
-    if (selectedId) localStorage.setItem(selectedKey(), selectedId);
-    else localStorage.removeItem(selectedKey());
+    const nextId = proposal?.id || '';
+    const key = selectedKey();
+    assertContext(generation);
+    try {
+      if (nextId) localStorage.setItem(key, nextId);
+      else localStorage.removeItem(key);
+    } catch (error) {
+      const failure = new Error('スケジュール案の選択をこの端末に記憶できませんでした。案は残っています。もう一度選んでください');
+      failure.code = 'scheduler_selection_storage_failed';
+      failure.userMessage = failure.message;
+      failure.cause = error;
+      throw failure;
+    }
+    selectedId = nextId;
     document.dispatchEvent(new CustomEvent('meldex:scheduler-proposal-selected', {
       detail: { proposalId: selectedId, proposal, preserveViewState: true },
     }));
@@ -9881,7 +9928,7 @@
     errorMessage: error => error?.userMessage || error?.message || String(error),
     _resetForTests() {
       contextKey = ''; contextGeneration++; listIncludesArchived = false; listLoaded = false;
-      capabilities = null; proposals = []; selectedId = ''; loading = null; CACHE.clear();
+      invalidateCapabilities(); proposals = []; selectedId = ''; loading = null; CACHE.clear();
     },
   });
 })();
@@ -10653,6 +10700,7 @@
 
   const Api = () => window.MeldexSchedulerProposals;
   let toolbarObserver = null;
+  const PROPOSAL_READ_ONLY_MESSAGE = '閲覧専用です。スケジュール案の操作は管理者またはスケジュール管理者が行います。確定した予定はカレンダーで確認できます。';
   const CAPABILITY_LABELS = Object.freeze({
     'scheduler.allocate': '自動割り当て',
     'scheduler.proposal.manage': '案の操作',
@@ -10677,11 +10725,12 @@
         let feedback = host.querySelector(':scope > .gb-scheduler-action-error');
         if (!feedback) {
           feedback = window.GBUI.createInlineError(message);
-          feedback.classList.add('gb-scheduler-progress', 'is-error', 'gb-scheduler-action-error');
+          feedback.classList.add('gb-scheduler-action-error');
           host.insertBefore(feedback, host.querySelector(':scope > .gb-scheduler-proposal-actions'));
         }
         feedback.dataset.proposalId = Api()?.selectedId?.() || '';
-        feedback.textContent = message;
+        if (typeof feedback.setMessage === 'function') feedback.setMessage(message);
+        else feedback.textContent = message;
         feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       }
     } else {
@@ -10766,6 +10815,17 @@
     const sequence = select._schedulerLoadSequence = (select._schedulerLoadSequence || 0) + 1;
     const previous = api.selectedId();
     try {
+      const caps = await api.loadCapabilities();
+      if (sequence !== select._schedulerLoadSequence) return;
+      if (caps.allowed?.['scheduler.proposal.manage'] === false) {
+        const confirmed = document.createElement('option');
+        confirmed.value = '';
+        confirmed.textContent = '確定版（閲覧専用）';
+        select.replaceChildren(confirmed);
+        select.disabled = true;
+        select.title = PROPOSAL_READ_ONLY_MESSAGE;
+        return;
+      }
       const proposals = await api.list(force);
       if (sequence !== select._schedulerLoadSequence) return;
       select.replaceChildren();
@@ -10931,6 +10991,9 @@
     const progress = document.createElement('div');
     progress.className = 'gb-scheduler-progress'; progress.hidden = true; progress.setAttribute('role', 'status');
     body.appendChild(progress);
+    const feedback = window.GBUI.createInlineError('');
+    feedback.classList.add('gb-scheduler-allocation-error');
+    body.appendChild(feedback);
 
     const modal = window.GBUI.createModal({
       title: '自動割り当て', body, variant: modalVariant(), extraClass: 'gb-scheduler-modal',
@@ -10944,6 +11007,7 @@
         status('対象にするタスクを1件以上選んでください', true); return;
       }
       run.disabled = true; cancel.disabled = true; progress.hidden = false;
+      feedback.setMessage('');
       progress.textContent = '案を作成しています…';
       const requestId = `allocation-${Date.now().toString(36)}`;
       const stop = button('処理を中止', 'square', async () => {
@@ -10960,10 +11024,10 @@
         modal.close('complete');
         syncAllSelectors(true);
       } catch (error) {
-        progress.textContent = Api().errorMessage(error);
-        progress.classList.add('is-error');
+        progress.hidden = true;
+        feedback.setMessage(Api().errorMessage(error));
         run.disabled = false; cancel.disabled = false;
-        progress.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        feedback.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       }
     }, { primary: true, e2eId: 'scheduler-allocation-create' });
     modal.footer.append(cancel, run);
@@ -11012,6 +11076,53 @@
         summary.className = 'gb-scheduler-compare-summary';
         summary.textContent = result.same ? '配置の差はありません' : `${result.changes.length}件の配置に差があります`;
         body.appendChild(summary);
+        const baseName = candidates.find(item => item.id === select.value)?.name || '選択した案';
+        const describe = row => {
+          if (!row) return 'この案にはありません';
+          if (row.status === 'unassigned') return `配置できません\n${row.reason || '配置できる勤務枠がありません'}`;
+          const time = value => {
+            const date = new Date(value || '');
+            if (Number.isNaN(date.getTime())) return '日時未設定';
+            const pad = n => String(n).padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+          };
+          const people = Array.isArray(row.users) && row.users.length ? row.users : [row.user].filter(Boolean);
+          return `${time(row.start)} ～ ${time(row.end)}\n担当: ${people.join('、') || '未設定'}`;
+        };
+        for (const change of result.changes || []) {
+          const row = change.after || change.before || {};
+          const card = document.createElement('section');
+          card.className = 'gb-section gb-section--boxed gb-scheduler-compare-task';
+          const title = document.createElement('strong');
+          const kind = !change.before ? '追加' : !change.after ? '削除' : '変更';
+          title.textContent = `${kind}: ${row.work_title ? row.work_title + ' / ' : ''}${row.task_name || '名前未設定の作業'}`;
+          card.appendChild(title);
+          const columns = document.createElement('div');
+          columns.className = 'gb-scheduler-compare-columns';
+          for (const [label, placement] of [[`比較元（${baseName}）`, change.before], [`変更案（${current.name || '表示中の案'}）`, change.after]]) {
+            const column = document.createElement('div');
+            const heading = document.createElement('div');
+            heading.className = 'gb-section-desc';
+            heading.textContent = label;
+            const value = document.createElement('div');
+            value.className = 'gb-scheduler-compare-value';
+            value.textContent = describe(placement);
+            column.append(heading, value);
+            columns.appendChild(column);
+          }
+          card.appendChild(columns);
+          body.appendChild(card);
+        }
+        // 比較条件は結果に置き換わるため、実行済みの無効ボタンは残さない。
+        modal.footer.replaceChildren(cancel);
+        modal.modal.classList.add('gb-scheduler-compare-complete');
+        if (typeof innerWidth === 'number' && innerWidth > 700 && modal.modal.dataset.userSized !== '1') {
+          // 初回の小さな選択欄の高さを、非同期に増えた結果へ合わせる。
+          // 利用者が変更・保存した寸法は維持する。
+          const height = modal.header.offsetHeight + modal.footer.offsetHeight + modal.body.scrollHeight;
+          modal.modal.style.height = Math.min(height, innerHeight - 32) + 'px';
+          window.GBModalShell?.clamp?.(modal.modal, modal.header, modal.footer);
+        }
       } catch (error) { compare.disabled = false; status(Api().errorMessage(error), true); }
     }, { primary: true, e2eId: 'scheduler-compare-run' });
     modal.footer.append(cancel, compare); modal.modal.appendChild(modal.footer); modal.open();
@@ -11093,7 +11204,18 @@
       const seq = ++refreshSeq;
       const isCurrent = () => seq === refreshSeq && host.__schedulerAllocationSeq === renderSeq;
       let caps;
-      try { caps = await Api().loadCapabilities(); await Api().list(); }
+      try {
+        caps = await Api().loadCapabilities();
+        if (!isCurrent()) return;
+        if (caps.allowed?.['scheduler.proposal.manage'] === false) {
+          summary.classList.remove('is-error');
+          summary.textContent = PROPOSAL_READ_ONLY_MESSAGE;
+          actions.replaceChildren();
+          proposalDetails.replaceChildren();
+          return;
+        }
+        await Api().list();
+      }
       catch (error) { if (isCurrent()) { summary.textContent = Api().errorMessage(error); summary.classList.add('is-error'); } return; }
       if (!isCurrent()) return;
       const current = Api().current();
@@ -11815,6 +11937,8 @@
     instance.containerEl = _buildContainerDOM(instance);
     hostEl.appendChild(instance.containerEl);
     instance.ctx = _buildPaneContext(instance);
+    // 設定表・作品一覧は初回だけ一行省略。保存済みの表／ビュー／列の指定を優先する。
+    instance.ctx.productionCellTextOverflowDefault = 'clip';
     // GBLayout のグローバルペインレジストリへ登録せず、埋め込みDOMからだけ
     // コンテキストを解決できるようにする。セル編集や再描画がグローバルstateへ
     // 戻った後も、このシート固有の property_types を失わないために必要。
@@ -12069,6 +12193,24 @@
     if (typeof showStatus === 'function') showStatus(message, error);
   }
 
+  function showReadFailure(host, error, retry, e2eId) {
+    const translated = window.MeldexErrorMessages?.translate?.(error);
+    const reason = translated?.matched
+      ? [translated.message, translated.action].filter(Boolean).join(' ')
+      : '接続とアクセス権限を確認して再試行してください。';
+    const message = '制作設定を読み込めませんでした。 ' + reason;
+    const feedback = window.GBUI.createInlineError({ message, onRetry: retry });
+    feedback.dataset.e2eId = e2eId;
+    feedback.title = String(error?.message || '');
+    const button = feedback.querySelector('button');
+    if (button) button.dataset.e2eId = e2eId + '-retry';
+    host.classList.remove('is-error', 'gb-production-settings-state');
+    if (e2eId === 'production-settings-error') host.classList.add('gb-production-settings-read-failure');
+    host.removeAttribute('role');
+    host.replaceChildren(feedback);
+    status(message, true);
+  }
+
   function icon(name, size = 14) {
     const span = document.createElement('span');
     span.className = 'gb-production-settings-icon';
@@ -12091,7 +12233,7 @@
   function writeAvailabilityText() {
     const availability = window.MeldexProductionUiAvailability?.current?.();
     if (availability?.blocked) return { message: availability.reason || '閲覧専用です', blocked: true };
-    return { message: '編集できます。変更はシートの保存経路へ反映されます', blocked: false };
+    return { message: '編集できます。変更は自動で保存されます', blocked: false };
   }
 
   function relationIds(entity, propName) {
@@ -12290,8 +12432,7 @@
           sheetState.textContent = `${rowLabel(selectedTemplate)} / ${selectedChild.label} を表示中`;
         } catch (error) {
           if (closed || seq !== openSeq) return;
-          sheetState.textContent = `${error?.message || selectedChild.label + 'を読み込めませんでした'}。権限、ロック、接続を確認して再試行してください`;
-          sheetState.classList.add('is-error');
+          showReadFailure(sheetState, error, () => openSheet(), 'production-settings-sheet-error');
         } finally {
           if (!closed && seq === openSeq) body.setAttribute('aria-busy', 'false');
         }
@@ -12350,9 +12491,7 @@
     } catch (error) {
       if (!closed) {
         body.setAttribute('aria-busy', 'false');
-        loading.classList.add('is-error');
-        loading.textContent = error?.message || '制作設定を読み込めませんでした';
-        status(loading.textContent, true);
+        showReadFailure(loading, error, () => { modalApi.close('retry'); return open(options); }, 'production-settings-error');
       }
     }
     return modalApi;
@@ -12429,6 +12568,7 @@
       localStorage.setItem(_storageKey(pmRoot), JSON.stringify({ order, hidden }));
       return true;
     } catch {
+      if (typeof showStatus === 'function') showStatus('作品タブの並び順・表示設定を保存できませんでした。設定は変更していません。もう一度操作してください', true);
       return false;
     }
   }
@@ -12510,20 +12650,28 @@
   /* --- コンテキストメニュー --- */
 
   function _closeMenu() {
-    document.querySelectorAll('.gb-production-list-tab-menu').forEach(menu => menu.remove());
+    document.querySelectorAll('.gb-production-list-tab-menu').forEach(menu => {
+      menu._dispose?.(); menu.remove();
+    });
   }
 
   function _openMenu(event, items, e2eId) {
     _closeMenu();
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-production-list-tab-menu';
+    menu.setAttribute('role', 'menu');
+    const target = event?.currentTarget || document.activeElement;
+    const opener = target?.closest?.('button') || target;
     menu.dataset.e2eId = e2eId || 'gb-production-list-tab-menu';
     items.forEach(item => {
       if (item.type === 'sep') {
         menu.appendChild(Object.assign(document.createElement('div'), { className: 'gb-context-menu-sep' }));
         return;
       }
-      const node = document.createElement('div');
+      const node = document.createElement('button');
+      node.type = 'button';
+      node.disabled = !!item.disabled;
+      node.setAttribute('role', 'menuitem');
       node.className = 'gb-context-menu-item' + (item.disabled ? ' disabled' : '');
       if (item.e2eId) node.dataset.e2eId = item.e2eId;
       if (typeof lucide === 'function' && item.icon) node.innerHTML = lucide(item.icon, 14) + ' ';
@@ -12544,7 +12692,22 @@
     menu.style.top = ((anchorRect.bottom + 2) / z) + 'px';
     document.body.appendChild(menu);
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    const choices = () => Array.from(menu.querySelectorAll('button:not(:disabled)'));
+    menu.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault(); ev.stopPropagation(); _closeMenu(); opener?.focus?.(); return;
+      }
+      if (!['ArrowDown','ArrowUp','Home','End'].includes(ev.key)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      const rows = choices(); if (!rows.length) return;
+      const index = rows.indexOf(document.activeElement);
+      const next = ev.key === 'Home' ? 0 : ev.key === 'End' ? rows.length-1
+        : (index + (ev.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+      rows[next].focus();
+    });
+    choices()[0]?.focus({ preventScroll:true });
     setTimeout(() => {
+      if (!menu.isConnected) return;
       const closer = ev => {
         if (!menu.contains(ev.target)) {
           _closeMenu();
@@ -12552,6 +12715,7 @@
         }
       };
       document.addEventListener('pointerdown', closer);
+      menu._dispose = () => document.removeEventListener('pointerdown', closer);
     }, 0);
     return menu;
   }
@@ -12675,8 +12839,7 @@
         icon: 'listTodo',
         e2eId: 'gb-production-list-hidden-item-' + _sanitizeIdPart(sheet.sheet_name),
         action: () => {
-          showTab(opts.pmRoot, opts.sheets, sheet.sheet_name);
-          opts.onReopen?.(sheet);
+          if (showTab(opts.pmRoot, opts.sheets, sheet.sheet_name)) opts.onReopen?.(sheet);
         },
       })), 'gb-production-list-hidden-menu');
     });
@@ -12780,7 +12943,7 @@
 
   function _savePrefs(instance) {
     try {
-      if (typeof localStorage === 'undefined' || !instance._pmRoot) return;
+      if (typeof localStorage === 'undefined' || !instance._pmRoot) return false;
       localStorage.setItem(_prefsKey(instance._pmRoot), JSON.stringify({
         filters: { status: instance._filters.status, assignee: instance._filters.assignee },
         sort: instance._sort,
@@ -12788,7 +12951,11 @@
         columnWidths: instance._columnWidths,
         hiddenColumns: instance._hiddenColumns,
       }));
-    } catch { /* localStorage 不可時は表示設定の保存だけを諦める（機能自体は動く） */ }
+      return true;
+    } catch {
+      _notify('一覧の表示設定をこの端末に記憶できませんでした。もう一度操作してください', true);
+      return false;
+    }
   }
 
   function _normalizedColumnOrder(value) {
@@ -13028,11 +13195,16 @@
         checkbox.checked = !instance._hiddenColumns.includes(column.key);
         checkbox.disabled = checkbox.checked && instance._hiddenColumns.length >= COLUMN_DEFS.length - 1;
         checkbox.addEventListener('change', () => {
+          const beforeHidden = instance._hiddenColumns.slice();
           const hidden = new Set(instance._hiddenColumns);
           if (checkbox.checked) hidden.delete(column.key); else hidden.add(column.key);
           if (hidden.size >= COLUMN_DEFS.length) return;
           instance._hiddenColumns = [...hidden];
-          _savePrefs(instance);
+          if (!_savePrefs(instance)) {
+            instance._hiddenColumns = beforeHidden;
+            checkbox.checked = !beforeHidden.includes(column.key);
+            return;
+          }
           _renderColumnLayout(instance);
           render();
         });
@@ -14219,7 +14391,9 @@
       button.addEventListener('click', () => {
         state.addingList = true;
         renderListBar(component, state);
-        state.listBarEl?.querySelector('[data-e2e-id="gb-production-list-switch-add-input"]')?.focus();
+        const input=state.listBarEl?.querySelector('[data-e2e-id="gb-production-list-switch-add-input"]');
+        input?.focus({ preventScroll:true });
+        input?.closest('form')?.scrollIntoView({ block:'nearest',inline:'nearest' });
       });
       wrap.appendChild(button);
       return wrap;
@@ -14396,8 +14570,8 @@
     summary.setAttribute('aria-live', 'polite');
     summary.textContent = '変更内容を確認しています…';
     const detail = document.createElement('p');
-    detail.className = 'gb-production-bulk-result';
-    detail.setAttribute('role', 'alert');
+    detail.className = 'gb-production-structure-detail';
+    detail.setAttribute('role', 'status');
     panel.append(intro, summary, detail);
 
     const cancel = makeButton('閉じる', 'x');
@@ -14422,11 +14596,23 @@
       apply.disabled = busy || !preview?.apply_allowed;
       apply.textContent = busy ? '処理中…' : 'この構成に更新';
     };
+    let feedback = null;
+    const clearFeedback = () => { feedback?.remove(); feedback=null; detail.hidden=false; };
+    const showFailure = (error, message) => {
+      clearFeedback(); detail.hidden=true;
+      feedback=window.GBUI.createInlineError({message,onRetry:loadPreview});
+      feedback.title=String(error?.message || '');
+      feedback.dataset.e2eId='gb-production-task-structure-error';
+      const retry=feedback.querySelector('button');
+      if(retry)retry.dataset.e2eId='gb-production-task-structure-retry';
+      panel.append(feedback);
+    };
     const close = () => { if (!busy) dialog.close?.(); };
     cancel.addEventListener('click', close);
     apply.addEventListener('click', async () => {
       if (!preview?.fingerprint || busy) return;
       setBusy(true);
+      clearFeedback();
       detail.textContent = '';
       try {
         const result = await api().applyTaskStructure({
@@ -14446,14 +14632,18 @@
         busy = false;
         dialog.close?.();
       } catch (error) {
-        detail.textContent = error?.message || 'タスク構成を更新できませんでした。もう一度プレビューしてください。';
+        showFailure(error,'タスク構成を更新できませんでした。再試行で最新の内容を確認してください。');
         setBusy(false);
       }
     });
     document.body.appendChild(dialog.overlay);
     window.GBModalShell?.enhanceOverlay?.(dialog.overlay);
-    setBusy(true);
-    api().previewTaskStructure({ work_title: workTitle }).then((data) => {
+    async function loadPreview() {
+      clearFeedback(); preview=null; setBusy(true);
+      summary.textContent='変更内容を確認しています…';
+      detail.textContent='';
+      try {
+      const data=await api().previewTaskStructure({ work_title: workTitle });
       preview = data;
       const units = (data.page_units || []).join('、');
       summary.textContent = [
@@ -14466,11 +14656,12 @@
       detail.textContent = data.protected_count
         ? '作業中・予定済みなどの保護対象は元の構成のまま残ります。'
         : data.apply_allowed ? '内容を確認して「この構成に更新」を押してください。' : '更新が必要なタスクはありません。';
-      setBusy(false);
-    }).catch((error) => {
-      detail.textContent = error?.message || '変更内容を確認できませんでした。';
-      setBusy(false);
-    });
+      } catch (error) {
+        summary.textContent='変更内容を取得できませんでした。';
+        showFailure(error,'変更内容を確認できませんでした。接続とアクセス権限を確認して再試行してください。');
+      } finally { setBusy(false); }
+    }
+    loadPreview();
     return dialog;
   }
 
@@ -16082,19 +16273,26 @@
     const rows = (Array.isArray(artifacts) ? artifacts : []).filter(row => row?.document_id && row?.revision);
     if (!rows.length) return { upserted: 0, unchanged: 0, changed: 0 };
     const db = await open();
-    const existing = new Map((await list()).map(row => [row.document_id, row]));
+    // 書き込む文書だけを同じ処理の中で読み比べる。以前は数件の保存のたびに端末内の
+    // 全件を読み込み、同期の回数×件数で遅くなっていた（2026-11-24）。
     const tx = db.transaction(ARTIFACTS, 'readwrite');
+    const store = tx.objectStore(ARTIFACTS);
     let changed = 0;
     let unchanged = 0;
+    const done = _complete(tx);
     rows.forEach(row => {
-      if (existing.get(row.document_id)?.revision === row.revision) {
-        unchanged += 1;
-        return;
-      }
-      changed += 1;
-      tx.objectStore(ARTIFACTS).put(row);
+      // 読み取りの完了時に同じ処理の中で直接書く（Promise を挟むと古い Safari で処理が閉じる）
+      const request = store.get(String(row.document_id));
+      request.onsuccess = () => {
+        if (request.result?.revision === row.revision) {
+          unchanged += 1;
+          return;
+        }
+        changed += 1;
+        store.put(row);
+      };
     });
-    await _complete(tx);
+    await done;
     return { upserted: changed, unchanged, changed };
   }
 

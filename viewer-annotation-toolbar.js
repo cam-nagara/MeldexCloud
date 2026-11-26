@@ -80,9 +80,8 @@
     };
   }
 
-  // 呼び出しボタン（下端ツールバーのアノテート）の真上へ置く。本体はツールバーが上端に
-  // あるためボタンの左横へ出すが、ビューワーのボタンは下端にあるので、そのまま横へ出すと
-  // 下端ツールバーへ重なる。入らない時だけボタンの下へ逃がす。
+  // 呼び出しボタン（上端ツールバーのアノテート）の真下へ置く（2026-11-24 ツールバーを下端から
+  // 上端へ移動）。ツールバーへ重ならないよう、下に入らない時だけボタンの上へ逃がす。
   function positionNextToButton(toolbar, anchor) {
     toolbar.classList.add('visible');
     const toolbarRect = toolbar.getBoundingClientRect();
@@ -91,8 +90,8 @@
     const area = placementArea();
     const anchorRect = anchor ? anchor.getBoundingClientRect() : null;
     const baseX = anchorRect ? anchorRect.right - width : area.width - width - 8;
-    let y = (anchorRect ? anchorRect.top : area.height) - height - 8;
-    if (y < 4) y = anchorRect ? anchorRect.bottom + 8 : 4;
+    let y = anchorRect ? anchorRect.bottom + 8 : 4;
+    if (anchorRect && y + height > area.height - 4) y = anchorRect.top - height - 8;
     const position = clampPosition(baseX, y, width, height);
     toolbar.style.left = position.x + 'px';
     toolbar.style.top = position.y + 'px';
@@ -307,6 +306,9 @@
     window.addEventListener('resize', reclamp);
     // 右サイドバーの開閉・幅変更でも表示領域が変わる（viewer-resize.js が知らせる）。
     window.addEventListener('viewer-layout-resize', reclamp);
+    // ツールバー自身の幅も、項目のあふれ判定や描画の後で変わる。保存位置を小さい幅で収めた後に
+    // 幅が伸びると、電話幅では右側（色ボタン等）が画面外へ出ていた。
+    if (typeof ResizeObserver === 'function') new ResizeObserver(reclamp).observe(toolbar);
 
     return { element: toolbar, setVisible, syncFromState };
   }

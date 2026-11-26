@@ -364,6 +364,7 @@
     const interactiveSel = `button, select, input[type=checkbox], input[type=radio], input[type=range], input[type=button], input[type=submit], a[href], [role="button"], [data-vl-guard], ${editableSel}`;
     const pointerGuardSel = '.gb-split-handle, .gb-resize-handle, .resize-handle, .sidebar-resizer, [data-resize-handle], [data-vl-guard-pointer]';
     const pendingInputs = new WeakMap();
+    const replayedFormInputs = new WeakSet();
     let replayingInput = false;
     const toolbarSel = '#app-toolbar, .gb-toolbar, .gb-pane-toolbar, .gb-tool-header, [data-vl-toolbar]';
     const excludeSel = '.vl-lock-icon, .gb-tabs, .gb-tab, .gb-pane-header, .gb-dock-handle, .cf-modal, .modal, .gb-context-menu, .cf-confirm, .cf-prompt, ._inline-comment-input, ._note-ctx-menu, #ann-overlay, #ann-toolbar, #right-panel, .gb-right-panel, #rp-chat, .gb-tool-chat';
@@ -420,13 +421,53 @@
       const InputCtor = (typeof window.InputEvent === 'function') ? window.InputEvent : (typeof InputEvent === 'function' ? InputEvent : Event);
       el.dispatchEvent(new InputCtor('input', init));
     };
+    const valueSegmenter = typeof Intl?.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+    const valueDeleteBoundary = (value, index, direction) => {
+      if (valueSegmenter) {
+        const part = valueSegmenter.segment(value).containing(direction < 0 ? index - 1 : index);
+        return part ? (direction < 0 ? part.index : part.index + part.segment.length) : index;
+      }
+      const character = direction < 0 ? Array.from(value.slice(0, index)).at(-1) || '' : Array.from(value.slice(index))[0] || '';
+      return index + direction * character.length;
+    };
     const replayInput = (el, replay) => {
       if (!el?.isConnected || !replay) return;
       if (replay.kind === 'value') {
+        if (isInstance(el, 'HTMLInputElement') && el.type === 'number' && isNativeFormInput(el)) {
+          // Number inputs hide their caret from selectionStart/selectionEnd.
+          // Let the browser retain its selection, including select-all and a middle caret.
+          const previousFocus = document.activeElement;
+          // Coalesce the browser's blur changes until all approved keystrokes are restored.
+          const holdChange = event => event.stopImmediatePropagation();
+          el.addEventListener('change', holdChange, true);
+          replayingInput = true;
+          try {
+            el.focus({ preventScroll: true });
+            const command = replay.inputType === 'deleteContentBackward' ? 'delete'
+              : replay.inputType === 'deleteContentForward' ? 'forwardDelete' : 'insertText';
+            if (!document.execCommand(command, false, command === 'insertText' ? replay.data : null)) {
+              throw new Error('Native number input could not be replayed');
+            }
+          } finally {
+            if (previousFocus !== el) {
+              if (previousFocus?.isConnected) previousFocus.focus?.({ preventScroll: true });
+              if (document.activeElement === el) el.blur();
+            }
+            replayingInput = false;
+            el.removeEventListener('change', holdChange, true);
+          }
+          return { end: el.value.length };
+        }
+        const value = String(el.value || '');
+        if (replay.start === replay.end && replay.inputType === 'deleteContentBackward') {
+          replay.start = valueDeleteBoundary(value, replay.start, -1);
+        } else if (replay.start === replay.end && replay.inputType === 'deleteContentForward') {
+          replay.end = valueDeleteBoundary(value, replay.end, 1);
+        }
         if (typeof el.setRangeText === 'function') el.setRangeText(replay.data, replay.start, replay.end, 'end');
-        else el.value = String(el.value || '').slice(0, replay.start) + replay.data + String(el.value || '').slice(replay.end);
+        else el.value = value.slice(0, replay.start) + replay.data + value.slice(replay.end);
         dispatchInput(el, replay);
-        return;
+        return { end: Number.isInteger(el.selectionStart) ? el.selectionStart : replay.start + replay.data.length };
       }
       const range = replay.range;
       if (!range || !range.commonAncestorContainer?.isConnected) return;
@@ -461,6 +502,21 @@
       if (eventType === 'pointerdown') return target.closest(`${pointerGuardSel}, ${interactiveSel}`);
       return target.closest(interactiveSel);
     };
+    // Form controls use the browser's native Tab order. Replaying a synthetic
+    // key cannot move focus or emit the change event for a restored value.
+    const isNativeFormInput = el => !!el?.closest?.('.gb-form-input-row')
+      && (isInstance(el, 'HTMLInputElement') || isInstance(el, 'HTMLTextAreaElement') || isInstance(el, 'HTMLSelectElement'));
+    const commitReplayedFormInput = el => {
+      if (!el?.isConnected || !replayedFormInputs.has(el)) return;
+      replayedFormInputs.delete(el);
+      // Keep this event inside the normal lock/write checks; permission may
+      // have changed again since the text was restored.
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const blurReplayedFormInput = event => {
+      const el = resolveGuardElement(event.target, 'focusout');
+      if (isNativeFormInput(el) && !pendingInputs.has(el)) commitReplayedFormInput(el);
+    };
     const isStructuralPointerGuard = (el) => !!(el && typeof el.matches === 'function' && el.matches(pointerGuardSel));
     const isInGuardArea = (target, info, el, eventType) => {
       if (!isElementNode(target) || !info?.viewKey) return false;
@@ -478,6 +534,9 @@
       if (!isElementNode(t) || t.closest(excludeSel)) return;
       const info = (typeof getActiveInfo === 'function') ? getActiveInfo() : null;
       if (!info || !info.viewKey) return;
+      // 押した・選んだ時点で、編集可否を先に読んでおく（打ち始めた時に確認を待たせない。待つ間の打鍵は後から戻すが、
+      // その間のクリックなどとの順番が崩れることがあった。2026-11-25）。
+      if (!_cache.has(info.viewKey)) get(info.viewKey).catch(() => {});
       const el = resolveGuardElement(t, 'remember');
       if (!el || !isInGuardArea(t, info, el, 'remember')) return;
       const cached = _cache.get(info.viewKey);
@@ -487,6 +546,31 @@
       }
       const value = readValue(el);
       if (value !== undefined) el._vlPrevValue = value;
+    };
+    // 確認の間に押した確定のキー（Enter・Tab・Escape）を、打った文字の順番どおりに届ける。
+    const releaseHeldKeys = (pendingInput, el, upTo, ok) => {
+      const held = pendingInput.heldKeys || [];
+      while (held.length && held[0].after <= upTo) {
+        const key = held.shift();
+        if (!ok) continue;
+        const target = key.target?.isConnected ? key.target : el;
+        if (!target?.isConnected) continue;
+        const event = new KeyboardEvent('keydown', key.init);
+        // keyCode/which は作成時の指定が無視されるので、古い判定（keyCode === 13 など）のために付け直す。
+        try { Object.defineProperty(event, 'keyCode', { get: () => key.init.keyCode }); Object.defineProperty(event, 'which', { get: () => key.init.keyCode }); } catch (_) {}
+        target.dispatchEvent(event);
+        // 画面の処理が受け取らなかった Enter は、ブラウザーの通常の動き（改行・段落）を代わりに行う
+        // （作り直したキーの出来事では、ブラウザーは改行を入れない）。
+        if (event.defaultPrevented || key.init.key !== 'Enter') continue;
+        if (isInstance(el, 'HTMLTextAreaElement') && typeof el.setRangeText === 'function') {
+          el.setRangeText('\n', el.selectionStart, el.selectionEnd, 'end');
+          dispatchInput(el, { inputType: 'insertLineBreak', data: null });
+        } else if (isEditableHost(el) && typeof document.execCommand === 'function') {
+          replayingInput = true;
+          try { document.execCommand(key.init.shiftKey ? 'insertLineBreak' : 'insertParagraph', false, null); }
+          finally { replayingInput = false; }
+        }
+      }
     };
     const handler = (e) => {
       if (replayingInput) return;
@@ -515,6 +599,7 @@
             pendingInputs.set(el, pendingInput);
           }
           pendingInput.count++;
+          var inputOrder = (pendingInput.queued = (pendingInput.queued || 0) + 1);
         }
         // ロック状態の初回取得中にドラッグ開始を失わない。解除・確認が
         // 成功し、同じポインターを押し続けている場合だけ開始を再配信する。
@@ -570,11 +655,14 @@
                 if (same && pendingInput.end !== null) inputReplay.start = inputReplay.end = pendingInput.end;
                 else pendingInput.origin = { kind: inputReplay.kind, start: inputReplay.start, end: inputReplay.end };
               }
-              replayInput(el, inputReplay);
+              const replayed = replayInput(el, inputReplay);
+              if (inputReplay.kind === 'value' && isNativeFormInput(el)) replayedFormInputs.add(el);
+              // 打った順を保つ: この文字までに押された確定のキーを、ここで届ける。
+              releaseHeldKeys(pendingInput, el, inputOrder, true);
               const selection = window.getSelection?.();
               pendingInput.end = inputReplay.kind === 'contenteditable'
                 ? (selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : inputReplay.range?.cloneRange())
-                : inputReplay.start + inputReplay.data.length;
+                : (Number.isInteger(el.selectionStart) ? el.selectionStart : (replayed?.end ?? inputReplay.start + inputReplay.data.length));
             } else if (replayPointer && !pointerEnded && el.isConnected && getActiveInfo()?.viewKey === info.viewKey) {
               const init = event => ({ bubbles: true, cancelable: true, pointerId: e.pointerId,
                 pointerType: e.pointerType, isPrimary: e.isPrimary, button: 0, buttons: 1,
@@ -584,17 +672,43 @@
             }
           } catch (_) {}
         }).catch(() => {}).finally(() => {
-          if (pendingInput && --pendingInput.count === 0 && pendingInputs.get(el) === pendingInput) pendingInputs.delete(el);
+          if (pendingInput && --pendingInput.count === 0 && pendingInputs.get(el) === pendingInput) {
+            pendingInputs.delete(el);
+            // 残りの確定のキーを届ける（拒否された時は捨てる）。
+            Promise.resolve(pendingInput.allowed).then(ok => {
+              releaseHeldKeys(pendingInput, el, Infinity, ok);
+              if (ok && getActiveInfo()?.viewKey === pendingInput.viewKey && document.activeElement !== el) commitReplayedFormInput(el);
+            }).catch(() => {});
+          }
           cleanupPointer();
           delete el._vlPrevValue;
         });
       } catch (_) {}
     };
+    // 打った文字が編集可否の確認を待っている間の確定のキー（Enter・Tab・Escape）も待たせる。先に届くと、
+    // 画面の処理が文字の無いまま確定し、後から戻った文字が行き場を失っていた（シートのセル。2026-11-25）。
+    const COMMIT_KEYS = new Set(['Enter', 'Tab', 'Escape']);
+    const holdCommitKey = (e) => {
+      if (replayingInput || !e.isTrusted || !COMMIT_KEYS.has(e.key) || e.isComposing) return;
+      const t = e.target;
+      if (!isElementNode(t)) return;
+      const el = resolveGuardElement(t, 'keydown');
+      const pendingInput = el ? pendingInputs.get(el) : null;
+      if (!pendingInput) return;
+      if (e.key === 'Tab' && isNativeFormInput(el)) return;
+      e.preventDefault(); e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      (pendingInput.heldKeys ||= []).push({ after: pendingInput.queued || 0, target: t, init: { key: e.key, code: e.code, keyCode: e.keyCode,
+        shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, altKey: e.altKey, metaKey: e.metaKey, bubbles: true, cancelable: true } });
+    };
+    document.addEventListener('keydown', holdCommitKey, { capture: true });
     document.addEventListener('pointerdown', rememberValue, { capture: true });
     document.addEventListener('focusin', rememberValue, { capture: true });
     document.addEventListener('keydown', rememberValue, { capture: true });
     document.addEventListener('pointerdown', handler, { capture: true });
     document.addEventListener('click', handler, { capture: true });
+    document.addEventListener('focusout', blurReplayedFormInput, { capture: true });
+    document.addEventListener('change', event => replayedFormInputs.delete(event.target), { capture: true });
     document.addEventListener('change', handler, { capture: true });
     document.addEventListener('beforeinput', handler, { capture: true });
     document.addEventListener('paste', handler, { capture: true });

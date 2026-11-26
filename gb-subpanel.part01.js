@@ -215,6 +215,7 @@ const GBSubPanel = (() => {
       return {
         index: scene.getIndex?.() || 0,
         zoom: scene.getZoom?.() || 1,
+        pdfAutoFit: !!scene.isPdf?.() && scene.isPdfAutoFit?.() === true,
         panX: scene.getPanX?.() || 0,
         panY: scene.getPanY?.() || 0,
         rotateDeg: scene.getRotateDeg?.() || 0,
@@ -303,16 +304,15 @@ const GBSubPanel = (() => {
         }
         return { ok: true };
       }
-      // CSV: _csvDirty/_csvPathは単一のグローバル変数（縮小スコープ）。このサブパネル
-      // 対象を離れる時点でも _csvPath がまだこの対象を指していれば（=他へ奪われて
-      // いなければ）、保留中の自動保存を即座に確定させる。openCsvFile()自身の
+      // CSV: 編集状態は面（メイン／サブパネル）ごとに持つ（gb-csv-viewer.js の _csvBindSurface）。
+      // このサブパネルの面に未保存の編集があれば、対象を離れる前に保存を確定させる
+      // （保留中の自動保存を待たない。メインパネルのCSVには触らない）。openCsvFile()自身の
       // 「前のCSVをflushしてから開く」経路が働かない対象外への遷移（閉じる等）を
       // ここで担う（board/scriptnoteと同じ理由）。
       if (type === 'csv') {
-        if (typeof _csvDirty !== 'undefined' && _csvDirty && typeof _csvPath !== 'undefined'
-            && _csvPath === entry.path && typeof saveCsv === 'function') {
-          if (typeof _csvAutoSaveTimer !== 'undefined') clearTimeout(_csvAutoSaveTimer);
-          const ok = await saveCsv();
+        const csvRoot = _contentEl?.querySelector('.gb-subpanel-csv-root');
+        if (csvRoot && typeof _csvFlushContainerSurface === 'function') {
+          const ok = await _csvFlushContainerSurface(csvRoot);
           return { ok: ok !== false };
         }
         return { ok: true };
@@ -357,6 +357,14 @@ const GBSubPanel = (() => {
       if (_sheetEmbed) { _sheetEmbed.destroy(); _sheetEmbed = null; }
       _stopSheetTheftObserver();
       _teardownVirtualPane();
+      // フォルダの面（専用の描画先）の状態を手放す（メインのフォルダパネルの状態はそのまま残る）
+      if (typeof _folderReleaseSurface === 'function') {
+        content.querySelectorAll('.gb-subpanel-folder-root').forEach(root => _folderReleaseSurface(root));
+      }
+      // CSVの面（専用の描画先）の状態を手放す（保存は確認済み。メインパネルのCSVの状態はそのまま残る）
+      if (typeof _csvReleaseSurface === 'function') {
+        content.querySelectorAll('.gb-subpanel-csv-root').forEach(root => _csvReleaseSurface(root));
+      }
       content.replaceChildren();
       if (opts.remount && hadVirtualPane && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountAllPanes === 'function') {
         GBPaneBridge.mountAllPanes();
@@ -503,35 +511,15 @@ const GBSubPanel = (() => {
     return GBPaneBridge.mountVirtualPane(_pane, _contentEl, { surface: 'subpanel' });
   }
 
-  // 通知を出した側（gb-folder.part01.part01.js の openFolder() 内 _folderShowTakeoverNotice、
-  // gb-csv-viewer.js の openCsvFile() 内 _csvShowTakeoverNotice）は、直前の描画先（メイン等）へ
-  // 「切り替わりました」通知を書き込むだけで、pane-bridge側の「この面に最後に描いた内容」の
-  // 記録（dataset.gbLegacyView/gbLegacyPath）までは更新しない。そのため通知を受け取った側の
-  // タブへ戻っても再読込が走らず、案内表示のまま残ってしまう（2026-08-19 AGENT_INBOX）。
-  // 取り合いを起こす側＝サブパネルが、共有シングルトン（_folderPath/_csvPath）を書き換える
-  // 直前にこの記録を無効化しておくことで、そのタブへ戻った時点で needsLiveReload が真になり
-  // 自動的に再読込されるようにする（層をまたぐため GBPaneBridge の公開入口を使う。
-  // 判定ロジック自体は増やさず、pane-bridge側の既存の needsLiveReload 比較に委ねる）。
-  function _invalidateTakenOverRenderState(viewName, previousPath, nextPath) {
-    if (!previousPath || previousPath === nextPath) return;
-    if (typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.invalidateLegacyRenderState !== 'function') return;
-    GBPaneBridge.invalidateLegacyRenderState(viewName, previousPath);
-  }
-
-  // CSV（csv-view）も「1つしかない表示領域」の1つ（Phase B-2）。ただしCSVの編集状態
-  // （_csvPath/_csvData等）はシートのctxと違い、gb-csv-viewer.js内の生グローバル変数
-  // のまま（縮小スコープ・2026-08-19ユーザー承認）。完全な同時独立編集はせず、
-  // 描画先（DOM）だけを専用化して取り合いを解消する。別ファイルへの切替時は
-  // openCsvFile側が直前の描画先へ「切り替わりました」通知を出す。
-  function _mountCsv(entry) {
-    if (typeof openCsvFile !== 'function') return false;
-    _invalidateTakenOverRenderState('csv', typeof _csvPath !== 'undefined' ? _csvPath : '', entry.path);
-    const root = document.createElement('div');
-    root.className = 'gb-subpanel-csv-root';
-    root.dataset.testid = 'gb-subpanel-csv-root';
-    root.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:auto;min-height:0;';
-    _contentEl.appendChild(root);
-    openCsvFile(entry.label || _basename(entry.path), entry.path, {
+  // CSVは専用の描画先（.gb-subpanel-csv-root）へ開く。CSVの状態（開いているファイル・表の内容・
+  // 未保存の編集・保存の待ち行列・版）は面ごとに持つので（gb-csv-viewer.js の _csvBindSurface）、
+  // メインパネルのCSVとサブパネルで別々のCSVを同時に表示・編集・保存できる（2026-11-25。以前は
+  // 状態が1つで、メイン側が「切り替わりました」になり、タブへ戻った時に読み直していた）。
+  // メインパネルの「最後に描いた内容」の記録は無効化しない（メインを読み直させない）。
+  // 未保存の編集は _flushBeforeTransition() が保存し、内容を片付ける時
+  // （_retractCurrentContent）に面の状態を手放す。
+  function _csvSubpanelOpenOpts(root) {
+    return {
       containerEl: root,
       skipShowView: true,
       skipGlobalUi: true,
@@ -540,7 +528,17 @@ const GBSubPanel = (() => {
       skipSaveLastView: true,
       skipRecent: true,
       skipHighlight: true,
-    }).then(ok => {
+    };
+  }
+
+  function _mountCsv(entry) {
+    if (typeof openCsvFile !== 'function') return false;
+    const root = document.createElement('div');
+    root.className = 'gb-subpanel-csv-root';
+    root.dataset.testid = 'gb-subpanel-csv-root';
+    root.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:auto;min-height:0;';
+    _contentEl.appendChild(root);
+    openCsvFile(entry.label || _basename(entry.path), entry.path, _csvSubpanelOpenOpts(root)).then(ok => {
       if (ok === false && _current === entry) _renderErrorState(entry, 'CSVを読み込めませんでした');
       else if (_current === entry) _applySurfaceScroll(root, entry.state?._subpanelSurface?.scroll);
     }).catch(() => {
@@ -625,19 +623,16 @@ const GBSubPanel = (() => {
     return true;
   }
 
-  // フォルダ（folder-view/folder-grid）も「1つしかない表示領域」の1つ（Phase B-2）。
-  // フォルダの状態（_folderPath/_folderItems/_folderSelected等）はCSVと同じく
-  // ctxへ分離されていない生のグローバル変数のまま（縮小スコープ・2026-08-19
-  // ユーザー承認）。完全な同時独立編集はせず、描画先（DOM）だけを専用化して
-  // 取り合いを解消する。別フォルダへの切替時は openFolder() 側
-  // （_folderShowTakeoverNotice、gb-folder.part01.part01.js）が直前の描画先へ
-  // 「切り替わりました」通知を出す。フォルダは削除・リネーム・タグ付け等の操作が
+  // フォルダは専用の描画先（.gb-subpanel-folder-root）へ開く。フォルダの状態
+  // （開いているフォルダ・一覧・選択・スクロール・大きなフォルダの表示）は面ごとに持つので
+  // （gb-folder.part01.part00.js の _folderBindSurface）、メインのフォルダパネルとサブパネルで
+  // 別々のフォルダを同時に表示・操作できる（2026-11-24。以前は状態が1つで、メイン側が
+  // 「切り替わりました」になっていた）。フォルダは削除・リネーム・タグ付け等の操作が
   // すべて即時のAPI呼び出しで完結し、保留中の自動保存やdirty状態を持たないため、
   // _flushBeforeTransition() にフォルダ用の分岐は追加していない（flushすべき
-  // 保留編集が存在しない）。
+  // 保留編集が存在しない）。内容を片付ける時（_retractCurrentContent）に面の状態を手放す。
   function _mountFolder(entry) {
     if (typeof openFolder !== 'function') return false;
-    _invalidateTakenOverRenderState('folder', typeof _folderPath !== 'undefined' ? _folderPath : '', entry.path);
     const root = document.createElement('div');
     root.className = 'gb-subpanel-folder-root';
     root.dataset.testid = 'gb-subpanel-folder-root';

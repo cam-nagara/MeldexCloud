@@ -503,13 +503,32 @@
     display: none !important;
   }
 
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar {
+    /* スマホのフォルダ名は18px。ファイルアイコンの大きさもこの文字の大きさから決まる（UI共通ルール19） */
+    --ui-toolbar-title-font-size: 18px;
+    /* 変数は宣言した場所で計算されるため、ここでも同じ式で宣言し直す */
+    --ui-toolbar-file-icon-size: calc(var(--ui-toolbar-title-font-size) * 1.2);
+  }
+
+  /* ファイルアイコンはフォルダ名と同じ欄の左に置き、名前はアイコン＋共通の間隔の後から始める（2026-11-24。以前は別の行へ並んでいた） */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar > .tb-file-icon {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: start;
+    margin: 0 !important;
+    z-index: 1;
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-toolbar #folder-title {
     width: 100%;
     max-width: 100%;
     grid-column: 2;
     grid-row: 1;
     min-width: 0;
-    font-size: 18px !important;
+    box-sizing: border-box;
+    margin-left: 0 !important;
+    padding-left: calc(var(--ui-toolbar-file-icon-size) + var(--ui-border-width) + var(--ui-toolbar-file-icon-name-gap)) !important;
+    font-size: var(--ui-toolbar-title-font-size) !important;
     font-weight: 700 !important;
     letter-spacing: 0;
     overflow: hidden;
@@ -1539,7 +1558,7 @@
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .gb-modal-close,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet button[aria-label="閉じる"] {
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet :is(.gb-modal-header, .gb-modal-shell-header, header) button[aria-label="閉じる"] {
     width: var(--ui-h-touch, 44px) !important;
     min-width: var(--ui-h-touch, 44px) !important;
     height: var(--ui-h-touch, 44px) !important;

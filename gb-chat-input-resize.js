@@ -58,6 +58,13 @@
   function _applyHeight(handle, input, cfg, height, persist) {
     const bounds = _bounds(handle, input, cfg);
     const next = Math.round(Math.min(Math.max(Number(height) || bounds.min, bounds.min), bounds.max));
+    if (persist) {
+      try { localStorage.setItem(cfg.storageKey, String(next)); }
+      catch (error) {
+        if (typeof showStatus === 'function') showStatus('入力欄の高さを保存できませんでした。もう一度お試しください', true);
+        return false;
+      }
+    }
     const target = _resizeTarget(input);
     input.dataset.chatManualHeight = '1';
     target.style.height = next + 'px';
@@ -67,7 +74,7 @@
       input.style.overflowY = 'hidden';
     }
     _updateHandleAria(handle, bounds, next);
-    if (persist) localStorage.setItem(cfg.storageKey, String(next));
+    return true;
   }
 
   function _restoreHeight(handle, input, cfg) {

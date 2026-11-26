@@ -81,6 +81,13 @@
           nodeItem = await MeldexDnD.preserveMediaItem(nodeItem);
         }
         const { name, path, type } = nodeItem;
+        // Alt を押しながらドロップ: リンクではなく、ファイルの中身をそのまま表示する埋め込みにする
+        if (e.altKey && path && typeof MeldexNoteFileEmbed !== 'undefined'
+            && MeldexNoteFileEmbed.insertEmbed(el, insertRange, path).ok) {
+          draggedNode = null;
+          if (nodeResolved) MeldexDnD.completeDrop(nodeResolved);
+          return;
+        }
         if (typeof MeldexDnD !== 'undefined' && MeldexDnD.insertNodeAtEditableRange
             && MeldexDnD.insertNodeAtEditableRange(el, { name, path, type }, insertRange)) {
           draggedNode = null;

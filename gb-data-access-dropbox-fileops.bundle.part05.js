@@ -1,3 +1,37 @@
+      }
+    }
+
+    await walk('');
+    return { items, total, truncated: total > items.length || scanTruncated, scannedFiles, scannedDirs };
+  }
+
+  handlers.push(async ({ method, body, url, pathname, signal, headers }) => {
+    if (pathname === '/cloud/space-usage' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      if (typeof provider.refreshSharedSpaceUsage !== 'function') return { ok: false, error: 'Dropbox 容量確認に未対応です' };
+      return provider.refreshSharedSpaceUsage();
+    }
+
+    if (pathname === '/cloud/conflicts' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      const result = await _findDropboxConflictedCopies(provider, url.searchParams.get('limit') || 50);
+      return {
+        ok: true,
+        count: result.total,
+        truncated: result.truncated,
+        scanned_files: result.scannedFiles,
+        scanned_dirs: result.scannedDirs,
+        items: result.items,
+      };
+    }
+
+    if (pathname === '/cloud/conflict-detail' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      const conflictPath = _normalizeFolderPath(url.searchParams.get('path') || '');
+      if (!conflictPath || !_isDropboxConflictName(_basename(conflictPath))) throw new Error('競合コピーのパスが不正です');
+      const originalPath = _originalPathForConflict(conflictPath);
+      if (!originalPath) throw new Error('元ファイルの推定に失敗しました');
+      const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
       const conflictSnapshot = await _readConflictSnapshot(provider, conflictPath);
@@ -864,37 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const targetFileName = _basename(body?.target_file || '');
       const cascade = !!body?.cascade_container;
       let directCount = 0;
-      let cascadeCount = 0;
-      const records = await _listAnnotationRecords(provider);
-      for (const record of records) {
-        const matchedWithoutCascade = _annotationMatchesOrphan(record, body || {}, false);
-        const matchedWithCascade = !matchedWithoutCascade && _annotationMatchesOrphan(record, body || {}, cascade);
-        if (!matchedWithoutCascade && !matchedWithCascade) continue;
-        record.orphan = 1;
-        record.orphaned_at = now;
-        record.target_file_name = targetFileName;
-        if (body?.target_snapshot && !record.target_snapshot) record.target_snapshot = body.target_snapshot;
-        record.modified = now;
-        record.modified_at = now;
-        if (matchedWithoutCascade) directCount += 1;
-        else cascadeCount += 1;
-        await _writeAnnotationRecord(provider, record);
-      }
-      return { ok: true, orphaned: directCount, cascade_orphaned: cascadeCount };
-    }
-    if (pathname === '/annotation/screenshot-source' && method === 'GET') {
-      const provider=await _requirePwaProvider('read');
-      const path=url.searchParams.get('path')||'';
-      if(!/\.png$/i.test(path))return {source_link:null};
-      const file=await provider.downloadAsFile(path);
-      return {source_link:window.GBScreenshotPng.read(new Uint8Array(await file.arrayBuffer()))};
-    }
-    if (pathname === '/annotation/screenshot' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const imageAftercare = window.MeldexCreatedImageIdentityAftercare;
-      if (!imageAftercare?.prepare || !imageAftercare?.record
-          || !imageAftercare?.cancel || !imageAftercare?.drainPrepared) {
-        throw new Error('Cloud画像identity aftercareが読み込まれていません');
-      }
-      const drainedIdentity = await imageAftercare.drainPrepared(provider);
-      const dataUrl = String(body?.data || '');

@@ -403,7 +403,7 @@
         if (item.id === columnsId || item.id === inlineNoteId || item.id === htmlId || item.topicLayoutId) {
           editors.get(selectedId)?.deactivate?.();
           if ((item.id === columnsId || item.topicLayoutId)
-            && await options.selectTopicLayout?.(item.topicLayoutId || window.GBEntityLayout?.COLUMNS_TAB_ID) === false) {
+            && await options.selectTopicLayout?.(item.topicLayoutId || window.GBEntityLayout?.COLUMNS_TAB_ID, { initial: selectionOptions.initial === true }) === false) {
             return false;
           }
           selectedId = item.id; updateSelection();
@@ -609,8 +609,10 @@
       if (closedCount > 0) add(`閉じたタブを再表示（${closedCount}）`, 'eye', reopenClosedTabs);
       // レイアウトのタブの「…」に、トピックレイアウトの編集・名前の変更・複製・書き出し・削除を出す（2026-11-21 ユーザー決定）
       const layoutId = desc.selectable?.topicLayoutId;
-      if (layoutId && !options.readOnly && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.topicLayoutTabMenuItems) {
-        const layoutItems = window.GBEntityLayout.topicLayoutTabMenuItems(more, { ...options.topicLayoutContext(), layoutId });
+      if (layoutId && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.topicLayoutTabMenuItems) {
+        // 閲覧専用でも書き出しは使える（変更しない操作。旧タブ行の書き出しボタンは閲覧専用でも出ていた。2026-11-24）。
+        const layoutItems = window.GBEntityLayout.topicLayoutTabMenuItems(more, { ...options.topicLayoutContext(), layoutId })
+          .filter(entry => !options.readOnly || entry.key === 'export');
         if (layoutItems.length) {
           separator();
           layoutItems.forEach(entry => add(entry.label, entry.icon, async () => {
@@ -992,7 +994,7 @@
       if (options.selectedId === initial.id) { initialRow.hidden = false; saveTabPrefs(); }
       else firstSelection = tabItems.get(visibleTabRows()[0]?.dataset.attachmentId) || initial;
     }
-    if (firstSelection) selectAttachment(firstSelection, { activate: !!options.selectedId });
+    if (firstSelection) selectAttachment(firstSelection, { activate: !!options.selectedId, initial: !options.selectedId });
     return section;
   }
 

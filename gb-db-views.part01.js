@@ -717,6 +717,22 @@ async function _showDbConfigModal(dbPath, ctx) {
     row.dataset.originalStatusName = name || '';
     row.dataset.statusId = statusId || globalThis.GbDbSchemaMutation?.newId?.('status') || '';
     row.className = 'dbcfg-status-row';
+    row.dataset.reorderKey = row.dataset.statusId;
+    const handle = document.createElement('button');
+    handle.type = 'button';
+    handle.className = 'gb-btn gb-btn-sm gb-btn-icon gb-btn-quiet dbcfg-status-drag-handle';
+    handle.innerHTML = lucide('gripVertical', 14);
+    _dbBindReorderHandle(handle, {
+      label: name || 'ステータス', key: row.dataset.statusId, root: statusDiv, selector: '.dbcfg-status-row',
+      keys: () => [...statusDiv.children].map(node => node.dataset.reorderKey),
+      disabled: () => busy,
+      commit: next => {
+        const nodes = new Map([...statusDiv.children].map(node => [node.dataset.reorderKey, node]));
+        next.forEach(key => statusDiv.appendChild(nodes.get(key)));
+        handle.focus({ preventScroll: true });
+      },
+    });
+    row.appendChild(handle);
     // カラースウォッチ（共通カラーパレット）
     const swatch = document.createElement('button');
     swatch.type = 'button';
@@ -804,6 +820,7 @@ async function _showDbConfigModal(dbPath, ctx) {
 
   saveButton.addEventListener('click', async () => {
     if (busy || childOpen) return;
+    const beforeViewConfig = captureDbViewConfigHistory(dbPath);
     busy = true;
     [templateButton, cancelButton, saveButton, attachBtn, viewFilesBtn, migrateMediaBtn, o.querySelector('#dbcfg-grid-border'), conditionalColorButton]
       .filter(Boolean).forEach(button => { button.disabled = true; });
@@ -916,6 +933,8 @@ async function _showDbConfigModal(dbPath, ctx) {
         });
       }
       saveDbViewConfig(dbPath, c, { skipBackend: true, ctx: localCtx });
+      pushDbViewConfigHistory(dbPath, 'シート設定', beforeViewConfig, captureDbViewConfigHistory(dbPath), '',
+        () => _renderCurrentDbView(localCtx, dbPath));
       if (state.currentDbPath === dbPath && state.dbMetadata) state.dbMetadata.calendar_mapping = calendarMapping;
       if (typeof _invalidateDbMetadataCache === 'function') _invalidateDbMetadataCache(dbPath);
     } catch (e) {
@@ -1169,9 +1188,17 @@ async function _saveDuplicatedDbViews(dbPath, views, ctx) {
   return false;
 }
 
+function _dbViewSelectionGuard(ctx) {
+  const stamp = () => JSON.stringify([ctx?.dbPath || '', ctx?.currentViewId || '',
+    ctx?.currentViewIdx ?? -1, ctx?._dbLoadSeq || 0, ctx?.generation || 0]);
+  const initial = stamp();
+  return () => !ctx?.destroyed && stamp() === initial;
+}
+
 async function duplicateSavedView(idx, ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
+  const mayActivateDuplicate = _dbViewSelectionGuard(ctx);
   const views = getSavedViews(dbPath);
   const source = views[idx];
   if (!source) return;
@@ -1193,7 +1220,7 @@ async function duplicateSavedView(idx, ctx) {
   const insertIdx = idx + 1;
   views.splice(insertIdx, 0, duplicate);
   if (!await _saveDuplicatedDbViews(dbPath, views, ctx)) return false;
-  loadSavedView(insertIdx, ctx, { skipHistory: true });
+  if (mayActivateDuplicate()) loadSavedView(insertIdx, ctx, { skipHistory: true });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     const detail = (source.name || 'ビュー') + ' → ' + name;
     pushDbViewConfigHistory(dbPath, 'シート表示: ビュー複製', before, captureDbViewConfigHistory(dbPath), detail);
@@ -1205,6 +1232,7 @@ async function duplicateSavedView(idx, ctx) {
 async function duplicateCurrentDbView(viewMode, label, ctx) {
   ctx = ctx || _currentPaneState();
   const dbPath = ctx.dbPath || state.currentDbPath;
+  const mayActivateDuplicate = _dbViewSelectionGuard(ctx);
   const mode = viewMode || getCurrentViewMode(dbPath, { ctx }) || 'pivot';
   const sourceLabel = String(label || VIEW_TYPES.find(vt => vt.mode === mode)?.label || 'ビュー').trim() || 'ビュー';
   const views = getSavedViews(dbPath);
@@ -1223,7 +1251,7 @@ async function duplicateCurrentDbView(viewMode, label, ctx) {
   const duplicate = _makeDbViewStateFromCurrent(dbPath, mode, name, ctx);
   views.push(duplicate);
   if (!await _saveDuplicatedDbViews(dbPath, views, ctx)) return false;
-  loadSavedView(views.length - 1, ctx, { skipHistory: true });
+  if (mayActivateDuplicate()) loadSavedView(views.length - 1, ctx, { skipHistory: true });
   if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
     pushDbViewConfigHistory(dbPath, 'シート表示: ビュー複製', before, captureDbViewConfigHistory(dbPath), sourceLabel + ' → ' + name);
   }

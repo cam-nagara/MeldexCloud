@@ -24,7 +24,7 @@ function _folderRefreshCurrentFolder() {
       { skipNavPush: true, skipSaveLastView: true },
     );
   }
-  if (_folderPath) return openFolder(_folderPath.split(/[\\/]/).pop() || _folderPath, _folderPath);
+  if (_folderPath) return openFolder(_folderPath.split(/[\\/]/).pop() || _folderPath, _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}) });
   return Promise.resolve();
 }
 

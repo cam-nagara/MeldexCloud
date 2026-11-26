@@ -148,11 +148,16 @@ const UI_STYLE_SECTIONS = {
     { label: 'アクティブセル枠', line:'--db-active-color', width:'--db-active-width', text:'━━' },
     { label: 'テーブル罫線', line:'--db-grid-border', toggle:'--db-show-grid', toggleOn:'1px', toggleOff:'0px', text:'━━' },
     // 候補値（列タイプごと）。テーマパネルと同じ項目を、見本のクリックで開く書式設定ポップアップで編集する。
-    { label: 'セレクト', fg:'--db-option-select-fg', bg:'--db-option-select-bg', bgType:'rgba', bold:'--db-option-select-bold', fontSize:'--db-option-select-font-size', line:'--db-option-select-border-color', width:'--db-option-select-border-width', text:'セレクト', popupNumbers:[{ label:'角丸', key:'--db-option-select-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-select-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
-    { label: 'マルチセレクト', fg:'--db-option-multi-fg', bg:'--db-option-multi-bg', bgType:'rgba', bold:'--db-option-multi-bold', fontSize:'--db-option-multi-font-size', line:'--db-option-multi-border-color', width:'--db-option-multi-border-width', text:'マルチセレクト', popupNumbers:[{ label:'角丸', key:'--db-option-multi-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-multi-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
-    { label: 'リレーション', fg:'--db-option-relation-fg', bg:'--db-option-relation-bg', bgType:'rgba', bold:'--db-option-relation-bold', fontSize:'--db-option-relation-font-size', line:'--db-option-relation-border-color', width:'--db-option-relation-border-width', text:'リレーション', popupNumbers:[{ label:'角丸', key:'--db-option-relation-radius', min:0, max:20, step:1, unit:'px', fallback:4 }, { label:'左右の余白', key:'--db-option-relation-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
-    { label: 'ロールアップ', fg:'--db-option-rollup-fg', bg:'--db-option-rollup-bg', bgType:'rgba', bold:'--db-option-rollup-bold', fontSize:'--db-option-rollup-font-size', line:'--db-option-rollup-border-color', width:'--db-option-rollup-border-width', text:'ロールアップ', popupNumbers:[{ label:'角丸', key:'--db-option-rollup-radius', min:0, max:20, step:1, unit:'px', fallback:0 }, { label:'左右の余白', key:'--db-option-rollup-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
-    { label: 'タグ', fg:'--db-option-tag-fg', bg:'--db-option-tag-bg', bgType:'rgba', bold:'--db-option-tag-bold', fontSize:'--db-option-tag-font-size', line:'--db-option-tag-border-color', width:'--db-option-tag-border-width', text:'タグ', popupNumbers:[{ label:'角丸', key:'--db-option-tag-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-tag-padding-x', min:0, max:20, step:1, unit:'px', fallback:6 }] },
+    { label: 'セレクト', fg:'--db-option-select-fg', bg:'--db-option-select-bg', bgType:'rgba', bold:'--db-option-select-bold', italic:'--db-option-select-italic', strike:'--db-option-select-strike', fontSize:'--db-option-select-font-size', line:'--db-option-select-border-color', width:'--db-option-select-border-width', text:'セレクト', popupNumbers:[{ label:'角丸', key:'--db-option-select-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-select-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'マルチセレクト', fg:'--db-option-multi-fg', bg:'--db-option-multi-bg', bgType:'rgba', bold:'--db-option-multi-bold', italic:'--db-option-multi-italic', strike:'--db-option-multi-strike', fontSize:'--db-option-multi-font-size', line:'--db-option-multi-border-color', width:'--db-option-multi-border-width', text:'マルチセレクト', popupNumbers:[{ label:'角丸', key:'--db-option-multi-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-multi-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'リレーション', fg:'--db-option-relation-fg', bg:'--db-option-relation-bg', bgType:'rgba', bold:'--db-option-relation-bold', italic:'--db-option-relation-italic', strike:'--db-option-relation-strike', fontSize:'--db-option-relation-font-size', line:'--db-option-relation-border-color', width:'--db-option-relation-border-width', text:'リレーション', popupNumbers:[{ label:'角丸', key:'--db-option-relation-radius', min:0, max:20, step:1, unit:'px', fallback:4 }, { label:'左右の余白', key:'--db-option-relation-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'ロールアップ', fg:'--db-option-rollup-fg', bg:'--db-option-rollup-bg', bgType:'rgba', bold:'--db-option-rollup-bold', italic:'--db-option-rollup-italic', strike:'--db-option-rollup-strike', fontSize:'--db-option-rollup-font-size', line:'--db-option-rollup-border-color', width:'--db-option-rollup-border-width', text:'ロールアップ', popupNumbers:[{ label:'角丸', key:'--db-option-rollup-radius', min:0, max:20, step:1, unit:'px', fallback:0 }, { label:'左右の余白', key:'--db-option-rollup-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'タグ', fg:'--db-option-tag-fg', bg:'--db-option-tag-bg', bgType:'rgba', bold:'--db-option-tag-bold', italic:'--db-option-tag-italic', strike:'--db-option-tag-strike', fontSize:'--db-option-tag-font-size', line:'--db-option-tag-border-color', width:'--db-option-tag-border-width', text:'タグ', popupNumbers:[{ label:'角丸', key:'--db-option-tag-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-tag-padding-x', min:0, max:20, step:1, unit:'px', fallback:6 }] },
+    { label: 'マルチリレーション', fg:'--db-option-multi-relation-fg', bg:'--db-option-multi-relation-bg', bgType:'rgba', bold:'--db-option-multi-relation-bold', italic:'--db-option-multi-relation-italic', strike:'--db-option-multi-relation-strike', fontSize:'--db-option-multi-relation-font-size', line:'--db-option-multi-relation-border-color', width:'--db-option-multi-relation-border-width', text:'マルチリレーション', popupNumbers:[{ label:'角丸', key:'--db-option-multi-relation-radius', min:0, max:20, step:1, unit:'px', fallback:4 }, { label:'左右の余白', key:'--db-option-multi-relation-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: '複数シートリレーション', fg:'--db-option-multi-source-relation-fg', bg:'--db-option-multi-source-relation-bg', bgType:'rgba', bold:'--db-option-multi-source-relation-bold', italic:'--db-option-multi-source-relation-italic', strike:'--db-option-multi-source-relation-strike', fontSize:'--db-option-multi-source-relation-font-size', line:'--db-option-multi-source-relation-border-color', width:'--db-option-multi-source-relation-border-width', text:'複数シートリレーション', popupNumbers:[{ label:'角丸', key:'--db-option-multi-source-relation-radius', min:0, max:20, step:1, unit:'px', fallback:4 }, { label:'左右の余白', key:'--db-option-multi-source-relation-padding-x', min:0, max:20, step:1, unit:'px', fallback:8 }] },
+    { label: 'ユーザー', fg:'--db-option-user-fg', bg:'--db-option-user-bg', bgType:'rgba', bold:'--db-option-user-bold', italic:'--db-option-user-italic', strike:'--db-option-user-strike', fontSize:'--db-option-user-font-size', line:'--db-option-user-border-color', width:'--db-option-user-border-width', text:'ユーザー', popupNumbers:[{ label:'角丸', key:'--db-option-user-radius', min:0, max:20, step:1, unit:'px', fallback:4 }, { label:'左右の余白', key:'--db-option-user-padding-x', min:0, max:20, step:1, unit:'px', fallback:6 }] },
+    { label: 'マルチユーザー', fg:'--db-option-multi-user-fg', bg:'--db-option-multi-user-bg', bgType:'rgba', bold:'--db-option-multi-user-bold', italic:'--db-option-multi-user-italic', strike:'--db-option-multi-user-strike', fontSize:'--db-option-multi-user-font-size', line:'--db-option-multi-user-border-color', width:'--db-option-multi-user-border-width', text:'マルチユーザー', popupNumbers:[{ label:'角丸', key:'--db-option-multi-user-radius', min:0, max:20, step:1, unit:'px', fallback:10 }, { label:'左右の余白', key:'--db-option-multi-user-padding-x', min:0, max:20, step:1, unit:'px', fallback:6 }] },
+    { label: 'ステータス', fg:'--db-option-status-fg', bg:'--db-option-status-bg', bgType:'rgba', bold:'--db-option-status-bold', italic:'--db-option-status-italic', strike:'--db-option-status-strike', fontSize:'--db-option-status-font-size', line:'--db-option-status-border-color', width:'--db-option-status-border-width', text:'ステータス', popupNumbers:[{ label:'角丸', key:'--db-option-status-radius', min:0, max:20, step:1, unit:'px', fallback:4 }, { label:'左右の余白', key:'--db-option-status-padding-x', min:0, max:20, step:1, unit:'px', fallback:6 }] },
     { label: '採用ステータス', bg:'--db-status-adopted-color', text:'採用ステータス色' },
     { label: 'ソースバッジ 1', bg:'--db-msr-badge-1-bg', text:'1' },
     { label: 'ソースバッジ 2', bg:'--db-msr-badge-2-bg', text:'2' },
@@ -390,6 +395,7 @@ function normalizeStyleSettingValue(key, value) {
   const raw = String(value == null ? '' : value).trim();
   if (!raw) return raw;
   const name = String(key || '');
+  if (/^--db-(?:th|cell|entity)-underline$/i.test(name) && raw.toLowerCase() === 'none') return '0px';
   if (/-left-accent$/i.test(name) && raw === '3px') return THEME_STYLE_LEFT_ACCENT_WIDTH;
   if (/-underline$/i.test(name) && raw.toLowerCase() === 'underline') return THEME_STYLE_UNDERLINE_WIDTH;
   return raw;
@@ -437,7 +443,7 @@ function getAllStyleKeys() {
       if(d.lineHeight) keys.add(d.lineHeight);
       // 枠線付き／選択状態の行は仮想キー生成の対象外でも、明示された
       // 装飾キーを保存・取消・再読込の対象から落とさない。
-      ['stroke', 'strokeWidth', 'leftAccent', 'underline', 'accent'].forEach(prop => {
+      ['stroke', 'strokeWidth', 'leftAccent', 'underline', 'accent', 'strike'].forEach(prop => {
         if (d[prop]) keys.add(d[prop]);
       });
       if(Array.isArray(d.numbers)) d.numbers.forEach(n => { if(n?.key) keys.add(n.key); });
@@ -522,6 +528,28 @@ function loadColorSettings() {
   } catch {}
 }
 
+// Share rendered colors, not unresolved OS/palette references from another origin.
+// Raw custom values below remain the editable source and are never replaced.
+function captureSharedThemeColors() {
+  const root = document.documentElement;
+  const probe = document.createElement('span');
+  probe.hidden = true;
+  root.appendChild(probe);
+  const colors = {};
+  try {
+    for (const key of ['--bg','--bg2','--bg3','--bg4','--fg','--fg2','--border','--accent','--accent2','--selection',
+      '--ui-accent','--ui-accent-fg','--ui-popup-bg','--ui-popup-border','--ui-modal-bg','--ui-modal-fg',
+      '--ui-button-bg','--ui-button-fg','--ui-hover-bg','--ui-hover-fg','--ui-selection-bg','--ui-selection-fg',
+      '--red','--green','--orange']) {
+      const value = getComputedStyle(root).getPropertyValue(key).trim();
+      if (!value || !CSS.supports('color', value)) continue;
+      probe.style.color = `var(${key})`;
+      colors[key] = getComputedStyle(probe).color;
+    }
+  } finally { probe.remove(); }
+  return colors;
+}
+
 function saveColorSettings() {
   const s = {};
   for (const k of getAllStyleKeys()) {
@@ -540,6 +568,7 @@ function saveColorSettings() {
   const extraSlots = getThemeColorExtraSlotSettings();
   if (Object.keys(extraSlots).length) s[THEME_COLOR_EXTRA_SLOT_SETTINGS_THEME_KEY] = extraSlots;
   if (typeof getStandardPaletteAdjust === 'function') s[STANDARD_PALETTE_THEME_KEY] = getStandardPaletteAdjust();
+  s['_shared-ui-colors'] = captureSharedThemeColors();
   try {
     localStorage.setItem(COLOR_SETTINGS_KEY, JSON.stringify(s));
   } catch (err) {

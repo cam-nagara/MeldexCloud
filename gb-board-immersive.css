@@ -221,6 +221,26 @@
   display: block !important;
 }
 
+@media (max-width: 820px) {
+  /* 固定表示の設定でも、携帯では右欄を本文へ重ねて画面幅を保つ。 */
+  #board-standalone-shell.bd-immersive-shell.bd-chrome-right-pinned #board-right-sidebar {
+    position: fixed;
+    z-index: 9980;
+    box-shadow: -14px 0 32px rgba(0, 0, 0, 0.38);
+  }
+  #board-standalone-shell.bd-immersive-shell.bd-chrome-right-pinned #board-sidebar-resizer {
+    display: none !important;
+  }
+  #board-standalone-shell #board-sidebar-splitter {
+    flex-basis: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  #board-standalone-shell #board-sidebar-splitter::before {
+    inset: 19px 0;
+  }
+}
+
 body[data-board-view-active="1"] #right-panel {
   position: fixed;
   z-index: 170;

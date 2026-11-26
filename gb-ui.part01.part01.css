@@ -241,6 +241,7 @@
   --ui-h-lg: 36px;
   --ui-h-xl: 40px;
   --ui-h-touch: 44px;
+  --ui-setting-label-width: 128px;
 
   /* 主要アプリツールバー（参照面: シート） */
   --ui-toolbar-main-height: 39px;
@@ -257,9 +258,13 @@
   --ui-toolbar-app-icon-gap: var(--ui-space-2);
   --ui-toolbar-app-icon-color: var(--ui-accent, var(--accent));
   /* ファイル名直前のファイルアイコン（フォルダツリーと同じアイコン。クリックでアイコン選択） */
-  --ui-toolbar-file-icon-size: var(--ui-icon-md); /* 16px。ファイル名の文字16pxに合わせる */
-  --ui-toolbar-file-icon-box: var(--ui-toolbar-control-size); /* 22px正方。ツールバーのボタンと同じ当たり */
+  /* 2026-11-24: ファイル名の文字と同じ大きさに見せる。Lucide等のアイコンは24の格子の外周2ずつが余白のため、
+     描く大きさを文字の1.2倍にすると見える形が文字の大きさ（16px）と揃う（16px→19.2px）。 */
+  --ui-toolbar-file-icon-size: calc(var(--ui-toolbar-title-font-size) * 1.2);
+  --ui-toolbar-file-icon-box: var(--ui-toolbar-control-size); /* 高さ22px。ツールバーのボタンと同じ当たり。幅はアイコン＋枠 */
   --ui-toolbar-file-icon-gap: var(--ui-space-1);
+  /* アイコンの右端からファイル名の文字の始まりまで（2026-11-24 詰める） */
+  --ui-toolbar-file-icon-name-gap: var(--ui-space-2);
   --ui-toolbar-file-icon-color: var(--ui-toolbar-fg);
 
   /* 部品の共通寸法（UI共通ルール 4.0／19。全画面がこの値を参照し、比較テストで固定する） */
@@ -351,7 +356,12 @@
   --ui-disabled-bg: color-mix(in srgb, var(--ui-bg-control, #2a2a2a) 55%, #777);
   --ui-disabled-border: color-mix(in srgb, var(--ui-border, #555) 55%, #777);
   --ui-disabled-accent: #777;
+  /* 2026-11-24: 個別の指定がないチェックボックス・ラジオ・スライダー・進捗表示を、ブラウザ既定の明るい青ではなく
+     テーマのアクセントカラーにする（accent-color は子へ継承される）。 */
+  accent-color: var(--ui-accent, var(--accent));
 }
+/* 個別の指定がないキーボードのフォーカス枠も、ブラウザ既定の青ではなくアクセントカラーにする（太さ・形は変えない）。 */
+:where(:focus-visible) { outline-color: var(--ui-accent, var(--accent)); }
 
 /* ============================================================
    Phase 1 (緊急実装): Color Swatch
@@ -682,24 +692,6 @@
   border-color: var(--ui-accent);
   color: var(--ui-toolbar-app-icon-color);
 }
-/* メニューの印（右下の小さな下向きの矢印）。ボタンの寸法を変えないよう重ねて置く。 */
-.tb-app-icon.tb-main-menu-btn { position: relative; }
-.tb-app-icon.tb-main-menu-btn > .tb-main-menu-caret {
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 10px;
-  height: 10px;
-  line-height: 0;
-  color: var(--ui-toolbar-app-icon-color);
-  pointer-events: none;
-}
-.tb-app-icon.tb-main-menu-btn > .tb-main-menu-caret > svg {
-  display: block;
-  width: 10px !important;
-  height: 10px !important;
-  margin: 0 !important;
-}
 .tb-app-icon.tb-main-menu-btn:focus-visible {
   outline: var(--ui-focus-width) solid var(--ui-accent);
   outline-offset: 0;
@@ -722,9 +714,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 var(--ui-toolbar-file-icon-box);
-  width: var(--ui-toolbar-file-icon-box);
-  min-width: var(--ui-toolbar-file-icon-box);
+  flex: 0 0 calc(var(--ui-toolbar-file-icon-size) + 2 * var(--ui-border-width));
+  width: calc(var(--ui-toolbar-file-icon-size) + 2 * var(--ui-border-width));
+  min-width: calc(var(--ui-toolbar-file-icon-size) + 2 * var(--ui-border-width));
   height: var(--ui-toolbar-file-icon-box);
   margin: 0 0 0 var(--ui-toolbar-file-icon-gap);
   padding: 0;
@@ -754,6 +746,20 @@
 .tb-file-icon[data-file-icon-editable="true"] {
   cursor: pointer;
 }
+/* ファイル名の文字の始まりを、アイコンの右端から --ui-toolbar-file-icon-name-gap にそろえる
+   （アイコン側の枠1px・ファイル名欄の枠の分を差し引く）。寸法の変化は無く、状態で動かない。 */
+.gb-toolbar .tb-file-icon + .tb-file-title:not(.tb-file-title--input),
+.gb-toolbar .tb-file-icon + .sa-title:not(.sa-title-input) {
+  margin-left: 0;
+  padding-left: calc(var(--ui-toolbar-file-icon-name-gap) - var(--ui-border-width));
+}
+.gb-toolbar .tb-file-icon + :is(.tb-file-title.tb-file-title--input, .sa-title.sa-title-input),
+.gb-toolbar .tb-file-icon + .tb-file-title > input {
+  margin-left: 0;
+  padding-left: calc(var(--ui-toolbar-file-icon-name-gap) - 2 * var(--ui-border-width));
+}
+/* 単独アプリの見出しのファイル名も、本体と同じファイル名の文字の大きさ（アイコンの大きさもこれに従う） */
+.gb-toolbar.gb-toolbar-main .sa-title { font-size: var(--ui-toolbar-title-font-size); }
 .tb-file-icon[data-file-icon-editable="true"]:hover {
   background: var(--ui-hover-bg);
   color: var(--ui-hover-fg);
@@ -1330,8 +1336,7 @@
 .gb-panel-tab-close:hover { opacity: 1; background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 
 .gb-inner-tab,
-.view-tab,
-.settings-theme-preview-sheet-view .db-view-tab {
+.view-tab {
   appearance: none;
   -webkit-appearance: none;
   display: inline-flex;
@@ -1356,8 +1361,7 @@
   box-sizing: border-box;
 }
 .gb-inner-tab:hover,
-.view-tab:hover,
-.settings-theme-preview-sheet-view .db-view-tab:hover {
+.view-tab:hover {
   color: var(--ui-inner-tab-hover-fg);
   background: var(--ui-inner-tab-hover-bg);
   border-color: var(--ui-inner-tab-hover-border);
@@ -1365,8 +1369,7 @@
 }
 .gb-inner-tab.gb-inner-tab-active,
 .gb-inner-tab-active,
-.view-tab.active,
-.settings-theme-preview-sheet-view .db-view-tab.active {
+.view-tab.active {
   color: var(--ui-inner-tab-active-fg);
   font-weight: var(--ui-inner-tab-active-font-weight);
   font-style: var(--ui-inner-tab-active-font-style);

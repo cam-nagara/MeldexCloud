@@ -49,6 +49,7 @@
 
   // 矢印キーの本来の意味（キャレット移動・値変更・一覧内移動等）を奪ってはいけない要素。
   const NATIVE_ARROW_SELECTOR = [
+    '[data-db-reorder-handle]',
     'input', 'textarea', 'select',
     '[contenteditable="true"]', '[contenteditable=""]',
     '[role="slider"]', '[role="spinbutton"]', '[role="combobox"]',

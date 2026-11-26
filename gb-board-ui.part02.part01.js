@@ -336,7 +336,8 @@ function _bdBindSelectionDetailPanel() {
         refreshAnchor: () => document.querySelector('[data-bd-detail-root="selection"] [data-bd-selection-card-style-pick]'),
         onPick(styleId) {
           if (!nodeIds.length) {
-            bd.activeCardStyle = styleId || '';
+            if ((bd.activeCardStyle || '') !== (styleId || '') || (bd.newCardStyleRef || '') !== (styleId || '')) bdPushUndo();
+            bdChooseCardStyleForNewTopics(styleId);
             return;
           }
           bdPushUndo();
@@ -393,7 +394,9 @@ function _bdBindSelectionDetailPanel() {
         const rerender = (field) => {
           bdDrawConns({ connIds, reason: 'selection-detail-fields' });
           bdDirty();
-          if ((!field || _bdStyleFieldNeedsFullRebuild('line', field) || !lineFieldsEl._bdFormatPopup?.isConnected) && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+          const inlineField = _bdLineInlineNumberField(field);
+          if (inlineField) _bdSyncLineInlineNumberInputs(lineFieldsEl, field, typeof bdGetConnectionById === 'function' ? bdGetConnectionById(connIds[0]) : null);
+          if ((!field || _bdStyleFieldNeedsFullRebuild('line', field) || (!inlineField && !lineFieldsEl._bdFormatPopup?.isConnected)) && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         };
         _bdBuildStyleFields(lineFieldsEl, 'line', displayStyle, rerender, {
           editTargets: () => connIds
@@ -605,12 +608,30 @@ async function _bdOpenLinkedTarget(node, e) {
   else if (typeof openNative === 'function') openNative(path);
 }
 
-function _bdRefreshNodeDetailDirty(nodeId, includeSubtree, keepStyleEditor = false) {
-  const ids = includeSubtree && typeof bdFastSubtreeIds === 'function'
+function _bdRefreshNodeDetailDirty(nodeId, includeSubtree, keepStyleEditor = false, dynamicShapeOnly = false) {
+  const batch = Array.isArray(nodeId);
+  const ids = batch ? [...new Set(nodeId)] : includeSubtree && typeof bdFastSubtreeIds === 'function'
     ? bdFastSubtreeIds(nodeId)
     : [nodeId];
-  ids.forEach(id => {
-    if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'node-detail');
+  if (batch && dynamicShapeOnly && typeof bdMeasureNodeElements === 'function') {
+    const byId = new Map((bd.nodes || []).map(node => [node.id, node]));
+    const entries = [];
+    ids.forEach(id => {
+      const div = document.getElementById('bdn-' + id);
+      const n = byId.get(id);
+      if (div && n) entries.push({ n, div });
+      else if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'node-detail');
+    });
+    // 複数の書式変更では、全対象の反映後に寸法をまとめて読み取る。
+    bdMeasureNodeElements(entries);
+  } else ids.forEach(id => {
+    const element = dynamicShapeOnly ? document.getElementById('bdn-' + id) : null;
+    if (element && typeof bdMeasureNodeElement === 'function') {
+      // 輪郭の数値だけなら本文・HUDを作り直さず、既存のSVGと余白を更新する。
+      // 余白で高さが変わる場合も、更新後の実寸へ輪郭を合わせる。
+      bdMeasureNodeElement(id, element);
+      bdMeasureNodeElement(id, element);
+    } else if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'node-detail');
   });
   if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(ids, 'node-detail');
   if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, 'node-detail');
@@ -671,11 +692,32 @@ function _bdBindNodeDetailPanel(nodeId) {
   });
   const node = bd.nodes.find(item => item.id === nodeId);
   const rerenderNodeDetail = (field) => {
-    const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('card', field) && roots.some(root => root.querySelector('[data-bd-node-card-style-fields]')?._bdFormatPopup?.isConnected);
+    // 数値欄はポップアップの外にもある。欄の作り直しで連続入力を中断しない。
+    const cloudField = ['cloudBumpWidth', 'cloudBumpHeight', 'cloudOffset', 'cloudSubWidthRatio', 'cloudSubHeightRatio'].includes(field);
+    const appearanceField = ['bgColor', 'borderColor', 'textColor', 'textStrokeColor', 'fontBold', 'fontItalic',
+      'fontSize', 'textStrokeWidth', 'borderWidth', 'borderRadius'].includes(field);
+    const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('card', field) && (cloudField || appearanceField
+      || roots.some(root => root.querySelector('[data-bd-node-card-style-fields]')?._bdFormatPopup?.isConnected));
+    if ((cloudField || appearanceField) && node) {
+      const value = field === 'cloudOffset' ? Math.round(node[field] * 100) : node[field];
+      roots.forEach(root => root.querySelectorAll(`input[type="number"][data-bd-style-field="${field}"]`).forEach(input => {
+        // 上下限の補正も表示へ戻す。欄の作り直しに頼らず、空入力時の戻り先も更新する。
+        if (input.value !== String(value)) input.value = String(value);
+        input.defaultValue = input.value;
+        input._gbFmtCommittedValue = input.value;
+      }));
+    }
     bdDirty();
-    _bdRefreshNodeDetailDirty(nodeId, false, keepStyleEditor);
-    bdRefreshBoardToolbar();
-    if (!keepStyleEditor && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+    const appearanceUpdated = appearanceField && typeof bdRefreshNodeStyleInPlace === 'function'
+      && bdRefreshNodeStyleInPlace(nodeId);
+    // 形状の見た目を補助UIの予約待ちにしない。通常の対象1件の描画を先に行う。
+    const shapeUpdated = field === 'shape' && typeof bdReplaceNodeElement === 'function'
+      && bdReplaceNodeElement(nodeId);
+    _bdRefreshNodeDetailDirty(nodeId, false, keepStyleEditor, cloudField || appearanceUpdated || shapeUpdated);
+    // 形状で増減する欄は dirtyDetailPanel の更新にまとめ、同じ欄を二度作らない。
+    const deferredShapeUi = field === 'shape' && typeof bdMarkExtrasDirty === 'function';
+    if (!deferredShapeUi) bdRefreshBoardToolbar();
+    if (!keepStyleEditor && !deferredShapeUi && typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   };
   const styleTrigger = roots.map(root => root.querySelector('[data-bd-node-style-pick]')).find(Boolean);
   styleTrigger?.addEventListener('click', event => {
@@ -776,6 +818,26 @@ function _bdBindNodeDetailPanel(nodeId) {
   });
 }
 
+// 直角線のコーナー半径・分岐位置は、書式ポップアップの外に常に出ている数値欄。
+function _bdLineInlineNumberField(field) {
+  return field === 'cornerRadius' || field === 'branchRatio';
+}
+
+// 上下限の補正を、欄を作り直さずに表示へ戻す。
+function _bdSyncLineInlineNumberInputs(fieldsEl, field, conn) {
+  if (!fieldsEl || !conn) return;
+  const eff = typeof bdGetConnectionStyle === 'function' ? bdGetConnectionStyle(conn) : conn;
+  const raw = eff?.[field] ?? conn[field];
+  if (raw == null) return;
+  const value = field === 'branchRatio' ? Math.round(raw * 100) : raw;
+  fieldsEl.querySelectorAll(`input[type="number"][data-bd-style-field="${field}"]`).forEach(input => {
+    if (input.value !== String(value)) input.value = String(value);
+    input.defaultValue = input.value;
+    input._gbFmtCommittedValue = input.value;
+  });
+  fieldsEl._bdRefreshFormatPreview?.();
+}
+
 function _bdBindConnectionDetailPanel(connId) {
   const roots = [...document.querySelectorAll('[data-bd-detail-root="connection"]')].filter(root => root.dataset.connId === connId);
   if (!roots.length) return;
@@ -811,7 +873,11 @@ function _bdBindConnectionDetailPanel(connId) {
       });
     });
     const rerenderConnDetail = (field) => {
-      const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('line', field) && root.querySelector('[data-bd-conn-line-style-fields]')?._bdFormatPopup?.isConnected;
+      const fieldsEl = root.querySelector('[data-bd-conn-line-style-fields]');
+      // 直角線の数値欄はポップアップの外にある。欄を作り直して連続入力を中断しない。
+      const inlineField = _bdLineInlineNumberField(field);
+      const keepStyleEditor = !!field && !_bdStyleFieldNeedsFullRebuild('line', field) && (inlineField || fieldsEl?._bdFormatPopup?.isConnected);
+      if (inlineField) _bdSyncLineInlineNumberInputs(fieldsEl, field, typeof bdGetConnectionById === 'function' ? bdGetConnectionById(connId) : null);
       bdDirty();
       bdDrawConns({ connIds: [connId], reason: 'connection-detail-style' });
       bdRefreshBoardToolbar();

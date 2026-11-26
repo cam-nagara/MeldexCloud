@@ -463,8 +463,8 @@
     const split = _splitNameAndExt(originalName);
     let destName = originalName;
     let destPath = _joinPath(trashDir, destName);
-    for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-      destName = source?.kind === 'file'
+    for (let counter = 1; await _pathExists(provider, destPath) || (!source && await _pathExists(provider, destPath + '._trash_meta.json')); counter += 1) {
+      destName = source?.kind !== 'directory'
         ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
         : `${originalName}_${String(counter).padStart(4, '0')}`;
       destPath = _joinPath(trashDir, destName);
@@ -485,8 +485,29 @@
       queryImpact: confirmation.queryImpact,
     });
     // tombstone を含む最初の書き込みは、上のfresh再検証より後に限定する。
-    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath);
-    if (!source) return { ok: true };
+    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath, {
+      beforeDelete: source ? undefined : async backup => {
+        await _directoryHandle(provider, trashDir, true);
+        // Keep an ordinary readable Markdown copy as well as the complete row.
+        // Do not remove these backups after an uncertain/failed tombstone write.
+        if (typeof provider.uploadBytesConditional !== 'function') throw new Error('回答の回復用保存を利用できません');
+        await provider.uploadBytesConditional(destPath, new TextEncoder().encode(internals._sheetRowTrashText(backup.previousRow)), null);
+        await provider.uploadBytesConditional(metaPath, new TextEncoder().encode(JSON.stringify({
+          original_path: targetPath, trash_root: trashDir, deleted_at: backup.tombstone.deletedAt,
+          sheet_row_backup: backup,
+        })), null);
+        // The recovery uploads take time. Recheck the confirmed row after them;
+        // the subsequent sheet write still uses the revision read for backup.
+        await gate.revalidateProviderDelete({
+          provider, receipt: confirmation.receipt, items: [confirmation.item],
+          queryImpact: confirmation.queryImpact,
+        });
+      },
+    });
+    if (!source) {
+      if (!sheetTombstone) throw Object.assign(new Error('削除する回答が見つかりません'), { status: 404 });
+      return { ok: true, trash_name: destName, trash_root: trashDir };
+    }
     const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
       action: 'delete', oldPath: targetPath, newPath: destPath,
       isFolder: source.kind === 'directory',

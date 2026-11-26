@@ -175,8 +175,30 @@ function _continuePaneHistoryAfterFlush(navState, nextIndex, entry, applied) {
   return true;
 }
 
+// サブパネル（右側の独立したパネル）はタブ履歴を自前で持つ。戻る/進むボタンと同じ履歴を使う。
+// 対象がサブパネルでなければ null を返し、通常のパネル履歴へ進ませる。
+function _subpanelNavDelegate(paneId, direction) {
+  const id = paneId || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
+  if (!id || typeof GBLayout === 'undefined' || typeof GBLayout.findNode !== 'function') return null;
+  const node = GBLayout.findNode(GBLayout.root, id)?.node;
+  if (node?.meldexRole !== 'subpanel-workspace') return null;
+  const sub = window.GBSubPanel;
+  if (!sub || typeof sub.navState !== 'function') return false;
+  const state = sub.navState() || {};
+  if (direction < 0) {
+    if (!state.canBack) return false;
+    sub.navBack?.();
+  } else {
+    if (!state.canForward) return false;
+    sub.navForward?.();
+  }
+  return true;
+}
+
 // ナビゲーション履歴の戻る/進む
 function navBack(paneId) {
+  const subpanelResult = _subpanelNavDelegate(paneId, -1);
+  if (subpanelResult !== null) return subpanelResult;
   const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
     ? GBPanelSet.rightRailNavigationState(paneId)
     : null;
@@ -197,6 +219,8 @@ function navBack(paneId) {
   }
 }
 function navForward(paneId) {
+  const subpanelResult = _subpanelNavDelegate(paneId, 1);
+  if (subpanelResult !== null) return subpanelResult;
   const railState = typeof GBPanelSet !== 'undefined' && typeof GBPanelSet.rightRailNavigationState === 'function'
     ? GBPanelSet.rightRailNavigationState(paneId)
     : null;
@@ -320,14 +344,31 @@ function updateNavBreadcrumb() {}
 
 let _pointerNavTargetId = null;
 
+function _subpanelWorkspacePaneId() {
+  if (typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function') return null;
+  return GBLayout.getAllPanes(GBLayout.root).find(pane => pane?.meldexRole === 'subpanel-workspace')?.id || null;
+}
+
 function _pointerNavigationTargetId(target) {
   const fixedRightDock = target?.closest?.('.gb-dock-fixed-right[data-panelset-id]');
   if (fixedRightDock?.dataset?.panelsetId) return fixedRightDock.dataset.panelsetId;
+  // サブパネルの中身はパネルの枠の外に描かれることがあるため、先に判定する。
+  if (target?.closest?.('#gb-subpanel-root')) {
+    const subpanelPaneId = _subpanelWorkspacePaneId();
+    if (subpanelPaneId) return subpanelPaneId;
+  }
   return target?.closest?.('.gb-pane')?.dataset?.paneId || null;
+}
+
+// マウスの戻る(button 3)/進む(button 4)ボタン。押した場所のパネルのタブ履歴を動かす。
+// ブラウザ既定の「ページ全体を戻る」は常に止める（止めないと Meldex 画面ごと遷移してしまう）。
+function _pointerNavigate(paneId, direction) {
+  return direction < 0 ? navBack(paneId || undefined) : navForward(paneId || undefined);
 }
 
 function _handlePointerNavigationButtons(e) {
   if (e.button !== 3 && e.button !== 4) return;
+  e.preventDefault();
   const paneId = _pointerNavTargetId || _pointerNavigationTargetId(e.target) || undefined;
   _pointerNavTargetId = null;
   // 以前フォーカスしていた入力欄ではなく、実際にサイドボタンを押した場所で判定する。
@@ -335,12 +376,20 @@ function _handlePointerNavigationButtons(e) {
   // 戻る/進むが永続的に無効になっていた。入力要素そのものの上で押した時だけ保護する。
   const editableTarget = e.target?.closest?.('input, textarea, select, [contenteditable="true"]');
   if (editableTarget) return;
-  if (e.button === 3) {
-    if (navBack(paneId)) e.preventDefault();
-  } else if (e.button === 4) {
-    if (navForward(paneId)) e.preventDefault();
-  }
+  _pointerNavigate(paneId, e.button === 3 ? -1 : 1);
 }
+
+// 同じ画面内に埋め込んだ別ページ（ビューワー等）から、マウスの戻る/進むを受け取る。
+// 埋め込み先の枠が置かれたパネルのタブ履歴を動かす。
+function meldexPointerNavigateFromFrame(frameWindow, direction) {
+  let frameEl = null;
+  try {
+    frameEl = Array.from(document.querySelectorAll('iframe')).find(el => el.contentWindow === frameWindow) || null;
+  } catch { frameEl = null; }
+  const paneId = frameEl ? _pointerNavigationTargetId(frameEl) : null;
+  return !!_pointerNavigate(paneId, direction < 0 ? -1 : 1);
+}
+window.meldexPointerNavigateFromFrame = meldexPointerNavigateFromFrame;
 
 window.addEventListener('mousedown', (e) => {
   if (e.button === 3 || e.button === 4) {
@@ -349,6 +398,9 @@ window.addEventListener('mousedown', (e) => {
   }
 }, true);
 window.addEventListener('mouseup', _handlePointerNavigationButtons, true);
+window.addEventListener('auxclick', (e) => {
+  if (e.button === 3 || e.button === 4) e.preventDefault();
+}, true);
 window.addEventListener('pointercancel', () => { _pointerNavTargetId = null; }, true);
 
 // esc() は meldex-core.js で定義済み
@@ -533,8 +585,8 @@ const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 60000;
 // （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
 const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
 const GB_APP_API_FETCH_FILE_OPERATIONS = new Set([
-  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
-  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/move-batch', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore', '/outliner/restore-batch',
   '/trash/restore', '/trash/delete', '/trash/empty',
   '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
   '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
@@ -1039,6 +1091,7 @@ async function apiPut(path, body, options = {}) {
     catch (error) { setTimeout(() => notify('failed'), 0); throw error; }
     _scheduleLinkDictionaryRefreshForMutation(path);
     notify('saved');
+    _gbAppNotifyPathsWritten(path, guardedBody);
     return result;
   }
   const requestOptions = {
@@ -1058,6 +1111,7 @@ async function apiPut(path, body, options = {}) {
   } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
   window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
+  _gbAppNotifyPathsWritten(path, guardedBody, result);
   return result;
 }
 
@@ -1080,6 +1134,30 @@ function _gbAppNotifyEntityValuesChanged(path, phase, body) {
     const entityPath = new URLSearchParams(String(path).split('?')[1] || '').get('path')
       || (body && typeof body === 'object' ? (body.entry_path || body.folder_path || '') : '');
     if (entityPath) window.dispatchEvent(new CustomEvent('meldex:entity-values-changed', { detail: { path: entityPath, phase } }));
+  } catch {}
+}
+
+// 書き込みが成功したファイル・フォルダを同じ画面内へ知らせる（ノートに埋め込んだ表示の差分更新用）。
+// 本文は渡さず、対象のパスだけを送る。通知の失敗で保存を失敗扱いにしない。
+function _gbAppNotifyPathsWritten(path, body, result) {
+  try {
+    const paths = new Set();
+    const add = value => { if (typeof value === 'string' && value && value.length < 2048) paths.add(value.replace(/\\/g, '/')); };
+    const query = new URLSearchParams(String(path || '').split('?')[1] || '');
+    ['path', 'db_path', 'dbPath', 'folder'].forEach(key => add(query.get(key)));
+    if (body && typeof body === 'object') {
+      ['path', 'file_path', 'entry_path', 'folder_path', 'db_path', 'dbPath', 'src', 'dst', 'old_path', 'new_path', 'target', 'dest'].forEach(key => add(body[key]));
+      if (Array.isArray(body.paths)) body.paths.slice(0, 200).forEach(add);
+    }
+    // 名前変更・移動は、応答の新しい場所と組にして知らせる（埋め込みの参照を追従させる）。
+    const renamed = [];
+    const oldPath = body && typeof body === 'object' ? (body.old_path || body.src || '') : '';
+    const newPath = result && typeof result === 'object' ? (result.new_path || result.dst || '') : '';
+    if (typeof oldPath === 'string' && typeof newPath === 'string' && oldPath && newPath && oldPath !== newPath) {
+      renamed.push({ from: oldPath, to: newPath }); add(newPath);
+    }
+    if (!paths.size) return;
+    window.dispatchEvent(new CustomEvent('meldex:paths-written', { detail: { api: String(path || '').split('?')[0], paths: [...paths], renamed } }));
   } catch {}
 }
 
@@ -1118,6 +1196,7 @@ async function apiPost(path, body, options = {}) {
   window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
   _scheduleLinkDictionaryRefreshForMutation(path);
   if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, 'saved', body);
+  _gbAppNotifyPathsWritten(path, body, result);
   return result;
 }
 
@@ -1184,6 +1263,10 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBoth('path');
     addBody('entry_path');
     addBody('folder_path');
+  } else if (route === '/db-property/rename') {
+    // 列名の変更はシート全体の行を書き換える。シート（フォルダ）を対象にする。
+    addBody('db_path');
+    if (!body?.db_path) addBody('path');
   } else if (route === '/replace-batch') {
     (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
   } else if (route === '/upload-file' || route === '/upload-files') {
@@ -1204,14 +1287,21 @@ function _apiLockWriteCandidatePaths(path, opts) {
   } else if (route === '/outliner/move') {
     addBody('path');
     addBody('dest_folder');
+  } else if (route === '/outliner/move-batch') {
+    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
+    addBody('dest_folder');
   } else if (route === '/outliner/rename') {
     addBody('old_path');
     const oldPath = String(body?.old_path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName && !window.GBPathUtils?.isDisplayTitleRename?.(route, body)) {
+    const boardTitle = body?.type === 'board' ? window.GBPathUtils?.displayTitle : null;
+    const newName = boardTitle ? boardTitle.storageName(body?.new_name) : String(body?.new_name || '').trim();
+    const titleOnly = boardTitle ? body?.title_only === true : window.GBPathUtils?.isDisplayTitleRename?.(route, body);
+    if (oldPath && newName && !titleOnly) {
       const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
-      _apiLockAddPath(paths, destinationBase);
-      const extension = _apiLockRenameExtension(oldPath);
+      const extension = boardTitle
+        ? oldPath.match(/\.(?:mel-board|board\.(?:md|json)|canvas\.json|md)$/i)?.[0] || _apiLockRenameExtension(oldPath)
+        : _apiLockRenameExtension(oldPath);
+      if (!boardTitle || !extension) _apiLockAddPath(paths, destinationBase);
       if (extension) _apiLockAddPath(paths, destinationBase + extension);
     }
   } else if (route === '/entity/create') {
@@ -1259,6 +1349,19 @@ function _apiLockBlockIfNeeded(path, opts) {
   throw new Error(message);
 }
 
+function _apiIsSheetWideWrite(path, opts) {
+  const method = String(opts?.method || 'GET').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return false;
+  let route = '';
+  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
+  catch { return false; }
+  if (route === '/db-property/rename') return 'schema';
+  if (route !== '/db-metadata') return false;
+  // 表示の設定だけの保存は行の中身を変えないので、ほかの人が入力中の行は待たない（シートを開いた時の自動保存もある）。
+  const keys = Object.keys(_apiLockJsonBody(opts)).filter(key => !['view_config', 'operation_id', 'expected_schema_revision', 'path', 'db_path'].includes(key));
+  return keys.length ? 'schema' : 'view';
+}
+
 function _apiUsesTransientActiveLock(path) {
   let route = '';
   try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
@@ -1266,26 +1369,100 @@ function _apiUsesTransientActiveLock(path) {
   return new Set([
     '/upload-file', '/upload-files', '/outliner/add', '/outliner/rename', '/outliner/delete',
     '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
-    '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
+    '/outliner/save-as', '/outliner/move', '/outliner/move-batch', '/trash/restore', '/replace', '/replace-batch',
+    // シートの行の追加・名前の自動生成・取り込みは、その間だけシートを取り、終わったら放す（シートのロックを残すと、
+    // ほかの端末・裏の取り込みがどの行へも書けなくなる。セルの入力中のロックは行だけ。2026-11-25）。
+    '/entity/create', '/entity/auto-name', '/import-csv', '/import-xlsx',
   ]).has(route);
 }
 
 // apiFetchをオーバーライドしてユーザー名を付加
 const _origApiFetch = apiFetch;
+
+// まとめての移動・削除（項目ごとに結果が返る要求）かどうか。該当すれば経路名を返す。
+function _apiLockBatchRoute(path, opts) {
+  if (String(opts?.method || 'GET').toUpperCase() !== 'POST') return '';
+  let route = '';
+  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
+  catch { return ''; }
+  return route === '/outliner/move-batch' || route === '/outliner/delete-batch' ? route : '';
+}
+
+// 編集中ロックを取れなかった項目を要求から外す。外した項目は、サーバーの項目ごとの失敗と同じ形で返す。
+// 移動先フォルダのロックが取れない時は全体を止める（fatal）。
+function _apiSplitLockRejectedItems(opts, failedLocks) {
+  const normalize = window.MeldexActiveLocks?.normalizePath || (value => String(value || ''));
+  const body = _apiLockJsonBody(opts) || {};
+  const items = Array.isArray(body.items) ? body.items : [];
+  const failedByPath = new Map((failedLocks || []).map(item => [item.path, item.error]));
+  const destination = normalize(body.dest_folder || '');
+  if (destination && failedByPath.has(destination)) return { fatal: failedByPath.get(destination) };
+  const kept = [];
+  const order = [];
+  for (const item of items) {
+    const rawPath = item && typeof item === 'object' ? item.path : item;
+    const error = failedByPath.get(normalize(rawPath));
+    if (!error) {
+      kept.push(item);
+      order.push(null);
+      continue;
+    }
+    const detail = error?.payload?.detail;
+    order.push({
+      ok: false, path: String(rawPath || ''), status: Number(error?.status) || 423,
+      detail: detail || error?.message || 'ほかの端末で編集中のため操作できません', lock_rejected: true,
+    });
+  }
+  if (!order.some(Boolean)) return { opts, order: null };
+  return { opts: { ...opts, body: JSON.stringify({ ...body, items: kept }) }, order, keptCount: kept.length };
+}
+
+function _apiMergeLockRejectedResults(result, order) {
+  const served = Array.isArray(result?.results) ? result.results.slice() : [];
+  const results = order.map(rejected => rejected || served.shift()).filter(Boolean).concat(served);
+  const failed = results.filter(item => !item?.ok);
+  return { ...(result || {}), ok: !failed.length, results, failed };
+}
+
 apiFetch = async function(path, opts) {
   opts = opts || {};
   const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
+  // まとめての移動・削除で、ロックを取れなかった項目を外した後の対象（外していなければ上と同じ）
+  let sentLockCandidatePaths = lockCandidatePaths;
   _apiLockBlockIfNeeded(path, opts);
   const activeLocks = window.MeldexActiveLocks;
-  const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
-    ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
-    : null;
+  const lockBatchRoute = _apiLockBatchRoute(path, opts);
+  // まとめての移動・削除は、取れなかった項目だけを外して残りを進める（1件ずつの時は従来どおり全体を止める）
+  // シート全体を変える保存（列・並べ替え・ビューの設定・列名の変更）は、その保存の間だけシート全体（中の行を含む）を
+  // ロックし、終わったら放す。セルの入力は行（トピック）のファイルだけをロックするので、ほかの行への書き込み
+  // （裏の取り込み・Web Clipper・ほかの端末）は通る（2026-11-25 利用者の判断「狭める」）。
+  const sheetWide = _apiIsSheetWideWrite(path, opts);
+  const lockSpecs = sheetWide === 'schema'
+    ? lockCandidatePaths.map(candidate => ({ path: candidate, includeDescendants: true }))
+    : lockCandidatePaths;
+  const transientLease = !((_apiUsesTransientActiveLock(path) || sheetWide) && activeLocks?.acquireMutationLocks) ? null
+    : lockBatchRoute ? await activeLocks.acquireMutationLocks(lockCandidatePaths, { partial: true })
+    : await activeLocks.acquireMutationLocks(lockSpecs);
+  let lockRejectedOrder = null;
+  if (lockBatchRoute && transientLease?.failed?.length) {
+    const split = _apiSplitLockRejectedItems(opts, transientLease.failed);
+    if (split.fatal || (split.order && !split.keptCount)) {
+      await transientLease.release();
+      if (split.fatal) throw split.fatal;
+      return _apiMergeLockRejectedResults({ results: [] }, split.order);
+    }
+    if (split.order) {
+      opts = split.opts;
+      sentLockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
+      lockRejectedOrder = split.order;
+    }
+  }
   const deferredCommittedUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
     && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, ''));
   let mutationSucceeded = false;
   try {
     if (activeLocks?.beforeApiFetch) {
-      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
+      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: sheetWide === 'schema' ? lockSpecs : sentLockCandidatePaths });
     }
     // 表示名と安定IDを自動付与（監査ログ・版履歴の編集者帰属用）
     const user = getUsername();
@@ -1297,8 +1474,9 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && actorId && !/[?&]_actor_id=/.test(path)) identityParams.push('_actor_id=' + encodeURIComponent(actorId));
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
-    const result = await _origApiFetch(path, opts);
+    let result = await _origApiFetch(path, opts);
     mutationSucceeded = true;
+    if (lockRejectedOrder) result = _apiMergeLockRejectedResults(result, lockRejectedOrder);
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
     } else if (result?.history_recorded === false) {

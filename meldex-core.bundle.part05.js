@@ -1,3 +1,17 @@
+    _ann.drawing = false;
+    layer.querySelector('.ann-preview')?.remove();
+    if (_ann.path.length < 2) {
+      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
+      return;
+    }
+    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+    const data = type === 'rect' ? _saRectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    const targetPath = _ann.targetPath || _saCurrentTargetPath();
+    if (!targetPath || _saCurrentTargetPath() !== targetPath) {
+      _ann.path = []; _ann.pressures = []; _ann.targetPath = '';
+      return;
+    }
+    try {
       const res = await apiPost('/annotations', { target_path: targetPath, type, data, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
       if (_saCurrentTargetPath() !== targetPath) return;
       if (type === 'rect') _renderRect(data, _ann.color, _ann.opacity, res.id);
@@ -134,7 +148,7 @@
     _ann.active = active;
     svg.style.pointerEvents = active ? 'auto' : 'none';
     svg.style.cursor = active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-    svg.style.outline = active ? '2px solid rgba(86,156,214,0.3)' : '';
+    svg.style.outline = active ? '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)' : '';
     hitRect.setAttribute('pointer-events', active ? 'all' : 'none');
     _syncStandaloneNoteInteractivity();
   }
@@ -463,6 +477,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  window.MeldexMenuIcons?.decorate?.(popup);
   popup.classList.add('gb-popup-surface');
   window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
@@ -784,3 +799,102 @@ function enableCheckboxDragToggle(container, scopeSelector) {
 document.addEventListener('DOMContentLoaded', () => {
   enableCheckboxDragToggle(document.body, '.modal-overlay');
 }, { once: true });
+
+// ================================================================
+// メニュー項目の共通アイコン対応表（2026-11-24）
+// メインメニュー・右クリックメニューで、同じ操作には同じアイコンを出すための単一正本。
+// 項目側でアイコンを指定していない時だけ、表示名（末尾の「...」「（N件）」等を除いた形）で引く。
+// 表にない名前（ファイル名・タグ名など利用者のデータ）には何も足さない。
+// ICONLESS は「意図してアイコンを付けない」項目（状態の選択肢・空の印）。
+// 対応表は app/tests/test_meldex_menu_icons.py が全メニュー定義と突き合わせる。
+// ================================================================
+(function () {
+  const ICONS = Object.freeze({
+    '新規作成': 'plus',
+    '検索・置換': 'replace',
+    '検索': 'search',
+    '開く': 'folderOpen',
+    '現在のフォルダを開く': 'folderOpen',
+    'Markdownファイルを開く': 'fileText',
+    'スライドショー': 'image',
+    '表示設定': 'eye',
+    'オプションを表示': 'slidersHorizontal',
+    'フォルダツリーで表示': 'folderTree',
+    'バージョン管理': 'gitBranch',
+    'バージョンを保存': 'save',
+    'パスをコピー': 'copy',
+    'リンクをコピー': 'link',
+    'Markdownをコピー': 'copy',
+    '最近使ったファイル': 'clock',
+    '閉じる': 'x',
+    '別名で保存': 'save',
+    '名前を付けて保存': 'save',
+    'ファイルを複製': 'copyPlus',
+    'ファイルを削除': 'trash2',
+    '印刷': 'printer',
+    'CSVからインポート': 'import',
+    'Excelからインポート': 'import',
+    '旧シナリオからインポート': 'import',
+    'シフト表を取り込む': 'import',
+    'Excelからシナリオを作成': 'fileSpreadsheet',
+    'CSVとして保存': 'download',
+    'Excelとして保存': 'download',
+    'HTMLとして保存': 'download',
+    'Markdownとして保存': 'download',
+    'Wordとして保存': 'download',
+    'シナリオ形式として保存': 'download',
+    '勤怠CSVとして保存': 'download',
+    '辞書ファイルを出力': 'download',
+    'シフト、実績、作業予定を書き出す': 'download',
+    'PNG画像として保存': 'image',
+    '画像（PNG）として保存': 'image',
+    'SVG画像として保存': 'image',
+    'B-MANGAへ送信': 'send',
+    'CLIP STUDIO PAINTへ送信': 'send',
+    'アーカイブ管理': 'archive',
+    'シートに変換': 'db',
+    'シートから一括読込': 'db',
+    'テンプレート': 'layoutTemplate',
+    'シートテンプレート': 'layoutTemplate',
+    'ノートテンプレート': 'layoutTemplate',
+    '新規トピックのノートテンプレート': 'layoutTemplate',
+    'テンプレートに登録': 'bookmarkPlus',
+    '現在のノートからテンプレートを作成': 'layoutTemplate',
+    '現在のシナリオからテンプレートを作成': 'layoutTemplate',
+    '現在のシートからテンプレートを作成': 'layoutTemplate',
+    '現在のボードからテンプレートを作成': 'layoutTemplate',
+    'シート横断検索': 'databaseSearch',
+    '整合性検証': 'shieldCheck',
+    '検証ルール管理': 'listChecks',
+    '列の表示と順序': 'columns',
+    '列を追加': 'columns',
+    '行を追加': 'rows3',
+    '公開設定': 'globe',
+    '公開を更新': 'refreshCw',
+    '新規イベント': 'calendarPlus',
+    '同期設定': 'calendarSync',
+    '新規リンクトピック: ノート': 'link2',
+    '新規リンクトピック: シート': 'link2',
+    '新規リンクトピック: ボード': 'link2',
+    '既存ファイルへのリンクトピック': 'link2',
+    'ツール': 'wrench',
+    '重複画像を検出': 'scanSearch',
+    'このフォルダで重複検出': 'scanSearch',
+    '画像インデックスを作成': 'fileSearch',
+    'このフォルダのインデックス作成': 'fileSearch',
+    'この階層を閉じる': 'chevronsDownUp',
+    'リネーム': 'pencil',
+    'パスを変更': 'folderPen',
+    'ワークスペースの管理': 'settings',
+    'システム保護': 'shield',
+    'プロパティ': 'info',
+    'チャットを開く': 'messageSquare',
+    '比較': 'columns',
+  });
+  // 色見本が先頭に付く行（色設定）は色見本をアイコンとして扱う。読み込み中の一時表示は付けない。
+  const ICONLESS = Object.freeze(new Set(['(なし)', '（なし）', '設定する', '解除する', 'OS メニュー 読み込み中']));
+
+  function normalizeLabel(label) {
+    let text = String(label ?? '').replace(/\s+/g, ' ').trim();
+    text = text.replace(/^[✓✔]\s*/, '');
+    text = text.replace(/(?:\.\.\.|…)$/, '').trim();

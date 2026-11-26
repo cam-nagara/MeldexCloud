@@ -767,6 +767,7 @@
 
   // --- Cleanup ---
   return function bdCleanupInteraction() {
+    if (typeof bdCancelSelectionAnchorGesture === 'function') bdCancelSelectionAnchorGesture();
     canvas.removeEventListener('pointerdown', onCanvasPointerdown);
     canvas.removeEventListener('contextmenu', onCanvasContextmenu);
     canvas.removeEventListener('dblclick', onCanvasDblclick);

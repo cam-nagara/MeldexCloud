@@ -106,7 +106,10 @@
         notify('ファイルへの保存を完了できなかったため、閉じません', true);
         return false;
       }
-      return getCloseState().canClose;
+      const closeState = getCloseState();
+      // 進めない時は理由を出す（黙って何もしないと、押したメニューが効かないように見える）。
+      if (!closeState.canClose) notify(closeState.message || '保存が終わっていないため、切り替えられません', true);
+      return closeState.canClose;
     })().finally(() => { running = null; });
     return running;
   }

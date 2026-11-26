@@ -31,10 +31,18 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'テーマ',
-    desc: 'テーマカラー、アクセント、詳細設定、プレビュー',
+    desc: 'テーマカラー、アクセント、一括設定、個別設定',
     icon: 'palette',
     pages: [
       { id: 'theme', label: 'テーマ', panels: ['テーマ'], view: 'theme', commitMode: 'draft-save' },
+    ],
+  },
+  {
+    id: 'アイコン素材集',
+    desc: 'SVG・PNGのアイコン素材集の登録、使う／使わない、削除',
+    icon: 'shapes',
+    pages: [
+      { id: 'icon-packs', label: 'アイコン素材集', panels: ['アイコン素材集'], view: 'icon-packs', commitMode: 'immediate-safe' },
     ],
   },
   {
@@ -81,6 +89,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     icon: 'blocks',
     pages: [
       { id: 'web-clipper', label: 'Web Clipper', panels: ['拡張機能'], view: 'web-clipper', commitMode: 'immediate-safe' },
+      { id: 'x-connection', label: 'X接続', panels: ['取り込み'], view: 'x-connection', commitMode: 'immediate-safe' },
       { id: 'x-bookmarks', label: 'Xブックマーク', panels: ['取り込み'], view: 'x-bookmarks', commitMode: 'immediate-safe' },
       { id: 'x-account-posts', label: 'Xアカウント保存', panels: ['取り込み'], view: 'x-account-posts', commitMode: 'immediate-safe' },
     ],
@@ -158,6 +167,7 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'LLMコスト': { tabId: 'AI', pageId: 'ai-usage' },
   'LLMコスト管理': { tabId: 'AI', pageId: 'ai-usage' },
   '利用料金': { tabId: '利用料金', pageId: 'usage-costs' },
+  'アイコン素材集': { tabId: 'アイコン素材集', pageId: 'icon-packs' },
   '月別利用料金': { tabId: '利用料金', pageId: 'usage-costs' },
   'AI料金': { tabId: 'AI', pageId: 'ai-usage' },
   'AI使用量': { tabId: 'AI', pageId: 'ai-usage' },
@@ -165,6 +175,7 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   '取り込み': { tabId: 'インポート', pageId: 'external-import' },
   '外部取り込み': { tabId: 'インポート', pageId: 'external-import' },
   'Notion同期': { tabId: 'インポート', pageId: 'notion-sync' },
+  'X接続': { tabId: 'Webクリップ', pageId: 'x-connection' },
   'Xブックマーク': { tabId: 'Webクリップ', pageId: 'x-bookmarks' },
   'Xアカウント保存': { tabId: 'Webクリップ', pageId: 'x-account-posts' },
   'Web Clipper': { tabId: 'Webクリップ', pageId: 'web-clipper' },
@@ -342,6 +353,7 @@ function _tagSettingsNavigationSections(root = document) {
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="取り込み"]'), [
     'external-import',
+    'x-connection',
     'x-bookmarks',
     'x-account-posts',
   ]);

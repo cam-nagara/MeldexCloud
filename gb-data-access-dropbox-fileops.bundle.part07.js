@@ -1,3 +1,37 @@
+            await _awaitPendingEditFinalizations();
+            const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+            const adapter = await _managementAdapterForProvider(provider, kind, mappings[0].oldPath);
+            const records = await adapter.listDocuments(kind);
+            for (const record of records) {
+              const current = _normalizeFolderPath(record?.payload?.original_relative_path || '');
+              const mapping = mappings.find(row => row.oldPath === current);
+              if (!mapping) continue;
+              await adapter.save(kind, record.documentId, { ...record.payload, original_relative_path: mapping.newPath }, { expectedRevision: record.revision });
+            }
+          });
+          await _runPostMutationStep(warnings, 'stored-paths', () => (
+            typeof _rewriteStoredPathsBatchForProvider === 'function'
+              ? _rewriteStoredPathsBatchForProvider(provider, mappings)
+              : Promise.all(mappings.map(row => _rewriteStoredPathsForProvider(provider, row.oldPath, row.newPath, false)))
+          ));
+          for (const entry of entries || []) {
+            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
+            const newPath = direction === 'reverse' ? entry.source : entry.destination;
+            await _runPostMutationStep(warnings, 'csv-sidecars', () => _relocateCsvSidecars(provider, oldPath, newPath, false, false));
+            await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: false, operationId }, warnings);
+            await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
+              action: 'rename', oldPath, newPath, isFolder: false,
+              annotationPlan: prepared?.get?.(oldPath),
+            }));
+          }
+          let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
+          await _runPostMutationStep(warnings, 'references', async () => {
+            relocate = typeof _relocateReferencesBatch === 'function'
+              ? await _relocateReferencesBatch(provider, mappings)
+              : await _relocateReferences(provider, mappings[0]?.oldPath, mappings[0]?.newPath, false);
+          });
+          for (const mapping of mappings) {
+            window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(mapping.oldPath, mapping.newPath);
           }
           window.dispatchEvent(new CustomEvent('meldex:batch-paths-renamed', {
             detail: { operationId, direction, entries: (entries || []).map(entry => ({ source: entry.source, destination: entry.destination })) },
@@ -269,10 +303,36 @@
       const trashPath = _joinPath(trashRoot.path, trashName);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
       const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
+      let originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, originalPath, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        // The metadata is the durable retry receipt. Remove the visible trash
+        // copy only after the row is safely restored; an uncertain write keeps it.
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
+      if (await _pathExists(provider, originalPath)) {
+        // 同じ名前を黙って上書きも別名にもしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        // 置き換えは、Dropbox では今ある方を回復できる形で退避できないので受け付けない。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true, trash_name: trashName };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${originalPath}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
+        const split = _splitNameAndExt(_basename(originalPath));
+        const baseDir = _dirname(originalPath);
+        const basePath = originalPath;
+        for (let counter = 2; await _pathExists(provider, originalPath); counter += 1) {
+          originalPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(basePath)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
+        }
+      }
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
       const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
@@ -370,19 +430,31 @@
       const trashPath = _joinPath(trashRoot.path, name);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error('ゴミ箱に見つかりません');
       const meta = await _readJsonSafe(provider, metaPath, {});
       const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, baseDest, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_to: baseDest, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error('ゴミ箱に見つかりません');
       let destPath = baseDest;
       if (await _pathExists(provider, destPath)) {
+        // 同じ名前がある時は、黙って別名にしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${baseDest}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
         const split = _splitNameAndExt(_basename(baseDest));
         const baseDir = _dirname(baseDest);
-        for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-          const stem = source.kind === 'directory' ? _basename(baseDest).replace(/_\d{4}$/, '') : split.stem;
-          const nextName = source.kind === 'directory'
-            ? `${stem}_restored_${String(counter).padStart(4, '0')}`
-            : `${stem}_restored_${String(counter).padStart(4, '0')}${split.ext}`;
-          destPath = _joinPath(baseDir, nextName);
+        for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
+          destPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(baseDest)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
         }
       }
       await _moveEntry(provider, trashPath, destPath);

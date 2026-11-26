@@ -46,7 +46,7 @@
 
   // 未設定の時に引き継ぐ項目。シートの候補値（列タイプごと）は、v0.7.515 の「候補値」共通の設定を初期値にする。
   function _inheritedStyleKey(key) {
-    const match = String(key || '').match(/^--db-option-(?:select|multi|relation|rollup|tag)-(fg|bg|bold|font-size|radius|padding-x|border-color|border-width)$/);
+    const match = String(key || '').match(/^--db-option-(?:select|multi|relation|rollup|tag|multi-relation|multi-source-relation|user|multi-user|status)-(fg|bg|bold|italic|strike|font-size|radius|padding-x|border-color|border-width)$/);
     return match ? `--db-option-chip-${match[1]}` : '';
   }
 
@@ -313,6 +313,7 @@
       add('fontFamily', _settingsKey(def, 'font', '-font'));
       add('fontWeight', _settingsKey(def, 'bold', '-bold'), 'bold');
       add('fontStyle', _settingsKey(def, 'italic', '-italic'), 'italic');
+      if (def.strike) add('strike', def.strike);
       add('textStrokeColor', _settingsKey(def, 'stroke', '-stroke-color'));
       add('textStrokeWidth', _settingsKey(def, 'strokeWidth', '-stroke-width'));
       add('leftAccent', _settingsKey(def, 'leftAccent', '-left-accent'));
@@ -423,6 +424,7 @@
       bgColor: map.bgColor ? _cssVar(map.bgColor) : '',
       fontWeight: map.fontWeight && _cssVar(map.fontWeight) === 'bold' ? 'bold' : '',
       fontStyle: map.fontStyle && _cssVar(map.fontStyle) === 'italic' ? 'italic' : '',
+      strike: map.strike && _cssVar(map.strike) === 'line-through',
       fontSize: map.fontSize ? _pxNumber(_cssVar(map.fontSize), _previewFontSize(def.label) || '') : '',
       fontFamily: map.fontFamily ? _cssVar(map.fontFamily) : '',
       textStrokeColor: map.textStrokeColor ? _cssVar(map.textStrokeColor) : '',
@@ -455,6 +457,7 @@
     ];
     if (map.fontWeight) parts.push(`font-weight:${_varRef(map.fontWeight)}`);
     if (map.fontStyle) parts.push(`font-style:var(${map.fontStyle})`);
+    if (map.strike) parts.push(`text-decoration:var(${map.strike})`);
     if (map.fontSize) {
       const fallback = previewSize ? `, ${previewSize}px` : '';
       if (_inheritedStyleKey(map.fontSize)) parts.push(`font-size:${_varRef(map.fontSize, previewSize ? `${previewSize}px` : '')}`);
@@ -829,10 +832,10 @@
     const hasNumbers = popupNumberSpecs.length > 0;
     // State samples edit their own CSS key and retain the direct edit/cancel contract.
     const themeUiEditor = def.__themeStateEntry ? null : _makeThemeUiApplicationPopupEditor(def, previewEl);
-    if (!fields.length && !hasNumbers && !themeUiEditor) return;
     const extraNumberRows = _makePopupNumberRows(def, previewEl, popupNumberSpecs);
     const extraControls = typeof window.settingsThemePreviewExtraControls === 'function'
       ? window.settingsThemePreviewExtraControls(def,previewEl) : null;
+    if (!fields.length && !hasNumbers && !themeUiEditor && !extraControls?.childElementCount) return;
     const stateEntry = def.__themeStateEntry || null;
     const stateTargetKeys = stateEntry && typeof settingsThemeStyleSettingTargetKeys === 'function'
       ? settingsThemeStyleSettingTargetKeys(stateEntry.key)
@@ -926,6 +929,7 @@
         if (prop === 'textColor' && map.textColor) _setThemeStyle(map.textColor, value || '');
         else if (prop === 'bgColor' && map.bgColor) _setThemeStyle(map.bgColor, _styleBgColorWithPreservedAlpha(def, _cssVar(map.bgColor), value));
         else if (prop === 'fontWeight' && map.fontWeight) _setThemeStyle(map.fontWeight, value === 'bold' ? 'bold' : 'normal');
+        else if (prop === 'strike' && map.strike) _setThemeStyle(map.strike, value ? 'line-through' : 'none');
         else if (prop === 'fontStyle' && map.fontStyle) _setThemeStyle(map.fontStyle, value === 'italic' ? 'italic' : 'normal');
         else if (prop === 'fontSize' && map.fontSize) _setThemeStyle(map.fontSize, value == null ? '' : value + 'px');
         else if (prop === 'fontFamily' && map.fontFamily) _setThemeStyle(map.fontFamily, value || '');
@@ -1031,6 +1035,7 @@
   function _isWidthField(field) {
     const t = _fieldText(field);
     return (field.type === 'pxtext' || field.type === 'number' || field.type === 'toggle')
+      && field.on !== 'line-through'
       && LINE_RE.test(t) && !CARET_RE.test(t) && !/lineHeight|行間|letter|字間|ruby|ルビ|wrap|折り返し/i.test(t);
   }
 
@@ -1103,6 +1108,7 @@
     add('bgColor', _findField(fields, _isBgField));
     add('fontWeight', _findField(fields, f => f.type === 'toggle' && f.on === 'bold'));
     add('fontStyle', _findField(fields, f => f.type === 'toggle' && f.on === 'italic'));
+    add('strike', _findField(fields, f => f.type === 'toggle' && f.on === 'line-through'));
     add('fontSize', _findField(fields, _isFontSizeField));
     add('fontFamily', _findField(fields, f => f.type === 'select' && (f.preview === 'fontSample' || /font|フォント/i.test(_fieldText(f)))));
     add('borderColor', _findField(fields, _isLineField));
@@ -1124,7 +1130,11 @@
       }) : null));
       add('fontWeight', map.fontWeight || (supportsGeneratedTextStyle ? _virtualFileField(base, '-bold', '太字', 'toggle', { on: 'bold', off: 'normal' }) : null), 'bold');
       add('fontStyle', map.fontStyle || (supportsGeneratedTextStyle ? _virtualFileField(base, '-italic', '斜体', 'toggle', { on: 'italic', off: 'normal' }) : null), 'italic');
-      add('bgColor', map.bgColor || (supportsGeneratedTextStyle ? _virtualFileField(base, '-bg', '背景色', 'color') : null));
+      // 本文全体の面は共通テーマに従う。ファイルの書式は段落の背景を編集する。
+      const backgroundField = base === '--page-text'
+        ? { key: '--page-paragraph-bg', label: '背景色', type: 'color', virtual: true }
+        : (supportsGeneratedTextStyle ? _virtualFileField(base, '-bg', '背景色', 'color') : null);
+      add('bgColor', map.bgColor || backgroundField);
       add('textStrokeColor', _findField(fields, _isStrokeColorField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-stroke-color', '文字フチ色', 'color') : null));
       add('textStrokeWidth', _findField(fields, _isStrokeWidthField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-stroke-width', '文字フチ幅', 'pxtext') : null));
       add('leftAccent', _findField(fields, _isLeftAccentField) || (supportsGeneratedTextStyle ? _virtualFileField(base, '-left-accent', '左アクセントバー', 'toggle', { on: STYLE_LEFT_ACCENT_WIDTH, off: '0px' }) : null));
@@ -1176,6 +1186,7 @@
       bgColor: _readFileWithInheritance(map.bgColor, adapter),
       fontWeight: _readFileWithInheritance(map.fontWeight, adapter) === 'bold' ? 'bold' : '',
       fontStyle: _readFileWithInheritance(map.fontStyle, adapter) === 'italic' ? 'italic' : '',
+      strike: _readFileWithInheritance(map.strike, adapter) === 'line-through',
       fontSize: _pxNumber(_readFileWithInheritance(map.fontSize, adapter), _previewFontSize(rowData.label) || ''),
       fontFamily: _readFileWithInheritance(map.fontFamily, adapter),
       textStrokeColor: _readFileWithInheritance(map.textStrokeColor, adapter),
@@ -1230,6 +1241,7 @@
     el.style.color = previewFg;
     if (values.fontWeight === 'bold') el.style.fontWeight = 'bold';
     if (values.fontStyle === 'italic') el.style.fontStyle = 'italic';
+    if (values.strike) el.style.textDecoration = 'line-through';
     const previewSize = values.fontSize || _previewFontSize(rowData.label);
     if (previewSize) el.style.fontSize = previewSize + 'px';
     if (values.fontFamily) el.style.fontFamily = values.fontFamily;
@@ -1302,9 +1314,9 @@
     const raw = _rawForField(field, prop, value, options);
     const normalized = typeof _fsNormalizeFieldValue === 'function' ? _fsNormalizeFieldValue(field, raw) : raw;
     const result = adapter.set(field, normalized || '');
-    // ボードは未保存の入力を保持する。通信完了まで文字の見た目を待たせず、
-    // 遅い応答で別ボードへ再適用しない。他の面の保存順序は従来どおり。
-    const appliedImmediately = adapter.ctx === 'board' && adapter.isCurrent?.() !== false;
+    // ボードとシートは未保存の入力を保持する。通信完了まで見た目を待たせず、
+    // 遅い応答で別のファイルへ再適用しない。
+    const appliedImmediately = ['board', 'db'].includes(adapter.ctx) && adapter.isCurrent?.() !== false;
     if (appliedImmediately) adapter.applyCss(field, normalized || '');
     const apply = saved => {
       if (saved === false || adapter.isCurrent?.() === false) return false;
@@ -1371,12 +1383,16 @@
       },
       onReset: async () => {
         try {
-          for (const [prop, field] of Object.entries(map)) {
-            if (await _setFileField(field, prop, '', adapter, { clear: true }) === false) return;
+          const ctx = adapter.ctx || adapter.kind;
+          const next = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
+          for (const field of [...Object.values(map), ...extraFields]) {
+            const key = _fsStyleStorageKeyForField(ctx, field);
+            if (key) delete next[key];
           }
-          for (const field of extraFields) {
-            if (await _setFileField(field, '', '', adapter, { clear: true }) === false) return;
-          }
+          // リセットは1操作。色・フォント等を個別に保存すると、1回のUndoで一部しか戻らない。
+          const saved = await _fsRunThemeAction(ctx, () =>
+            _fsApplyStyleWithHistory(ctx, adapter, next, '書式を初期状態に戻す', _rowLabel(rowData)));
+          if (saved === false) return;
           if (adapter.isCurrent?.() !== false) {
             anchorEl = _replaceFilePreview(anchorEl, rowData, adapter);
             _syncFileThemeSelect(adapter);

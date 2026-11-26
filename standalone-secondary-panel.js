@@ -248,6 +248,8 @@
   // iframe として動くため、起動時に全部読むと画像を開くたびに重くなる。
   // タブを最初に開いた時だけ読み込む。
   const FILE_INFO_SCRIPTS = [
+    'gb-error-message-translator.js',
+    'gb-log-export.js',
     'gb-file-info-panel.js',
     'gb-file-metadata.js',
     'gb-auto-tag-settings.js',
@@ -307,6 +309,56 @@
   }
 
   const fileInfoRenderSeq = new WeakMap();
+  const FOLDER_OPEN_SCRIPTS = ['standalone-parity-adapter.js'];
+  let folderOpenAdapterPromise = null;
+
+  function loadFolderOpenAdapter() {
+    if (root.MeldexStandaloneParity?.openTarget) return Promise.resolve(root.MeldexStandaloneParity);
+    if (folderOpenAdapterPromise) return folderOpenAdapterPromise;
+    folderOpenAdapterPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = FOLDER_OPEN_SCRIPTS[0];
+      const failed = () => {
+        script.remove();
+        reject(new Error('フォルダを開く準備ができませんでした。もう一度操作してください'));
+      };
+      script.addEventListener('error', failed, { once: true });
+      script.addEventListener('load', () => {
+        if (root.MeldexStandaloneParity?.openTarget) resolve(root.MeldexStandaloneParity);
+        else failed();
+      }, { once: true });
+      document.head.appendChild(script);
+    }).catch(error => {
+      folderOpenAdapterPromise = null;
+      throw error;
+    });
+    return folderOpenAdapterPromise;
+  }
+
+  async function openFileInfoFolder(path, isCurrent = () => true, reportFailure = () => {}) {
+    if (!path || isCurrent() === false) return false;
+    try {
+      const adapter = await loadFolderOpenAdapter();
+      if (isCurrent() === false) return false;
+      const opened = await adapter.openTarget({ path, linkType: 'folder' }, 'main');
+      if (opened === false && isCurrent() !== false) {
+        const native = new URLSearchParams(root.location?.search || '').get('native') === '1';
+        reportFailure(native
+          ? 'Meldex本体を開けませんでした。インストール・起動状態を確認し、もう一度お試しください。'
+          : '新しいウィンドウを開けませんでした。ポップアップを許可して、もう一度お試しください。');
+      }
+      if (opened !== false && isCurrent() !== false) root.showStatus?.('フォルダをMeldex本体へ渡しました');
+      return opened !== false;
+    } catch (error) {
+      if (isCurrent() !== false) {
+        const message = error?.userMessage || (String(error?.message || '').startsWith('フォルダを')
+          ? error.message : 'フォルダを開く準備を読み込めませんでした。もう一度お試しください。');
+        reportFailure(message);
+        root.showStatus?.(message, true);
+      }
+      return false;
+    }
+  }
 
   // 「プロパティ」タブ: 本体のフォルダパネル→プロパティタブと同じ内容。
   // 表示中のファイルが続けて変わった時に、古い呼び出しの結果で上書きしないよう順番を確かめる。
@@ -316,8 +368,9 @@
     fileInfoRenderSeq.set(host, seq);
     if (!root.MeldexFileInfoPanel?.renderInto) {
       host.innerHTML = '<div class="gb-empty-placeholder">読み込み中...</div>';
-      await ensureFileInfoDeps();
     }
+    // 初回通知が重なるとFileInfoだけ先に使える。後続のタグ等も同じ読込を待つ。
+    await ensureFileInfoDeps();
     if (fileInfoRenderSeq.get(host) !== seq) return;
     if (!root.MeldexFileInfoPanel?.renderInto) {
       host.innerHTML = '<div class="gb-empty-placeholder">ファイル情報を読み込めませんでした</div>';
@@ -325,7 +378,13 @@
     }
     const showTags = await standaloneTagsAvailable();
     if (fileInfoRenderSeq.get(host) !== seq) return;
-    await root.MeldexFileInfoPanel.renderInto(host, String(getPath?.() || '').trim(), { showTags });
+    const isCurrent = () => fileInfoRenderSeq.get(host) === seq;
+    let folderFailureMessage = '';
+    await root.MeldexFileInfoPanel.renderInto(host, String(getPath?.() || '').trim(), {
+      showTags, isCurrent,
+      onOpenFolder: path => openFileInfoFolder(path, isCurrent, message => { folderFailureMessage = message; }),
+      getOpenFolderFailureMessage: () => folderFailureMessage,
+    });
   }
 
   // 「ショートカットキー」タブ: 設定と同じ一覧・変更機能
@@ -340,6 +399,17 @@
 
   function setupViewer(embedded) {
     const controls = document.getElementById('controls');
+    // 共通プロパティ・タグ等はshowStatusを使う。ビューワーには本体の
+    // #sb-msgがないため、失敗がコンソールだけで終わらないようHUDへ届ける。
+    if (!root.showStatus?._viewerHudStatus) {
+      const previousStatus = root.showStatus;
+      const viewerStatus = (message, isError, options) => {
+        previousStatus?.(message, isError, options);
+        root.MeldexViewerScene?.flashStatus?.(String(message || ''), isError ? 5000 : 1500);
+      };
+      viewerStatus._viewerHudStatus = true;
+      root.showStatus = viewerStatus;
+    }
     // #controls は共通ツールバー（.gb-toolbar-viewer）。中に置くボタンも共通の .tb-icon-btn を使い、
     // デスクトップ32px帯・タッチ44px操作領域のトークンをそのまま適用する。
     const shell = setupShell('viewer', controls, 'tb-icon-btn');
@@ -371,7 +441,12 @@
     if (infoSource) {
       new MutationObserver(() => {
         const host = tabs.panels.get('info');
-        if (host && !host.hidden && (!root.MeldexStandaloneNative || shell.panel.classList.contains('is-open'))) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
+        if (!host || host.hidden || (root.MeldexStandaloneNative && !shell.panel.classList.contains('is-open'))) return;
+        const path = root.MeldexViewerScene?.currentPath?.() || '';
+        // HUDは倍率や回転でも変わる。同じファイルなら編集欄・選択・保存中の
+        // 表示を保ち、タグやプロパティの全件取得を繰り返さない。
+        if (host.querySelector('[data-file-info-path]')?.getAttribute('data-file-info-path') === path) return;
+        renderFileInfoTab(host, () => path);
       }).observe(infoSource, { childList: true, subtree: true, characterData: true });
     }
     return true;
@@ -405,6 +480,7 @@
       speedSource.value = speed.value;
       speedSource.dispatchEvent(new Event('input', { bubbles: true }));
       speedSource.dispatchEvent(new Event('change', { bubbles: true }));
+      speed.value = speedSource.value;
     });
     slideshow.appendChild(row('切替秒数', speed));
     const slideshowActions = document.createElement('div');

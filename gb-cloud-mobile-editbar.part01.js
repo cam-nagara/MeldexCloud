@@ -49,6 +49,7 @@
     { id: 'folder-tree', label: 'フォルダツリー', icon: 'folderTree', action: () => window.MeldexCloudMobile?.openSidebar?.(true) },
     { id: 'preview', label: 'ビューワー', icon: 'monitor', action: () => _openPreviewPanel() },
     { id: 'options', label: 'オプション', icon: 'slidersHorizontal', action: () => _callGlobal('toggleOptionPanel') },
+    { id: 'theme', label: 'テーマ', icon: 'palette', action: () => _callGlobal('openRightPanelTab', 'file-theme') },
     { id: 'version', label: 'バージョン', icon: 'gitBranch', action: () => _openVersionPanel() },
     { id: 'annotation', label: 'アノテート', icon: 'squarePen', action: () => _openToolPanel('annotation') },
     { id: 'history', label: 'ヒストリー', icon: 'history', action: () => _openToolPanel('history') },
@@ -437,17 +438,78 @@
     return false;
   }
 
-  // スマホの幅ではシートのツールバーが出ない（2026-11-22）。パソコンのツールバーにだけある操作を、同じ処理でメニューへ出す。
+  // スマホの幅ではシートのツールバーが出ない（2026-11-22）。パソコンのツールバーの操作を、同じ並び・同じ処理でメニューへ出す
+  // （2026-11-24 自動リンク・折返し・列幅・列の表示と順序・取り消し・公開・検索・オプションも追加）。
   function _sheetToolbarItemsForMobile() {
     const anchor = () => (_mainButton?.isConnected ? _mainButton : document.getElementById('cloud-mobile-main-button'));
-    return [
+    const anchorEvent = () => { const button = anchor(); return button ? { target: button, currentTarget: button } : null; };
+    const toolbarButton = action => document.querySelector(`#tb-db [data-action^="${action}"]`);
+    const items = [];
+    const autoLink = toolbarButton('MeldexDisplayLayers.toggleFromButton');
+    if (autoLink) {
+      items.push({ id: 'sheet-autolink', label: autoLink.getAttribute('title') || autoLink.getAttribute('aria-label') || '自動リンク',
+        icon: 'externalLink', action: () => window.MeldexDisplayLayers?.toggleFromButton?.(autoLink) });
+    }
+    items.push(
+      { id: 'sheet-cell-wrap', label: '折返し', icon: 'wrapText', action: () => _callGlobal('showDbCellWrapMenu', anchorEvent()) },
+      { id: 'sheet-auto-fit-columns', label: '列幅自動調整', icon: 'columns3', action: () => _callGlobal('autoFitCurrentSheetColumns') },
+      { id: 'sheet-column-display-order', label: '列の表示と順序', icon: 'listChecks', action: () => _callGlobal('showColumnDisplayOrderModal') },
+      { id: 'sheet-undo', label: '元に戻す', icon: 'undo2', action: () => _callGlobal('meldexUndo') },
+      { id: 'sheet-redo', label: 'やり直し', icon: 'redo2', action: () => _callGlobal('meldexRedo') },
       { id: 'sheet-filter', label: 'フィルタ', icon: 'filter', action: () => _callGlobal('showUnifiedFilterModal') },
       { id: 'sheet-sort', label: '並び替え', icon: 'arrowUpDown', action: () => {
         const button = anchor();
         return _callGlobal('showDbSortMenu', button ? { target: button, currentTarget: button } : null);
       } },
+      { id: 'sheet-publish', label: '公開を更新', icon: 'upload', action: () => _callGlobal('publishCurrentDatabaseView') },
       { id: 'sheet-reload', label: '再読み込み', icon: 'refreshCw', action: () => _callGlobal('reloadCurrentOpenFile') },
-    ];
+      { id: 'sheet-search-replace', label: '検索と置換', icon: 'search', action: () => _callGlobal('openCurrentToolbarSearchReplace', 'database') },
+      { id: 'sheet-options', label: 'オプション', icon: 'slidersHorizontal', action: () => {
+        _callGlobal('_openDetailRightPanel');
+        const panel = document.getElementById('rp-detail');
+        if (panel && window.MeldexCloudMobileSideDrawer?.openElement?.('オプション', panel, { kind: 'detail' })) return true;
+        return _callGlobal('toggleOptionPanel');
+      } },
+    );
+    items.push(..._sheetTopicActionItemsForMobile(anchor));
+    return items;
+  }
+
+  // パソコンではトピックの画面の上に出るシートのアクション（ボタン列）を、スマホではメニューから実行する。
+  // 対象は、ドロワーで開いているトピック、無ければ表で選んでいる行のトピック。ダイアログはパソコンと同じもの。
+  function _sheetTopicActionItemsForMobile(anchor) {
+    try {
+      const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : null;
+      const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
+      const actions = (ctx?.dbMetadata?.actions || (typeof state !== 'undefined' ? state.dbMetadata?.actions : null) || []);
+      if (!dbPath || !Array.isArray(actions) || !actions.length || typeof _showDbActionModal !== 'function') return [];
+      let entityPath = window.MeldexCloudMobileSideDrawer?.currentEntity?.()?.entityPath || '';
+      if (!entityPath) {
+        const cell = typeof _dbCurrentVisualActiveCell === 'function' ? _dbCurrentVisualActiveCell() : null;
+        const entityName = cell?.closest?.('tr')?.dataset?.entityName || '';
+        if (entityName && typeof _entityPath === 'function') entityPath = _entityPath(dbPath, entityName, ctx?.pivotData);
+      }
+      if (!entityPath) return [];
+      return actions.map((action, index) => ({
+        id: 'sheet-topic-action-' + index,
+        label: 'アクション: ' + (action?.label || 'アクション実行'),
+        icon: 'zap',
+        action: async () => {
+          const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+          _showDbActionModal(action, data, entityPath, anchor());
+          return true;
+        },
+      }));
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  // ツールバーと同じ操作がメインメニューにもある時（列の表示と順序 など）は、ツールバーの並びの方だけを残す。
+  function _withoutDuplicateMenuLabels(first, rest) {
+    const key = item => String(item?.label || '').replace(/[.…]+$/, '').trim();
+    const seen = new Set(first.map(key).filter(Boolean));
+    return [...first, ...rest.filter(item => !item?.label || !seen.has(key(item)))];
   }
 
   function _toolMenuItems(toolType) {
@@ -500,7 +562,7 @@
       { id: 'note-toc', label: '目次の表示/非表示', icon: 'listCollapse', action: () => _callGlobal('toggleNoteToc') },
       ...desktopItems,
     ];
-    if (toolType === 'database') return [..._sheetToolbarItemsForMobile(), ...desktopItems];
+    if (toolType === 'database') return _withoutDuplicateMenuLabels(_sheetToolbarItemsForMobile(), desktopItems);
     if (toolType !== 'calendar') return desktopItems;
     // 制作タスクリスト面では、汎用カレンダー操作を混在させず制作操作だけを表示する。
     // 「カレンダーに戻る」が同面を識別する安定した印になる。

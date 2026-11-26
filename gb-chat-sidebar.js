@@ -50,6 +50,21 @@
       if (paneId) GBLayout.revealPane(paneId, { activate: true, deferRender: true, preserveCollapsed: true });
     }
   }
+  // 旧版の不具合で、右サイドバーの補助パネル（バージョン管理など）がチャット欄にタブとして
+  // 追加されていた。右サイドバーに同じものがあるため、読み込み時にチャット欄から取り除く。
+  function removeStrayRailTabs(dock) {
+    const railTypes = window.GBRailContract?.types?.();
+    if (!railTypes) return;
+    GBLayout.getAllPanes(dock).forEach(pane => {
+      const tabs = pane.tabs || [];
+      const keep = tabs.filter(tab => tab.type === 'chat' || !railTypes.has(tab.type));
+      if (keep.length === tabs.length) return;
+      const active = tabs[pane.activeTabIndex];
+      pane.tabs = keep;
+      const index = keep.indexOf(active);
+      pane.activeTabIndex = index >= 0 ? index : (keep.findIndex(tab => tab.type === 'chat') >= 0 ? keep.findIndex(tab => tab.type === 'chat') : (keep.length ? 0 : -1));
+    });
+  }
   function ensure(root) {
     if (!root || window._gbSingleWindow || typeof GBPanelSet === 'undefined') return root;
     let dock = null;
@@ -74,6 +89,7 @@
       }
     }
     walk(root);
+    if (dock) removeStrayRailTabs(dock);
     if (dock) {
       // 保存レイアウトでチャットタブだけが欠けても、右レールの入口を空にしない。
       let group = dock.groups.find(item => GBLayout.getAllPanes(item.root).some(pane => pane.tabs?.some(tab => tab.type === 'chat')));
@@ -110,6 +126,7 @@
   }
   function close() {
     const dock = currentDock();
+    if (dock && typeof GBPaneBridge !== 'undefined') GBPaneBridge.rememberChatViewport?.();
     if (dock && window.innerWidth <= 768) {
       const paneId = workPaneId(GBLayout.root, dock);
       if (paneId) GBLayout.revealPane(paneId, { activate: true, deferRender: true, preserveCollapsed: true });
@@ -127,17 +144,25 @@
     const pane = GBLayout.getAllPanes(dock).find(item => item.tabs?.some(tab => tab.type === 'chat'));
     const chatTab = pane?.tabs?.find(tab => tab.type === 'chat');
     if (!chatTab) return false;
+    const group = dock.groups.find(item => GBLayout.getAllPanes(item.root).some(node => node.id === pane.id));
+    const needsActivation = pane.tabs[pane.activeTabIndex]?.id !== chatTab.id || group && dock.activeGroupId !== group.id;
     if (window.innerWidth <= 768) {
+      if (!needsActivation && GBLayout.activePane === pane.id) {
+        if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.restoreChatViewport?.();
+        window.MeldexCloudMobileEditBar?.refresh?.();
+        return true;
+      }
       pane.activeTabIndex = pane.tabs.indexOf(chatTab);
       if (GBLayout.activePane !== pane.id) returnPaneId = GBLayout.activePane;
       GBLayout.revealPane(pane.id, { activate: true, userIntent: true, deferRender: true, preserveCollapsed: true });
       GBLayout.render();
       GBLayout.saveLayout({ immediate: true });
     } else {
-      GBLayout.setNodeCollapsed(dock.id, false);
+      if (dock.collapsed) GBLayout.setNodeCollapsed(dock.id, false);
       // バージョンなど別のタブがこの列に開かれていても、入口は必ずチャット本文へ戻す。
-      GBTabs.activateTab(pane.id, chatTab.id, { preserveActivePane: true });
+      if (needsActivation) GBTabs.activateTab(pane.id, chatTab.id, { preserveActivePane: true });
     }
+    if (typeof GBPaneBridge !== 'undefined') GBPaneBridge.restoreChatViewport?.();
     window.MeldexCloudMobileEditBar?.refresh?.();
     return true;
   }

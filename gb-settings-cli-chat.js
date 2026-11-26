@@ -9,9 +9,12 @@ function _settingsCliIcon(name, size) {
 
 const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
   codex: [
-    { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
-    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol' },
+    { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra' },
     { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra' },
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' },
+    { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+    { id: 'gpt-6-sol', name: 'GPT-6 Sol' },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
@@ -24,11 +27,16 @@ const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
     { id: 'fable', name: 'Fable（最新版）' },
   ],
   antigravity_cli: [
+    { id: 'gemini-4-neon', name: 'Gemini 4 Neon' },
     { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
-    { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
-    { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
-    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
+    { id: 'gemini-4-argon', name: 'Gemini 4 Argon（終了予定）' },
+    { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen' },
+    { id: 'gemini-pro-orchestrator-neon', name: 'Orchestrator (Neon)' },
+    { id: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)' },
+    { id: 'gemini-pro-orchestrator-argon', name: 'Orchestrator (Argon)' },
+    { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash（終了予定）' },
     { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
+    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
     { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
   ],
 };
@@ -98,7 +106,7 @@ function _renderCliChatSettingsContainer(container, config) {
     </div>
     <div id="settings-cli-chat-status" class="gb-section-desc" style="margin-top:6px;"></div>
     <div id="settings-workspace-cli-relay-container"></div>`;
-  container.querySelector('#settings-cli-chat-refresh')?.addEventListener('click', () => renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document));
+  container.querySelector('#settings-cli-chat-refresh')?.addEventListener('click', () => renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document, { forceLineup: true }));
   container.querySelector('#settings-cli-chat-save')?.addEventListener('click', async () => {
     const overlay = container.closest('.modal-overlay');
     const status = container.querySelector('#settings-cli-chat-status');
@@ -114,7 +122,30 @@ function _renderCliChatSettingsContainer(container, config) {
   if (typeof replaceIcons === 'function') replaceIcons(container);
 }
 
-async function renderCliChatSettingsForSettings(root) {
+// CLIが示す最新のモデル一覧が届いたら、モデル欄の候補だけを描き直す（選択中の値は保つ）。
+function _settingsCliRefreshModelSelects(container) {
+  container?.querySelectorAll?.('.settings-cli-chat-row[data-provider]').forEach(row => {
+    const key = row.dataset.provider;
+    const select = row.querySelector('[data-cli-chat-field="model"]');
+    if (!select) return;
+    const current = select.value;
+    const choices = _settingsCliModelChoices(key).slice();
+    if (current && !choices.some(choice => choice.id === current)) choices.push({ id: current, name: current });
+    select.innerHTML = [`<option value="">CLI既定（推奨）</option>`]
+      .concat(choices.map(choice => `<option value="${_settingsCliEsc(choice.id)}">${_settingsCliEsc(choice.name)}</option>`))
+      .join('');
+    select.value = current;
+  });
+}
+
+async function _settingsCliLoadModelLineups(container, force) {
+  if (typeof window.refreshCliChatModelLineup !== 'function') return;
+  const results = await Promise.all(['codex', 'claude_code', 'antigravity_cli']
+    .map(key => window.refreshCliChatModelLineup(key, { force: !!force }).catch(() => false)));
+  if (results.some(Boolean) && container?.isConnected) _settingsCliRefreshModelSelects(container);
+}
+
+async function renderCliChatSettingsForSettings(root, options = {}) {
   const scope = root?.querySelector ? root : document;
   const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
   if (!container) return;
@@ -129,6 +160,7 @@ async function renderCliChatSettingsForSettings(root) {
     const config = await apiFetch('/cli-chat/config');
     if (!container.isConnected) return;
     _renderCliChatSettingsContainer(container, config);
+    _settingsCliLoadModelLineups(container, !!options.forceLineup);
     // 設定画面で確認できた状態を、起動時の取得失敗が残るチャットにも反映する。
     if (typeof _chatRefreshProviderAvailability === 'function'
       && typeof _chatCliProviderReadyStatus === 'function') {

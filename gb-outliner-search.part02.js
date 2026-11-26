@@ -325,9 +325,9 @@ const MeldexUnifiedSearch = (() => {
     return request('/search-unified?' + params.toString(), { silentError: true });
   }
 
-  // CLIPのトークナイザは英語のBPEなので、非ASCIIを渡すと意味を持たない断片に
-  // なる（実測: 日本語直と英訳で識別度が大きく変わる）。判定は「ASCII以外を
-  // 含むか」程度の軽いものでよい（1-A追記）。
+  // Japanese retrieval remains available for multilingual local models.
+  // Show the pending real-model evaluation status without translating or
+  // sending the query outside the PC.
   const NON_ASCII_RE = /[^\x00-\x7F]/;
 
   // 検索対象「画像の内容」が使えない理由・日本語クエリの注意を、3つの検索UI
@@ -338,7 +338,7 @@ const MeldexUnifiedSearch = (() => {
     const hints = [];
     const q = String(query || '');
     if (q && active().includes('clip') && NON_ASCII_RE.test(q)) {
-      hints.push('画像の内容検索は英語で入力してください（例: a red circle）');
+      hints.push('日本語の画像検索精度は実モデル検証待ちです。検索結果を原本で確認してください。');
     }
     const clipIssue = (data?.unavailable || []).find(item => item?.source === 'clip' && item.message);
     if (clipIssue) hints.push(String(clipIssue.message));
@@ -1021,6 +1021,7 @@ function renderSearchResults(data, query, caseSensitive, useRegex) {
   const results = data.results || [];
   const container = document.getElementById('sp-results');
   window.GBOutlinerThumbnails?.detachWithin?.(container);
+  (container._visualThumbnailUrls || []).forEach(url => URL.revokeObjectURL(url)); container._visualThumbnailUrls = [];
   if (results.length === 0) {
     renderEmptyState(container, 'search', '見つかりませんでした', '別のキーワードで検索してください');
     document.getElementById('sp-status').textContent = '0件';
@@ -1029,13 +1030,14 @@ function renderSearchResults(data, query, caseSensitive, useRegex) {
 
   let html = '';
   results.forEach(file => {
+    const visualLocation = file.visual_id ? ` data-search-result-location="${esc(encodeURIComponent(JSON.stringify(file)))}"` : '';
     const resultAttrs = `data-search-result-path="${esc(file.path)}" data-search-result-type="${esc(file.type)}"`;
-    html += `<div class="sp-file" ${resultAttrs}>${esc(file.name)} <span style="font-weight:normal;color:var(--fg2);font-size:11px;">(${file.matches.length}件)</span></div>`;
+    html += `<div class="sp-file" ${resultAttrs}${visualLocation}>${esc(file.name)}${file.visual_id ? ` · ${Number(file.page)}ページ（領域）` : ''} <span style="font-weight:normal;color:var(--fg2);font-size:11px;">(${file.matches.length}件)</span></div>`;
     file.matches.slice(0, 20).forEach(m => {
       const text = m.text || '';
       const highlighted = highlightMatch(text, query, caseSensitive, useRegex);
       const lineInfo = m.field ? `${m.field}:${m.line}` : `L${m.line}`;
-      const location = encodeURIComponent(JSON.stringify({ line: m.line || 0, field: m.field || '', col: m.col || 0, text }));
+      const location = encodeURIComponent(JSON.stringify(file.visual_id ? {...file, box: m.box || file.box} : { line: m.line || 0, field: m.field || '', col: m.col || 0, text }));
       html += `<button type="button" class="sp-match" ${resultAttrs} data-search-result-location="${esc(location)}"><span class="sp-line">${lineInfo}</span>${highlighted}</button>`;
     });
     if (file.matches.length > 20) {
@@ -1049,7 +1051,11 @@ function renderSearchResults(data, query, caseSensitive, useRegex) {
     icon.innerHTML = typeof _outlinerIconMarkup === 'function' ? _outlinerIconMarkup(file, 18) : '';
     icon.style.marginRight = '6px';
     header.prepend(icon);
-    window.GBOutlinerThumbnails?.attachToIcon?.(icon, file, 24);
+    if (file.thumbnail_key && window.MeldexPdfVisual) {
+      const img = document.createElement('img'); img.alt = '検索した画像領域'; img.style.cssText = 'width:64px;height:48px;object-fit:contain';
+      const urls = container._visualThumbnailUrls || (container._visualThumbnailUrls = []);
+      header.prepend(img); void window.MeldexPdfVisual.thumbnail(img, file, urls);
+    } else window.GBOutlinerThumbnails?.attachToIcon?.(icon, file, 24);
   });
   _bindVaultSearchResultClicks(container);
   document.getElementById('sp-status').textContent = `${data.total}件（${results.length}ファイル）`;
@@ -1123,6 +1129,7 @@ function _searchResultKind(path, type) {
 }
 
 function openSearchResult(path, type, location = null) {
+  if (location?.visual_id && window.MeldexPdfVisual) return window.MeldexPdfVisual.openResult(location);
   const _expOpts = { fromExplorer: true };
   const kind = _searchResultKind(path, type);
   const label = _searchResultLabel(path);

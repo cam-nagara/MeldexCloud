@@ -788,7 +788,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'board-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['icon-packs', 'theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'board-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -810,7 +810,8 @@
 
   function _assertPersonalPreferenceName(name) {
     const doc = String(name || '').trim();
-    if (!PERSONAL_PREFERENCE_DOCUMENTS.has(doc)) throw _httpError(404, `未知の個人設定です: ${name}`);
+    // アイコン素材集は素材集ごとに1文書（icon-pack-<12桁の16進>）。
+    if (!PERSONAL_PREFERENCE_DOCUMENTS.has(doc) && !/^icon-pack-[0-9a-f]{12}$/.test(doc)) throw _httpError(404, `未知の個人設定です: ${name}`);
     return doc;
   }
 

@@ -463,8 +463,8 @@
     const split = _splitNameAndExt(originalName);
     let destName = originalName;
     let destPath = _joinPath(trashDir, destName);
-    for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-      destName = source?.kind === 'file'
+    for (let counter = 1; await _pathExists(provider, destPath) || (!source && await _pathExists(provider, destPath + '._trash_meta.json')); counter += 1) {
+      destName = source?.kind !== 'directory'
         ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
         : `${originalName}_${String(counter).padStart(4, '0')}`;
       destPath = _joinPath(trashDir, destName);
@@ -485,8 +485,29 @@
       queryImpact: confirmation.queryImpact,
     });
     // tombstone を含む最初の書き込みは、上のfresh再検証より後に限定する。
-    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath);
-    if (!source) return { ok: true };
+    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath, {
+      beforeDelete: source ? undefined : async backup => {
+        await _directoryHandle(provider, trashDir, true);
+        // Keep an ordinary readable Markdown copy as well as the complete row.
+        // Do not remove these backups after an uncertain/failed tombstone write.
+        if (typeof provider.uploadBytesConditional !== 'function') throw new Error('回答の回復用保存を利用できません');
+        await provider.uploadBytesConditional(destPath, new TextEncoder().encode(internals._sheetRowTrashText(backup.previousRow)), null);
+        await provider.uploadBytesConditional(metaPath, new TextEncoder().encode(JSON.stringify({
+          original_path: targetPath, trash_root: trashDir, deleted_at: backup.tombstone.deletedAt,
+          sheet_row_backup: backup,
+        })), null);
+        // The recovery uploads take time. Recheck the confirmed row after them;
+        // the subsequent sheet write still uses the revision read for backup.
+        await gate.revalidateProviderDelete({
+          provider, receipt: confirmation.receipt, items: [confirmation.item],
+          queryImpact: confirmation.queryImpact,
+        });
+      },
+    });
+    if (!source) {
+      if (!sheetTombstone) throw Object.assign(new Error('削除する回答が見つかりません'), { status: 404 });
+      return { ok: true, trash_name: destName, trash_root: trashDir };
+    }
     const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
       action: 'delete', oldPath: targetPath, newPath: destPath,
       isFolder: source.kind === 'directory',
@@ -2416,7 +2437,8 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = options.records || await adapter.listDocuments(kind);
+  const records = options.records || await adapter.listDocuments(kind,
+    options.documentIdPrefix ? { documentIdPrefix: options.documentIdPrefix } : undefined);
   const visible = records.filter(row => {
     const payload = row?.payload || {};
     const currentPath = _normalizeFolderPath(payload.original_relative_path || '');
@@ -2456,12 +2478,21 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
 }
 const _verifiedIntegrityMemo = new Map();
 
+// 保存の前処理が読む編集履歴は、対象パスのものだけ（記録名の先頭が対象パスのハッシュ）。
+// 種別全体を読むと、無関係な履歴・フォルダの控え（実データで3199件・307MB）を保存のたびに
+// ダウンロードし、スマホのクイックメモ送信が終わらなかった（2026-11-26）。
+// 移動で付け替えた記録は元の名前のままなので、ここでは読まない（直前の編集者の判定と
+// 未確定の記録の回収が、移動後の最初の1回だけ効かない。内容は失われない）。
+function _editRecordPrefix(path) {
+  return `edit-${_fnvFileId(_normalizeFolderPath(path))}-`;
+}
+
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
   await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = await adapter.listDocuments(kind);
+  const records = await adapter.listDocuments(kind, { documentIdPrefix: _editRecordPrefix(normalized) });
   const currentHash = _contentHistoryHash(currentContent);
   let changed = false;
   for (const row of records) {
@@ -2500,7 +2531,9 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
   if (_stableHistoryContent(currentContent) === _stableHistoryContent(nextContent)) {
     return { adapter, kind, skipped: true, eventId: '', documentId: '', payload: null };
   }
-  const latest = (await _listSharedEditRecords(provider, normalized, false, { skipIntegrity: true, records }))[0]?.payload || {};
+  const latest = (await _listSharedEditRecords(provider, normalized, false, {
+    skipIntegrity: true, records, documentIdPrefix: _editRecordPrefix(normalized),
+  }))[0]?.payload || {};
   const previous = latest.actor_id ? latest : actor;
   const transition = !!(latest.actor_id && actor.actor_id && latest.actor_id !== actor.actor_id);
   const eventId = `edit-${_versionTimestamp()}-${_randomId('e').slice(-8)}`;
@@ -2746,18 +2779,6 @@ async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
     moved += 1;
   }
   return moved > 0;
-}
-
-async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-  let size = 0;
-  async function walk(current) {
-    for (const entry of await _listDirectoryEntries(provider, current)) {
-      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-      else size += 1;
-    }
-  }
-  await walk(folderPath);
-  return size;
 }
 
 function _fileVersionName(path, options) {
@@ -3150,6 +3171,25 @@ async function _restoreVersionAnnotations(provider, path, snapshot, expectedRevi
   return rollback;
 }
 
+window.MeldexFileVersionProviderOps = Object.freeze({
+  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
+  read: (provider, path, version) => _readFileVersion(provider, path, version),
+  captureAnnotations: (provider,path) => _captureVersionAnnotations(provider,path),
+});
+  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
+  /* 以下の3つは gb-data-access-dropbox-fileops-versions.js が1000行を超えたため、ここへ移した（同じ関数スコープに連結される）: フォルダの中身の件数・ファイルの版の論理削除と復元。 */
+async function _countFolderEntriesIncludingTrash(provider, folderPath) {
+  let size = 0;
+  async function walk(current) {
+    for (const entry of await _listDirectoryEntries(provider, current)) {
+      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
+      else size += 1;
+    }
+  }
+  await walk(folderPath);
+  return size;
+}
+
 async function _deleteFileVersion(provider, path, version) {
   const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
   if (!record) throw new Error('バージョンが見つかりません');
@@ -3180,12 +3220,6 @@ async function _undeleteFileVersion(provider, path, token) {
   return { ok: true, version: record.payload.version_name };
 }
 
-window.MeldexFileVersionProviderOps = Object.freeze({
-  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
-  read: (provider, path, version) => _readFileVersion(provider, path, version),
-  captureAnnotations: (provider,path) => _captureVersionAnnotations(provider,path),
-});
-  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
   function _relativeToFolder(folderPath, filePath) {
     const folder = _normalizeFolderPath(folderPath);
     const file = _normalizeFolderPath(filePath);
@@ -5651,10 +5685,36 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const trashPath = _joinPath(trashRoot.path, trashName);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
       const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
+      let originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, originalPath, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        // The metadata is the durable retry receipt. Remove the visible trash
+        // copy only after the row is safely restored; an uncertain write keeps it.
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
+      if (await _pathExists(provider, originalPath)) {
+        // 同じ名前を黙って上書きも別名にもしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        // 置き換えは、Dropbox では今ある方を回復できる形で退避できないので受け付けない。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true, trash_name: trashName };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${originalPath}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
+        const split = _splitNameAndExt(_basename(originalPath));
+        const baseDir = _dirname(originalPath);
+        const basePath = originalPath;
+        for (let counter = 2; await _pathExists(provider, originalPath); counter += 1) {
+          originalPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(basePath)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
+        }
+      }
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
       const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
@@ -5752,19 +5812,31 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const trashPath = _joinPath(trashRoot.path, name);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error('ゴミ箱に見つかりません');
       const meta = await _readJsonSafe(provider, metaPath, {});
       const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, baseDest, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_to: baseDest, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error('ゴミ箱に見つかりません');
       let destPath = baseDest;
       if (await _pathExists(provider, destPath)) {
+        // 同じ名前がある時は、黙って別名にしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${baseDest}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
         const split = _splitNameAndExt(_basename(baseDest));
         const baseDir = _dirname(baseDest);
-        for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-          const stem = source.kind === 'directory' ? _basename(baseDest).replace(/_\d{4}$/, '') : split.stem;
-          const nextName = source.kind === 'directory'
-            ? `${stem}_restored_${String(counter).padStart(4, '0')}`
-            : `${stem}_restored_${String(counter).padStart(4, '0')}${split.ext}`;
-          destPath = _joinPath(baseDir, nextName);
+        for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
+          destPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(baseDest)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
         }
       }
       await _moveEntry(provider, trashPath, destPath);

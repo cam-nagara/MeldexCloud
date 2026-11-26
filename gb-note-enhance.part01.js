@@ -123,7 +123,8 @@ function _getCurrentFileStyleContext() {
     ? GBTabs.getActiveTab(GBLayout.activePane)
     : null;
   if (activeTab?.type === 'scriptnote') return 'scriptnote';
-  const view = state?.view || '';
+  if (activeTab?.type === 'board') return 'board';
+  const view = typeof state !== 'undefined' ? state?.view || '' : '';
   if (view === 'folder') return 'folder';
   if (view === 'page') return 'page';
   if (view === 'board') return 'board';

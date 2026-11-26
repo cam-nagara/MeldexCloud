@@ -40,6 +40,7 @@
   function save(patch) {
     const ok = Scene.savePageSettings(patch);
     status.textContent = ok ? '' : '表示設定を保存できませんでした。もう一度操作してください';
+    return ok;
   }
   function layout() {
     pane.hidden = !visible;
@@ -50,8 +51,8 @@
     // viewer-resize observes the actual display size once, after layout.
   }
   function setVisible(value) {
+    if (!save({ visible: value })) return false;
     visible = value;
-    save({ visible });
     layout();
     if (visible) sync(true);
     else toggle.focus({ preventScroll: true });
@@ -208,20 +209,25 @@
   toggle.onclick = () => setVisible(!visible);
   toggle.addEventListener('mousedown', e => e.preventDefault());
   document.getElementById('viewer-pages-close').onclick = () => setVisible(false);
-  mode.onchange = () => { Scene.setMode(mode.value); sync(true); };
-  first.onchange = () => { Scene.setFirstSide(first.value); sync(true); };
+  // 選んで閉じたら選択欄からフォーカスを外し、続く矢印キーをページ送りにする（表示モードを変えない）。
+  mode.onchange = () => { Scene.setMode(mode.value); sync(true); window.MeldexViewerControls?.releaseViewSelect?.(mode); };
+  first.onchange = () => { Scene.setFirstSide(first.value); sync(true); window.MeldexViewerControls?.releaseViewSelect?.(first); };
   scroll.addEventListener('scroll', schedule, { passive: true });
   pane.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); setVisible(false); } });
   function resize(value, persist) {
-    width = Math.max(160, Math.min(480, value)); layout();
-    if (persist) save({ width });
+    const next = Math.max(160, Math.min(480, value));
+    if (persist && !save({ width: next })) return false;
+    width = next; layout();
   }
   grip.onpointerdown = e => {
     if (narrow()) return;
     grip.setPointerCapture(e.pointerId);
     const start = e.clientX, initial = width;
     grip.onpointermove = event => resize(initial + event.clientX - start, false);
-    grip.onpointerup = grip.onpointercancel = () => { grip.onpointermove = null; save({ width }); };
+    grip.onpointerup = grip.onpointercancel = () => {
+      grip.onpointermove = null;
+      if (!save({ width })) { width = initial; layout(); }
+    };
   };
   grip.onkeydown = e => {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {

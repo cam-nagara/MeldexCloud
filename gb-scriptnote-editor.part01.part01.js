@@ -549,6 +549,11 @@ class ScriptNoteEditor {
       }
       return !this._dirty;
     }
+    // タイトルの確定でファイル名を変えている間は待ち、変更後のパスと版の印で保存する
+    // （旧名への保存は移動と重なり、見つからない・競合になる）。
+    if (this._fileRenamePending) {
+      try { await this._fileRenamePending; } catch (_) {}
+    }
     const savePath = this._path;
     const json = JSON.stringify(this.collectDoc(), null, 2);
     const prevIds = this._lastSavedRowIds || new Set();

@@ -312,6 +312,11 @@ async function showSettingsModal(opts) {
       .settings-modal[data-settings-mobile-layout="1"] [data-settings-webclip-desktop]{display:none!important;}
       @media (max-width: 900px){
         .settings-modal .settings-panel.settings-panel-grid{column-count:1;}
+        /* 開いた後の縮小でも編集部品を作り直さず、カテゴリを上段へ退避する。 */
+        .settings-modal > .gb-modal-body:has(> .settings-desktop-layout){display:flex;flex-direction:column;}
+        .settings-modal .settings-desktop-layout{flex-direction:column!important;}
+        .settings-modal .settings-desktop-layout .settings-sidebar{width:100%!important;flex:0 0 auto!important;max-height:150px;margin-right:0!important;border-right:0!important;border-bottom:1px solid var(--border);box-sizing:border-box;}
+        .settings-modal .settings-desktop-panel{min-height:0;}
       }
     </style>
     <!-- モバイル: セクションリスト -->
@@ -457,6 +462,11 @@ async function showSettingsModal(opts) {
           <label class="gb-check">
             <input type="checkbox" id="modal-statusbar-hidden" ${localStorage.getItem('meldex-statusbar-hidden') === '1' ? 'checked' : ''}>
             <span>ステータスバーを非表示にする</span>
+          </label>
+          <label class="gb-check">
+            <input type="checkbox" id="modal-toolbar-autohide" data-e2e-id="settings-toolbar-autohide" ${localStorage.getItem('meldex-toolbar-autohide') !== '0' ? 'checked' : ''}>
+            <span>ツールバーを自動で隠す</span>
+            ${fieldHelp('メインメニューボタン・ファイルアイコン・ファイル名は常に表示し、ほかのボタンはツールバーにマウスを乗せた時だけ表示します。ビューワーはツールバー全体を隠します。', { e2eId: 'settings-toolbar-autohide-help' })}
           </label>
           <label class="gb-check">
             <input type="checkbox" id="modal-a11y-high-contrast" ${(window.MeldexAccessibility?.isPreferenceEnabled?.('highContrast') ?? (localStorage.getItem('meldex-a11y-high-contrast') === '1')) ? 'checked' : ''}>
@@ -738,6 +748,9 @@ async function showSettingsModal(opts) {
         </section>
       </div>
     </div>
+    <div class="settings-panel" data-panel="アイコン素材集" hidden>
+      <div id="settings-icon-packs-container"><div class="gb-section-desc">表示時に読み込みます…</div></div>
+    </div>
     <div class="settings-panel" data-panel="利用料金" hidden>
       <div id="monthly-usage-costs-container"><div class="gb-section-desc">表示時に読み込みます…</div></div>
     </div>
@@ -805,6 +818,10 @@ async function showSettingsModal(opts) {
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
+      <section class="gb-section gb-section--boxed" data-settings-view="x-connection">
+        <div class="gb-section-title">${lucide('link',14)} X接続 ${fieldHelp('XブックマークとXアカウント保存で共通の接続・翻訳設定です。')}</div>
+        <div id="x-connection-settings-container"></div>
+      </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">${lucide('bookmark',14)} Xブックマーク保存</div>
         <div id="x-bookmarks-settings-container">
@@ -953,6 +970,10 @@ async function showSettingsModal(opts) {
       : dialog.modal.querySelector('.settings-tab.gb-inner-tab-active:not([disabled]), .settings-tab:not([disabled])'),
     returnFocus: () => suppressSettingsReturnFocus ? suppressedReturnFocusTarget : opener,
     onBeforeClose: reason => {
+      if (reason === 'escape' && document.querySelector('[data-e2e-id="x-bookmarks-maintenance-menu"]')) {
+        window.MeldexContextMenuUI?.close();
+        return false;
+      }
       if ((settingsSaveBusy || o?.__settingsMaintenanceBusy) && reason !== 'complete') return false;
       if (reason !== 'complete' && typeof restoreThemeSnapshot === 'function') {
         restoreThemeSnapshot(window._settingsThemeSnapshot);
@@ -961,6 +982,7 @@ async function showSettingsModal(opts) {
       return true;
     },
     onClose: () => {
+      if (document.querySelector('[data-e2e-id="x-bookmarks-maintenance-menu"]')) window.MeldexContextMenuUI?.close();
       if (_settingsModalController === dialog) _settingsModalController = null;
     },
   });

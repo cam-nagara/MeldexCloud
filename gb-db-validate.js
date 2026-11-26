@@ -60,6 +60,11 @@ function _applyValidationRulesLocally(dbPath, rules) {
 async function setValidationRules(dbPath, rules, options = {}) {
   const before = getValidationRules(dbPath);
   const next = _validationRulesClone(rules);
+  const historyScope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+  // 取り消しの枠は操作した時点で取る（保存の完了後に積むと、保存が重なった時に取り消しの順番が入れ替わり、
+  // 「元に戻す」が前の別の変更を戻していた。2026-11-24 スマホ幅の検査で検出）。保存に失敗したら枠を取り除く。
+  const reservation = !options.skipHistory && typeof historyReserve === 'function'
+    ? historyReserve(options.historyLabel || '検証ルールの変更', historyScope) : null;
   _applyValidationRulesLocally(dbPath, next);
   try {
     const ctx = _validationMetadataContexts(dbPath)[0] || null;
@@ -70,13 +75,14 @@ async function setValidationRules(dbPath, rules, options = {}) {
     }
   } catch (error) {
     _applyValidationRulesLocally(dbPath, before);
+    reservation?.cancel?.();
     if (typeof showStatus === 'function') showStatus('検証ルールを保存できませんでした: ' + (error?.message || error), true);
     return false;
   }
   // 移し終えたので、以前の版のブラウザ内の保存は消す
   _legacyValidationRuleKeys(dbPath).forEach(key => { try { localStorage.removeItem(key); } catch {} });
-  if (!options.skipHistory && typeof historyPush === 'function') {
-    const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : (typeof _dbScope === 'function' ? _dbScope(dbPath) : '');
+  if (!options.skipHistory && (reservation || typeof historyPush === 'function')) {
+    const scope = historyScope;
     const restore = async (target) => {
       const ok = await setValidationRules(dbPath, target, { skipHistory: true });
       if (!ok) throw new Error('検証ルールを戻せませんでした');
@@ -86,7 +92,8 @@ async function setValidationRules(dbPath, rules, options = {}) {
         showValidationRulesModal(dbPath);
       }
     };
-    historyPush(options.historyLabel || '検証ルールの変更', () => restore(before), () => restore(next), scope);
+    if (reservation) reservation.fill(() => restore(before), () => restore(next), options.historyLabel || '検証ルールの変更');
+    else historyPush(options.historyLabel || '検証ルールの変更', () => restore(before), () => restore(next), scope);
   }
   return true;
 }
@@ -787,15 +794,22 @@ function _collectRuleConfig(type) {
 async function onValidateClick() {
   const dbPath = state.currentDbPath;
   if (!dbPath || !state.pivotData) { showStatus('シートを選択してください', true); return; }
-  showStatus('検証中...');
   const propTypes = getPropertyTypes(dbPath);
   let validationData = state.pivotData;
-  try {
-    validationData = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath));
-  } catch (e) {
-    showStatus('検証データの取得に失敗: ' + (e.message || e), true);
+  // 検証中は処理パネルに出す。ステータスバーの「〜中...」は別の知らせ（シートの件数など）で消えるため、
+  // 検証が続いているのに進行の表示が消えていた（2026-11-24）。
+  const withProgress = (task) => (typeof runWithProgress === 'function'
+    ? runWithProgress('検証中', task, { kind: 'sheet-validation' })
+    : (showStatus('検証中...'), task()));
+  // 失敗はステータスバーで知らせる（処理パネルに失敗を二重に残さない）。
+  const loaded = await withProgress(() => apiFetch('/pivot?path=' + encodeURIComponent(dbPath))
+    .then(data => ({ data }), error => ({ error })));
+  if (loaded.error) {
+    const e = loaded.error;
+    showStatus('検証データの取得に失敗: ' + (e?.message || e), true);
     return;
   }
+  validationData = loaded.data;
   const results = await runValidation(dbPath, validationData, propTypes);
   showValidationResults(results, dbPath);
   const errorCount = results.filter(r => r.severity === 'error').length;

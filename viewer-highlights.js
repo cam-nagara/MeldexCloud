@@ -155,6 +155,13 @@
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !window.MeldexContextMenuUI?.isOpen()) cancel(); }, true);
   window.MeldexViewerHighlights = {
     ensureNative, loadNativeExisting, renderCards,
+    getRegion: () => {
+      captureText();
+      if (!selection || !selection.scene.wrap.isConnected || !engine()?.getScenes().includes(selection.scene)) return null;
+      const { scene, path, data } = selection;
+      return { path: path.replace(/#page=\d+$/, ''), page: scene.isPdf ? scene.pageIndex + 1 : 1,
+        box: [data.x / scene.mediaWidth, data.y / scene.mediaHeight, data.width / scene.mediaWidth, data.height / scene.mediaHeight] };
+    },
     menuItems: () => {
       captureText(); // Keep media coordinates before the menu takes focus.
       return [{ label: 'ハイライト', ariaLabel: 'ハイライト', icon: 'highlighter', items: colors().map((color, index) => ({ label: 'テーマカラー ' + (index + 1), ariaLabel: 'テーマカラー ' + (index + 1), icon: 'square', color, action: () => apply(color) })) }];

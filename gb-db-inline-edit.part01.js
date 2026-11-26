@@ -482,6 +482,21 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
   inp.focus();
   inp.select();
   let committed = false;
+  const restoreRejectedDraft = proposedName => {
+    if (_renCtx?.dbPath && _renCtx.dbPath !== dbPath) return false;
+    if (_renCtx && typeof _currentPaneState === 'function' && _currentPaneState() !== _renCtx) return false;
+    if (typeof _dbEntityCreateIsEditing === 'function' && _dbEntityCreateIsEditing(_renCtx)) return false;
+    const row = typeof _dbFindEntityRow === 'function' ? _dbFindEntityRow(_renCtx, oldName) : null;
+    const cell = row?.querySelector('.col-entity');
+    const label = cell?.querySelector('.entity-name-label');
+    if (!cell || !label) return false;
+    startEntityInlineRename(cell, label, oldName, dbPath);
+    const draft = cell.querySelector('.entity-rename-input');
+    if (!draft) return false;
+    draft.value = proposedName;
+    draft.select();
+    return true;
+  };
   const commit = async (commitOptions = {}) => {
     if (committed) return;
     committed = true;
@@ -531,7 +546,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
         showStatus(e?.resultUnknown ? '保存結果を確認できません。再読み込みで確認します' : '名前の変更に失敗しました', true);
       }
       if (e?.resultUnknown) _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
-      restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
+      if (e?.resultUnknown || !restoreRejectedDraft(newName)) restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
     }
   };
   inp.addEventListener('keydown', (e) => {
@@ -561,7 +576,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
           .catch((error) => {
             _dbCommitEntityRenameLocalFirst(_renCtx, td, nameSpan, newName, oldName, dbPath);
             if (typeof showStatus === 'function') showStatus(error?.message || '名前の変更に失敗しました', true);
-            doAfter();
+            if (!restoreRejectedDraft(newName)) doAfter();
           });
         return;
       }
@@ -575,7 +590,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
           showStatus(error?.resultUnknown ? '保存結果を確認できません。再読み込みで確認します' : '名前の変更に失敗しました', true);
         }
         if (error?.resultUnknown) _dbRefreshEntityRenameInBackground(_renCtx, dbPath, newName);
-        doAfter();
+        if (error?.resultUnknown || !restoreRejectedDraft(newName)) doAfter();
       });
     }
   });

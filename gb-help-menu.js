@@ -355,6 +355,7 @@ function showMeldexAboutDialog(returnFocus) {
       <ul class="settings-about-credit-list">
         <li>Meldex 本体 (MIT License)</li>
         <li>Icons by <a href="https://lucide.dev/" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-lucide">Lucide</a> (ISC License)</li>
+        <li>Icons by <a href="https://github.com/google/material-design-icons" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-material-symbols">Google Material Symbols</a> (Apache 2.0)</li>
         <li>Font: <a href="https://fonts.google.com/noto/specimen/Noto+Sans+JP" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-noto-sans-jp">Noto Sans JP</a> (SIL OFL 1.1)</li>
         <li>Emoji Font: <a href="https://github.com/googlefonts/noto-emoji" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-noto-emoji">Google Noto Emoji</a> (SIL OFL 1.1)</li>
         <li>Emoji by <a href="https://github.com/twitter/twemoji" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-twemoji">Twemoji</a> (CC-BY 4.0)</li>

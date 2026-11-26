@@ -35,8 +35,8 @@ const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/settings-transfer/export', 315000],
 ]);
 const API_FETCH_FILE_OPERATIONS = new Set([
-  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
-  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/move-batch', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore', '/outliner/restore-batch',
   '/trash/restore', '/trash/delete', '/trash/empty',
   '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
   '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
@@ -204,6 +204,10 @@ async function apiFetch(path, opts) {
     window.MeldexSaveSafety?.reportApiSuccess?.(path, opts, payload);
     return _apiFetchClonePayload(payload);
   } catch (e) {
+    // 注釈は専用の記録を持つ。共有タグの書込失敗だけを共通記録へ渡す。
+    if (/^\/(?:api\/)?global-tags\/target(?:\/|\?|$)/.test(String(path)) && _apiFetchMethod(opts) !== 'GET') {
+      try { window.MeldexDiagnostics?.noteRequestFailure?.(path, opts, e); } catch {}
+    }
     if (e.name === 'AbortError' && timedOut) {
       // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
       try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
@@ -427,6 +431,7 @@ document.addEventListener('DOMContentLoaded', scheduleMeldexViewportSizeUpdate, 
 window.addEventListener('load', scheduleMeldexViewportSizeUpdate, { once: true });
 
 function clampPopupToViewport(el) {
+  window.MeldexMenuIcons?.decorate?.(el);
   if (!el.matches('.modal-overlay, .gb-modal-overlay, [aria-modal="true"]')) el.classList.add('gb-popup-surface');
   const z = _getZoom();
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
@@ -877,8 +882,13 @@ function _isMobileStatusToastNeeded() {
 }
 
 function _showMobileStatusToast(text, isError) {
-  if (!text || !document.body || !_isMobileStatusToastNeeded()) return;
+  if (!document.body) return;
   let toast = document.getElementById('gb-mobile-status-toast');
+  if (!text || !_isMobileStatusToastNeeded()) {
+    clearTimeout(_mobileStatusToastTimer);
+    toast?.classList.remove('is-visible');
+    return;
+  }
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'gb-mobile-status-toast';
@@ -888,13 +898,3 @@ function _showMobileStatusToast(text, isError) {
   toast.textContent = text;
   toast.dataset.statusKind = isError ? 'error' : 'success';
   toast.setAttribute('role', isError ? 'alert' : 'status');
-  toast.setAttribute('aria-live', isError ? 'assertive' : 'polite');
-  toast.classList.add('is-visible');
-  clearTimeout(_mobileStatusToastTimer);
-  _mobileStatusToastTimer = setTimeout(() => {
-    if (toast.textContent === text) toast.classList.remove('is-visible');
-  }, isError ? 5000 : 3500);
-}
-
-// ── 進捗は処理パネル（共通の進捗表示 MeldexOperationProgress）に出し、ステータスバーには出さない ──
-// （2026-11-21 ユーザー指示・UI共通ルール §10）。「〜中...」「〜しています…」のような進行中の知らせは

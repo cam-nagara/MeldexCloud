@@ -7,6 +7,36 @@
   let pending = 0;
   let requestSequence = 0;
 
+  // 「OSアクセント」は var(--theme-native-os-accent, AccentColor) で保存される。この値は本体の画面だけが
+  // OSから読むため、別画面では AccentColor（ブラウザ既定の明るい青）へ落ちていた（2026-11-24 利用者報告:
+  // ビューワーのメインメニューボタンが明るい青）。本体の中の画面は本体の色を、単独の画面はサーバーが
+  // 返すOSの色を使う。
+  function sameOriginParentRoot() {
+    try {
+      if (global.parent && global.parent !== global && global.parent.document?.documentElement) {
+        return global.parent.document.documentElement;
+      }
+    } catch { /* 別オリジンの親は読まない */ }
+    return null;
+  }
+  let nativeOsAccent = '';
+  function applyNativeOsAccent(color) {
+    const value = String(color || '').trim();
+    if (/^#[0-9a-f]{6}$/i.test(value)) nativeOsAccent = value.toLowerCase();
+    if (nativeOsAccent) document.documentElement.style.setProperty('--theme-native-os-accent', nativeOsAccent);
+  }
+  // 本体の中に埋め込まれた画面は、本体の表示中の色を正とする（保存済みの写しや古い記録で上書きしない）。
+  function followParentTheme() {
+    const parentRoot = sameOriginParentRoot();
+    if (!parentRoot) { applyNativeOsAccent(''); return false; }
+    try {
+      const native = getComputedStyle(parentRoot).getPropertyValue('--theme-native-os-accent').trim();
+      if (native) document.documentElement.style.setProperty('--theme-native-os-accent', native);
+      if (typeof global.inheritParentTheme === 'function') global.inheritParentTheme();
+    } catch { /* 親の画面が閉じかけている */ }
+    return true;
+  }
+
   function restoreOverrides() {
     const root = document.documentElement;
     let saved = {};
@@ -16,9 +46,13 @@
     } catch { /* A damaged local preference must not prevent the tool opening. */ }
     for (const [key, value] of Object.entries(saved)) {
       if (!/^--[a-z0-9-]+$/i.test(key) || typeof value !== 'string') continue;
-      root.style.setProperty(key, value);
+      // A standalone origin may not have the main window's native OS/palette
+      // dependencies. Its last saved rendered color is the portable fallback.
+      const rendered = saved['_shared-ui-colors']?.[key];
+      root.style.setProperty(key, /var\(/i.test(value) && typeof rendered === 'string' ? rendered : value);
       editedKeys.add(key);
     }
+    followParentTheme();
     syncSurface();
   }
   function syncSurface() {
@@ -53,6 +87,7 @@
     if (!pending) pending = requestAnimationFrame(refresh);
   }
   function applyShared(value) {
+    applyNativeOsAccent(value?.osAccent);
     if (value?.available !== true || !value.theme?.ui?.cssVars) return false;
     const manager = global.MeldexThemeManager;
     if (!manager) return false;
@@ -67,6 +102,7 @@
     for (const [key,color] of Object.entries(value.theme.ui.cssVars)) {
       if (/^--[a-z0-9-]+$/i.test(key) && typeof color === 'string') document.documentElement.style.setProperty(key,color);
     }
+    followParentTheme();
     syncSurface();
     return true;
   }

@@ -20,7 +20,12 @@ async function fetchRelatedDbData(dbPath) {
     return cached.data;
   }
   try {
-    const data = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath));
+    // 参照先シートが保存先の外や見つからない時は、リレーション一覧と同じ静かな確認で空として扱う。
+    const data = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), {
+      silentError: true,
+      headers: { 'X-Meldex-Relation-Probe': 'true' },
+    });
+    if (data?.relation_target_unavailable) return null;
     _rollupCache.set(dbPath, { data, timestamp: Date.now() });
     return data;
   } catch (e) {

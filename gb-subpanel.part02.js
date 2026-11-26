@@ -69,7 +69,8 @@
       if (!scene) return;
       await Promise.resolve(scene.ready);
       if (Number.isInteger(saved.index)) await Promise.resolve(scene.goToIndex?.(saved.index));
-      if (Number.isFinite(Number(saved.zoom))) scene.setZoomAt?.(null, null, Number(saved.zoom));
+      // 自動フィットの倍率は移動前のパネル寸法に依存する。手動倍率だけを復元する。
+      if (!saved.pdfAutoFit && Number.isFinite(Number(saved.zoom))) scene.setZoomAt?.(null, null, Number(saved.zoom));
       scene.setPan?.(Number(saved.panX) || 0, Number(saved.panY) || 0);
       if (Number.isFinite(Number(saved.rotateDeg))) scene.setRotateDeg?.(Number(saved.rotateDeg));
       const media = win.MeldexViewerVideo?.getCurrentVideoElement?.()
@@ -162,6 +163,12 @@
       reload: async (options = {}) => {
         if (!options.skipFlush && !(await _flushBeforeTransition(entry)).ok) return false;
         if (kind === 'page') return window.GBEditorHost.reloadNote(_contentEl, entry.label, entry.path);
+        if (kind === 'csv') {
+          // このサブパネルの面だけを読み直す（メインパネルのCSVには触らない）。
+          const csvRoot = _contentEl?.querySelector('.gb-subpanel-csv-root');
+          if (!csvRoot || typeof openCsvFile !== 'function') return false;
+          return openCsvFile(entry.label || _basename(entry.path), entry.path, { ..._csvSubpanelOpenOpts(csvRoot), discardDirty: true, silent: true });
+        }
         if (_sheetEmbed) return _sheetEmbed.refresh();
         const component = getComponentInstance(_pane?.tabs?.[0]?.id);
         if (kind === 'scriptnote') return component?._loadScenario(entry.path, { skipNavPush: true, silent: true });
@@ -568,13 +575,17 @@
     const opts = options || {};
     const seq = ++_opSeq;
     _restoreTabsFromLayout();
+    // 対象の種類・実在確認の通信を先に始め、右レールを開く描き直しと並行させる
+    // （描き直しの後に通信を始めると、フォルダを開くまでが0.3秒を超えることがあった）。
+    const normalized = _normalizeTarget(target);
+    normalized.catch(() => {});
     // スマホのドロワー表示は _openMobileDrawer が自前で開くため、右レールの操作はしない。
     try {
       if (opts.reveal !== false && !_isMobileDrawerEnabled()) _revealRightSidebar();
     } catch { /* 右レールを開けない環境でも、表示処理そのものは続ける */ }
     let entry;
     try {
-      entry = await _normalizeTarget(target);
+      entry = await normalized;
     } catch (e) {
       const fallbackPath = (target && typeof target === 'object') ? String(target.path || '') : String(target || '');
       entry = { type: 'unsupported', path: fallbackPath, label: _basename(fallbackPath), state: {} };
@@ -594,10 +605,14 @@
       const at = Number.isInteger(opts.index) ? Math.max(0, Math.min(_tabs.length, opts.index)) : (activeIndex >= 0 ? activeIndex + 1 : _tabs.length);
       _tabs.splice(at, 0, tab);
       added = true;
-    } else {
-      tab.history[tab.index] = { ...tab.history[tab.index], ...entry, state: { ...(tab.history[tab.index].state || {}), ...(entry.state || {}) } };
     }
     const transitioned = await _guardedTransition(seq, () => {
+      if (!added) {
+        // 古い面の位置をguardが記録した後で、今回の明示的な選択を反映する。
+        const state = { ...(tab.history[tab.index].state || {}), ...(entry.state || {}) };
+        if (entry.state?.viewerUrl && !entry.state?._viewerState) delete state._viewerState;
+        tab.history[tab.index] = { ...tab.history[tab.index], ...entry, state };
+      }
       _activeId = tab.id;
       _useTabHistory(tab);
       _renderTarget(tab.history[tab.index]);
@@ -991,6 +1006,8 @@
   function onPathRename(oldPath, newPath, options = {}) {
     window.GBEditorHost?.onPathRename?.(oldPath, newPath, options);
     if (!oldPath || !newPath || typeof _mapRenamedPath !== 'function') return;
+    // サブパネルで開いているCSVの面の保存先も付け替える（メインパネルのCSVは本体側が付け替える）。
+    if (typeof _csvRenameSubSurfacePaths === 'function') _csvRenameSubSurfacePaths(path => _mapRenamedPath(path, oldPath, newPath));
     const frame = _contentEl?.querySelector('.gb-subpanel-viewer-frame');
     const viewerState = frame ? _captureViewerFrameState(frame) : null;
     const updateViewerUrl = value => {

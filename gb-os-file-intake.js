@@ -57,7 +57,7 @@
     if (!result?.ok) throw new Error(result?.error || '貼り付け処理の完了を確認できませんでした');
     if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'os-clipboard' });
     if (typeof openFolder === 'function' && typeof _folderPath !== 'undefined' && _folderPath === path) {
-      await openFolder(document.getElementById('folder-title')?.textContent || path, path, { silent: true, skipNavPush: true });
+      await openFolder(document.getElementById('folder-title')?.textContent || path, path, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}), silent: true, skipNavPush: true });
     }
     showStatus(`${result.paths.length}件を${data.cut ? '移動' : '貼り付け'}しました`);
     return true;

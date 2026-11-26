@@ -822,12 +822,20 @@
     if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
     const body = document.getElementById(BODY_ID);
     _syncEntityAccessNotice(body, access);
+    // 列一覧で打ちかけの入力欄を覚えておく。タブ行の描き直しでフォーカスが移ると、閲覧専用へ切り替える時に
+    // 打ちかけの値として守れず、続く列一覧の開閉で消えていた（2026-11-24）。
+    const gridBeforeAccess = body?.querySelector?.('.cloud-mobile-side-drawer-props-grid');
+    const focusedDraft = document.activeElement && gridBeforeAccess?.contains(document.activeElement)
+      && document.activeElement.matches?.('input, textarea, select, [contenteditable]') ? document.activeElement : null;
     if (
       typeof body?.__MeldexRenderEntityAttachmentsAccess === 'function'
       && (body.__MeldexAttachmentsRequestedReadOnly ?? body.__MeldexAttachmentsRenderedReadOnly) !== access.readOnly
     ) {
       await body.__MeldexRenderEntityAttachmentsAccess(access.readOnly);
       if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
+    }
+    if (focusedDraft?.isConnected && document.activeElement !== focusedDraft) {
+      try { focusedDraft.focus({ preventScroll: true }); } catch { /* ignore */ }
     }
     const grid = body?.querySelector?.('.cloud-mobile-side-drawer-props-grid');
     if (grid) {
@@ -977,8 +985,33 @@
             selectedId,
             columnsPanel: columnsPane,
             selectTopicLayout: layoutId => {
+              // タブ行の描き直しで同じタブが選び直された時は列一覧を描き直さない。閲覧専用への切替は
+              // 入力欄をその場で閉じる処理（_setEntityGridRuntimeReadOnly）が受け持ち、打ちかけの値を消さない（2026-11-24）。
+              if (layoutId === selectedTopicLayoutId && grid.childElementCount > 0) return true;
               renderGridForAccess(readOnly, layoutId);
               return true;
+            },
+            // 統合タブの「＋」「…」からトピックレイアウトを操作する対象（PCのトピックの画面と同じ）。
+            // 統合タブへまとめた時（2026-11-21）にスマホのドロワーだけ配線が無く、スマホではレイアウトを追加・編集できなかった（2026-11-24）。
+            topicLayoutContext: () => {
+              // ドロワーはシートの上に開く。レイアウトの追加・削除などはシートの履歴の範囲へ積み、シートで Ctrl+Z を押すと戻る
+              // （サブパネルと同じ。未設定だと共通の範囲に積まれ、シートの取り消しが届かなかった。2026-11-24）。
+              grid._elHistoryScope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(parentDb) : (typeof _dbScope === 'function' ? _dbScope(parentDb) : '');
+              return {
+              grid, entityPath, dbPath: parentDb, pivotData: data,
+              options: { parentDb, surface: 'mobile-drawer', topicTabs: true, readOnly: readOnly === true },
+              rerender: async () => {
+                if (seq !== _renderSeq) return;
+                const columnsId = window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns';
+                const layouts = (typeof getDbViewConfig === 'function' ? getDbViewConfig(parentDb).entityLayouts : null) || [];
+                const known = id => id === columnsId || layouts.some(layout => layout.id === id);
+                const sessionTab = window.GBEntityLayout?.sessionTab?.(grid, entityPath);
+                const next = sessionTab && known(sessionTab) ? sessionTab
+                  : (known(selectedTopicLayoutId) ? selectedTopicLayoutId : columnsId);
+                await renderAttachmentsForAccess(readOnly, next === columnsId ? '__columns__' : '__layout__:' + next);
+                renderGridForAccess(readOnly, next);
+              },
+              };
             },
             beforeMutation: _flushActiveEditor,
             onReload: async (nextId) => {
@@ -1114,6 +1147,9 @@
   window.MeldexCloudMobileSideDrawer = {
     isEnabled: _isEnabled,
     isOpen,
+    // ドロワーで開いているトピック（スマホのメニューからシートのアクションを実行する対象）。
+    currentEntity: () => (isOpen() && _currentTarget?.kind === 'entity'
+      ? { entityPath: _currentTarget.entityPath, name: _currentTarget.entityName || '' } : null),
     openBoardLink,
     openEntity,
     openElement,

@@ -74,6 +74,7 @@ function setEntryPropOrder(dbPath, order) {
 }
 
 async function _saveEntryPropAddedValue(grid, entityPath, propName, value, status, note, options) {
+  const ownerHistoryScope = typeof options?.historyScope === 'function' ? options.historyScope() : undefined;
   let path = entityPath;
   let viewPath = grid.__entryPropEntityPath;
   let reference;
@@ -98,7 +99,8 @@ async function _saveEntryPropAddedValue(grid, entityPath, propName, value, statu
   applyResult(await _apiPostValue(path, propName, value, status, note));
   if (typeof historyPush === 'function') {
     const db = options?.parentDb || _entityParentDir(path);
-    const scope = typeof _dbScopeForPath === 'function' ? _dbScopeForPath(db)
+    const scope = ownerHistoryScope !== undefined ? ownerHistoryScope
+      : typeof _dbScopeForPath === 'function' ? _dbScopeForPath(db)
       : typeof _dbScope === 'function' ? _dbScope(db) : 'db:' + db;
     historyPush('候補値追加: ' + propName + '=' + value, async () => {
       if (reference.candidate_id || reference.candidate_index != null) {
@@ -295,6 +297,8 @@ function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTy
         entityData: data.properties,
         propTypes,
         viewType: options.viewType,
+        historyScope: options.historyScope,
+        onHistoryChanged: options.onHistoryChanged,
         readOnly: options.readOnly === true,
       });
     } else if (typeof createValueElement === 'function') {
@@ -478,7 +482,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
     valuesEl.className = 'entry-prop-values cell-values';
-    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly });
+    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly, historyScope: opts.historyScope, onHistoryChanged: opts.onHistoryChanged });
     if (layoutEditMode) {
       const hideBtn = document.createElement('button');
       hideBtn.type = 'button';

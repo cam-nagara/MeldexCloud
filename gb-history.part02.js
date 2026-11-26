@@ -232,6 +232,11 @@ function _historyScopeDisplayName(scope) {
   const at = text.indexOf(':');
   const kind = at > 0 ? text.slice(0, at) : '';
   let raw = at > 0 ? text.slice(at + 1) : text;
+  if (kind === 'annotation') {
+    const surface = raw.lastIndexOf('#');
+    if (surface >= 0) raw = raw.slice(0, surface);
+    raw = raw.replace(/#page=(\d+)$/i, '（$1ページ）');
+  }
   // シートなどは内部の識別番号で記録される。利用者には対象の名前だけを見せる（識別番号・保存先の絶対パスは出さない）。
   if (raw && !/[\\/]/.test(raw) && typeof _fileIdToPath === 'function') {
     try { raw = _fileIdToPath(raw) || raw; } catch {}
@@ -466,7 +471,9 @@ function _historyIsBusy() {
 // 中身が入るまで、その枠の取り消し・やり直しは順番待ちのまま保存完了を待つ。
 let _historyCaptureReservation = null;
 
-function historyReserve(label, scope, detail) {
+function historyReserve(label, scope, detail, options = {}) {
+  const redoBefore = options.preserveRedoOnCancel ? _getStack(scope).redo.slice() : null;
+  const globalRedoBefore = options.preserveRedoOnCancel && scope ? _historyGlobal.redo.slice() : null;
   const entry = historyPush(label, null, null, scope, detail);
   let settle = null;
   entry._historyPending = new Promise(resolve => { settle = resolve; });
@@ -503,13 +510,24 @@ function historyReserve(label, scope, detail) {
     },
     cancel() {
       if (finished) return;
-      const stacks = [_getStack(entry.scope), _historyGlobal];
+      const scoped = _getStack(entry.scope);
+      const stillReserved = scoped.undo.includes(entry) || scoped.redo.includes(entry);
+      const newerScopedEdit = [...scoped.undo, ...scoped.redo].some(item => item.id > entry.id);
+      const stacks = [scoped, _historyGlobal];
       stacks.forEach(stack => {
         ['undo', 'redo'].forEach(kind => {
           const index = stack[kind].indexOf(entry);
           if (index >= 0) stack[kind].splice(index, 1);
         });
       });
+      // A different document does not invalidate this scope's Redo. Global
+      // Redo, in contrast, is invalidated by any later edit.
+      if (redoBefore && stillReserved && !newerScopedEdit && !scoped.redo.length) {
+        scoped.redo.push(...redoBefore);
+      }
+      if (globalRedoBefore && stillReserved && _historyEntrySequence === entry.id) {
+        _historyGlobal.redo.splice(0, _historyGlobal.redo.length, ...globalRedoBefore);
+      }
       finish();
     },
   };
@@ -695,7 +713,7 @@ function _historyReachableGlobal(direction, scope) {
 }
 
 function _historyPanelModel(filter = _historyPanelFilter) {
-  const scope = _historyActiveScope;
+  const scope = _historyPanelScope();
   const undo = [];
   const redo = [];
   if (filter === 'all') {
@@ -721,12 +739,21 @@ function _historyPanelModel(filter = _historyPanelFilter) {
   ownUndo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
   ownRedo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
   // 共通の履歴は、対象の操作をすべて戻した後（undo）／すべてやり直した後（redo）に届く。
-  const sharedUndo = _historyReachableGlobal('undo', scope).map(entry => ({ entry, scope: '', shared: true }));
-  const sharedRedo = _historyReachableGlobal('redo', scope).map(entry => ({ entry, scope: '', shared: true }));
+  // 注釈面のUndoは明示した面の履歴だけを使う。現在表示も同じ到達範囲に揃える。
+  const annotations = globalThis.GBAnnotationSurfaces;
+  const scopedOnly = annotations?.usesHistory?.() ?? annotations?.isOpen?.();
+  const sharedUndo = scopedOnly ? [] : _historyReachableGlobal('undo', scope).map(entry => ({ entry, scope: '', shared: true }));
+  const sharedRedo = scopedOnly ? [] : _historyReachableGlobal('redo', scope).map(entry => ({ entry, scope: '', shared: true }));
   sharedUndo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
   sharedRedo.sort((a, b) => _historyNewestFirst(a.entry, b.entry));
   // 「現在」に近い側ほど先に実行される。やり直し側は下（現在の直上）が先、元に戻す側は上（現在の直下）が先。
   return { undo: [...ownUndo, ...sharedUndo], redo: [...sharedRedo, ...ownRedo] };
+}
+
+function _historyPanelScope() {
+  const annotations = globalThis.GBAnnotationSurfaces;
+  return (annotations?.usesHistory?.() ?? annotations?.isOpen?.())
+    ? (annotations?.historyScope?.() || '') : _historyActiveScope;
 }
 
 function _historyRowTime(entry) {
@@ -743,7 +770,7 @@ function _historyPanelHtml(filterId) {
   const filter = _historyPanelFilter === 'all' ? 'all' : 'current';
   const busy = _historyIsBusy();
   const model = _historyPanelModel(filter);
-  const scopeLabel = _historyScopeDisplayName(_historyActiveScope);
+  const scopeLabel = _historyScopeDisplayName(_historyPanelScope());
   let html = `<div class="gb-hp-toolbar">
     <select id="${esc(filterId)}" aria-label="履歴の表示範囲" class="gb-select gb-select-sm gb-hp-filter"
       data-onchange="this.value==='all'?(_historyPanelFilter='all'):(_historyPanelFilter='current');renderHistoryList();renderHistoryPanel()">
@@ -756,14 +783,18 @@ function _historyPanelHtml(filterId) {
     const help = typeof fieldHelp === 'function' ? ' ' + fieldHelp(HISTORY_PANEL_HELP, { size: 12 }) : '';
     return html + `<div class="gb-hp-empty">操作履歴がありません${help}</div>`;
   }
-  // やり直し側（「現在」より上）。一覧からは実行しない（Ctrl+Y / 進む を使う）。
+  // 「すべて」では、各対象の次の1操作を明示してやり直せる。現在の面のショートカットの対象は変えない。
   model.redo.forEach(row => {
     const parts = _historyDisplayParts(row.entry);
-    html += `<div class="gb-hp-entry gb-hp-entry-redo">`
+    const clickable = filter === 'all' && row.steps === 1
+      && (typeof row.entry.redo === 'function' || !!row.entry._historyPending);
+    const tag = clickable ? 'button' : 'div';
+    const action = clickable ? _historyActionAttrs('historyPanelRedoEntry', [row.scope || '', row.entry.id]) : '';
+    html += `<${tag} class="gb-hp-entry gb-hp-entry-redo${clickable ? ' gb-hp-entry-clickable' : ''}"${clickable ? ' type="button" title="' + esc('この操作をやり直す: ' + parts.title) + '"' : ''}${action}${clickable && busy ? ' disabled' : ''}>`
       + `${_hpScopeIcon(row.scope)}${_historyRowTag(row, filter)}<span class="gb-hp-label">${esc(parts.title)}</span>`
       + `<span class="gb-hp-time">${_historyRowTime(row.entry)}</span>`
       + (parts.detail ? `<span class="gb-hp-detail">${esc(parts.detail)}</span>` : '')
-      + `</div>`;
+      + `</${tag}>`;
   });
   html += `<div class="gb-hp-current">${typeof lucide === 'function' ? lucide('play', 12) : ''} 現在</div>`;
   // 元に戻す側。行を押す（Enter / Space でも可）と、その操作までまとめて戻す。
@@ -815,9 +846,35 @@ function _hpScopeIcon(scope) {
   return typeof lucide === 'function' ? lucide(name, 12) + ' ' : '';
 }
 
+async function historyPanelRedoEntry(scope, entryId) {
+  if (_historyIsBusy()) return false;
+  const targetScope = scope || '';
+  const stack = _getStack(targetScope);
+  const selected = stack.redo[stack.redo.length - 1];
+  if (!selected || selected.id !== entryId) return false;
+  _historyBusy = true;
+  try {
+    renderHistoryList(); renderHistoryPanel();
+    if (typeof _meldexPrepareHistoryScopeTarget === 'function') {
+      const prep = await _meldexPrepareHistoryScopeTarget(targetScope);
+      if (!prep.ok) { showStatus('対象の文書が開かれていないためやり直せません', true); return false; }
+    }
+    if (!await _historyPrepareNavigation(targetScope)) return false;
+    if (stack.redo[stack.redo.length - 1] !== selected) return false;
+    return await _historyReplayEntry('redo', targetScope, false, true);
+  } catch (error) {
+    showStatus('Redo失敗: ' + (error?.message || error), true);
+    return false;
+  } finally {
+    _historyBusy = false;
+    renderHistoryList(); renderHistoryPanel();
+    if (_historyNavigationQueue.length) _historyRunNavigationQueue();
+  }
+}
+
 async function historyPanelJump(steps, scope, entryId) {
   if (!Number.isSafeInteger(steps) || steps <= 0 || _historyIsBusy()) return false;
-  const targetScope = arguments.length >= 2 ? (scope || '') : _historyActiveScope;
+  const targetScope = arguments.length >= 2 ? (scope || '') : _historyPanelScope();
   const initialStack = _getStack(targetScope);
   const selected = entryId == null ? initialStack.undo[initialStack.undo.length - steps]
     : initialStack.undo.find(entry => entry.id === entryId);
@@ -910,14 +967,14 @@ async function historyPanelJumpThroughShared(entryId) {
 
 async function confirmHistoryPanelClear() {
   if (_historyIsBusy()) return false;
-  const scope = _historyActiveScope;
+  const scope = _historyPanelScope();
   const all = _historyPanelFilter === 'all';
   const ok = await cfConfirm(all ? 'すべての操作履歴をクリアしますか？編集内容は変わりません。'
     : '現在の対象の操作履歴をクリアしますか？編集内容は変わりません。');
   return ok ? historyPanelClear(scope, all) : false;
 }
 
-function historyPanelClear(scope = _historyActiveScope, all = _historyPanelFilter === 'all') {
+function historyPanelClear(scope = _historyPanelScope(), all = _historyPanelFilter === 'all') {
   if (_historyIsBusy()) return false;
   if (all) {
     _historyGlobal.undo.length = 0;
@@ -1088,7 +1145,9 @@ function _meldexHasPaneLayout() {
 // 対象パス指定書き込みのため対象外（無関係な対象を汚染しない）。
 const _MELDEX_LIVE_SCOPE_GETTERS = Object.freeze({
   'board:': () => (typeof bd !== 'undefined' && typeof _bdHistoryScope === 'function') ? _bdHistoryScope(bd.path) : null,
-  'csv:': () => (typeof _csvHistoryScope === 'function') ? _csvHistoryScope() : null,
+  // CSVの状態は面（メイン／サブパネル）ごと。操作中の面に読み込まれているCSVを見る。
+  'csv:': () => (typeof _csvInteractionHistoryScope === 'function') ? _csvInteractionHistoryScope()
+    : (typeof _csvHistoryScope === 'function') ? _csvHistoryScope() : null,
   'map:': () => {
     if (typeof getComponentInstance !== 'function') return null;
     const tab = _meldexActiveTabForPane();
@@ -1266,6 +1325,8 @@ function _meldexUndoRedoContext() {
 function _meldexScheduleUndo() {
   const component = _meldexScheduleActiveComponent();
   if (!component) return;
+  // 実行中の同じ画面には順番待ちがある。can判定は処理中に偽となるため先に渡す。
+  if (component._undoBusy && typeof component._undo === 'function') return component._undo();
   const scope = typeof _schedHistoryScope === 'function' ? _schedHistoryScope(component) : '';
   if (scope && typeof historyCanUndo === 'function' && historyCanUndo(scope)) {
     if (typeof component._undo === 'function') return component._undo();
@@ -1279,6 +1340,8 @@ function _meldexScheduleUndo() {
 function _meldexScheduleRedo() {
   const component = _meldexScheduleActiveComponent();
   if (!component) return;
+  // 実行中の同じ画面には順番待ちがある。can判定は処理中に偽となるため先に渡す。
+  if (component._undoBusy && typeof component._redo === 'function') return component._redo();
   const scope = typeof _schedHistoryScope === 'function' ? _schedHistoryScope(component) : '';
   if (scope && typeof historyCanRedo === 'function' && historyCanRedo(scope)) {
     if (typeof component._redo === 'function') return component._redo();

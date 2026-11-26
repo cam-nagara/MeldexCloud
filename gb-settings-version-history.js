@@ -23,6 +23,7 @@
     'editor-theme-name': { label: 'テーマ', format: 'text' },
     'ui-scale': { label: '表示サイズ', format: 'percent' },
     'meldex-statusbar-hidden': { label: 'ステータスバー', format: 'hidden' },
+    'meldex-toolbar-autohide': { label: 'ツールバーを自動で隠す', format: 'off-zero' },
     'note-vertical': { label: '縦書き', format: 'boolean' },
     'note-heading-indent': { label: '見出しのインデント', format: 'boolean' },
     'note-toc-visible': { label: '目次', format: 'boolean' },
@@ -42,6 +43,7 @@
   function valueText(value, format) {
     if (format === 'changed') return '変更あり';
     if (format === 'boolean') return String(value) === 'true' || String(value) === '1' ? 'オン' : 'オフ';
+    if (format === 'off-zero') return String(value) === '0' ? 'オフ' : 'オン';
     if (format === 'hidden') return String(value) === 'true' || String(value) === '1' ? '非表示' : '表示';
     if (format === 'percent') return /^\d{1,3}$/.test(String(value || '')) ? `${value}%` : '変更あり';
     if (format === 'number') return /^\d+$/.test(String(value || '')) ? String(value) : '変更あり';

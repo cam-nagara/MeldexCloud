@@ -57,12 +57,8 @@ function _dbEntityColumnDisplayLabel(dbPath, options) {
 }
 
 function _dbDefaultEntityColumnWidth(dbPath) {
-  // 保存済みの列幅は呼出元で優先する。未設定のスマホだけ、行メニューと
-  // トピック名を同時に読める初期幅にする。
-  if (window.matchMedia?.('(max-width: 640px)')?.matches) return 180;
-  // 幅の目安は既定ラベル基準（任意名を付けても既定の幅感を保つ）
-  const label = _dbDefaultEntityColumnLabel(dbPath);
-  return label === 'タスク名' ? 260 : (label === 'トピック名' ? 120 : 180);
+  // 保存済みの幅は呼出元で優先する。未指定の列は端末やラベルによらず150px。
+  return 150;
 }
 
 function _dbE2eToken(value) {
@@ -156,6 +152,10 @@ function _dbReflowPinnedColumnOffsets(table) {
       left += Math.max(60, Math.round(th.offsetWidth || parseFloat(th.style.width) || 100));
     }
   });
+  // ブラウザーによる入力欄・セルの自動スクロールでも、左の固定列を可視領域から除く。
+  // 狭いパネルで中央へ寄せると、編集するセルがトピック名の下へ隠れて操作できなくなる。
+  const scrollHost = _dbPinnedColumnScrollHost(table);
+  if (scrollHost) scrollHost.style.scrollPaddingLeft = left + 'px';
   _dbAlignPinnedColumnSeams(table);
   _dbSchedulePinnedColumnSeamAlignment(table);
 }
@@ -356,6 +356,7 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   } else {
     const sortPtc = propTypes?.[sortCfg.key] || {};
     const sortType = sortPtc.type || 'text';
+    const optionOrder = new Map((sortType === 'common-tags' ? sortPtc.tagOrder || [] : Array.isArray(sortPtc.options) ? sortPtc.options : []).map((value, index) => [String(value), index]));
     const adoptedStr = (v) => {
       if (!Array.isArray(v)) return v == null ? '' : String(v);
       const picked = v.find(x => x && (x.status === '採用' || x.status === '掲載済み'))
@@ -385,7 +386,13 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
       if (!sa) return 1;
       if (!sb) return -1;
       let cmp;
-      if (sortType === 'number' || sortType === 'formula') {
+      if (['select', 'multi-select', 'status', 'tag', 'common-tags'].includes(sortType) && optionOrder.size) {
+        const rank = value => Math.min(...String(value).split(',').map(v => optionOrder.get(v.trim()) ?? Infinity));
+        const ia = rank(sa), ib = rank(sb);
+        if (!Number.isFinite(ia) && Number.isFinite(ib)) return 1;
+        if (Number.isFinite(ia) && !Number.isFinite(ib)) return -1;
+        cmp = ia === ib ? _dbNaturalTextCompare(sa, sb) : ia - ib;
+      } else if (sortType === 'number' || sortType === 'formula') {
         const na = toNum(sa), nb = toNum(sb);
         if (na != null && nb != null) cmp = na - nb;
         else if (na != null) cmp = -1;
@@ -406,8 +413,7 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   return entityNames;
 }
 
-// 列見出しの右側に「…」ボタン（右端から14px・幅約20px）の場所を常に空けておく幅。
-const DB_TH_MENU_BUTTON_ROOM = 36;
+// 列見出しの「…」は名前に重ね、常時表示する印の幅だけを確保する。
 // 列名の横に並ぶ印（列タイプ・フィルター・鍵・リンク切れ）の幅を列名の最大幅から差し引く。
 function _dbSyncHeaderLabelRoom(th) {
   const label = th?.querySelector?.(':scope > .th-label');
@@ -732,6 +738,7 @@ function renderPivot(ctx) {
       }
       const th0MoreBtn = document.createElement('span');
       th0MoreBtn.className = 'th-more-btn entity-th-more-btn';
+      th0MoreBtn.dataset.e2eId = _dbE2eId(ctx, 'column-menu', 'entity');
       th0MoreBtn.innerHTML = lucide('moreHorizontal', 14);
       th0MoreBtn.title = '列メニュー';
       th0MoreBtn.setAttribute('aria-label', entityColumnLabel + '列メニュー');
@@ -810,7 +817,7 @@ function renderPivot(ctx) {
     th.dataset.dbColToken = p;
     th.dataset.e2eId = _dbE2eId(ctx, 'column-header', p);
     _setupDbColumnHeaderA11y(th, p);
-    const w = savedWidths[p] || 100;
+    const w = savedWidths[p] || 150;
     th.style.width = w + 'px';
     th.style.minWidth = w + 'px';
     th.style.maxWidth = w + 'px';
@@ -872,20 +879,24 @@ function renderPivot(ctx) {
     // ホバー表示の「...」ボタン（メニュー起動）
     const moreBtn = document.createElement('span');
     moreBtn.className = 'th-more-btn';
+    moreBtn.dataset.e2eId = _dbE2eId(ctx, 'column-menu', p);
     moreBtn.innerHTML = lucide('moreHorizontal', 14);
     moreBtn.title = '列メニュー';
+    moreBtn.tabIndex = 0;
+    moreBtn.setAttribute('role', 'button');
+    moreBtn.setAttribute('aria-label', p + ' 列メニュー');
+    moreBtn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); moreBtn.click(); } });
+    moreBtn.addEventListener('focus', () => { moreBtn.style.opacity = '1'; });
+    moreBtn.addEventListener('blur', () => { moreBtn.style.opacity = th.matches(':hover') ? '1' : '0'; });
     moreBtn.style.cssText = 'position:absolute;right:14px;top:50%;transform:translateY(-50%);opacity:0;padding:2px 3px;border-radius:3px;cursor:pointer;background:var(--bg2);display:inline-flex;align-items:center;transition:opacity 0.1s;z-index:2;';
     moreBtn.addEventListener('mouseenter', () => { moreBtn.style.background = 'var(--bg4)'; });
     moreBtn.addEventListener('mouseleave', () => { moreBtn.style.background = 'var(--bg2)'; });
     moreBtn.addEventListener('click', (e) => { e.stopPropagation(); showColHeaderMenu(e, p, domColIndex, ctx, dbPath); });
     th.appendChild(moreBtn);
-    // 列名は「…」ボタンの手前で省略する。ボタンの場所はホバーの前から空けておき、ホバーで寸法を変えない
-    // （2026-11-22 利用者役の探索: ボタンが列名の中ほどに重なり「メモ コ…ー」と中間が隠れていた）。
-    th.style.paddingRight = DB_TH_MENU_BUTTON_ROOM + 'px';
     _dbSyncHeaderLabelRoom(th);
     th.style.position = pinnedCols.includes(p) ? 'sticky' : 'relative';
     th.addEventListener('mouseenter', () => { moreBtn.style.opacity = '1'; });
-    th.addEventListener('mouseleave', () => { moreBtn.style.opacity = '0'; });
+    th.addEventListener('mouseleave', () => { moreBtn.style.opacity = document.activeElement === moreBtn ? '1' : '0'; });
 
     // リサイズハンドル
     const handle = document.createElement('div');

@@ -52,7 +52,8 @@ function bdDrawFrames(options = {}) {
     if (groupStyle.labelColor) label.style.color = groupStyle.labelColor;
     if (Number.isFinite(+groupStyle.labelFontSize)) label.style.fontSize = Math.max(8, +groupStyle.labelFontSize) + 'px';
     if (groupStyle.labelFontFamily) label.style.fontFamily = groupStyle.labelFontFamily;
-    if (groupStyle.labelBold) label.style.fontWeight = '700';
+    // 明示的なオフは共通CSSの既定太字より優先する。未設定は従来の見た目を保つ。
+    if (groupStyle.labelBold != null) label.style.fontWeight = groupStyle.labelBold ? '700' : '400';
     if (g.collapsed) {
       const fontSize = Math.max(8, +groupStyle.labelFontSize || 11);
       const borderWidth = Math.max(0, +groupStyle.borderWidth || 2);
@@ -66,7 +67,8 @@ function bdDrawFrames(options = {}) {
     label.ondblclick = (ev) => {
       ev.stopPropagation();
       if (g.locked) return;
-      label.contentEditable = 'true'; label.focus();
+      label.contentEditable = 'true';
+      try { label.focus({ preventScroll: true }); } catch (_) { label.focus(); }
       label.style.cursor = 'text';
       const s=window.getSelection(), r=document.createRange(); r.selectNodeContents(label); s.removeAllRanges(); s.addRange(r);
       const originalName = String(g.name || '');

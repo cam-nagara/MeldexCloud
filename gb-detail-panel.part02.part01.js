@@ -168,7 +168,7 @@ function _fsResolveSections(ctx, spec) {
           // 候補値は列タイプごとに見本1つ（クリックで共通の書式設定ポップアップ）。個々の書式を行として並べない。
           ...(typeof DB_OPTION_CHIP_TYPES !== 'undefined' ? DB_OPTION_CHIP_TYPES : []).map(({ id, label }) => ({
             label, keepTogether: true,
-            fields: pick(['fg', 'bg', 'bold', 'font-size', 'radius', 'padding-x', 'border-color', 'border-width'].map(suffix => `--db-option-${id}-${suffix}`)),
+            fields: pick(['fg', 'bg', 'bold', 'italic', 'strike', 'font-size', 'radius', 'padding-x', 'border-color', 'border-width'].map(suffix => `--db-option-${id}-${suffix}`)),
           })),
         ],
       },
@@ -373,8 +373,12 @@ async function _fsRunThemeAction(ctx, action) {
   try {
     return await handler(ctx);
   } catch (error) {
-    console.error(error);
-    if (typeof showStatus === 'function') showStatus('テーマ操作に失敗しました', true);
+    const storageFull = error?.name === 'QuotaExceededError';
+    if (storageFull) console.warn('[theme] settings storage unavailable', error);
+    else console.error(error);
+    if (typeof showStatus === 'function') showStatus(storageFull
+      ? 'テーマを保存できませんでした。この端末の保存領域が不足しています。設定を保持したまま、空きを確保して再試行してください'
+      : 'テーマ操作に失敗しました', true);
   }
 }
 
@@ -718,7 +722,17 @@ function _fsBindThemePanel(root, ctx) {
   const adapter = _fsGetAdapter(ctx);
   if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
   const select = section.querySelector('[data-fs-theme-select]');
-  select?.addEventListener('change', () => _fsRunThemeAction(ctx, () => fileThemeSelect(ctx, select.value)));
+  select?.addEventListener('change', async () => {
+    const next = select.value;
+    select.disabled = true;
+    try { await _fsRunThemeAction(ctx, () => fileThemeSelect(ctx, next)); }
+    finally {
+      if (select.isConnected) {
+        select.value = _fsCurrentThemeId(ctx, _fsGetAdapter(ctx));
+        select.disabled = false;
+      }
+    }
+  });
   section.querySelector('[data-fs-theme-menu]')?.addEventListener('click', event => {
     event.preventDefault();
     event.stopPropagation();
@@ -729,6 +743,28 @@ function _fsBindThemePanel(root, ctx) {
 }
 
 let _fsThemePanelGlobalSyncBound = false;
+function _fsSyncThemePalette(section, ctx, adapter) {
+  const colors = _fsThemeColorSetForCurrent(ctx, adapter);
+  const useOsAccent = _fsUseOsAccent(ctx, adapter);
+  const palette = section.querySelector('.fs-theme-palette');
+  const shapeMatches = palette && !!palette.querySelector('[data-theme-os-accent-swatch]') === useOsAccent
+    && palette.querySelectorAll('[data-theme-color-slot]').length === (useOsAccent ? 0 : colors?.length || 0);
+  if (!shapeMatches && palette) {
+    // ファイルの読込後やカスタム化で8色→10色になっても、古い色見本を使い回さない。
+    // 書式ポップアップの基準要素を保つため、設定行ではなく色見本の部分だけ入れ替える。
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = _fsRenderThemeControlSection(ctx, adapter);
+    const next = wrapper.querySelector('.fs-theme-palette');
+    if (next) {
+      next.open = palette.open;
+      if (section.querySelector('[data-fs-theme-select]')?.disabled) next.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
+      palette.replaceWith(next);
+      _fsBindThemeColorSetEditor(section, ctx);
+    }
+  }
+  if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, colors);
+}
+
 function _fsEnsureThemePanelGlobalSync() {
   if (_fsThemePanelGlobalSyncBound || typeof window === 'undefined') return;
   _fsThemePanelGlobalSyncBound = true;
@@ -738,7 +774,7 @@ function _fsEnsureThemePanelGlobalSync() {
       const ctx = section.getAttribute('data-file-theme-panel') || '';
       if (!ctx) return;
       const adapter = _fsGetAdapter(ctx);
-      syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
+      _fsSyncThemePalette(section, ctx, adapter);
     });
   };
   window.addEventListener('meldex-theme-color-set-change', refresh);
@@ -787,7 +823,12 @@ function _fsBindThemeColorSetEditor(root, ctx) {
       ? MeldexThemeManager.normalizeThemeColorSet(colors, currentColors())
       : colors;
     if (!Array.isArray(normalized) || !normalized.length) return;
-    for (let i = 0; i < 10; i += 1) next[`--theme-palette-${i}`] = normalized[i % normalized.length];
+    for (let i = 0; i < 10; i += 1) {
+      // 共通パレットの正規化は8色。ファイルに表示する9・10番目の入力も保持する。
+      const explicit = colors[i] != null && typeof MeldexThemeManager.normalizeThemeColorSet === 'function'
+        ? MeldexThemeManager.normalizeThemeColorSet([colors[i]], [normalized[i % normalized.length]])[0] : '';
+      next[`--theme-palette-${i}`] = explicit || normalized[i % normalized.length];
+    }
     next[_fsThemeIdField(ctx).key] = _fsLocalCustomThemeId();
     next[_fsLocalCustomThemeNameKey()] = next[_fsLocalCustomThemeNameKey()] || 'カスタムテーマ';
     return _fsCommitThemeStyle(ctx, adapter, next, { label: 'テーマカラー変更' });
@@ -890,12 +931,12 @@ function _fsSyncThemeSelect(ctx) {
     if (!select) return;
     const adapter = _fsGetAdapter(ctx);
     if (!adapter) return;
+    _fsSyncThemePalette(section, ctx, adapter);
     const current = _fsCurrentThemeId(ctx, adapter);
     if (select.dataset.fsThemeSyncedId === current && select.value === current) return;
     select.innerHTML = _fsThemeOptionsHtml(current, ctx);
     select.value = current;
     select.dataset.fsThemeSyncedId = current;
-    if (typeof syncThemeColorSetSwatches === 'function') syncThemeColorSetSwatches(section, _fsThemeColorSetForCurrent(ctx, adapter));
   });
 }
 if (typeof window !== 'undefined') window._fsSyncThemeSelect = _fsSyncThemeSelect;
@@ -1021,10 +1062,20 @@ async function fileThemeSave(ctx) {
     let saved = true;
     if (ctx === 'scriptnote') saved = await _getScriptNoteEditorForFileStyle?.()?.save?.();
     else if (ctx === 'board' && typeof bdSave === 'function') saved = await bdSave();
-    else if (ctx === 'db' && typeof _dbFolderNoteStyleSaveQueue !== 'undefined') await _dbFolderNoteStyleSaveQueue;
+    else if (ctx === 'db' && typeof _dbFolderNoteStyleSaveQueue !== 'undefined') {
+      // 拒否された書込みを待ち直すだけでは保存されない。保持した入力を再送する。
+      await _dbFolderNoteStyleSaveQueue.catch(() => {});
+      if (typeof _dbFileStyleHasUnsavedChanges === 'function' && _dbFileStyleHasUnsavedChanges()) {
+        saved = await _fsApplyStyleWithHistory(ctx, adapter, _fsGetStyleForContext(ctx), 'テーマ保存', '', { rollbackOnFailure: false });
+      }
+    }
     else if (ctx === 'page' && typeof _runNoteAutoSave === 'function') {
-      const pc = document.getElementById('page-content');
-      await _runNoteAutoSave(pc, pc?.dataset?.path);
+      const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+      if (typeof _waitForNoteFileStyleWrites === 'function') await _waitForNoteFileStyleWrites(pc).catch(() => {});
+      if (!_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
+      if (!_fsStyleSnapshotsEqual(_fsStyleBeforeMutation(ctx), _fsGetStyleForContext(ctx))) {
+        saved = await _fsApplyStyleWithHistory(ctx, adapter, _fsGetStyleForContext(ctx), 'テーマ保存');
+      } else await _runNoteAutoSave(pc, pc?.dataset?.path);
       saved = !!pc && _noteMarkdownFromEditor(pc) === pc.dataset.lastSavedMd;
     }
     if (saved === false || !_fsThemeAdapterIsCurrent(ctx, adapter)) {

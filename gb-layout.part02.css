@@ -196,12 +196,13 @@
   border: 1px solid transparent;
   border-radius: var(--ui-radius-xs, 3px);
   background: transparent;
-  color: var(--fg2);
+  /* 戻り先・進み先がある時は通常の文字色（暗いテーマでは白）。無い時は共通の無効ボタン色（--ui-disabled-fg）になる。 */
+  color: var(--fg);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.8;
+  opacity: 1;
 }
 .gb-pane-nav-btn svg {
   width: 18px;

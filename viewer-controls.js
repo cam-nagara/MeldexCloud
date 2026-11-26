@@ -35,7 +35,13 @@
   document.getElementById('btn-shift-back').onclick = () => { Scene.pause(); Scene.shiftBackward(); };
   document.getElementById('btn-shift-fwd').onclick = () => { Scene.pause(); Scene.shiftForward(); };
   document.getElementById('btn-play').onclick = Scene.togglePlay;
-  document.getElementById('sel-mode').onchange = function() { Scene.setMode(this.value); };
+  // 表示モード等の選択欄は、選んで閉じたらフォーカスを外して画面へ戻す。フォーカスが残ると、
+  // 続く左右の矢印キーが選択欄の値を変え、ページ送りのつもりで表示モードが切り替わっていた。
+  function releaseViewSelect(select) {
+    if (select && document.activeElement === select) select.blur();
+  }
+  window.MeldexViewerControls = Object.assign(window.MeldexViewerControls || {}, { releaseViewSelect });
+  document.getElementById('sel-mode').onchange = function() { Scene.setMode(this.value); releaseViewSelect(this); };
   document.getElementById('speed').oninput = function() { Scene.setSpeed(this.value); };
   document.getElementById('btn-bg').onclick = Scene.toggleBg;
   document.getElementById('btn-fullscreen').onclick = Scene.toggleFullscreen;
@@ -59,7 +65,7 @@
   if (annotationButton) {
     // iframe内では二度と出さないので取り除く（アノテートの可否が後から変わっても復活させない）。
     if (window.MeldexViewerSceneUtils?.isEmbeddedMeldexViewer?.()) annotationButton.remove();
-    else if (annotationsAvailable()) annotationButton.onclick = () => window.MeldexViewerAnnotations?.toggle?.();
+    else if (annotationsAvailable()) annotationButton.onclick = () => window.MeldexViewerAnnotationEntry.toggle();
     else annotationButton.hidden = true;
   }
   document.getElementById('btn-prev-folder').onclick = Scene.prevFolder;
@@ -98,17 +104,19 @@
   }
   window.MeldexShortcutRegistry?.registerLocal(VIEWER_SHORTCUTS);
 
+  const leftward = () => Scene.getMode?.() === 'manga';
   // [実行内容, 既定動作を抑止するか]
   const VIEWER_ACTIONS = {
     'viewer.playPause':     [() => Scene.togglePlay(), true],
     'viewer.prevFolder':    [() => Scene.prevFolder(), true],
     'viewer.nextFolder':    [() => Scene.nextFolder(), true],
-    'viewer.shiftForward':  [() => Scene.shiftForward(), true],
-    'viewer.shiftBackward': [() => Scene.shiftBackward(), true],
-    // マンガモードでも常に右=次、左=前。再生中は手動送りに合わせてスライドショーの
+    'viewer.shiftForward':  [() => (leftward() ? Scene.shiftBackward : Scene.shiftForward)(), true],
+    'viewer.shiftBackward': [() => (leftward() ? Scene.shiftForward : Scene.shiftBackward)(), true],
+    // 見開き_左へ（右から左へめくる）では、矢印キーの左右を入れ替える（左＝次、右＝前。2026-11-26 利用者判断）。
+    // 単ページ・見開き_右へ は 右＝次、左＝前。再生中は手動送りに合わせてスライドショーの
     // 次送りタイマーを起点からやり直す（元コードの `if (playing) scheduleNext()` を維持）。
-    'viewer.next':          [() => { Scene.nextGroup(); Scene.rescheduleSlideshow(); }, false],
-    'viewer.prev':          [() => { Scene.prevGroup(); Scene.rescheduleSlideshow(); }, false],
+    'viewer.next':          [() => { (leftward() ? Scene.prevGroup : Scene.nextGroup)(); Scene.rescheduleSlideshow(); }, false],
+    'viewer.prev':          [() => { (leftward() ? Scene.nextGroup : Scene.prevGroup)(); Scene.rescheduleSlideshow(); }, false],
     'viewer.toggleHud':     [() => Scene.toggleHud(), false],
     'viewer.fullscreen':    [() => Scene.toggleFullscreen(), false],
     'viewer.reversePlay':   [() => Scene.toggleReversePlay(), false],
@@ -124,19 +132,24 @@
     'viewer.fitNone':       [() => Scene.setFitMode('none'), false],
   };
   if (annotationsAvailable()) {
-    VIEWER_ACTIONS['viewer.annotation'] = [() => window.MeldexViewerAnnotations?.toggleFromShortcut?.(), false];
+    VIEWER_ACTIONS['viewer.annotation'] = [() => window.MeldexViewerAnnotationEntry.toggle(true), false];
   }
 
   // 文字入力・選択欄、右サイドバー・メニュー・ダイアログ内のキーはそれぞれの部品に任せる。
-  // 下端ツールバーのボタンにフォーカスが残っていても（再生ボタンを押した直後など）矢印キー等の
+  // ツールバーのボタンにフォーカスが残っていても（再生ボタンを押した直後など）矢印キー等の
   // ビューワー操作は効かせ、Space/Enter だけはボタン自身の押下に任せる。シークバーでは
   // 矢印キー等をスライダー操作に任せる（値の変更がそのまま前後移動になる）。
+  const VIEW_SELECTS = '#sel-mode, #viewer-pages-mode, #viewer-pages-first';
   const RANGE_NATIVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
   function shouldLeaveKeyToFocusedControl(e) {
     const target = e.target;
     if (!target || typeof target.closest !== 'function') return false;
     if (target.isContentEditable) return true;
     if (target.closest('.sa-secondary-panel, .gb-context-menu, [role="menu"], [role="dialog"], .sa-version-overlay')) return true;
+    const nativeMedia = target.closest('video[controls], audio[controls]');
+    if (nativeMedia?.closest('.layer.show')) return true;
+    // 表示の選択欄にフォーカスが残っていても、左右の矢印キーはページ送りにする（選択欄の値を変えない）。
+    if (target.closest('#sel-mode, #viewer-pages-mode, #viewer-pages-first') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey) return false;
     if (target.closest('textarea, select')) return true;
     const input = target.closest('input');
     if (input) return String(input.type || '').toLowerCase() !== 'range' || RANGE_NATIVE_KEYS.has(e.key);
@@ -158,7 +171,9 @@
     const id = window.MeldexShortcutRegistry?.matchEvent(e, ['viewer']) || '';
     const entry = VIEWER_ACTIONS[id];
     if (entry) {
-      if (entry[1]) e.preventDefault();
+      // 選択欄の既定動作（値の切替）はページ送りの時に止める
+      if (entry[1] || e.target?.closest?.(VIEW_SELECTS)) e.preventDefault();
+      if (e.target?.closest?.(VIEW_SELECTS)) e.target.closest(VIEW_SELECTS).blur();
       entry[0]();
       return;
     }
@@ -185,8 +200,14 @@
     Scene.zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 'out' : 'in');
   }, {passive: false});
 
+  // タッチ後にブラウザーが生成する互換dblclickを、マウスの操作と混同しない。
+  let lastContentPointerType = '';
+  document.getElementById('display').addEventListener('pointerdown', e => {
+    lastContentPointerType = e.pointerType;
+  }, true);
   // 画像のダブルクリックは、フィット方式を維持したままズームとパンをリセットする。
   document.getElementById('display').addEventListener('dblclick', e => {
+    if (lastContentPointerType === 'touch' || e.sourceCapabilities?.firesTouchEvents) return;
     if (e.target.closest('.viewer-text-layer, .nav-area, .sa-toolbar, .sa-note, button, input, select')) return;
     e.preventDefault();
     Scene.resetZoom();
@@ -284,20 +305,26 @@
     }
   })();
 
-  // マウスの戻る/進むボタン（XButton1/XButton2）で前後へ移動
+  // マウスの戻る/進むボタン（XButton1/XButton2）は画像送りに使わない。
+  // 埋め込み時は親画面へ渡し、このビューワーを開いているタブの履歴を戻る/進むにする。
+  // 単独で開いた時は何もしない（ページ全体の遷移だけ止める）。
   ['mousedown', 'mouseup', 'auxclick'].forEach(eventName => {
     document.addEventListener(eventName, e => {
       if (e.button !== 3 && e.button !== 4) return;
       e.preventDefault();
       e.stopPropagation();
-      if (eventName !== 'mousedown') return;
-      Scene.pause();
-      if (e.button === 3) Scene.prevGroup();
-      else Scene.nextGroup();
+      if (eventName !== 'mouseup') return;
+      try {
+        if (window.parent && window.parent !== window
+            && typeof window.parent.meldexPointerNavigateFromFrame === 'function') {
+          window.parent.meldexPointerNavigateFromFrame(window, e.button === 3 ? -1 : 1);
+        }
+      } catch {}
     }, {capture: true});
   });
 
-  // ツールバー自動表示/非表示: マウスが#display下端に近づいたら表示、離れたら短い遅延後に非表示。
+  // ツールバー自動表示/非表示: マウスが#display上端に近づいたら表示、離れたら短い遅延後に非表示
+  // （2026-11-24 下端から上端へ移動。設定「ツールバーを自動で隠す」がオフなら常に表示）。
   // ツールバー内にフォーカス/ホバーがある間は隠さない。pointer:coarse環境（タッチ）では常時表示
   // （embed=1専用だった旧hover制御・再生中3秒非表示の旧ロジックはこの方式に統一。
   // ビューワー残課題修正計画 2026-08-04「6. ツールバーの自動表示/非表示」）。
@@ -325,26 +352,34 @@
       clearTimeout(hideTimer);
       controls.classList.add('controls-active');
       syncParentAnnotationButton(true);
-      if (isCoarsePointer) hideTimer = setTimeout(hideNow, 2600);
+    }
+    // 全アプリ共通の設定（gb-toolbar-autohide.js）。オフなら隠さない。
+    const autoHideEnabled = () => !window.MeldexToolbarAutoHide || window.MeldexToolbarAutoHide.isEnabled();
+    function menuOpen() {
+      return !!controls.querySelector('[aria-expanded="true"]')
+        || !!document.querySelector('.gb-toolbar-overflow-popup, .gb-context-menu:not([hidden])');
     }
     function hideNow() {
-      if (toolbarFocused || controls.matches(':hover')) return;
+      if (!autoHideEnabled() || isCoarsePointer || toolbarFocused || controls.matches(':hover')) return;
+      if (menuOpen()) { scheduleHide(); return; }
       controls.classList.remove('controls-active');
       syncParentAnnotationButton(false);
     }
     function scheduleHide() {
       clearTimeout(hideTimer);
-      hideTimer = setTimeout(hideNow, isCoarsePointer ? 2600 : HIDE_DELAY_MS);
+      hideTimer = setTimeout(hideNow, HIDE_DELAY_MS);
     }
 
     window.showViewerToolbar = show;
     if (isCoarsePointer) { show(); return; }
+    if (!autoHideEnabled()) show();
+    window.addEventListener('meldex:toolbar-autohide-change', () => { if (autoHideEnabled()) scheduleHide(); else show(); });
 
     document.addEventListener('mousemove', (e) => {
       const rect = displayEl.getBoundingClientRect();
-      const nearBottom = (rect.bottom - e.clientY) <= PROXIMITY_PX
-        && e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top;
-      if (nearBottom) show(); else scheduleHide();
+      const nearTop = (e.clientY - rect.top) <= PROXIMITY_PX
+        && e.clientX >= rect.left && e.clientX <= rect.right && e.clientY <= rect.bottom;
+      if (nearTop) show(); else scheduleHide();
     });
     controls.addEventListener('mouseenter', show);
     controls.addEventListener('mouseleave', scheduleHide);

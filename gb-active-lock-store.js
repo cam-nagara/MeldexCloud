@@ -732,7 +732,14 @@
       purpose: options.purpose,
     });
     const both = (key, options) => { query(key, options); payload(key, options); };
-    if (pathname === '/file' || pathname === '/value' || pathname === '/db-metadata' || pathname === '/replace') {
+    if (pathname === '/db-metadata' || pathname === '/db-property/rename') {
+      // シート全体を変える保存は、ほかの人がロックしている行（トピック）とも食い違うので、中の行も含めて確かめる
+      // （セルの入力は行だけをロックする。2026-11-25）。表示の設定だけの保存は行の中身を変えないので、シートだけ。
+      const schema = pathname === '/db-property/rename'
+        || Object.keys(body || {}).some(key => !['view_config', 'operation_id', 'expected_schema_revision', 'path', 'db_path'].includes(key));
+      both('path', { includeDescendants: schema });
+      payload('db_path', { includeDescendants: schema });
+    } else if (pathname === '/file' || pathname === '/value' || pathname === '/replace') {
       both('path');
       payload('entry_path');
       payload('folder_path');
@@ -773,16 +780,33 @@
         includeDescendants: false,
         purpose: 'destination',
       });
+    } else if (pathname === '/outliner/move-batch') {
+      // まとめての移動も、1件の移動と同じく移動元と移動先を候補にする
+      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
+      for (const item of Array.isArray(body?.items) ? body.items : []) {
+        const sourcePath = _normalizeFolderPath(item?.path || '');
+        if (!sourcePath) continue;
+        const sourceKind = await _entryKind(provider, sourcePath);
+        _addCandidate(candidates, sourcePath, { includeDescendants: sourceKind === 'directory', purpose: 'source' });
+        _addCandidate(candidates, await _moveTarget(provider, sourcePath, destFolder, sourceKind === 'file'), {
+          includeDescendants: false, purpose: 'destination',
+        });
+      }
     } else if (pathname === '/outliner/rename' || pathname === '/entity/rename') {
       const oldPath = _normalizeFolderPath(pathname === '/outliner/rename' ? body?.old_path : body?.path);
-      const newName = String(body?.new_name || '').replace(/[\\/]/g, '').trim();
+      const boardTitle = pathname === '/outliner/rename' && body?.type === 'board' ? window.GBPathUtils?.displayTitle : null;
+      const newName = boardTitle ? boardTitle.storageName(body?.new_name) : String(body?.new_name || '').replace(/[\\/]/g, '').trim();
       const sourceKind = await _entryKind(provider, oldPath);
       const isFile = sourceKind === 'file' || (sourceKind !== 'directory' && !!_splitNameAndExtension(_pathBase(oldPath)).extension);
       _addCandidate(candidates, oldPath, {
         includeDescendants: sourceKind === 'directory',
         purpose: 'source',
       });
-      if (!window.GBPathUtils?.isDisplayTitleRename?.(pathname, body)) _addCandidate(candidates, _renameTarget(oldPath, newName, isFile), {
+      const titleOnly = boardTitle ? body?.title_only === true : window.GBPathUtils?.isDisplayTitleRename?.(pathname, body);
+      const destination = boardTitle && isFile
+        ? _joinPath(_pathDir(oldPath), newName + internals._splitNameAndExt(_pathBase(oldPath)).ext)
+        : _renameTarget(oldPath, newName, isFile);
+      if (!titleOnly) _addCandidate(candidates, destination, {
         includeDescendants: false,
         purpose: 'destination',
       });

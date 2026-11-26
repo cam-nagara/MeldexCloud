@@ -477,7 +477,7 @@ function _dropNoteDraftIfBaselineRestored(pc, path) {
 // gb-db-core.js 等は戻り値の ok:false を「保存失敗で中止」と解釈するため、
 // ここでは ok キーを使わない（既存の画面遷移の挙動を変えない）。
 async function _runNoteAutoSave(pc, expectedPath) {
-  const skipHistory = arguments[2]?.skipHistory === true;
+  let skipHistory = arguments[2]?.skipHistory === true;
   const currentPath = pc?.dataset?.path;
   if (!currentPath) return { outcome: 'skipped' };
   if (pc.dataset.loadFailed === '1') return { outcome: 'load-failed' };
@@ -489,6 +489,7 @@ async function _runNoteAutoSave(pc, expectedPath) {
   // 従来どおり「今のcurrentPath」で保存する）。
   if (expectedPath !== undefined && expectedPath !== currentPath) return;
   let md = _noteMarkdownFromEditor(pc);
+  if (!skipHistory && typeof _noteFileStyleSaveOwnsMarkdown === 'function' && _noteFileStyleSaveOwnsMarkdown(pc, md)) skipHistory = true;
   const prevSaved = pc.dataset.lastSavedMd || '';
   const prevBody = prevSaved.replace(/^---\n[\s\S]*?\n---\n?/, '');
   const fm = pc.dataset.frontmatter || '';
@@ -499,7 +500,7 @@ async function _runNoteAutoSave(pc, expectedPath) {
     return { outcome: 'unchanged' };
   }
   const _prevSavedForDiff = prevSaved;
-  const pendingHistory = !skipHistory && window.MeldexNoteHistory?.reserveSavedEdit?.(currentPath);
+  const pendingHistory = skipHistory ? null : window.MeldexNoteHistory?.reserveSavedEdit?.(currentPath);
   window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, prevSaved);
   try {
     // フォールバック: window.MeldexNoteSaveAdapter が読み込まれていない環境
@@ -1386,6 +1387,7 @@ async function openPage(label, path, opts) {
   if (!openOpts.skipGlobalUi) _syncDetailPanel(label, path, 'page', { fileMeta: _fileMeta });
   } finally {
     if (!isStaleInvocation() && pc.dataset.loadPending === '1') delete pc.dataset.loadPending;
+    if (!isStaleInvocation() && typeof _refreshFileThemeTargetBindings === 'function') _refreshFileThemeTargetBindings();
     if (loadingShown) {
       hideLoading(loading);
     }

@@ -192,10 +192,12 @@
     if (!input.offsetParent && typeof window.openRightPanelTab === 'function') {
       try { window.openRightPanelTab('chat'); } catch {}
     }
-    input.value = CONSULT_TEXT;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
-    if (!window.GBChatFormatting?.focusInput?.()) input.focus();
+    if (!window.GBChatFormatting?.replaceInputSource?.(CONSULT_TEXT)) {
+      input.value = CONSULT_TEXT;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (window.GBChatFormatting?.syncInput) window.GBChatFormatting.syncInput();
+    }
+    if (!window.GBChatFormatting?.focusInput?.({ atEnd: true })) input.focus();
     try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
     return true;
   }

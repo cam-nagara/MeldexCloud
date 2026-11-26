@@ -13,7 +13,9 @@ function bdEditConnLabel(conn) {
       lbl = document.querySelector(`.bd-conn-label[data-conn-id="${conn.id}"]`);
     }
     if (!lbl) { delete conn._editingInline; return; }
-    lbl.contentEditable = 'true'; lbl.focus();
+    lbl.contentEditable = 'true';
+    // ボードは表示位置を自前で持つ。入力欄へ移る時に画面送りでボード全体をずらさない。
+    try { lbl.focus({ preventScroll: true }); } catch (_) { lbl.focus(); }
     const s=window.getSelection(), r=document.createRange();
     r.selectNodeContents(lbl); s.removeAllRanges(); s.addRange(r);
     lbl.style.pointerEvents = 'auto';
@@ -49,7 +51,11 @@ function bdEditConnLabel(conn) {
         if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'conn-label-placeholder-cancel' });
         return;
       }
-      if ((!placeholderAdd || !conn._labelPlaceholderUndoCaptured) && typeof bdPushUndo === 'function') bdPushUndo();
+      if ((!placeholderAdd || !conn._labelPlaceholderUndoCaptured) && typeof bdPushUndo === 'function') {
+        // 仮の「テキスト」を入れる前の状態を履歴へ残す。取り消しで仮の文字を残さない。
+        if (placeholderAdd) conn.label = labelBeforePlaceholder;
+        bdPushUndo();
+      }
       // 元々空ラベルだった場合にプレースホルダ「テキスト」のまま確定されたら空に戻す
       conn.label = nextLabel;
       lbl.style.pointerEvents = '';
@@ -862,9 +868,45 @@ function _bdClearStatusOnNodes(statusName) {
   });
 }
 
-function _bdRefreshStatusNodesPartial(nodeIds, reason) {
-  const ids = [...new Set([...(nodeIds || [])].filter(Boolean))];
+function _bdRefreshStatusNodesPartial(nodeIds, reason, styleField = '') {
+  let ids = [...new Set([...(nodeIds || [])].filter(Boolean))];
   if (!ids.length) return;
+  if ((styleField === 'opacity' || styleField === 'border')
+      && typeof bdApplyNodeBaseStyles === 'function' && typeof bdGetNodeStyle === 'function') {
+    const byId = new Map((bd.nodes || []).map(node => [node.id, node]));
+    const remaining = [], resized = [];
+    ids.forEach(id => {
+      const node = byId.get(id), element = document.getElementById('bdn-' + id);
+      const style = node && bdGetNodeStyle(node);
+      // 輪郭固有の枠と内包カードの寸法更新は、従来の再描画経路へ委ねる。
+      if (!element || !style || (styleField === 'border'
+          && (node.contained || (style.shape && style.shape !== 'rect')))) {
+        remaining.push(id);
+        return;
+      }
+      // テーマ更新と同じく通常描画の書式計算を使い、本文・動画・HUDを保持する。
+      // 透明度1や空の枠へ戻した時も、元のトピック書式を復元する。
+      const sample = document.createElement('div');
+      bdApplyNodeBaseStyles(sample, node, style, !bd.displayFilters || bd.displayFilters.showStatus !== false);
+      const keys = styleField === 'opacity' ? ['opacity'] : ['border-color', 'border-width', 'border-style'];
+      keys.forEach(key => {
+        const value = sample.style.getPropertyValue(key);
+        if (value) element.style.setProperty(key, value); else element.style.removeProperty(key);
+      });
+      if (styleField === 'border') {
+        node._rw = element.offsetWidth;
+        node._rh = element.offsetHeight;
+        resized.push(id);
+      }
+    });
+    if (resized.length) {
+      if (typeof bdInvalidateFastBoardIndexes === 'function') bdInvalidateFastBoardIndexes();
+      if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(resized, 'status-style');
+    }
+    if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ boardUi: true, detailPanel: true }, 'status-style');
+    ids = remaining;
+    if (!ids.length) return;
+  }
   if (typeof bdRefreshNodesPartial === 'function') {
     bdRefreshNodesPartial(ids, reason || 'status-definition', {
       selection: true,
@@ -1024,7 +1066,7 @@ function bdManageStatuses() {
       bd.statuses[i][f] = ev.target.value;
     }
     const statusName = bd.statuses[i]?.name || '';
-    _bdRefreshStatusNodesPartial((bd.nodes || []).filter(node => node.status === statusName).map(node => node.id), 'status-style');
+    _bdRefreshStatusNodesPartial((bd.nodes || []).filter(node => node.status === statusName).map(node => node.id), 'status-style', f);
     bdDirty();
   });
   content.addEventListener('click', async (ev) => {

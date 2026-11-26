@@ -685,18 +685,25 @@ async function saveDbViewConfigImmediate(dbPath, cfg, options = {}) {
   const historyScope = options.historyScope !== undefined ? options.historyScope : _dbViewConfigHistoryScope(dbPath);
   const reservation = (options.historyLabel && options.skipHistory !== true && typeof historyReserve === 'function')
     ? historyReserve(options.historyLabel, historyScope, options.historyDetail || '') : null;
-  localStorage.setItem(key, JSON.stringify(cfg || {}));
+  const requested = JSON.stringify(cfg || {});
+  const rollback = () => {
+    // 後から入力された別の設定を、先行保存の失敗で巻き戻さない。
+    if (localStorage.getItem(key) !== requested) return;
+    if (previous == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, previous);
+  };
+  localStorage.setItem(key, requested);
   let saved = false;
   try {
     saved = await _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: true, ctx: options.ctx });
   } catch (error) {
     reservation?.cancel();
+    rollback();
     throw error;
   }
   if (!saved) {
     reservation?.cancel();
-    if (previous == null) localStorage.removeItem(key);
-    else localStorage.setItem(key, previous);
+    rollback();
     return false;
   }
   if (options.historyLabel && options.skipHistory !== true) {

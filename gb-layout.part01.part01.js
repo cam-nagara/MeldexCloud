@@ -379,6 +379,21 @@ const GBLayout = (() => {
     return !!found?.node && found.node.type === 'pane' && _isSidebarPaneNode(found.node);
   }
 
+  // タブ単位の判定。チャット欄はチャットのタブだけが固定で、旧版の不具合で紛れ込んだ
+  // バージョン管理などの他のタブは、他のタブ行と同じく閉じられる（2026-11-24 利用者報告）。
+  function _isClosableChatDockTab(node, tab) {
+    return _paneRoleName(node) === 'chat-sidebar' && !!tab && tab.type !== 'chat';
+  }
+
+  function isFixedRailTab(paneId, tabOrId) {
+    if (!isFixedRailPane(paneId)) return false;
+    const node = findNode(_root, paneId)?.node;
+    const tab = tabOrId && typeof tabOrId === 'object'
+      ? tabOrId
+      : (node?.tabs || []).find(item => item.id === tabOrId);
+    return !_isClosableChatDockTab(node, tab);
+  }
+
   // どの経路で右レールの既定パネルが欠けても補填し、恒久的な消失を防ぐ安全網。
   // 追加が発生した場合だけ true を返す（呼び出し側で再描画するため）。
   function ensureFixedRailDefaults() {
@@ -1739,7 +1754,7 @@ const GBLayout = (() => {
           active: i === node.activeTabIndex,
           e2eId: `pane-${node.id}-tab-${tab.id}`,
           moreE2eId: `pane-${node.id}-tab-${tab.id}-actions`,
-          onMore: _isMainPaneNode(node) && !node.collapsed ? (e) => _showTabContextMenu(e, node.id, tab) : null,
+          onMore: (_isMainPaneNode(node) || _isClosableChatDockTab(node, tab)) && !node.collapsed ? (e) => _showTabContextMenu(e, node.id, tab) : null,
         });
         tabEl.dataset.tabId = tab.id;
         const canReorderMainTab = _canReorderMainPaneTabs(node);

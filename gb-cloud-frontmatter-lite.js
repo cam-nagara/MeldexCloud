@@ -223,7 +223,24 @@
       return { key: m[1], rest: content.slice(m[0].length) };
     }
 
-    function stripComment(text) {
+    function stripComment(text, flow = false) {
+      // flow内の引用符つきの値（影の「0 2px #色」など）はコメントではない。
+      // plain scalar内のアポストロフィーは引用符として扱わない。
+      if (flow) {
+        let quote = '';
+        for (let i = 0; i < text.length; i += 1) {
+          const ch = text[i];
+          if (quote) {
+            if (quote === '"' && ch === '\\') { i += 1; continue; }
+            if (ch === quote) {
+              if (quote === "'" && text[i + 1] === "'") { i += 1; continue; }
+              quote = '';
+            }
+          } else if (ch === '"' || ch === "'") quote = ch;
+          else if (ch === '#' && (i === 0 || /[ \t]/.test(text[i - 1]))) return text.slice(0, i).trimEnd();
+        }
+        return text;
+      }
       const m = text.match(/^(.*?)[ \t]+#.*$/);
       return m ? m[1] : text;
     }
@@ -361,7 +378,7 @@
         buffer += ' ' + lines[next].text.trim();
         next += 1;
       }
-      const trimmed = stripComment(buffer.trim());
+      const trimmed = stripComment(buffer.trim(), true);
       try { return { value: JSON.parse(trimmed), index: next }; } catch {}
       const inline = yamlInline(trimmed);
       if (inline === undefined) { markLossy(); return { value: trimmed, index: next }; }

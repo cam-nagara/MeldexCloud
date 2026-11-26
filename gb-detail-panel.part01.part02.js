@@ -182,7 +182,8 @@
     if (field.min !== undefined) inp.min = String(field.min);
     if (field.max !== undefined) inp.max = String(field.max);
     if (field.step !== undefined) inp.step = String(field.step);
-    inp.value = (cur !== undefined && cur !== null && cur !== '') ? String(cur) : '';
+    const currentNumber = parseFloat(String(cur ?? ''));
+    inp.value = Number.isFinite(currentNumber) ? String(currentNumber) : '';
     inp.placeholder = '—';
     inp.title = field.label;
     _fsSetControlE2e(inp, field, rowLabel, 'number');

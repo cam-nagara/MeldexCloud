@@ -105,7 +105,63 @@ function _normalizeStoredFileIdMap(map) {
 }
 
 function _readLatestStoredFileIdMap() {
+  // まとめ書きの途中の変更（下の _fileIdMapRewritePending）があれば、先に保存してから読む
+  _flushFileIdMapRewrite();
   return _normalizeStoredFileIdMap(_readStorageJson(FILE_ID_MAP_KEY, {}));
+}
+
+// 名前の変更・移動に伴う「保存済みの file_id の対応表」の書き直しを、同じ処理の区切りの中では1回にまとめる。
+// 多数の項目の移動（100 件の塊の結果を続けて反映する）で、1件ごとに表全体を読み直して書き直していた
+// （表は件数に比例して大きくなるので、件数の2乗で遅くなる。3,000 件の移動で塊の間が 0.06 秒 → 4.5 秒へ伸びていた。2026-11-25 実測）。
+// メモリ上の表は1件ごとにすぐ変える。保存は、区切りの直後（次のタスク）か、次に保存先を読む時に行う。
+// その間に別の画面が保存先を書き換えていたら、保存先を読み直して、ためておいた変更を順に当ててから書く（別の画面の分を消さない）。
+let _fileIdMapRewritePending = null;   // { baseRaw, ops: [[oldPath, newPath, fileId], ...] }
+
+function _readFileIdMapRaw() {
+  try { return localStorage.getItem(FILE_ID_MAP_KEY); } catch { return null; }
+}
+
+function _applyFileIdMapRename(map, oldPath, newPath, fileId) {
+  let changed = false;
+  const parent = _normalizeAppPathForCompare(oldPath);
+  const prefix = parent + '/';
+  Object.keys(map).forEach(path => {
+    // 多くのキーは既に正規の形（区切りが「/」・前後の空白なし・末尾の「/」なし）。その時は文字列の比較だけで済ませる。
+    const plain = path.indexOf('\\') < 0 && path.charCodeAt(path.length - 1) !== 47 && path === path.trim();
+    if (plain ? !(parent && (path === parent || path.startsWith(prefix))) : !_isSameOrChildPath(path, oldPath)) return;
+    const mapped = _mapRenamedPath(path, oldPath, newPath);
+    const existingId = map[path];
+    delete map[path];
+    map[mapped] = (path === oldPath && fileId) ? fileId : existingId;
+    changed = true;
+  });
+  if (fileId && map[newPath] !== fileId) {
+    map[newPath] = fileId;
+    changed = true;
+  }
+  return changed;
+}
+
+function _flushFileIdMapRewrite() {
+  const pending = _fileIdMapRewritePending;
+  if (!pending) return;
+  _fileIdMapRewritePending = null;
+  if (!pending.changed) return;
+  if (_readFileIdMapRaw() === pending.baseRaw && _storedFileIdMapCache) {
+    // 保存先は、読んだ時のまま。メモリ上の表（変更済み）をそのまま書く
+    _writeStorageJson(FILE_ID_MAP_KEY, _storedFileIdMapCache);
+    return;
+  }
+  // 別の画面が書き換えていた: 今の保存先の内容へ、ためておいた変更を順に当てる
+  const latest = _normalizeStoredFileIdMap(_readStorageJson(FILE_ID_MAP_KEY, {}));
+  pending.ops.forEach(([oldPath, newPath, fileId]) => { _applyFileIdMapRename(latest, oldPath, newPath, fileId); });
+  _storedFileIdMapCache = latest;
+  _writeStorageJson(FILE_ID_MAP_KEY, latest);
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  // 画面を離れる時は、まとめ書きの残りを保存してから離れる
+  window.addEventListener('pagehide', _flushFileIdMapRewrite);
 }
 
 function _storedFileIdMap() {
@@ -531,6 +587,62 @@ function _mapRenamedPath(path, oldPath, newPath) {
   return current;
 }
 
+// 直近の名前の変更・移動の記録（古い場所 → 新しい場所）。画面に残った古い場所を、操作の直前に今の場所へ直すために使う。
+// 例: フォルダを作ってすぐ名前を変え、すぐシートをドロップすると、ドロップ先のカードがまだ古い名前（「無題 2」）を
+// 持っていて「移動先フォルダが見つかりません」で失敗していた（2026-11-24 利用者の報告）。取り消しで戻した変更も
+// 同じく記録されるので、古い順に当てはめれば今の場所になる。
+const _appRecentPathChanges = [];
+const _APP_RECENT_PATH_CHANGE_MS = 2 * 60 * 1000;
+function _appPathChangeNorm(path) { return String(path || '').replace(/\\/g, '/').replace(/\/+$/, ''); }
+function _appPathIsAbs(path) { return /^(?:[a-z]:\/|\/)/i.test(path); }
+function _appRememberPathChange(oldPath, newPath) {
+  const from = _appPathChangeNorm(oldPath);
+  const to = _appPathChangeNorm(newPath);
+  if (!from || !to || from === to) return;
+  const now = Date.now();
+  while (_appRecentPathChanges.length && (now - _appRecentPathChanges[0].at > _APP_RECENT_PATH_CHANGE_MS || _appRecentPathChanges.length > 200)) {
+    _appRecentPathChanges.shift();
+  }
+  _appRecentPathChanges.push({ from, to, at: now });
+}
+// path の先頭部分が from と同じ場所を指していれば、その部分を to へ置き換える。
+// 絶対パス（ツリーの形）と保存先の相対パス（パネルの形）が混ざっていても、末尾がそろう所で突き合わせる。
+function _appApplyPathChange(path, from, to) {
+  const segments = path.split('/');
+  for (let i = 1; i <= segments.length; i += 1) {
+    const prefix = segments.slice(0, i).join('/');
+    const lp = prefix.toLowerCase();
+    const lf = from.toLowerCase();
+    let replacement = null;
+    if (lp === lf) replacement = to;
+    else if (_appPathIsAbs(prefix) && !_appPathIsAbs(from) && lp.endsWith('/' + lf)) {
+      const root = prefix.slice(0, prefix.length - from.length);
+      replacement = _appPathIsAbs(to) ? to : root + to;
+    } else if (!_appPathIsAbs(prefix) && _appPathIsAbs(from) && lf.endsWith('/' + lp)) {
+      const root = from.slice(0, from.length - prefix.length);
+      if (!_appPathIsAbs(to)) replacement = to;
+      else if (to.toLowerCase().startsWith(root.toLowerCase())) replacement = to.slice(root.length);
+    }
+    if (replacement != null) {
+      const rest = segments.slice(i).join('/');
+      return rest ? replacement + '/' + rest : replacement;
+    }
+  }
+  return path;
+}
+// 画面が持っている場所を、直近の名前の変更・移動を当てはめた今の場所にする（変わっていなければそのまま返す）。
+// 同じ名前の項目が後から作り直されることがあるので、古い場所が「見つからない」と分かった時の補正にだけ使う。
+function resolveCurrentAppPath(path, options = {}) {
+  let current = _appPathChangeNorm(path);
+  if (!current) return String(path || '');
+  const since = Number(options.since) || 0;
+  for (const change of _appRecentPathChanges) {
+    if (change.at < since) continue;
+    current = _appApplyPathChange(current, change.from, change.to);
+  }
+  return current === _appPathChangeNorm(path) ? String(path || '') : current;
+}
+
 const APP_PATH_REF_KEYS = [
   'path', 'dbPath', 'scenarioPath', 'scriptnotePath', 'boardPath', 'formPath',
   'pagePath', 'entityPath', 'folderPath', 'mediaPath', 'csvPath', 'versionPath',
@@ -653,21 +765,17 @@ function _readFileIdMap(options) {
 }
 
 function _rewriteStoredFileIdMapForRename(oldPath, newPath, fileId) {
-  const map = _readFileIdMap({ fresh: true });
-  let changed = false;
-  Object.keys(map).forEach(path => {
-    if (!_isSameOrChildPath(path, oldPath)) return;
-    const mapped = _mapRenamedPath(path, oldPath, newPath);
-    const existingId = map[path];
-    delete map[path];
-    map[mapped] = (path === oldPath && fileId) ? fileId : existingId;
-    changed = true;
-  });
-  if (fileId && map[newPath] !== fileId) {
-    map[newPath] = fileId;
-    changed = true;
+  if (!_fileIdMapRewritePending) {
+    // この区切りで最初の変更: 保存先の今の内容をメモリ上の表として読み、保存は次のタスクでまとめて行う
+    const baseRaw = _readFileIdMapRaw();
+    _readFileIdMap({ fresh: true });
+    _fileIdMapRewritePending = { baseRaw, ops: [], changed: false };
+    setTimeout(_flushFileIdMapRewrite, 0);
   }
-  if (changed) _writeStorageJson(FILE_ID_MAP_KEY, map);
+  // メモリ上の表はすぐ変える（同じ区切りの中の読み取りが、新しい場所を見られるように）
+  const pending = _fileIdMapRewritePending;
+  pending.ops.push([oldPath, newPath, fileId]);
+  if (_applyFileIdMapRename(_storedFileIdMap(), oldPath, newPath, fileId)) pending.changed = true;
 }
 
 function _purgeStoredFileIdMapForDeletedPaths(deletedPaths) {
@@ -781,120 +889,12 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
   if (typeof _csvPath !== 'undefined' && _csvPath) {
     _csvPath = _mapRenamedPath(_csvPath, oldPath, newPath);
   }
-  if (typeof _folderPath !== 'undefined' && _folderPath) {
+  // フォルダの表示は面（メイン／サブパネル）ごとに状態を持つ。開いているフォルダの場所は、すべての面で付け替える。
+  const renameFolderSurfacePath = () => {
+    if (typeof _folderPath === 'undefined' || !_folderPath) return;
     const previousFolderPath = _folderPath;
     _folderPath = _mapRenamedPath(_folderPath, oldPath, newPath);
-    if (_folderPath !== previousFolderPath && previousFolderPath === oldPath && exactLabel != null) {
+    const mainSurface = !(typeof _folderIsIndependentSurface === 'function' && _folderIsIndependentSurface());
+    if (mainSurface && _folderPath !== previousFolderPath && previousFolderPath === oldPath && exactLabel != null) {
       const folderTitle = document.getElementById('folder-title');
       if (folderTitle && !folderTitle.querySelector('input')) folderTitle.textContent = exactLabel;
-    }
-  }
-  if (typeof bd !== 'undefined' && bd) {
-    if (bd.path) bd.path = _mapRenamedPath(bd.path, oldPath, newPath);
-    if (bd._loadedBoardPath) bd._loadedBoardPath = _mapRenamedPath(bd._loadedBoardPath, oldPath, newPath);
-  }
-}
-
-function renameAppPathReferences(oldPath, newPath, opts) {
-  if (!oldPath || !newPath || (oldPath === newPath && !Object.prototype.hasOwnProperty.call(opts || {}, 'label'))) return;
-  if (oldPath !== newPath && typeof rebindAutoVersionPathPrefix === 'function') {
-    rebindAutoVersionPathPrefix(oldPath, newPath);
-  }
-  // 改名/移動後も、開いている各編集面のsingle-flight・競合保留・参加者を
-  // 同じ安定文書IDへ束縛したままにする。フォルダ移動では配下aliasも一括更新。
-  window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
-  const options = opts || {};
-  if (typeof rebindPendingDbViewConfigBackendSave === 'function') {
-    rebindPendingDbViewConfigBackendSave(oldPath, newPath, {
-      isFolder: options.type === 'folder' || options.type === 'database',
-    }).catch(error => console.warn('[Meldex] シート表示設定の保存先を更新できませんでした', error));
-  }
-  const exactLabel = Object.prototype.hasOwnProperty.call(options, 'label') ? options.label : null;
-  const preResolvedId = options.fileId || _pathToFileId(newPath) || _pathToFileId(oldPath) || '';
-  const previousDbPath = state.currentDbPath || '';
-  if (_fileIdCache[oldPath]) {
-    const oldFid = _fileIdCache[oldPath];
-    delete _fileIdCache[oldPath];
-    _fileIdCache[newPath] = oldFid;
-    _pathCache[oldFid] = newPath;
-  }
-  if (options.fileId) {
-    _fileIdCache[newPath] = options.fileId;
-    _pathCache[options.fileId] = newPath;
-  }
-  const oldPrefix = oldPath + '/';
-  const newPrefix = newPath + '/';
-  Object.keys(_fileIdCache).forEach(cachedPath => {
-    if (cachedPath === oldPath || !cachedPath.startsWith(oldPrefix)) return;
-    const remapped = newPrefix + cachedPath.substring(oldPrefix.length);
-    const fid = _fileIdCache[cachedPath];
-    delete _fileIdCache[cachedPath];
-    _fileIdCache[remapped] = fid;
-    if (fid) _pathCache[fid] = remapped;
-  });
-  const fileId = preResolvedId || _pathToFileId(newPath) || '';
-  _rewriteStoredFileIdMapForRename(oldPath, newPath, fileId);
-  _rewriteStoredPathSettingForRename('outliner-work-folder', 'outliner-work-folder-id', oldPath, newPath, fileId);
-  if (typeof getWorkFolders === 'function' && typeof _saveWorkFolders === 'function') {
-    _saveWorkFolders(getWorkFolders().map(record => ({ ...record, path: _mapRenamedPath(record.path, oldPath, newPath) })));
-  }
-  _rewriteStoredPathSettingForRename('main-calendar-path', 'main-calendar-id', oldPath, newPath, fileId);
-  _rewritePublishStorageForRename(oldPath, newPath);
-  // 新規作成位置をパスで保存した手動順も、改名・フォルダ移動へ追従させる。
-  try {
-    const manual = JSON.parse(localStorage.getItem('outliner-manual-order') || '{}');
-    let changed = false;
-    Object.keys(manual).forEach(key => {
-      if (!Array.isArray(manual[key])) return;
-      const mappedKey = _mapRenamedPath(key, oldPath, newPath);
-      const mappedOrder = manual[key].map(path => _mapRenamedPath(path, oldPath, newPath));
-      if (mappedKey !== key || mappedOrder.some((path, index) => path !== manual[key][index])) {
-        delete manual[key];
-        manual[mappedKey] = mappedOrder;
-        changed = true;
-      }
-    });
-    if (changed) localStorage.setItem('outliner-manual-order', JSON.stringify(manual));
-  } catch {}
-  let recentChanged = false;
-  let layoutChanged = false;
-  let legacyTabsChanged = false;
-
-  try {
-    for (const recentKey of [RECENT_KEY, 'meldex-rail-last-files']) {
-      const recent = _readStorageArray(recentKey);
-      recent.forEach(entry => {
-        if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) recentChanged = true;
-        if (entry.path === newPath && exactLabel != null) {
-          entry.label = exactLabel;
-          recentChanged = true;
-        }
-        if (entry.path === newPath && fileId) {
-          entry.file_id = fileId;
-          recentChanged = true;
-        }
-      });
-      if (recentChanged) {
-        localStorage.setItem(recentKey, JSON.stringify(recent));
-        if (typeof updateRecentItems === 'function') updateRecentItems();
-      }
-    }
-  } catch {}
-
-  try {
-    const lastView = JSON.parse(localStorage.getItem('lastView') || 'null');
-    if (lastView && _updatePathRefs(lastView, APP_PATH_REF_KEYS, oldPath, newPath)) {
-      if (lastView.path === newPath && exactLabel != null) lastView.label = exactLabel;
-      if (lastView.path === newPath && fileId) lastView.file_id = fileId;
-      localStorage.setItem('lastView', JSON.stringify(lastView));
-    }
-  } catch {}
-
-  _tabs.forEach(tab => {
-    const wasExact = tab.path === oldPath;
-    const mapped = _mapRenamedPath(tab.path, oldPath, newPath);
-    if (mapped !== tab.path) {
-      tab.path = mapped;
-      legacyTabsChanged = true;
-    }
-    if (wasExact && exactLabel != null && tab.label !== exactLabel) {

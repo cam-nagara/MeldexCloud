@@ -177,6 +177,7 @@
   if (bd.activeCardStyle || bd.activeLineStyle || bd.activeDepthStylePreset || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides || hasDisplayLayers) {
     fm += 'boardUi:\n';
     if (bd.activeCardStyle) fm += `  activeCardStyle: ${bd.activeCardStyle}\n`;
+    if (bd.newCardStyleRef) fm += `  newCardStyleRef: ${JSON.stringify(String(bd.newCardStyleRef))}\n`;
     if (bd.activeLineStyle) fm += `  activeLineStyle: ${bd.activeLineStyle}\n`;
     if (bd.activeDepthStylePreset) fm += `  activeDepthStylePreset: ${JSON.stringify(String(bd.activeDepthStylePreset))}\n`;
     if (bd._stylePresetSeedVersion) fm += `  stylePresetSeedVersion: ${bd._stylePresetSeedVersion}\n`;
@@ -800,14 +801,15 @@ function _bdApplyTextOutline(txt, width, color, nodeKey) {
 // 雲型の輪郭に沿った「外側の枠線」となる。
 // clip-path はカード div にかけず、SVG の overflow: visible を利用して
 // 外側 stroke がカードの矩形 bbox を超えて描画できるようにする。
-function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor, borderOpacity = 1, bgOpacity = 1) {
+function _bdApplyCloudShape(div, pathStr, borderColor, borderWidth, bgColor, borderOpacity = 1, bgOpacity = 1, size = null) {
   const svgNS = 'http://www.w3.org/2000/svg';
   let svg = div.querySelector(':scope > svg.bd-cloud-border-svg');
   const bw = Math.max(0, +borderWidth || 0);
   const bc = borderColor || '';
   const bg = bgColor || '';
-  const w = div.offsetWidth || 1;
-  const h = div.offsetHeight || 1;
+  // まとめて測った寸法があれば使う。カードごとに読み直すと、前のカードの書き込みで毎回再計算が起きる。
+  const w = (size && size.width > 0 ? size.width : div.offsetWidth) || 1;
+  const h = (size && size.height > 0 ? size.height : div.offsetHeight) || 1;
   // clip-path / CSS border / bg は SVG に任せるので透明化・解除
   div.style.clipPath = '';
   div.style.background = 'transparent';
@@ -942,6 +944,12 @@ function bdRender() {
     return false;
   }
   bdCancelRenderRetry();
+  const draw = () => _bdRenderNodes(container, _bdRenderPerf);
+  if (typeof bdWithNormalizedBoardUiState === 'function') return bdWithNormalizedBoardUiState(draw);
+  return draw();
+}
+
+function _bdRenderNodes(container, _bdRenderPerf) {
   // 全再描画時はミニマップキャッシュも無効化 (ノード数/スタイルが変わっている可能性)
   if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
   // パネル切替直後などの遅延描画でも、入力中の要素を外さない。
@@ -991,7 +999,8 @@ function bdRender() {
   });
   if (editingElement) container.insertBefore(beforeEditing, editingElement);
   container.appendChild(renderFrag);
-  renderedNodes.forEach(({ n, div }) => {
+  if (typeof bdMeasureNodeElements === 'function') bdMeasureNodeElements(renderedNodes);
+  else renderedNodes.forEach(({ n, div }) => {
     if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(n, div);
     else { n._rw = div.offsetWidth; n._rh = div.offsetHeight; }
   });

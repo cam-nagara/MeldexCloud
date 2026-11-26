@@ -149,6 +149,15 @@
       continue;
     }
 
+    // ファイルの埋め込み（Obsidianと同じ `![[パス]]` / `![[パス|高さ]]` を1行で書く）
+    const fileEmbedHtml = typeof MeldexNoteFileEmbed !== 'undefined' ? MeldexNoteFileEmbed.blockHtmlForLine(line) : '';
+    if (fileEmbedHtml) {
+      closeListAll();
+      if (inTable) { html += '</table>'; inTable = false; pendingTableLayout = null; }
+      html += fileEmbedHtml;
+      continue;
+    }
+
     const tableLayoutMatch = line.match(/^<!--table-layout:(.+)-->\s*$/);
     if (tableLayoutMatch) {
       try {

@@ -173,7 +173,7 @@
       : `<div data-global-tags-target-path="${escapeHtml(filePath)}"></div>`;
     const folderIdentity = 'file-info-folder-' + encodeURIComponent(filePath);
     const folderHtml = info.folderPath
-      ? `<button type="button" class="auto-link" data-e2e-id="${escapeHtml(folderIdentity)}" data-path="${escapeHtml(info.folderPath)}" data-native-folder="true" style="padding:0;border:0;background:transparent;color:var(--accent);font:inherit;cursor:pointer;">${escapeHtml(info.folderName)}</button>`
+      ? `<button type="button" class="auto-link" data-e2e-id="${escapeHtml(folderIdentity)}" data-path="${escapeHtml(info.folderPath)}" data-link-type="folder" data-native-folder="true" style="padding:0;border:0;background:transparent;color:var(--accent);font:inherit;cursor:pointer;">${escapeHtml(info.folderName)}</button>`
       : '—';
     const linkActionsHtml = isLinked
       ? `<div class="file-info-link-actions" data-file-info-link-actions style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`
@@ -187,6 +187,7 @@
       + '<tbody>'
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">種類</td><td style="padding:4px 0;">${escapeHtml(info.typeLabel)}</td></tr>`
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;">${folderHtml}</td></tr>`
+      + '<tr data-file-info-folder-status-row hidden><td colspan="2"><div data-file-info-folder-status hidden></div></td></tr>'
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
       + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, { ...options, filePath, isLinked, linkFolderPath })}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
@@ -224,6 +225,50 @@
         _metadataLoadError: error?.userMessage || error?.message || String(error),
         _metadataLoadStatus: Number(error?.status) || 0,
       };
+    }
+  }
+
+  function bindFolderOpen(root, filePath, options) {
+    const panel = findPanel(root, filePath);
+    if (!panel) return false;
+    const folderButton = panel.querySelector('[data-native-folder="true"][data-path]');
+    const status = panel.querySelector('[data-file-info-folder-status]');
+    const statusRow = status?.closest?.('[data-file-info-folder-status-row]');
+    const reportFailure = () => {
+      if (!status || !folderButton.isConnected || options?.isCurrent?.() === false) return;
+      const reason = typeof options?.getOpenFolderFailureMessage === 'function' ? options.getOpenFolderFailureMessage() : '';
+      status.replaceChildren(global.GBUI.createInlineError({ message: reason || 'フォルダを開けませんでした。もう一度お試しください。' }));
+      status.hidden = false;
+      if (statusRow) statusRow.hidden = false;
+    };
+    let openFolder = options?.onOpenFolder;
+    if (typeof openFolder !== 'function' && typeof global.openLinkInRightSidebar === 'function') {
+      openFolder = path => global.openLinkInRightSidebar(path, folderButton.textContent, {
+        linkType: 'folder', sourcePaneId: folderButton.closest('.gb-pane')?.dataset?.paneId || '',
+      });
+    }
+    if (folderButton && typeof openFolder === 'function') {
+      folderButton.dataset.fileInfoFolderAction = 'true';
+      folderButton.addEventListener('click', async event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (folderButton.disabled || options?.isCurrent?.() === false) return;
+        folderButton.disabled = true;
+        try {
+          const opened = await openFolder(folderButton.dataset.path);
+          if (opened === false) reportFailure();
+          else if (status && folderButton.isConnected && options?.isCurrent?.() !== false) {
+            status.replaceChildren();
+            status.hidden = true;
+            if (statusRow) statusRow.hidden = true;
+          }
+        } catch (error) {
+          reportFailure();
+          global.showStatus?.('フォルダを開けませんでした。もう一度お試しください。', true);
+        } finally {
+          if (folderButton.isConnected) folderButton.disabled = false;
+        }
+      });
     }
   }
 
@@ -289,6 +334,7 @@
     }
     const metadataPromise = loadMetadata(normalizedPath, options?.preloadedMeta);
     container.innerHTML = panelHtml(normalizedPath, options?.preloadedMeta, options);
+    bindFolderOpen(container, normalizedPath, options);
     hydrateTags(container, options);
     const meta = await metadataPromise;
     if (renderRevisions.get(container) !== revision || options?.isCurrent?.() === false) return false;
@@ -305,6 +351,7 @@
     if (await global.showDetailPanel(panelHtml(normalizedPath, options?.preloadedMeta, options)) === false) return false;
     if (revision !== detailRevision || options?.isCurrent?.() === false) return false;
     const detailRoot = global.document.getElementById('rp-detail') || global.document;
+    bindFolderOpen(detailRoot, normalizedPath, options);
     hydrateTags(detailRoot, options);
     const meta = await metadataPromise;
     if (revision !== detailRevision || options?.isCurrent?.() === false) return false;

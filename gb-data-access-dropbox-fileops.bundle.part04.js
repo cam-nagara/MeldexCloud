@@ -1,3 +1,36 @@
+  prepare: _prepareCloudFileEdit,
+  commit: _commitCloudFileEdit,
+  settled: _awaitPendingEditFinalizations,
+  abort: _abortCloudFileEdit,
+  track: _trackCloudEdit,
+  fileKind: _historyFileKind,
+  stableContent: _stableHistoryContent,
+};
+
+function _versionTimestamp() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return `${y}${m}${day}T${hh}${mm}${ss}_${ms}_${_randomId('v').replace(/[^a-z0-9]/gi, '').slice(-6)}`;
+}
+
+function _fileVersionDir(path) {
+  const normalized = _normalizeFolderPath(path);
+  return _joinPath(LEGACY_VERSION_FILE_DIR, _fnvFileId(normalized));
+}
+
+function _folderVersionDir(path) {
+  const normalized = _normalizeFolderPath(path);
+  return _joinPath(LEGACY_VERSION_FOLDER_DIR, _fnvFileId(normalized || '.'));
+}
+
+async function _fileEtag(provider, path, entry, writeMeta) {
+  const meta = writeMeta?.meta || writeMeta || {};
   const metaToken = meta.rev || meta.revision || meta.content_hash || meta.etag || '';
   if (metaToken) return String(metaToken);
   if (window.MeldexRuntimeAdapter?.isBrowserMode?.() && typeof provider.getMetadata === 'function') {
@@ -50,18 +83,6 @@ async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
     moved += 1;
   }
   return moved > 0;
-}
-
-async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-  let size = 0;
-  async function walk(current) {
-    for (const entry of await _listDirectoryEntries(provider, current)) {
-      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-      else size += 1;
-    }
-  }
-  await walk(folderPath);
-  return size;
 }
 
 function _fileVersionName(path, options) {
@@ -454,6 +475,25 @@ async function _restoreVersionAnnotations(provider, path, snapshot, expectedRevi
   return rollback;
 }
 
+window.MeldexFileVersionProviderOps = Object.freeze({
+  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
+  read: (provider, path, version) => _readFileVersion(provider, path, version),
+  captureAnnotations: (provider,path) => _captureVersionAnnotations(provider,path),
+});
+  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
+  /* 以下の3つは gb-data-access-dropbox-fileops-versions.js が1000行を超えたため、ここへ移した（同じ関数スコープに連結される）: フォルダの中身の件数・ファイルの版の論理削除と復元。 */
+async function _countFolderEntriesIncludingTrash(provider, folderPath) {
+  let size = 0;
+  async function walk(current) {
+    for (const entry of await _listDirectoryEntries(provider, current)) {
+      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
+      else size += 1;
+    }
+  }
+  await walk(folderPath);
+  return size;
+}
+
 async function _deleteFileVersion(provider, path, version) {
   const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
   if (!record) throw new Error('バージョンが見つかりません');
@@ -484,12 +524,6 @@ async function _undeleteFileVersion(provider, path, token) {
   return { ok: true, version: record.payload.version_name };
 }
 
-window.MeldexFileVersionProviderOps = Object.freeze({
-  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
-  read: (provider, path, version) => _readFileVersion(provider, path, version),
-  captureAnnotations: (provider,path) => _captureVersionAnnotations(provider,path),
-});
-  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
   function _relativeToFolder(folderPath, filePath) {
     const folder = _normalizeFolderPath(folderPath);
     const file = _normalizeFolderPath(filePath);
@@ -864,37 +898,3 @@ window.MeldexFileVersionProviderOps = Object.freeze({
           size: Number(stats.size || 0),
           modified: stats.modified || '',
         });
-      }
-    }
-
-    await walk('');
-    return { items, total, truncated: total > items.length || scanTruncated, scannedFiles, scannedDirs };
-  }
-
-  handlers.push(async ({ method, body, url, pathname, signal, headers }) => {
-    if (pathname === '/cloud/space-usage' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      if (typeof provider.refreshSharedSpaceUsage !== 'function') return { ok: false, error: 'Dropbox 容量確認に未対応です' };
-      return provider.refreshSharedSpaceUsage();
-    }
-
-    if (pathname === '/cloud/conflicts' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const result = await _findDropboxConflictedCopies(provider, url.searchParams.get('limit') || 50);
-      return {
-        ok: true,
-        count: result.total,
-        truncated: result.truncated,
-        scanned_files: result.scannedFiles,
-        scanned_dirs: result.scannedDirs,
-        items: result.items,
-      };
-    }
-
-    if (pathname === '/cloud/conflict-detail' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const conflictPath = _normalizeFolderPath(url.searchParams.get('path') || '');
-      if (!conflictPath || !_isDropboxConflictName(_basename(conflictPath))) throw new Error('競合コピーのパスが不正です');
-      const originalPath = _originalPathForConflict(conflictPath);
-      if (!originalPath) throw new Error('元ファイルの推定に失敗しました');
-      const conflictEntry = await _resolveEntryHandle(provider, conflictPath);

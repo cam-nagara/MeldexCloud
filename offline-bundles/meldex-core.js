@@ -31,8 +31,8 @@ const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/settings-transfer/export', 315000],
 ]);
 const API_FETCH_FILE_OPERATIONS = new Set([
-  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
-  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/move-batch', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore', '/outliner/restore-batch',
   '/trash/restore', '/trash/delete', '/trash/empty',
   '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
   '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
@@ -200,6 +200,10 @@ async function apiFetch(path, opts) {
     window.MeldexSaveSafety?.reportApiSuccess?.(path, opts, payload);
     return _apiFetchClonePayload(payload);
   } catch (e) {
+    // 注釈は専用の記録を持つ。共有タグの書込失敗だけを共通記録へ渡す。
+    if (/^\/(?:api\/)?global-tags\/target(?:\/|\?|$)/.test(String(path)) && _apiFetchMethod(opts) !== 'GET') {
+      try { window.MeldexDiagnostics?.noteRequestFailure?.(path, opts, e); } catch {}
+    }
     if (e.name === 'AbortError' && timedOut) {
       // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
       try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
@@ -423,6 +427,7 @@ document.addEventListener('DOMContentLoaded', scheduleMeldexViewportSizeUpdate, 
 window.addEventListener('load', scheduleMeldexViewportSizeUpdate, { once: true });
 
 function clampPopupToViewport(el) {
+  window.MeldexMenuIcons?.decorate?.(el);
   if (!el.matches('.modal-overlay, .gb-modal-overlay, [aria-modal="true"]')) el.classList.add('gb-popup-surface');
   const z = _getZoom();
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
@@ -873,8 +878,13 @@ function _isMobileStatusToastNeeded() {
 }
 
 function _showMobileStatusToast(text, isError) {
-  if (!text || !document.body || !_isMobileStatusToastNeeded()) return;
+  if (!document.body) return;
   let toast = document.getElementById('gb-mobile-status-toast');
+  if (!text || !_isMobileStatusToastNeeded()) {
+    clearTimeout(_mobileStatusToastTimer);
+    toast?.classList.remove('is-visible');
+    return;
+  }
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'gb-mobile-status-toast';
@@ -971,6 +981,8 @@ function showStatus(msg, isError, options) {
     if (_isSaveSuccessStatusMessage(text, isError, options)) _queueSaveDialog(text);
     return;
   }
+  const messageToken = {};
+  el._statusMessageToken = messageToken;
   el.textContent = text;
   el.style.color = isError ? 'var(--red)' : 'var(--fg2)';
   if (text) {
@@ -983,7 +995,7 @@ function showStatus(msg, isError, options) {
   _showMobileStatusToast(text, !!isError);
   if (isError) {
     setTimeout(() => {
-      if (el.textContent === text) {
+      if (el._statusMessageToken === messageToken && el.textContent === text) {
         el.textContent = '';
         delete el.dataset.statusKind;
         el.removeAttribute('aria-label');
@@ -1204,6 +1216,8 @@ const LUCIDE = {
   underline: '<path d="M6 4v6a6 6 0 0 0 12 0V4"/><line x1="4" x2="20" y1="20" y2="20"/>',
   strikethrough: '<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/>',
   list: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  // フォルダパネルの表示形式「リスト・小」（行の詰まったリスト）
+  listCompact: '<line x1="8" x2="21" y1="5" y2="5"/><line x1="8" x2="21" y1="9.67" y2="9.67"/><line x1="8" x2="21" y1="14.33" y2="14.33"/><line x1="8" x2="21" y1="19" y2="19"/><line x1="3" x2="3.01" y1="5" y2="5"/><line x1="3" x2="3.01" y1="9.67" y2="9.67"/><line x1="3" x2="3.01" y1="14.33" y2="14.33"/><line x1="3" x2="3.01" y1="19" y2="19"/>',
   listOrdered: '<line x1="10" x2="21" y1="6" y2="6"/><line x1="10" x2="21" y1="12" y2="12"/><line x1="10" x2="21" y1="18" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
   quote: '<path d="M16 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M8 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/>',
   heading: '<path d="M6 12h12"/><path d="M6 20V4"/><path d="M18 20V4"/>',
@@ -1227,6 +1241,7 @@ const LUCIDE = {
   // 取り消し・やり直しボタン展開 v0.6.196（undo-redo-toolbar-plan フェーズ1-3）
   undo2: '<path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />',
   redo2: '<path d="m15 14 5-5-5-5" /><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" />',
+  ganttChart: '<path d="M10 6h8" /><path d="M12 16h6" /><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M8 11h7" />',
   workflow: '<rect width="8" height="8" x="3" y="3" rx="2" /><path d="M7 11v4a2 2 0 0 0 2 2h4" /><rect width="8" height="8" x="13" y="13" rx="2" />',
 };
 // gb-icon-assets.js (hasLucideName) が独自アイコン (page / db / scenario 等) を
@@ -1322,11 +1337,7 @@ function toolbarAppIconName(type) {
   return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
 }
 
-// メインメニューボタンの右下に付けるメニューの印。左隣のファイルアイコン（既定ではアプリと同じ種別のアイコン）と
-// 役割を見分けられるようにする（2026-11-21。同じアイコンが2つ並んでいた）。寸法は変えない（重ねて表示する）。
-function toolbarMainMenuCaretHtml() {
-  return `<span class="tb-main-menu-caret" aria-hidden="true">${lucide('chevronDown', 10)}</span>`;
-}
+// メインメニューボタンには印（右下の下向き矢印）を付けない（2026-11-24 利用者判断で撤去。不要とのこと）。
 
 function toolbarMainMenuLabel(type) {
   const label = UI_TOOLBAR_APP_ICON_LABELS[String(type ?? '')] || '';
@@ -1346,7 +1357,7 @@ function toolbarAppIconHtml(type, options) {
   const menuType = String(options?.menu || key).replace(/[^A-Za-z0-9_-]/g, '');
   const action = options?.action === false ? '' : ` data-action="showToolMenu(event,'${menuType}')"`;
   return `<button type="button" class="tb-app-icon tb-main-menu-btn tool-menu-btn" data-app-icon="${key}" data-main-menu="${menuType}" data-gb-tooltip-key="toolbar.mainMenu"`
-    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}${toolbarMainMenuCaretHtml()}</button>`;
+    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}</button>`;
 }
 
 // JSで組むツールバー用。onClick を渡すとその処理で開く（マップ・フォームのように部品を渡す場合）。
@@ -1374,7 +1385,8 @@ function hydrateToolbarAppIcons(root) {
     if (el.tagName === 'BUTTON') {
       // 同じ値でも書くと変更通知が積まれる（あふれ判定等の監視と押し合う）ため、足りない時だけ書く。
       if (!el.classList.contains('tb-main-menu-btn')) el.classList.add('tb-main-menu-btn');
-      if (!el.querySelector('.tb-main-menu-caret')) el.insertAdjacentHTML('beforeend', toolbarMainMenuCaretHtml());
+      // 旧版で付けた印が残っていれば取り除く（無ければ何も書かない）。
+      el.querySelector('.tb-main-menu-caret')?.remove();
       if (!el.dataset.gbTooltipKey) el.dataset.gbTooltipKey = 'toolbar.mainMenu';
       if (!el.getAttribute('title')) el.setAttribute('title', UI_TOOLBAR_MAIN_MENU_TITLE);
       if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', toolbarMainMenuLabel(key));
@@ -1576,7 +1588,9 @@ function replaceIcons(root) {
 function inheritParentTheme() {
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
-    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
+    // --theme-native-os-accent / --ui-accent: 「OSアクセント」の色は本体だけがOSから読むため、ここで渡さないと
+    // 埋め込みの画面が AccentColor（ブラウザ既定の明るい青）へ落ちる（2026-11-24）。
+    const themeVars = ['--theme-native-os-accent', '--ui-accent', '--ui-accent-fg', '--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
     themeVars.forEach(v => {
       const val = parentComputed.getPropertyValue(v).trim();
       if (val) document.documentElement.style.setProperty(v, val);
@@ -3164,7 +3178,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
       _ann.targetPath = msg.targetPath || '';
       svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
       svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
+      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)';
       else svg.style.outline = '';
       hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
       _updateSize();
@@ -3726,7 +3740,7 @@ function initStandaloneMarkup(container, getTargetPath) {
     _ann.active = active;
     svg.style.pointerEvents = active ? 'auto' : 'none';
     svg.style.cursor = active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-    svg.style.outline = active ? '2px solid rgba(86,156,214,0.3)' : '';
+    svg.style.outline = active ? '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)' : '';
     hitRect.setAttribute('pointer-events', active ? 'all' : 'none');
     _syncStandaloneNoteInteractivity();
   }
@@ -4055,6 +4069,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  window.MeldexMenuIcons?.decorate?.(popup);
   popup.classList.add('gb-popup-surface');
   window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
@@ -4376,3 +4391,136 @@ function enableCheckboxDragToggle(container, scopeSelector) {
 document.addEventListener('DOMContentLoaded', () => {
   enableCheckboxDragToggle(document.body, '.modal-overlay');
 }, { once: true });
+
+// ================================================================
+// メニュー項目の共通アイコン対応表（2026-11-24）
+// メインメニュー・右クリックメニューで、同じ操作には同じアイコンを出すための単一正本。
+// 項目側でアイコンを指定していない時だけ、表示名（末尾の「...」「（N件）」等を除いた形）で引く。
+// 表にない名前（ファイル名・タグ名など利用者のデータ）には何も足さない。
+// ICONLESS は「意図してアイコンを付けない」項目（状態の選択肢・空の印）。
+// 対応表は app/tests/test_meldex_menu_icons.py が全メニュー定義と突き合わせる。
+// ================================================================
+(function () {
+  const ICONS = Object.freeze({
+    '新規作成': 'plus',
+    '検索・置換': 'replace',
+    '検索': 'search',
+    '開く': 'folderOpen',
+    '現在のフォルダを開く': 'folderOpen',
+    'Markdownファイルを開く': 'fileText',
+    'スライドショー': 'image',
+    '表示設定': 'eye',
+    'オプションを表示': 'slidersHorizontal',
+    'フォルダツリーで表示': 'folderTree',
+    'バージョン管理': 'gitBranch',
+    'バージョンを保存': 'save',
+    'パスをコピー': 'copy',
+    'リンクをコピー': 'link',
+    'Markdownをコピー': 'copy',
+    '最近使ったファイル': 'clock',
+    '閉じる': 'x',
+    '別名で保存': 'save',
+    '名前を付けて保存': 'save',
+    'ファイルを複製': 'copyPlus',
+    'ファイルを削除': 'trash2',
+    '印刷': 'printer',
+    'CSVからインポート': 'import',
+    'Excelからインポート': 'import',
+    '旧シナリオからインポート': 'import',
+    'シフト表を取り込む': 'import',
+    'Excelからシナリオを作成': 'fileSpreadsheet',
+    'CSVとして保存': 'download',
+    'Excelとして保存': 'download',
+    'HTMLとして保存': 'download',
+    'Markdownとして保存': 'download',
+    'Wordとして保存': 'download',
+    'シナリオ形式として保存': 'download',
+    '勤怠CSVとして保存': 'download',
+    '辞書ファイルを出力': 'download',
+    'シフト、実績、作業予定を書き出す': 'download',
+    'PNG画像として保存': 'image',
+    '画像（PNG）として保存': 'image',
+    'SVG画像として保存': 'image',
+    'B-MANGAへ送信': 'send',
+    'CLIP STUDIO PAINTへ送信': 'send',
+    'アーカイブ管理': 'archive',
+    'シートに変換': 'db',
+    'シートから一括読込': 'db',
+    'テンプレート': 'layoutTemplate',
+    'シートテンプレート': 'layoutTemplate',
+    'ノートテンプレート': 'layoutTemplate',
+    '新規トピックのノートテンプレート': 'layoutTemplate',
+    'テンプレートに登録': 'bookmarkPlus',
+    '現在のノートからテンプレートを作成': 'layoutTemplate',
+    '現在のシナリオからテンプレートを作成': 'layoutTemplate',
+    '現在のシートからテンプレートを作成': 'layoutTemplate',
+    '現在のボードからテンプレートを作成': 'layoutTemplate',
+    'シート横断検索': 'databaseSearch',
+    '整合性検証': 'shieldCheck',
+    '検証ルール管理': 'listChecks',
+    '列の表示と順序': 'columns',
+    '列を追加': 'columns',
+    '行を追加': 'rows3',
+    '公開設定': 'globe',
+    '公開を更新': 'refreshCw',
+    '新規イベント': 'calendarPlus',
+    '同期設定': 'calendarSync',
+    '新規リンクトピック: ノート': 'link2',
+    '新規リンクトピック: シート': 'link2',
+    '新規リンクトピック: ボード': 'link2',
+    '既存ファイルへのリンクトピック': 'link2',
+    'ツール': 'wrench',
+    '重複画像を検出': 'scanSearch',
+    'このフォルダで重複検出': 'scanSearch',
+    '画像インデックスを作成': 'fileSearch',
+    'このフォルダのインデックス作成': 'fileSearch',
+    'この階層を閉じる': 'chevronsDownUp',
+    'リネーム': 'pencil',
+    'パスを変更': 'folderPen',
+    'ワークスペースの管理': 'settings',
+    'システム保護': 'shield',
+    'プロパティ': 'info',
+    'チャットを開く': 'messageSquare',
+    '比較': 'columns',
+  });
+  // 色見本が先頭に付く行（色設定）は色見本をアイコンとして扱う。読み込み中の一時表示は付けない。
+  const ICONLESS = Object.freeze(new Set(['(なし)', '（なし）', '設定する', '解除する', 'OS メニュー 読み込み中']));
+
+  function normalizeLabel(label) {
+    let text = String(label ?? '').replace(/\s+/g, ' ').trim();
+    text = text.replace(/^[✓✔]\s*/, '');
+    text = text.replace(/(?:\.\.\.|…)$/, '').trim();
+    text = text.replace(/\s*[（(][^（）()]*(?:件|枚)[）)]$/, '').trim();
+    return text;
+  }
+
+  function resolve(label) {
+    const key = normalizeLabel(label);
+    if (!key || ICONLESS.has(key)) return '';
+    return ICONS[key] || '';
+  }
+
+  // 既に描画済みのメニューで、アイコンの無い項目へ対応表のアイコンを足す。
+  // 位置合わせの共通処理（positionPopup / clampPopupToViewport）から呼ばれる。何度呼んでもよい。
+  function decorate(menu) {
+    if (!menu?.querySelectorAll || typeof lucide !== 'function') return;
+    if (!menu.matches?.('.gb-context-menu, .ab-dropdown') && !menu.querySelector?.('.gb-context-menu-item')) return;
+    menu.querySelectorAll('.gb-context-menu-item, .ab-dropdown-item').forEach((row) => {
+      if (row.dataset.menuIconResolved === '1') return;
+      row.dataset.menuIconResolved = '1';
+      if (row.querySelector('svg, img, .menu-icon, [data-icon], .gb-color-swatch')) return;
+      const labelEl = row.querySelector('.menu-label');
+      const name = resolve(labelEl ? labelEl.textContent : row.textContent);
+      if (!name) return;
+      const icon = document.createElement('span');
+      icon.className = 'menu-icon';
+      icon.dataset.menuIconSource = 'shared';
+      icon.innerHTML = lucide(name, 14);
+      row.insertBefore(icon, row.firstChild);
+    });
+  }
+
+  if (typeof window !== 'undefined') {
+    window.MeldexMenuIcons = Object.freeze({ icons: ICONS, iconless: ICONLESS, normalizeLabel, resolve, decorate });
+  }
+})();

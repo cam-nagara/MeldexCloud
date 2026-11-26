@@ -47,7 +47,8 @@
     if (!isVideoInActiveLayer(video)) return;
     const scene = Scene();
     if (scene?.isPlaying?.()) {
-      scene.nextGroup();
+      if (typeof scene.advanceSlideshow === 'function') scene.advanceSlideshow();
+      else scene.nextGroup();
       scene.rescheduleSlideshow?.();
     }
   }

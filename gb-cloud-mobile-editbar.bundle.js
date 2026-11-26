@@ -3,4 +3,5 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
 __loadSplitScript('gb-cloud-mobile-editbar.bundle.js', [
   'gb-cloud-mobile-editbar.bundle.part01.js',
   'gb-cloud-mobile-editbar.bundle.part02.js',
+  'gb-cloud-mobile-editbar.bundle.part03.js',
 ]);

@@ -48,7 +48,8 @@
     if (!isAudioInActiveLayer(audio)) return;
     const scene = Scene();
     if (scene?.isPlaying?.()) {
-      scene.nextGroup();
+      if (typeof scene.advanceSlideshow === 'function') scene.advanceSlideshow();
+      else scene.nextGroup();
       scene.rescheduleSlideshow?.();
     }
   }
@@ -89,7 +90,7 @@
     audio.addEventListener('pause', onAudioPause);
     audio.addEventListener('ended', onAudioEnded);
 
-    // 下端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
+    // 上端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
     window.MeldexViewerMediaSeek?.attach?.(audio);
 
     wrap.append(icon, filename, audio);

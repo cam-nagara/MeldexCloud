@@ -30,7 +30,9 @@
       button.addEventListener('click', () => {
         state.addingList = true;
         renderListBar(component, state);
-        state.listBarEl?.querySelector('[data-e2e-id="gb-production-list-switch-add-input"]')?.focus();
+        const input=state.listBarEl?.querySelector('[data-e2e-id="gb-production-list-switch-add-input"]');
+        input?.focus({ preventScroll:true });
+        input?.closest('form')?.scrollIntoView({ block:'nearest',inline:'nearest' });
       });
       wrap.appendChild(button);
       return wrap;
@@ -207,8 +209,8 @@
     summary.setAttribute('aria-live', 'polite');
     summary.textContent = '変更内容を確認しています…';
     const detail = document.createElement('p');
-    detail.className = 'gb-production-bulk-result';
-    detail.setAttribute('role', 'alert');
+    detail.className = 'gb-production-structure-detail';
+    detail.setAttribute('role', 'status');
     panel.append(intro, summary, detail);
 
     const cancel = makeButton('閉じる', 'x');
@@ -233,11 +235,23 @@
       apply.disabled = busy || !preview?.apply_allowed;
       apply.textContent = busy ? '処理中…' : 'この構成に更新';
     };
+    let feedback = null;
+    const clearFeedback = () => { feedback?.remove(); feedback=null; detail.hidden=false; };
+    const showFailure = (error, message) => {
+      clearFeedback(); detail.hidden=true;
+      feedback=window.GBUI.createInlineError({message,onRetry:loadPreview});
+      feedback.title=String(error?.message || '');
+      feedback.dataset.e2eId='gb-production-task-structure-error';
+      const retry=feedback.querySelector('button');
+      if(retry)retry.dataset.e2eId='gb-production-task-structure-retry';
+      panel.append(feedback);
+    };
     const close = () => { if (!busy) dialog.close?.(); };
     cancel.addEventListener('click', close);
     apply.addEventListener('click', async () => {
       if (!preview?.fingerprint || busy) return;
       setBusy(true);
+      clearFeedback();
       detail.textContent = '';
       try {
         const result = await api().applyTaskStructure({
@@ -257,14 +271,18 @@
         busy = false;
         dialog.close?.();
       } catch (error) {
-        detail.textContent = error?.message || 'タスク構成を更新できませんでした。もう一度プレビューしてください。';
+        showFailure(error,'タスク構成を更新できませんでした。再試行で最新の内容を確認してください。');
         setBusy(false);
       }
     });
     document.body.appendChild(dialog.overlay);
     window.GBModalShell?.enhanceOverlay?.(dialog.overlay);
-    setBusy(true);
-    api().previewTaskStructure({ work_title: workTitle }).then((data) => {
+    async function loadPreview() {
+      clearFeedback(); preview=null; setBusy(true);
+      summary.textContent='変更内容を確認しています…';
+      detail.textContent='';
+      try {
+      const data=await api().previewTaskStructure({ work_title: workTitle });
       preview = data;
       const units = (data.page_units || []).join('、');
       summary.textContent = [
@@ -277,11 +295,12 @@
       detail.textContent = data.protected_count
         ? '作業中・予定済みなどの保護対象は元の構成のまま残ります。'
         : data.apply_allowed ? '内容を確認して「この構成に更新」を押してください。' : '更新が必要なタスクはありません。';
-      setBusy(false);
-    }).catch((error) => {
-      detail.textContent = error?.message || '変更内容を確認できませんでした。';
-      setBusy(false);
-    });
+      } catch (error) {
+        summary.textContent='変更内容を取得できませんでした。';
+        showFailure(error,'変更内容を確認できませんでした。接続とアクセス権限を確認して再試行してください。');
+      } finally { setBusy(false); }
+    }
+    loadPreview();
     return dialog;
   }
 

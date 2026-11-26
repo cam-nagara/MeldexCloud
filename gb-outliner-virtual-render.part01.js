@@ -272,9 +272,20 @@
     }
     state.allItems.forEach(function (item) { append(item, null, 0); });
     state.flat = flat;
-    var built = engine.buildOffsets(flat);
+    _buildOffsets(state);
+  }
+
+  // 行の位置（累積の高さ）を作る。大きなフォルダの分割読み込みで、読み込み済みの範囲より前に
+  // まだ読み込んでいない行がある時（state.leadHeight。途中の位置へ直接飛んだ時）は、その分だけ全体を下へずらす。
+  // offsets[0] = 先頭の読み込み済みの行の上端、totalHeight = 読み込み済みの最後の行の下端。
+  function _buildOffsets(state) {
+    var built = _engine().buildOffsets(state.flat);
+    var lead = state.leadHeight || 0;
+    if (lead) {
+      for (var i = 0; i < built.offsets.length; i++) built.offsets[i] += lead;
+    }
     state.offsets = built.offsets;
-    state.totalHeight = built.totalHeight;
+    state.totalHeight = built.offsets[built.offsets.length - 1] || lead;
   }
 
   // 仮想化管理下の「読み込み済みの子項目一覧」への読み取り専用アクセサ。
@@ -293,6 +304,12 @@
     if (state.folderItem && state.folderItem.path === path) return (state.allItems || []).slice();
     if (state.childrenByParent && state.childrenByParent.has(path)) return state.childrenByParent.get(path).slice();
     return null;
+  }
+
+  // 仮想の一覧の高さ。まだ読み込んでいない続き（大きなフォルダの分割読み込み）の分も確保して、
+  // スクロールバーが全体の長さを表すようにする（reserveHeight は setPendingRows が決める）。
+  function _applyContainerHeight(childrenDiv, state) {
+    childrenDiv.style.height = (state.totalHeight + (state.reserveHeight || 0)) + 'px';
   }
 
   function mount(childrenDiv, items, rootPath, meta) {
@@ -332,7 +349,7 @@
     });
 
     _rebuildModel(state);
-    childrenDiv.style.height = state.totalHeight + 'px';
+    _applyContainerHeight(childrenDiv, state);
     _activeContainers.add(childrenDiv);
     _ensureScrollListener();
     _ensureViewportListener();
@@ -510,7 +527,7 @@
     var previouslyMounted = new Map(state.mountedByIndex);
     previouslyMounted.forEach(function (rowEl, index) { _unmountRow(state, index); });
     _rebuildModel(state);
-    childrenDiv.style.height = state.totalHeight + 'px';
+    _applyContainerHeight(childrenDiv, state);
 
     if (scroller && anchorPath) {
       var newIndex = state.flat.findIndex(function (entry) { return entry.id === anchorPath; });
@@ -543,10 +560,8 @@
     entry.height = newHeight;
     if (!state.heightsByPath) state.heightsByPath = new Map(); // 念のための防御(mount経由以外からの呼び出し向け)
     if (entry.id) state.heightsByPath.set(entry.id, newHeight);
-    var built = engine.buildOffsets(state.flat);
-    state.offsets = built.offsets;
-    state.totalHeight = built.totalHeight;
-    childrenDiv.style.height = state.totalHeight + 'px';
+    _buildOffsets(state);
+    _applyContainerHeight(childrenDiv, state);
     // マウント済みの行だけ位置を再計算する（表示範囲＋オーバースキャン分のみ。全件走査ではない）
     state.mountedByIndex.forEach(function (el, idx) {
       el.style.top = state.offsets[idx] + 'px';

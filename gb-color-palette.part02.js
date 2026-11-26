@@ -3,7 +3,6 @@
       selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
-      selectedCustomIdx = -1;
       selectedPresetIdx = -1;
       selectedOsAccentTone = '';
       updateSliders(); updatePicker(); updateSwatchHighlights();
@@ -90,7 +89,7 @@
   const hSlider = makeSlider('色相', 0, 360, hsb.h, v => { hsb.h = v; onSliderChange(); });
   const sSlider = makeSlider('彩度', 0, 100, hsb.s, v => { hsb.s = v; onSliderChange(); });
   const bSlider = makeSlider('明度', 0, 100, hsb.b, v => { hsb.b = v; onSliderChange(); });
-  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
+  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
   aSlider.row.dataset.e2eId = 'color-palette-opacity';
   sliderSection.append(hSlider.row, sSlider.row, bSlider.row, aSlider.row);
   palette.appendChild(sliderSection);
@@ -109,7 +108,8 @@
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  // 選んだカスタムカラーを調整している間は選択を保つ。＋ボタンはその色を上書きする（以前は調整した瞬間に選択が外れ、上書きできなかった）。
+  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;

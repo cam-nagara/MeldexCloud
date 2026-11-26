@@ -74,8 +74,8 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
     _setSelectedColumns(dbPath, targets, propName);
   }
   const widths = getColWidths(dbPath, { ctx });
-  const firstWidth = Number(widths[targets[0]] || 100);
-  const sameWidth = targets.every(name => Number(widths[name] || 100) === firstWidth);
+  const firstWidth = Number(widths[targets[0]] || 150);
+  const sameWidth = targets.every(name => Number(widths[name] || 150) === firstWidth);
 
   if (!globalThis.GBUI?.createModal) throw new Error('列幅指定を初期化できませんでした');
   const existing = document.querySelector('[data-e2e-id="db-bulk-column-width-dialog"]');

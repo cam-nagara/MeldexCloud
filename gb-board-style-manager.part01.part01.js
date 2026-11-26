@@ -100,7 +100,12 @@ function _bdSaveGlobalDepthStyles(styles) {
     } else {
       localStorage.removeItem(BD_GLOBAL_DEPTH_STYLES_KEY);
     }
-  } catch {}
+    return true;
+  } catch (_) {
+    // 保存できなかった時は黙って捨てず、原因を知らせる。
+    if (typeof showStatus === 'function') showStatus('階層別スタイルの既定を保存できませんでした（端末内の保存先に書けません）', true);
+    return false;
+  }
 }
 
 function _bdBoardStylePackExportPayload() {
@@ -270,6 +275,7 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
       if (field === 'cloudBumpWidth') style[field] = Math.max(8, Math.min(200, num));
       else if (field === 'cloudBumpHeight') style[field] = Math.max(2, Math.min(100, num));
       else style[field] = Math.max(2, Math.min(100, num));
+      markNodeOverride();
       return;
     }
     if (field === 'cloudOffset') {
@@ -277,12 +283,14 @@ function _bdApplyStyleFieldChange(kind, style, field, value) {
       const num = parseInt(value, 10);
       const pct = Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : 50;
       style[field] = pct / 100;
+      markNodeOverride();
       return;
     }
     if (field === 'cloudSubWidthRatio' || field === 'cloudSubHeightRatio') {
       // 0〜100 (%) の整数で保存。両方が > 0 のときだけ小山が現れる。
       const num = parseInt(value, 10);
       style[field] = Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : 0;
+      markNodeOverride();
       return;
     }
     if (field === 'shape') {

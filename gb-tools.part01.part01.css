@@ -9,6 +9,9 @@
   /* collapsed border はstickyセルと別に描画され、座標が接しても1px透ける。
      全ホストで罫線をセル自身へ持たせる。 */
   border-collapse: separate; border-spacing: 0; width: max-content; table-layout: fixed;
+  /* 親の横向きflexに表を縦へ引き伸ばさせない。行へ配られた余白を入力欄の高さへ
+     取り込むと、編集を始めるたびに行の配分が変わってクリック位置まで移動する。 */
+  align-self: flex-start;
 }
 #pivot-table thead {
   position: sticky;
@@ -27,6 +30,7 @@
   scroll-margin: var(--ui-active-frame-width) 8px;
 }
 #pivot-table th {
+  /* 行の下線は幅で保存する。内側の影なら罫線や行高を変えずに描ける。 */
   background: var(--db-th-bg); color: var(--db-th-fg);
   font-family: var(--db-th-font, var(--ui-font, inherit));
   font-weight: var(--db-th-bold); font-style: var(--db-th-italic); font-size: var(--db-th-font-size, 13px);
@@ -39,8 +43,7 @@
   -webkit-text-stroke-color: var(--db-th-stroke-color, transparent);
   -webkit-text-stroke-width: var(--db-th-stroke-width, 0px);
   paint-order: stroke fill;
-  box-shadow: inset var(--db-th-left-accent, 0px) 0 0 var(--db-th-accent-color, var(--db-th-fg));
-  text-decoration-line: var(--db-th-underline, none);
+  box-shadow: inset var(--db-th-left-accent, 0px) 0 0 var(--db-th-accent-color, var(--db-th-fg)), inset 0 calc(-1 * var(--db-th-underline, 0px)) 0 var(--db-th-accent-color, var(--db-th-fg));
   text-decoration-color: var(--db-th-accent-color, currentColor);
 }
 #pivot-table td {
@@ -55,8 +58,7 @@
   -webkit-text-stroke-color: var(--db-cell-stroke-color, transparent);
   -webkit-text-stroke-width: var(--db-cell-stroke-width, 0px);
   paint-order: stroke fill;
-  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg));
-  text-decoration-line: var(--db-cell-underline, none);
+  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)), inset 0 calc(-1 * var(--db-cell-underline, 0px)) 0 var(--db-cell-accent-color, var(--db-cell-fg));
   text-decoration-color: var(--db-cell-accent-color, currentColor);
 }
 #pivot-table tr:hover td { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
@@ -90,8 +92,7 @@
   -webkit-text-stroke-color: var(--db-entity-stroke-color, transparent);
   -webkit-text-stroke-width: var(--db-entity-stroke-width, 0px);
   paint-order: stroke fill;
-  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg));
-  text-decoration-line: var(--db-entity-underline, none);
+  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)), inset 0 calc(-1 * var(--db-entity-underline, 0px)) 0 var(--db-entity-accent-color, var(--db-entity-fg));
   text-decoration-color: var(--db-entity-accent-color, currentColor);
   cursor: pointer; white-space: normal; vertical-align: top;
   min-width: 120px; width: 120px;
@@ -146,10 +147,10 @@
 #pivot-table td.active-cell {
   /* 強調は内側の影で描き、境界線の太さを変えない（変えると行の高さが変わり、下の行がずれる。2026-11-20 報告）。 */
   outline: none !important; z-index: 6; position: relative;
-  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)), inset 0 calc(-1 * var(--db-cell-underline, 0px)) 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
 }
 #pivot-table td.active-cell.col-entity {
-  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)), inset 0 calc(-1 * var(--db-entity-underline, 0px)) 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
 }
 /* 範囲選択セル（Shift+矢印/ドラッグ選択の範囲全体）。gb-accessibility.css と同一定義を、
    同ファイルを読み込まないシートホスト（標準版 sheet-standalone / クラウド / モバイル）でも
@@ -184,8 +185,7 @@
   -webkit-text-stroke-color: var(--db-th-stroke-color, transparent);
   -webkit-text-stroke-width: var(--db-th-stroke-width, 0px);
   paint-order: stroke fill;
-  box-shadow: inset var(--db-th-left-accent, 0px) 0 0 var(--db-th-accent-color, var(--db-th-fg));
-  text-decoration-line: var(--db-th-underline, none);
+  box-shadow: inset var(--db-th-left-accent, 0px) 0 0 var(--db-th-accent-color, var(--db-th-fg)), inset 0 calc(-1 * var(--db-th-underline, 0px)) 0 var(--db-th-accent-color, var(--db-th-fg));
   text-decoration-color: var(--db-th-accent-color, currentColor);
 }
 .pivot-table td {
@@ -200,8 +200,7 @@
   -webkit-text-stroke-color: var(--db-cell-stroke-color, transparent);
   -webkit-text-stroke-width: var(--db-cell-stroke-width, 0px);
   paint-order: stroke fill;
-  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg));
-  text-decoration-line: var(--db-cell-underline, none);
+  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)), inset 0 calc(-1 * var(--db-cell-underline, 0px)) 0 var(--db-cell-accent-color, var(--db-cell-fg));
   text-decoration-color: var(--db-cell-accent-color, currentColor);
 }
 .pivot-table tr:hover td { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
@@ -221,8 +220,7 @@
   -webkit-text-stroke-color: var(--db-entity-stroke-color, transparent);
   -webkit-text-stroke-width: var(--db-entity-stroke-width, 0px);
   paint-order: stroke fill;
-  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg));
-  text-decoration-line: var(--db-entity-underline, none);
+  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)), inset 0 calc(-1 * var(--db-entity-underline, 0px)) 0 var(--db-entity-accent-color, var(--db-entity-fg));
   text-decoration-color: var(--db-entity-accent-color, currentColor);
   cursor: pointer; white-space: normal; vertical-align: top;
   min-width: 120px; width: 120px; overflow: hidden;
@@ -234,7 +232,7 @@
 #pivot-table :is(th.db-keyboard-header, td.col-row-controls).active-cell,
 .pivot-table :is(th.db-keyboard-header, td.col-row-controls).active-cell {
   outline: none !important;
-  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-th-left-accent, 0px) 0 0 var(--db-th-accent-color, var(--db-th-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-th-left-accent, 0px) 0 0 var(--db-th-accent-color, var(--db-th-fg)), inset 0 calc(-1 * var(--db-th-underline, 0px)) 0 var(--db-th-accent-color, var(--db-th-fg)) !important;
 }
 .pivot-table td.col-entity:hover { color: var(--accent); }
 .pivot-table.entity-col-unpinned td.col-entity,
@@ -243,10 +241,10 @@
 .pivot-table td.active-cell {
   /* 強調は内側の影で描き、境界線の太さを変えない（変えると行の高さが変わり、下の行がずれる。2026-11-20 報告）。 */
   outline: none !important; z-index: 6; position: relative;
-  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)), inset 0 calc(-1 * var(--db-cell-underline, 0px)) 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
 }
 .pivot-table td.active-cell.col-entity {
-  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
+  box-shadow: inset 0 0 0 var(--db-active-width, var(--ui-active-frame-width)) var(--db-active-color, var(--ui-active-frame-color)), inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)), inset 0 calc(-1 * var(--db-entity-underline, 0px)) 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
 }
 /* 列リサイズハンドル */
 .col-resize-handle {
@@ -380,6 +378,9 @@ th.col-drop-right::after { right: -2px; }
   text-align: left;
 }
 @media (pointer: coarse), (max-width: 640px) {
+  .db-multi-select-value-popup input[type="search"] {
+    min-height: var(--ui-h-touch, 44px);
+  }
   .status-dropdown {
     max-width: calc(100vw - 16px);
     max-height: min(55vh, 420px);
@@ -984,6 +985,23 @@ html.thumb-fit-contain .gb-image-gallery-card img {
 #folder-grid.hflow-layout {
   display: flex; flex-wrap: wrap; gap: 3px; align-items: flex-start; align-content: flex-start;
 }
+/* 空のタブ・空フォルダはカード1枠に入れず、描画先の利用可能幅を使う。
+   メインと独立したサブパネルで同じ契約にする。 */
+:is(#folder-grid, .gb-subpanel-folder-root):has(> :is(.gb-empty-state, .fv-empty-state)) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+:is(#folder-grid, .gb-subpanel-folder-root) > .gb-empty-state {
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+:is(#folder-grid, .gb-subpanel-folder-root) .gb-empty-create-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* 横並び: 高さ揃え（カード幅は画像の縦横比に依存） */
 #folder-grid.hflow-layout .fv-item { width: auto; }
 #folder-grid.hflow-layout .fv-thumb { width: auto; height: var(--fv-card-h, 120px); }
@@ -1272,7 +1290,11 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   text-align: center;
 }
 /* ウォーターフォール: グリッドと同じカード幅 */
-.waterfall-layout .fv-item { padding: 3px; text-align: center; }
+.waterfall-layout .fv-item {
+  padding: 3px; text-align: center;
+  /* 再配置中にtop/left/幅を補間すると、文字が下のカードを横切る。色だけを変化させる。 */
+  transition-property: color, background-color, border-color, box-shadow;
+}
 .waterfall-layout .fv-name { font-size: 12px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .waterfall-layout .fv-meta {
   display: flex;
@@ -1368,6 +1390,68 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   line-height: 15px;
 }
 .list-layout .fv-list-size { text-align: right; padding-right: 24px; }
+/* リスト・小（2026-11-24）: 行・アイコン・名前の文字・行間をフォルダツリーの行（.tree-node-row）と同じ共通の値で描く。
+   数値を写さず、ツリーと同じ変数（--ui-row-height / --ui-row-padding-y / --ui-row-gap / --ui-row-font-size /
+   --outliner-item-line-height / --tree-icon-size / --ui-row-radius）を参照する。
+   強調の枠は四辺の1本だけ（境界線の色だけを変え、太さ・余白は状態によらず一定: UI共通ルール §10）。
+   スマホ幅は ID 付きのスマホ用リストの指定が勝ち、通常のスマホのリストとして表示する。 */
+.list-layout.list-small-layout .fv-list-header,
+.list-layout.list-small-layout .fv-item {
+  gap: var(--ui-row-gap);
+  min-height: var(--ui-row-height);
+  padding: var(--ui-row-padding-y) var(--ui-row-padding-x) var(--ui-row-padding-y) 28px;
+  border-radius: var(--ui-row-radius);
+  font-size: var(--ui-row-font-size);
+  line-height: var(--outliner-item-line-height, 115%);
+}
+.list-layout.list-small-layout .fv-list-header { min-height: var(--ui-row-height); padding-top: 0; padding-bottom: 0; }
+.list-layout.list-small-layout .fv-list-header-cell { height: var(--ui-row-height); }
+/* ツリーの行と同じく境界線を持たず、ホバー・選択の枠は内側の輪郭線1本で描く（行の高さを変えない） */
+.list-layout.list-small-layout .fv-item { border-width: 0; outline: 1px solid transparent; outline-offset: -1px; }
+.list-layout.list-small-layout .fv-item:hover { outline-color: var(--fv-item-hover-border, var(--fg2)); }
+.list-layout.list-small-layout .fv-item.selected { box-shadow: none; outline-color: var(--fv-item-selected-border, var(--accent)); }
+.list-layout.list-small-layout .fv-thumb {
+  width: var(--tree-icon-size, 18px);
+  height: var(--tree-icon-size, 18px);
+}
+.list-layout.list-small-layout .fv-icon { font-size: var(--tree-icon-size, 18px); line-height: 0; }
+.list-layout.list-small-layout .fv-icon :is(svg, img) {
+  width: var(--tree-icon-size, 18px);
+  height: var(--tree-icon-size, 18px);
+  display: block;
+}
+.list-layout.list-small-layout .fv-name,
+.list-layout.list-small-layout .fv-list-cell {
+  font-size: var(--ui-row-font-size);
+  line-height: var(--outliner-item-line-height, 115%);
+}
+/* 名前はツリーと同じく1行で省略し、タグ・評価は名前の右に並べる（行の高さを変えない） */
+.list-layout.list-small-layout .fv-list-name {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--ui-row-gap);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.list-layout.list-small-layout .fv-list-name-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.list-layout.list-small-layout .fv-list-extra-meta { flex: 0 1 auto; flex-wrap: nowrap; overflow: hidden; line-height: inherit; }
+/* 行の中の小さなボタン・印は縦の中央に置き、行の高さに収める */
+.list-layout.list-small-layout .fv-item > .fv-more-btn {
+  top: 50%;
+  width: var(--ui-h-2xs, 18px);
+  height: var(--ui-h-2xs, 18px);
+  transform: translateY(-50%);
+}
+.list-layout.list-small-layout .fv-item > .fv-lock-badge { top: 50%; bottom: auto; transform: translateY(-50%); }
+/* チェックボックスは左の余白に重ねる（サブパネルでも行の中に2段目を作らない） */
+.list-layout.list-small-layout .fv-item > .fv-check { position: absolute; top: 50%; left: 7px; transform: translateY(-50%); }
 
 /* フォルダ パネル共通 */
 .fv-side-panel { padding: 12px; background: var(--fv-panel-bg, var(--content-bg, transparent)); }
@@ -1589,7 +1673,7 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .ann-note-resize-handle[data-dir="se"] { right: -5px; bottom: -5px; cursor: nwse-resize; }
 .ann-note-resize-handle[data-dir="sw"] { left: -5px; bottom: -5px; cursor: nesw-resize; }
 /* 選択ハイライトはボードカードと統一: 角の丸いアウトライン枠 */
-.ann-note.ann-note-selected { outline: 2px solid var(--bd-selection-color, #4a90d9); outline-offset: 2px; }
+.ann-note.ann-note-selected { outline: 2px solid var(--bd-selection-color, var(--ui-selection-bg, var(--ui-accent, var(--accent)))); outline-offset: 2px; }
 
 .rp-ann-row {
   display: flex; align-items: center; gap: 8px; padding: 6px 8px;
@@ -1943,3 +2027,108 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 .cal-month-event { font-size: 10px; padding: 1px 22px 1px 4px; margin: 1px 0; border-radius: 3px; color: var(--cal-event-fg); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; position: relative; }
 .cal-month-event:hover { opacity: 0.8; }
 .cal-month-more { font-size: 10px; color: var(--fg2); padding: 1px 4px; }
+
+/* 候補値の装飾は全タイプで同じ設定項目を持つ。個々の値は色だけを上書きする。 */
+.cell-select-val,
+.pt-select-option-row button.pt-select-option-preview.cell-select-val {
+  padding: 1px var(--db-option-select-padding-x, var(--db-option-chip-padding-x, 8px));
+  border-radius: var(--db-option-select-radius, var(--db-option-chip-radius, 10px));
+  font-size: var(--db-option-select-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-select-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-select-italic, normal);
+  text-decoration: var(--db-option-select-strike, none);
+  background: var(--db-option-select-bg, var(--db-option-chip-bg, var(--ui-hover-bg)));
+  color: var(--db-option-select-fg, var(--db-option-chip-fg, var(--ui-hover-fg)));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-select-border-width, var(--db-option-chip-border-width, 0px)) var(--db-value-border-color, var(--db-option-select-border-color, var(--db-option-chip-border-color, transparent)));
+}
+.multi-select-tag:not(.common-tags-tag),
+.pt-select-option-row button.pt-select-option-preview.multi-select-tag {
+  padding: 1px var(--db-option-multi-padding-x, var(--db-option-chip-padding-x, 8px));
+  border-radius: var(--db-option-multi-radius, var(--db-option-chip-radius, 10px));
+  font-size: var(--db-option-multi-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-multi-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-multi-italic, normal);
+  text-decoration: var(--db-option-multi-strike, none);
+  background: var(--db-option-multi-bg, var(--db-option-chip-bg, var(--ui-hover-bg)));
+  color: var(--db-option-multi-fg, var(--db-option-chip-fg, var(--ui-hover-fg)));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-multi-border-width, var(--db-option-chip-border-width, 0px)) var(--db-value-border-color, var(--db-option-multi-border-color, var(--db-option-chip-border-color, transparent)));
+}
+.relation-link {
+  padding: 1px var(--db-option-relation-padding-x, var(--db-option-chip-padding-x, 8px));
+  border-radius: var(--db-option-relation-radius, var(--db-option-chip-radius, 4px));
+  font-size: var(--db-option-relation-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-relation-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-relation-italic, normal);
+  text-decoration: var(--db-option-relation-strike, none);
+  background: var(--db-option-relation-bg, var(--db-option-chip-bg, var(--bg3)));
+  color: var(--db-option-relation-fg, var(--db-option-chip-fg, inherit));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-relation-border-width, var(--db-option-chip-border-width, 1px)) var(--db-value-border-color, var(--db-option-relation-border-color, var(--db-option-chip-border-color, transparent)));
+}
+[data-chip-type="multi-relation"] .relation-link {
+  padding: 1px var(--db-option-multi-relation-padding-x, var(--db-option-chip-padding-x, 8px));
+  border-radius: var(--db-option-multi-relation-radius, var(--db-option-chip-radius, 4px));
+  font-size: var(--db-option-multi-relation-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-multi-relation-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-multi-relation-italic, normal);
+  text-decoration: var(--db-option-multi-relation-strike, none);
+  background: var(--db-option-multi-relation-bg, var(--db-option-chip-bg, var(--bg3)));
+  color: var(--db-option-multi-relation-fg, var(--db-option-chip-fg, inherit));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-multi-relation-border-width, var(--db-option-chip-border-width, 1px)) var(--db-value-border-color, var(--db-option-multi-relation-border-color, var(--db-option-chip-border-color, transparent)));
+}
+[data-chip-type="multi-source-relation"] .msr-tag {
+  padding: 1px var(--db-option-multi-source-relation-padding-x, var(--db-option-chip-padding-x, 8px));
+  border-radius: var(--db-option-multi-source-relation-radius, var(--db-option-chip-radius, 4px));
+  font-size: var(--db-option-multi-source-relation-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-multi-source-relation-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-multi-source-relation-italic, normal);
+  text-decoration: var(--db-option-multi-source-relation-strike, none);
+  background: var(--db-option-multi-source-relation-bg, var(--db-option-chip-bg, var(--bg3)));
+  color: var(--db-option-multi-source-relation-fg, var(--db-option-chip-fg, inherit));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-multi-source-relation-border-width, var(--db-option-chip-border-width, 1px)) var(--db-value-border-color, var(--db-option-multi-source-relation-border-color, var(--db-option-chip-border-color, transparent)));
+}
+.db-rollup-line {
+  padding: 1px var(--db-option-rollup-padding-x, var(--db-option-chip-padding-x, 8px));
+  border-radius: var(--db-option-rollup-radius, var(--db-option-chip-radius, 0px));
+  font-size: var(--db-option-rollup-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-rollup-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-rollup-italic, normal);
+  text-decoration: var(--db-option-rollup-strike, none);
+  background: var(--db-option-rollup-bg, var(--db-option-chip-bg, transparent));
+  color: var(--db-option-rollup-fg, var(--db-option-chip-fg, inherit));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-rollup-border-width, var(--db-option-chip-border-width, 1px)) var(--db-value-border-color, var(--db-option-rollup-border-color, var(--db-option-chip-border-color, transparent)));
+}
+.cell-user-val {
+  padding: 1px var(--db-option-user-padding-x, var(--db-option-chip-padding-x, 6px));
+  border-radius: var(--db-option-user-radius, var(--db-option-chip-radius, 4px));
+  font-size: var(--db-option-user-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-user-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-user-italic, normal);
+  text-decoration: var(--db-option-user-strike, none);
+  background: var(--db-option-user-bg, var(--db-option-chip-bg, transparent));
+  color: var(--db-option-user-fg, var(--db-option-chip-fg, inherit));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-user-border-width, var(--db-option-chip-border-width, 0px)) var(--db-value-border-color, var(--db-option-user-border-color, var(--db-option-chip-border-color, transparent)));
+}
+.multi-user-tag {
+  padding: 1px var(--db-option-multi-user-padding-x, var(--db-option-chip-padding-x, 6px));
+  border-radius: var(--db-option-multi-user-radius, var(--db-option-chip-radius, 10px));
+  font-size: var(--db-option-multi-user-font-size, var(--db-option-chip-font-size, 12px));
+  font-weight: var(--db-option-multi-user-bold, var(--db-option-chip-bold, normal));
+  font-style: var(--db-option-multi-user-italic, normal);
+  text-decoration: var(--db-option-multi-user-strike, none);
+  background: var(--db-option-multi-user-bg, var(--db-option-chip-bg, var(--bg3)));
+  color: var(--db-option-multi-user-fg, var(--db-option-chip-fg, inherit));
+  border: 0;
+  box-shadow: inset 0 0 0 var(--db-option-multi-user-border-width, var(--db-option-chip-border-width, 1px)) var(--db-value-border-color, var(--db-option-multi-user-border-color, var(--db-option-chip-border-color, transparent)));
+}
+.common-tags-tag { font-style: var(--db-option-tag-italic, normal); text-decoration: var(--db-option-tag-strike, none); }
+.db-status-label { border-radius: var(--db-option-status-radius, 4px); padding-inline: var(--db-option-status-padding-x, 6px); font-size: var(--db-option-status-font-size, 12px); font-weight: var(--db-option-status-bold, normal); font-style: var(--db-option-status-italic, normal); text-decoration: var(--db-option-status-strike, none); background: var(--db-option-status-bg, transparent); color: var(--db-option-status-fg, inherit); box-shadow: inset 0 0 0 var(--db-option-status-border-width, 0px) var(--db-option-status-border-color, transparent); }
+@media (pointer: coarse), (max-width: 640px) { .pt-option-drag-handle, .kanban-column-header[role="button"] { min-width: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); } }
+
+.pt-tag-option-row { display: flex; align-items: center; gap: var(--ui-space-4); }

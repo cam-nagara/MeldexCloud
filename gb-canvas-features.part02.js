@@ -919,8 +919,8 @@ function bdShowZoomMenu(anchor) {
 // ミニマップは gb-canvas-minimap.js がボード内に表示する。
 
 // --- Node Shapes ---
-const BD_SHAPES = ['rect','ellipse','pill','octagon','cloud','fluffy','thorn','thorn-curve'];
-const BD_SHAPE_LABELS = {rect:'矩形',ellipse:'楕円',pill:'ピル',octagon:'八角形',cloud:'雲',fluffy:'もやもや',thorn:'トゲ（直線）','thorn-curve':'トゲ（曲線）'};
+const BD_SHAPES = ['rect','accent-card','ellipse','pill','octagon','cloud','fluffy','thorn','thorn-curve'];
+const BD_SHAPE_LABELS = {rect:'矩形','accent-card':'カード（左帯）',ellipse:'楕円',pill:'ピル',octagon:'八角形',cloud:'雲',fluffy:'もやもや',thorn:'トゲ（直線）','thorn-curve':'トゲ（曲線）'};
 function bdSetShape(nodeId, shape) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
   n.shape = BD_SHAPES.includes(shape) && shape !== 'rect' ? shape : '';

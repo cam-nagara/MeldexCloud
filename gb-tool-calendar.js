@@ -308,6 +308,7 @@ class CalendarComponent extends ToolComponent {
   activate() {
     const wasActive = this._active;
     super.activate();
+    if (typeof _refreshFileThemeTargetBindings === 'function') _refreshFileThemeTargetBindings();
     if (this._initPromise) return;
     if (this._initialized) {
       if (!wasActive) this._refreshAfterActivation();
@@ -318,6 +319,7 @@ class CalendarComponent extends ToolComponent {
       console.warn('[CalendarComponent] init failed:', error);
     }).finally(() => {
       this._initPromise = null;
+      if (this._active && typeof _refreshFileThemeTargetBindings === 'function') _refreshFileThemeTargetBindings();
     });
   }
 
@@ -563,10 +565,15 @@ class CalendarComponent extends ToolComponent {
     const end = new Date(y, m + 2, 0).toISOString();
     this._guardUndoLoadWindow(start + '|' + end, start, end);
     const seq = (this._loadEventsSeq = (this._loadEventsSeq || 0) + 1);
+    const editingAtStart = new Set(this._savingEventIds || []);
     try {
       const events = await apiFetch('/cal/events?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) + '&user=' + encodeURIComponent(this._getUser()));
       if (seq !== this._loadEventsSeq) return { ok: true, stale: true }; // 古い読み込み窓の応答は破棄（連打時の巻き戻り防止）
-      this._events = events;
+      const pending = new Set([...editingAtStart, ...(this._savingEventIds || [])]);
+      const editing = new Map((this._events || []).filter(event => pending.has(event.id)).map(event => [event.id, event]));
+      this._events = events.map(event => editing.get(event.id) || event);
+      const receivedIds = new Set(events.map(event => event.id));
+      for (const [id, event] of editing) if (!receivedIds.has(id)) this._events.push(event);
       return { ok: true, stale: false };
     } catch (error) {
       if (seq !== this._loadEventsSeq) return { ok: true, stale: true };

@@ -931,6 +931,8 @@
 
   function onKeyDown(event) {
     if (!state().active || event.defaultPrevented) return;
+    // サブパネルを操作中のキー操作は、メインパネルのCSVの選択範囲へ作用させない。
+    if (host()?.ownsKeyboard && !host().ownsKeyboard()) return;
     const editing = event.target.closest?.('input,textarea,select,[contenteditable="true"]');
     if (editing) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {

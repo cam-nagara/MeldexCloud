@@ -364,10 +364,16 @@ function _bdNextStyle(kind, styles) {
   return seed;
 }
 
-function _bdApplyAllAutoStyles() {
+function _bdApplyAllAutoStyles(changes) {
   if (typeof bdApplyAutoStyle !== 'function') return 0;
   const anchors = bd.nodes.filter(node => node._autoStyle);
-  anchors.forEach(node => bdApplyAutoStyle(node.id));
+  anchors.forEach(node => {
+    const applied = bdApplyAutoStyle(node.id);
+    if (changes) {
+      (applied?.nodeIds || []).forEach(id => changes.nodeIds.add(id));
+      (applied?.connIds || []).forEach(id => changes.connIds.add(id));
+    }
+  });
   return anchors.length;
 }
 

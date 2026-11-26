@@ -33,6 +33,7 @@
     '.gb-modal-overlay',
     '.gb-cal-modal-overlay',
     '.link-modal-overlay',
+    '#meldex-error-support-notice',
   ];
 
   let _popup = null;          // DOM element

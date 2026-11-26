@@ -7632,10 +7632,11 @@
   const protectedFiles=new Set(['_users.json','_permissions.json','.env.chat','_avatars.json',
     '_meldex_team.json','_notion-db.json','notion_config.json','google_calendar_token.json','editor-config.json','meldex.db']);
   const protectedParts=new Set(['credential','credentials','key','keys','secret','secrets','token','tokens']);
-  function protectedPath(path){
+  function protectedPath(path,options={}){
     const parts=path.toLowerCase().split('/');
-    return protectedFiles.has(parts[parts.length-1])||parts.some(part=>part.startsWith('.')
+    return protectedFiles.has(parts[parts.length-1])||parts.some((part,index)=>part.startsWith('.')
       ||protectedParts.has(part)||/^_(?:meldex|chat|permissions)(?:$|\.)/.test(part)
+        && !(options.chatAttachment&&part==='_chat'&&parts[index+1]==='attachments')
       ||/\.env|credentials|secret|token.*\.json$/.test(part));
   }
   function structured(path,content){
@@ -7743,7 +7744,7 @@
     }
     return {execute};
   }
-  global.MeldexLlmTools=Object.freeze({definitions,declarations,history,parseArguments,resolvePath,create});
+  global.MeldexLlmTools=Object.freeze({definitions,declarations,history,parseArguments,resolvePath,create,isProtectedPath:protectedPath});
 })(window);
 
 ;
@@ -7769,6 +7770,7 @@
       lower.includes('invalid api key') ||
       lower.includes('incorrect api key') ||
       lower.includes('api key is invalid') ||
+      lower.includes('http 401') ||
       (lower.includes('401') && (lower.includes('auth') || lower.includes('unauthorized')))
     ) {
       return 'APIキーが無効、またはこのモデルを使う権限がありません。設定 > LLMで該当APIキーを保存し直し、モデルを選び直してから再送信してください。';
@@ -7808,6 +7810,66 @@
 
   function _attachmentDataUrl(part) {
     return String(part?.dataUrl || (String(part?.url || '').startsWith('data:') ? part.url : '') || '');
+  }
+
+  function _base64ByteLength(data) {
+    return Math.max(0,Math.floor(data.length*3/4)-(data.endsWith('==')?2:data.endsWith('=')?1:0));
+  }
+
+  async function _hydrateClientAttachments(body,signal) {
+    const cache=new Map();
+    let bytes=0;
+    const reserve=size=>{bytes+=size;if(size>32*1024*1024||bytes>64*1024*1024)throw new Error('添付ファイルが大きすぎます。1件32MB、合計64MB以下にしてください');};
+    const current=()=>{if(signal?.aborted)throw new DOMException('操作を中止しました','AbortError');};
+    const read=async part=>{
+      current();
+      if(!part||!['image','document'].includes(part.type))return part;
+      const inline=_dataUrlParts(_attachmentDataUrl(part));
+      if(inline){reserve(_base64ByteLength(inline.data));return part;}
+      const path=String(part.path||'').replace(/\\/g,'/');
+      const valid=part.type==='document'?/\.pdf$/i.test(path):/\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(path);
+      if(!path||!valid||/^(?:https?:|file:|data:|blob:|javascript:|\/\/)/i.test(path)
+        ||path.split('/').some(item=>item==='.'||item==='..')
+        ||!window.MeldexLlmTools?.isProtectedPath||window.MeldexLlmTools.isProtectedPath(path,{chatAttachment:true}))
+        throw new Error('添付ファイルの保存先を確認できません。添付し直してください');
+      if(!cache.has(path))cache.set(path,(async()=>{
+        const base=typeof API_BASE==='string'?API_BASE:'/api';
+        let blob;
+        try {
+          const response=await fetch(base+'/file-raw?path='+encodeURIComponent(path),{signal});
+          if(!response.ok)throw new Error('attachment read failed');
+          blob=await response.blob();
+        } catch(error) {
+          if(signal?.aborted||_isAbortError(error))throw new DOMException('操作を中止しました','AbortError');
+          throw new Error('添付ファイルを読み込めません。保存先を確認して再試行してください');
+        }
+        current();
+        if(blob.size>32*1024*1024)throw new Error('添付ファイルは1件32MB以下にしてください');
+        const mime=String(part.mimeType||part.mime_type||blob.type||'');
+        if(part.type==='document'?mime!=='application/pdf':!mime.startsWith('image/'))throw new Error('添付ファイルの種類を確認できません');
+        return new Promise((resolve,reject)=>{
+          const reader=new FileReader();
+          const abort=()=>reader.abort();
+          const finish=(fn,value)=>{signal?.removeEventListener('abort',abort);fn(value);};
+          reader.onload=()=>finish(resolve,String(reader.result));
+          reader.onerror=()=>finish(reject,new Error('添付ファイルを読み込めません'));
+          reader.onabort=()=>finish(reject,new DOMException('操作を中止しました','AbortError'));
+          signal?.addEventListener('abort',abort,{once:true});
+          reader.readAsDataURL(blob.type===mime?blob:blob.slice(0,blob.size,mime));
+        });
+      })());
+      const dataUrl=await cache.get(path);current();
+      reserve(_base64ByteLength(_dataUrlParts(dataUrl).data));
+      return {...part,dataUrl};
+    };
+    const messages=[];
+    for(const message of body.messages||[]){
+      if(!Array.isArray(message?.content)){messages.push(message);continue;}
+      const content=[];
+      for(const part of message.content)content.push(await read(part));
+      messages.push({...message,content});
+    }
+    return {...body,messages};
   }
 
   function _attachmentName(part) {
@@ -7867,6 +7929,10 @@
       const data = _dataUrlParts(_attachmentDataUrl(part));
       if (data && String(data.mimeType || '').startsWith('image/')) {
         result.push({ type: 'image_url', image_url: { url: data.dataUrl } });
+        return;
+      }
+      if (data && (part.type === 'document' || data.mimeType === 'application/pdf')) {
+        result.push({ type: 'file', file: { filename: String(part.name || 'document.pdf'), file_data: data.dataUrl } });
         return;
       }
       result.push({ type: 'text', text: `[${part.type === 'document' ? 'PDF' : '添付'}: ${_attachmentName(part)}]` });
@@ -8066,7 +8132,15 @@
   function _estimatedInputTokens(body) {
     const text = _chatMessages(body).map(message => message.text || '').join('\n')
       + (body?._meldexToolTurns?.length ? JSON.stringify(body._meldexToolTurns) : '');
-    return Math.max(1, Math.ceil(text.length / 4));
+    let attachmentTokens=0;
+    for(const message of _chatMessages(body))for(const part of message.parts){
+      if(!['image','document'].includes(part?.type))continue;
+      const data=_dataUrlParts(_attachmentDataUrl(part));
+      const size=data?_base64ByteLength(data.data):0;
+      attachmentTokens+=part.type==='image'?Math.max(2048,Math.min(200000,Math.ceil(size/256)))
+        :Math.max(1024,Math.min(5000000,Math.ceil(size/4)));
+    }
+    return Math.max(1, Math.ceil(text.length / 4))+attachmentTokens;
   }
 
   function _assertClientBudget(body, provider, model) {
@@ -8300,7 +8374,7 @@
     } catch {
       try { text = await response.text(); } catch {}
     }
-    return _friendlyProviderErrorMessage(text || `HTTP ${response.status}`);
+    return _friendlyProviderErrorMessage(`HTTP ${response.status}${text ? ': ' + text : ''}`);
   }
 
   function _providerStreamError(data, eventType) {
@@ -8470,6 +8544,7 @@
         if(!completed||stopReason!=='tool_use')throw new Error('道具を実行する前に応答が切断されました');
         send({type:'meldex_tool_turn',format:'anthropic',assistant,calls});
       }
+      if (!completed) throw new Error('Anthropicの応答が完了前に切断されました。接続を確認して再送信してください。');
     };
     let lastError = null;
     for (let retry = 0; retry < 4; retry += 1) {
@@ -8597,6 +8672,7 @@
         if(finishReason!=='tool_calls')throw new Error('道具を実行する前に応答が切断されました');
         send({type:'meldex_tool_turn',format:'chat',text:assistantText,calls:[...toolCalls.values()]});
       }
+      if (!finishReason) throw new Error('OpenAIの応答が完了前に切断されました。接続を確認して再送信してください。');
     };
     let lastError = null;
     for (let retry = 0; retry < 6; retry += 1) {
@@ -8727,6 +8803,7 @@
         const calls=[...toolCalls.values()].map(item=>({id:item.call_id,name:item.name,arguments:item.arguments}));
         send({type:'meldex_tool_turn',format:'responses',assistant,calls});
       }
+      if (!completed) throw new Error('OpenAIの応答が完了前に切断されました。接続を確認して再送信してください。');
       return sawEvent;
     };
     let lastError = null;
@@ -8809,8 +8886,9 @@
     }
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model)
       + ':streamGenerateContent?alt=sse&key=' + encodeURIComponent(apiKey);
-    const assistantParts=[];let completed=false;
+    const assistantParts=[];let completed=false,finishReason='';
     const handleData = data => {
+      if(data.candidates?.[0]?.finishReason)finishReason=String(data.candidates[0].finishReason);
       if(data.candidates?.[0]?.finishReason==='STOP')completed=true;
       const parts = data.candidates?.[0]?.content?.parts || [];
       assistantParts.push(...parts);
@@ -8850,6 +8928,7 @@
         if(!completed)throw new Error('道具を実行する前に応答が切断されました');
         send({type:'meldex_tool_turn',format:'gemini',assistant:{role:'model',parts:assistantParts},calls});
       }
+      if (!finishReason) throw new Error('Geminiの応答が完了前に切断されました。接続を確認して再送信してください。');
     };
     let lastError = null;
     for (let retry = 0; retry < 4; retry += 1) {
@@ -8883,6 +8962,7 @@
   }
 
   async function streamChatAsResponse(body, options = {}) {
+    if(options.signal?.aborted)throw new DOMException('操作を中止しました','AbortError');
     const augmentedBody = await window.MeldexKnowledgePromptBuilder?.augmentChatBody?.(body || {}).catch(() => body) || body;
     const provider = _providerKey(augmentedBody?.provider);
     const apiKey = await window.MeldexLlmKeys?.getForProvider?.(provider);
@@ -8893,9 +8973,10 @@
       });
     }
     return _sseResponse(async send => {
-      const requestBody = _prepareClientStreamBody(augmentedBody, send);
+      let requestBody = _prepareClientStreamBody(augmentedBody, send);
       const model = _defaultModel(provider, requestBody.model);
       _assertClientBudget(requestBody, provider, model);
+      requestBody=await _hydrateClientAttachments(requestBody,options.signal);
       let latestUsage = null;
       const trackedSend = payload => {
         if (payload?.type === 'usage' && payload.usage) latestUsage = {...latestUsage,...payload.usage};
@@ -9235,6 +9316,9 @@
     const lower = safeName.toLowerCase();
     if (lower.endsWith('.mel-form')) return { stem: safeName.slice(0, -9), ext: '.mel-form' };
     if (lower.endsWith('.mel-board')) return { stem: safeName.slice(0, -10), ext: '.mel-board' };
+    for (const suffix of ['.board.md', '.board.json', '.canvas.json']) {
+      if (lower.endsWith(suffix)) return { stem: safeName.slice(0, -suffix.length), ext: suffix };
+    }
     if (lower.endsWith('.mel-sheet')) return { stem: safeName.slice(0, -10), ext: '.mel-sheet' };
     if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
     if (lower.endsWith('.mel-timer')) return { stem: safeName.slice(0, -10), ext: '.mel-timer' };
@@ -11314,7 +11398,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'board-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['icon-packs', 'theme-settings', 'shortcut-settings', 'topic-layout-templates', 'note-templates', 'board-templates', 'restore-point-policy', 'x-bookmarks-settings', 'quick-memo-tags']);
   const WORKSPACE_PREFERENCE_DOCUMENTS = new Set(['restore-point-policy']);
 
   function _personalPreferenceKind() {
@@ -11336,7 +11420,8 @@
 
   function _assertPersonalPreferenceName(name) {
     const doc = String(name || '').trim();
-    if (!PERSONAL_PREFERENCE_DOCUMENTS.has(doc)) throw _httpError(404, `未知の個人設定です: ${name}`);
+    // アイコン素材集は素材集ごとに1文書（icon-pack-<12桁の16進>）。
+    if (!PERSONAL_PREFERENCE_DOCUMENTS.has(doc) && !/^icon-pack-[0-9a-f]{12}$/.test(doc)) throw _httpError(404, `未知の個人設定です: ${name}`);
     return doc;
   }
 
@@ -12626,7 +12711,7 @@
       throw new SystemStorageError('load() は未実装です');
     }
 
-    async listDocuments(_kind) {
+    async listDocuments(_kind, _options) {
       throw new SystemStorageError('listDocuments() は未実装です');
     }
 
@@ -12665,8 +12750,8 @@
       return this._inner.load(kind, documentId);
     }
 
-    async listDocuments(kind) {
-      return this._inner.listDocuments(kind);
+    async listDocuments(kind, options) {
+      return this._inner.listDocuments(kind, options);
     }
 
     async listDocumentHeaders(kind, options) {
@@ -13387,13 +13472,19 @@
       }
       return entries;
     }
-    async listDocuments(kind) {
+    async listDocuments(kind, options) {
       const contract = _contract();
+      // documentIdPrefix: 名前の先頭が一致する記録だけを読む。編集履歴は対象パスの
+      // ハッシュが名前の先頭に入るので、保存の前処理はその1パス分だけ読めば足りる。
+      // 指定しないと全件（実データで3199件・307MB）を読むため、スマホの送信が
+      // 終わらなかった（2026-11-26）。
+      const prefix = String(options?.documentIdPrefix || '');
       const entries = await this._listFolderEntries(this._folderFor(kind));
       const documents = [];
       for (const entry of entries) {
         if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
         const documentId = String(entry.name).slice(0, -5);
+        if (prefix && !documentId.startsWith(prefix)) continue;
         try {
           contract.sanitizeDocumentId(documentId);
         } catch {
@@ -13417,7 +13508,8 @@
         }
       });
       // 一覧から消えた記録の控えを端末内から片付ける（待たせない）。
-      _envelopeStorePrune(
+      // 絞り込んだ一覧では他の記録の控えまで消してしまうので行わない。
+      if (!prefix) _envelopeStorePrune(
         `${await _envelopeCacheAccount()}|${this._namespaceKind}|${this._folderFor(kind)}/`,
         new Set(documents.map(({ documentId }) => `${documentId}.json`.toLowerCase())),
       );
@@ -13640,7 +13732,8 @@
           });
         }
         this._audit('error', 'save', kind, docId, { message: `書込に失敗しました: ${error && error.message}` });
-        throw new contract.SystemStorageWriteError(`管理データの書込に失敗しました: ${error && error.message}`);
+        // 失敗番号を保ち、権限不足や通信失敗を「未対応の操作」へ変換させない。
+        throw Object.assign(new contract.SystemStorageWriteError(`管理データの書込に失敗しました: ${error && error.message}`), { status: error?.status || error?.status_code || error?.httpStatus });
       }
       record.revision = String((uploadMeta && uploadMeta.rev) || currentRevision || '');
       this._audit('info', 'save', kind, docId, { message: '保存しました' });
@@ -13660,7 +13753,7 @@
       } catch (error) {
         if (_isNotFoundError(error)) return false;
         this._audit('error', 'delete', kind, docId, { message: `削除に失敗しました: ${error && error.message}` });
-        throw new contract.SystemStorageWriteError(`管理データの削除に失敗しました: ${error && error.message}`);
+        throw Object.assign(new contract.SystemStorageWriteError(`管理データの削除に失敗しました: ${error && error.message}`), { status: error?.status || error?.status_code || error?.httpStatus });
       }
     }
 
@@ -17156,13 +17249,14 @@
 
   async function _guardRename(provider, body) {
     const oldPath = _normalizeFolderPath(body?.old_path || '');
-    const newName = _validateItemName(body?.new_name || '', 'new_name');
+    const boardTitle = body?.type === 'board' ? window.GBPathUtils?.displayTitle : null;
+    const newName = boardTitle ? boardTitle.storageName(body?.new_name) : _validateItemName(body?.new_name || '', 'new_name');
     const source = await _resolveEntryHandle(provider, oldPath);
     if (!source) return;
     await requireUnlocked(provider, oldPath, { action: 'rename-source', includeDescendants: source.kind === 'directory' });
     const parentPath = _dirname(oldPath);
     const sourceName = _basename(oldPath);
-    const nextPath = source.kind === 'directory'
+    const nextPath = boardTitle && body?.title_only === true ? oldPath : source.kind === 'directory'
       ? _joinPath(parentPath, newName)
       : _joinPath(parentPath, newName + _splitNameAndExt(sourceName).ext);
     if (nextPath !== oldPath) await requireUnlocked(provider, nextPath, { action: 'rename-destination' });
@@ -17273,6 +17367,7 @@
       '/outliner/duplicate',
       '/outliner/save-as',
       '/outliner/move',
+      '/outliner/move-batch',
       '/version/restore',
       '/version/restore-folder',
       '/trash/restore',
@@ -17309,6 +17404,11 @@
       await _guardSaveAs(provider, body || {});
     } else if (pathname === '/outliner/move' && method === 'POST') {
       await _guardMove(provider, body || {});
+    } else if (pathname === '/outliner/move-batch' && method === 'POST') {
+      // まとめての移動は、1件ずつ同じ確認を通す（1件でもロック中なら要求ごと断る）
+      for (const item of Array.isArray(body?.items) ? body.items : []) {
+        await _guardMove(provider, { path: item?.path || '', dest_folder: body?.dest_folder || '' });
+      }
     } else if (pathname === '/version/restore' && method === 'POST') {
       await requireUnlocked(provider, body?.path || '', { action: 'version-restore' });
     } else if (pathname === '/version/restore-folder' && method === 'POST') {
@@ -18301,7 +18401,14 @@
       purpose: options.purpose,
     });
     const both = (key, options) => { query(key, options); payload(key, options); };
-    if (pathname === '/file' || pathname === '/value' || pathname === '/db-metadata' || pathname === '/replace') {
+    if (pathname === '/db-metadata' || pathname === '/db-property/rename') {
+      // シート全体を変える保存は、ほかの人がロックしている行（トピック）とも食い違うので、中の行も含めて確かめる
+      // （セルの入力は行だけをロックする。2026-11-25）。表示の設定だけの保存は行の中身を変えないので、シートだけ。
+      const schema = pathname === '/db-property/rename'
+        || Object.keys(body || {}).some(key => !['view_config', 'operation_id', 'expected_schema_revision', 'path', 'db_path'].includes(key));
+      both('path', { includeDescendants: schema });
+      payload('db_path', { includeDescendants: schema });
+    } else if (pathname === '/file' || pathname === '/value' || pathname === '/replace') {
       both('path');
       payload('entry_path');
       payload('folder_path');
@@ -18342,16 +18449,33 @@
         includeDescendants: false,
         purpose: 'destination',
       });
+    } else if (pathname === '/outliner/move-batch') {
+      // まとめての移動も、1件の移動と同じく移動元と移動先を候補にする
+      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
+      for (const item of Array.isArray(body?.items) ? body.items : []) {
+        const sourcePath = _normalizeFolderPath(item?.path || '');
+        if (!sourcePath) continue;
+        const sourceKind = await _entryKind(provider, sourcePath);
+        _addCandidate(candidates, sourcePath, { includeDescendants: sourceKind === 'directory', purpose: 'source' });
+        _addCandidate(candidates, await _moveTarget(provider, sourcePath, destFolder, sourceKind === 'file'), {
+          includeDescendants: false, purpose: 'destination',
+        });
+      }
     } else if (pathname === '/outliner/rename' || pathname === '/entity/rename') {
       const oldPath = _normalizeFolderPath(pathname === '/outliner/rename' ? body?.old_path : body?.path);
-      const newName = String(body?.new_name || '').replace(/[\\/]/g, '').trim();
+      const boardTitle = pathname === '/outliner/rename' && body?.type === 'board' ? window.GBPathUtils?.displayTitle : null;
+      const newName = boardTitle ? boardTitle.storageName(body?.new_name) : String(body?.new_name || '').replace(/[\\/]/g, '').trim();
       const sourceKind = await _entryKind(provider, oldPath);
       const isFile = sourceKind === 'file' || (sourceKind !== 'directory' && !!_splitNameAndExtension(_pathBase(oldPath)).extension);
       _addCandidate(candidates, oldPath, {
         includeDescendants: sourceKind === 'directory',
         purpose: 'source',
       });
-      if (!window.GBPathUtils?.isDisplayTitleRename?.(pathname, body)) _addCandidate(candidates, _renameTarget(oldPath, newName, isFile), {
+      const titleOnly = boardTitle ? body?.title_only === true : window.GBPathUtils?.isDisplayTitleRename?.(pathname, body);
+      const destination = boardTitle && isFile
+        ? _joinPath(_pathDir(oldPath), newName + internals._splitNameAndExt(_pathBase(oldPath)).ext)
+        : _renameTarget(oldPath, newName, isFile);
+      if (!titleOnly) _addCandidate(candidates, destination, {
         includeDescendants: false,
         purpose: 'destination',
       });
@@ -18830,7 +18954,170 @@
     });
   }
 
-  async function acquireMutationLocks(candidates) {
+  // 多数の対象（多数の移動・削除）は、対象ごとの要求ではなく1回の要求でまとめて取る・外す。
+  // 規則は1件の時と同じ（サーバーが対象ごとに同じ処理を通す）。古い本体と Cloud（Dropbox）は1件ずつ。
+  const BATCH_LOCK_MIN = 8;
+  const BATCH_LOCK_REQUEST_MAX = 500;
+  let batchLockApiUnsupported = false;
+
+  function _batchLockApiUsable() {
+    return !batchLockApiUnsupported && !window.MeldexRuntimeAdapter?.isDropboxMode?.();
+  }
+
+  async function _waitPendingReleases() {
+    while (pendingReleases.size) {
+      const released = await Promise.all([...pendingReleases.values()]);
+      if (released.some(result => result?.ok === false)) {
+        const error = new Error('前回の編集ロック解除を確認できません。接続の回復後に画面を再読込してください。保存処理は開始していません');
+        error.code = 'active_lock_release_unknown';
+        throw error;
+      }
+    }
+  }
+
+  function _batchItemError(row) {
+    const detail = row?.detail;
+    const message = (detail && typeof detail === 'object' ? detail.message : detail) || 'ほかの端末で編集中のため保存できません';
+    const error = new Error(String(message));
+    error.status = Number(row?.status) || 500;
+    error.payload = { detail };
+    return error;
+  }
+
+  // 戻り値: 取れなかった対象の一覧 [{ path, error }]。取れた対象は localLocks へ入る。
+  async function _ensureLocksBatch(specs) {
+    await _waitPendingReleases();
+    const need = [];
+    for (const spec of specs) {
+      lastUsedAt.set(spec.path, Date.now());
+      const current = localLocks.get(spec.path);
+      if (current
+        && (!spec.includeDescendants || current.include_descendants === true)
+        && Date.parse(current.expires_at || '') > Date.now() + HEARTBEAT_MS) continue;
+      need.push(spec);
+    }
+    if (!need.length) return [];
+    const rows = [];
+    for (let start = 0; start < need.length; start += BATCH_LOCK_REQUEST_MAX) {
+      const part = need.slice(start, start + BATCH_LOCK_REQUEST_MAX);
+      const body = _lockBody(part[0].path);
+      delete body.path;
+      delete body.include_descendants;
+      body.items = part.map(spec => ({ path: spec.path, include_descendants: spec.includeDescendants === true }));
+      const response = await _jsonFetch('/active-lock/acquire-batch', { method: 'POST', body: JSON.stringify(body) });
+      const partRows = Array.isArray(response?.results) ? response.results : [];
+      part.forEach((_spec, index) => rows.push(partRows[index] || null));
+    }
+    const failed = [];
+    need.forEach((spec, index) => {
+      const row = rows[index];
+      if (row?.ok && row.entry) {
+        localLocks.set(spec.path, row.entry);
+        return;
+      }
+      const error = row ? _batchItemError(row) : new Error('編集ロックの応答を確認できませんでした');
+      // 管理用フォルダはロック対象外。ロックを取れないことを理由に操作から外さない。
+      if (_isLockExemptError(error)) return;
+      failed.push({ path: spec.path, error });
+    });
+    if (localLocks.size) _startHeartbeat();
+    return failed;
+  }
+
+  async function _acquireMutationLocksBatch(specs, options) {
+    const acquired = [];
+    const fresh = [];
+    for (const spec of specs) {
+      const current = mutationLockRefs.get(spec.path);
+      if (current) {
+        current.count += 1;
+        acquired.push(spec.path);
+      } else fresh.push(spec);
+    }
+    let failed = [];
+    if (fresh.length) {
+      const preexisting = new Set(fresh.filter(spec => localLocks.has(spec.path)).map(spec => spec.path));
+      try {
+        failed = await _ensureLocksBatch(fresh);
+      } catch (error) {
+        await releaseMutationLocks(acquired);
+        if (error?.status === 404 || error?.status === 405) {
+          batchLockApiUnsupported = true;
+          error.code = 'active_lock_batch_unsupported';
+        }
+        throw error;
+      }
+      const failedPaths = new Set(failed.map(item => item.path));
+      for (const spec of fresh) {
+        if (failedPaths.has(spec.path)) continue;
+        mutationLockRefs.set(spec.path, { count: 1, owned: !preexisting.has(spec.path) });
+        acquired.push(spec.path);
+      }
+    }
+    if (failed.length && options?.partial !== true) {
+      await releaseMutationLocks(acquired);
+      if (failed[0].error?.status === 423) _status(_conflictMessage(failed[0].error), true);
+      throw failed[0].error;
+    }
+    return {
+      paths: acquired.slice(),
+      failed,
+      release: () => releaseMutationLocks(acquired),
+    };
+  }
+
+  async function _releaseLocksBatch(paths) {
+    const targets = _uniquePaths(paths).filter(path => !pendingReleases.has(path));
+    if (!targets.length) return;
+    targets.forEach(path => {
+      localLocks.delete(path);
+      lastUsedAt.delete(path);
+      mutationLockRefs.delete(path);
+    });
+    _stopHeartbeatIfIdle();
+    // 失敗・中断した解除も、サーバーへは届いているかもしれない。確認できなかった対象は、
+    // 1件の解除と同じく再読込まで「解除を確認できない」印を残す。
+    const request = _jsonFetch('/active-lock/release-batch', {
+      method: 'POST',
+      body: JSON.stringify({ token: token(), holder_id: holderId(), items: targets.map(path => ({ path })) }),
+    }).then(response => {
+      const rows = Array.isArray(response?.results) ? response.results : [];
+      return targets.map((_path, index) => rows[index]?.ok === true);
+    }, error => {
+      if (error?.status === 404 || error?.status === 405) batchLockApiUnsupported = true;
+      return null;
+    });
+    const releases = targets.map((path, index) => {
+      const release = request.then(async outcome => {
+        if (outcome) return outcome[index] ? { ok: true, removed: true } : { ok: false, removed: true, error_code: 'active_lock_release_unknown' };
+        if (batchLockApiUnsupported) {
+          return _releaseLock(path, false).then(
+            () => ({ ok: true, removed: true }),
+            () => ({ ok: false, removed: true, error_code: 'active_lock_release_unknown' }),
+          );
+        }
+        return { ok: false, removed: true, error_code: 'active_lock_release_unknown' };
+      });
+      pendingReleases.set(path, release);
+      return release.then(result => {
+        if (result.ok && pendingReleases.get(path) === release) pendingReleases.delete(path);
+        return result;
+      });
+    });
+    await Promise.all(releases);
+  }
+
+  // options.partial === true: 取れなかった対象があっても投げず、戻り値の failed（[{ path, error }]）で知らせる
+  // （まとめての移動・削除が、取れなかった対象だけを操作から外すため）。まとめて取る時だけ有効。
+  async function acquireMutationLocks(candidates, options) {
+    const batchSpecs = _candidateSpecs(candidates).filter(candidate => !_isLockExemptPath(candidate.path));
+    if (batchSpecs.length >= BATCH_LOCK_MIN && _batchLockApiUsable()) {
+      try {
+        return await _acquireMutationLocksBatch(batchSpecs, options);
+      } catch (error) {
+        if (error?.code !== 'active_lock_batch_unsupported') throw error;
+      }
+    }
     const acquired = [];
     try {
       for (const candidate of _candidateSpecs(candidates)) {
@@ -18858,14 +19145,20 @@
 
   async function releaseMutationLocks(paths) {
     const releases = [];
+    const owned = [];
     for (const path of [...(paths || [])].reverse()) {
       const current = mutationLockRefs.get(path);
       if (!current) continue;
       current.count -= 1;
       if (current.count > 0) continue;
       mutationLockRefs.delete(path);
-      if (current.owned) releases.push(releaseLock(path));
+      if (current.owned) owned.push(path);
     }
+    if (owned.length >= BATCH_LOCK_MIN && owned.length <= BATCH_LOCK_REQUEST_MAX && _batchLockApiUsable()) {
+      await _releaseLocksBatch(owned);
+      return;
+    }
+    owned.forEach(path => releases.push(releaseLock(path)));
     await Promise.all(releases);
   }
 
@@ -19009,6 +19302,7 @@
     header: HEADER,
     token,
     holderId,
+    normalizePath: _normalizePath,
     beforeApiFetch,
     ensureLock,
     touchLock,
@@ -19533,6 +19827,11 @@
     row.source_chat_path = _normalizeFolderPath(body?.source_chat_path ?? row.source_chat_path ?? '');
     row.source_msg_id = String(body?.source_msg_id ?? row.source_msg_id ?? '').trim();
     row.created_by = String(body?.created_by ?? row.created_by ?? '').trim();
+    // デスクトップ版と同じく deleted で削除・復元（取り消し）を受け付ける。
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'deleted')) {
+      if (_asBool(body.deleted)) row.deleted_at = row.deleted_at || now;
+      else delete row.deleted_at;
+    }
     row.created = row.created || now;
     row.updated = now;
     return row;
@@ -21797,7 +22096,9 @@
         } catch {}
       }
     }
-    const payload = { ...meta, count: entries.length, last };
+    const identity = typeof provider.getMetadata === 'function'
+      ? String((await provider.getMetadata(_roomDir(meta.path, sourceFolder)))?.id || '') : '';
+    const payload = { ...meta, id: identity, count: entries.length, last };
     if (meta.type === 'dm') payload.members = _roomMembers(meta.path);
     if (meta.type === 'group') payload.members = await _groupMembers(provider, meta.path, sourceFolder);
     return payload;
@@ -21844,10 +22145,20 @@
     return rooms.sort((a, b) => String(a.path || '').localeCompare(String(b.path || ''), 'ja'));
   }
 
-  async function _writeGroupMembers(provider, roomPath, sourceFolder, user, body) {
+  async function _writeGroupMembers(provider, roomPath, sourceFolder, user, body, stagingDirectory = null) {
     const members = Array.isArray(body?.members) ? body.members : [];
     const clean = Array.from(new Set([user, ...members.map(member => String(member || '').trim()).filter(Boolean)]));
-    await provider.writeText(_groupMembersPath(roomPath, sourceFolder), JSON.stringify({ members: clean }, null, 2));
+    if (typeof provider.uploadBytesConditional !== 'function') throw new Error('この保存先は部屋を安全に新規作成できません');
+    await provider.uploadBytesConditional(stagingDirectory ? _joinPath(stagingDirectory, GROUP_MEMBERS_FILE) : _groupMembersPath(roomPath, sourceFolder),
+      new TextEncoder().encode(JSON.stringify({ members: clean }, null, 2)), null);
+  }
+
+  function _newGroupCreationStage(sourceFolder) {
+    if (typeof window.crypto?.getRandomValues !== 'function') throw new Error('安全な部屋作成IDを利用できません');
+    const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+    const token = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    // The reserved llm container is excluded from collaboration room lists.
+    return _joinPath(sourceFolder, CHAT_DIR, 'llm', '.room-create-' + token);
   }
 
   function _messageMarkdown(roomPath, from, text, timestamp) {
@@ -21889,11 +22200,42 @@
       return _listRooms(provider, user, sourceFolder);
     }
     if (pathname === '/collab/rooms' && method === 'POST') {
-      const roomPath = _roomPathFromCreateBody(body || {}, user);
-      await _directoryHandle(provider, _roomDir(roomPath, sourceFolder), true);
-      if (_roomMeta(roomPath).type === 'group') await _writeGroupMembers(provider, roomPath, sourceFolder, user, body || {});
-      return { ok: true, path: roomPath };
+      const basePath = _roomPathFromCreateBody(body || {}, user);
+      const group = _roomMeta(basePath).type === 'group';
+      const autoName = group && body?.auto_name === true;
+      let index = 1;
+      let stagingDirectory = null;
+      while (true) {
+        const roomPath = index === 1 ? basePath : basePath + ' (' + index + ')';
+        const target = _roomDir(roomPath, sourceFolder);
+        const existed = await _pathExists(provider, target);
+        if (existed && group) {
+          if (autoName) { index = Math.max(2, index + 1); continue; }
+          await _assertRoomAccess(provider, roomPath, user, sourceFolder);
+          throw new Error('同名のルームが既に存在します');
+        }
+        if (!group) {
+          await _directoryHandle(provider, target, true);
+        } else {
+          if (!stagingDirectory) {
+            stagingDirectory = _newGroupCreationStage(sourceFolder);
+            await _directoryHandle(provider, stagingDirectory, true);
+            await _writeGroupMembers(provider, roomPath, sourceFolder, user, body || {}, stagingDirectory);
+          }
+          try {
+            // Dropbox movePath publishes atomically with autorename:false.
+            // Never delete a competing directory based on an old listing.
+            await _moveEntry(provider, stagingDirectory, target);
+          } catch (error) {
+            if (autoName && /(?:to|path)\/conflict(?:\/|$)/i.test(String(error?.message || ''))) { index = Math.max(2, index + 1); continue; }
+            // Retain the unpublished stage: Dropbox has no empty-directory CAS delete.
+            throw error;
+          }
+        }
+        return { ok: true, path: roomPath };
+      }
     }
+
     if (pathname === '/collab/rooms/rename' && method === 'POST') {
       const oldPath = _requireRoomPath(body?.path || '');
       _assertMutableRoomPath(oldPath);
@@ -22147,7 +22489,7 @@
       const value = String(msg[key] || '').trim();
       if (value) clean[key] = value;
     });
-    ['citations', 'code_exec_blocks', 'artifacts'].forEach(key => {
+    ['citations', 'code_exec_blocks', 'artifacts', 'skills'].forEach(key => {
       if (Array.isArray(msg[key])) clean[key] = msg[key];
     });
     if (msg.usage && typeof msg.usage === 'object' && !Array.isArray(msg.usage)) clean.usage = msg.usage;
@@ -22156,6 +22498,10 @@
     if (msg.aborted === true) clean.aborted = true;
     if (msg.error === true) clean.error = true;
     if (typeof msg.error_code === 'string' && msg.error_code.trim()) clean.error_code = msg.error_code.trim().slice(0, 128);
+    ['error_detail', 'action'].forEach(key => {
+      if (typeof msg[key] === 'string') clean[key] = msg[key];
+    });
+    if (typeof msg.auto_continue === 'boolean') clean.auto_continue = msg.auto_continue;
     if (str(msg.thinking).trim()) clean.thinking = str(msg.thinking).trim();
     if (str(msg.tool_audit_warning).trim()) clean.tool_audit_warning = str(msg.tool_audit_warning).trim();
     if (msg.compressed === true) clean.compressed = true;
@@ -25044,6 +25390,14 @@
     return _googlePullFull(provider, user);
   }
 
+  function _requireProviderRecurrenceSupported(row) {
+    let rule = row.recurrence;
+    if (typeof rule === 'string') { try { rule = JSON.parse(rule); } catch { return; } }
+    if (rule?.overrides && Object.keys(rule.overrides).length) {
+      throw new Error('一回だけ変更した繰り返し予定は、この連携先へまだ送信できません。内容は残っています。iCal書き出しをご利用ください');
+    }
+  }
+
   async function _googlePush(provider, body) {
     const user = String(body?.user || '').trim();
     const auth = await _googleAccessToken(provider);
@@ -25054,6 +25408,7 @@
     for (const row of rows) {
       if (!_isLocalUnsent(row, user)) continue;
       try {
+        _requireProviderRecurrenceSupported(row);
         const providerId = await _stableProviderEventKey(row.id);
         const eventBody = { id: providerId, summary: row.title || '', description: row.description || '', location: row.location || '' };
         if (row.all_day) {
@@ -25290,6 +25645,7 @@
     for (const row of rows) {
       if (!_isLocalUnsent(row, user) || !row.start) continue;
       try {
+        _requireProviderRecurrenceSupported(row);
         const eventBody = _microsoftEventBody(row);
         eventBody.transactionId = await _stableProviderEventKey(row.id);
         const result = await _graphJson('POST', '/me/events', auth.access_token, eventBody);
@@ -26355,7 +26711,41 @@
   // 互いのロックを奪い合って両方とも「更新ロックを失いました」で失敗していた（M-014 スケジュール網羅、Cloud版の初回起動で発見）。
   // 同じ保存先への更新は、この画面の中では順番に行う。入れ子の呼び出しで待ち続けないよう、待つのは最大30秒まで。
   const calendarLeaseQueues = new WeakMap();
+  const pendingCalendarReleases = new WeakMap();
   const PAGE_LEASE_TOKEN = globalThis.crypto?.randomUUID ? 'calendar-page-' + globalThis.crypto.randomUUID() : `calendar-page-${Date.now()}-${Math.random()}`;
+
+  function calendarReleaseScope() {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    return JSON.stringify([state.accountId || state.account_id || '', state.securityScopeId || state.security_scope_id || '',
+      state.path || state.folder || '', window.MeldexWorkspaces?.getActiveId?.() || '',
+      window.MeldexRuntimeAdapter?.getMode?.() || '']);
+  }
+
+  function rememberCalendarRelease(provider, scope, lease, holderId) {
+    const key = provider?.[LEASE_PROVIDER_ORIGINAL] || provider;
+    let scopes = pendingCalendarReleases.get(key);
+    if (!scopes) pendingCalendarReleases.set(key, scopes = new Map());
+    const jobs = scopes.get(scope) || [];
+    jobs.push({ provider, path: lease.path, token: PAGE_LEASE_TOKEN, holderId });
+    scopes.set(scope, jobs);
+  }
+
+  async function releasePendingCalendarLeases(provider) {
+    const key = provider?.[LEASE_PROVIDER_ORIGINAL] || provider;
+    const scopes = key && pendingCalendarReleases.get(key), scope = calendarReleaseScope();
+    const jobs = scopes?.get(scope);
+    if (!jobs?.length) return;
+    for (const job of [...jobs]) {
+      try {
+        // 同時に待つ呼出元も同じ解放を待つ。終了した操作の保持者だけを指定する。
+        job.promise ||= Promise.resolve().then(() => window.MeldexActiveLockStore.release(job.provider, job.path, job.token, job.holderId));
+        await job.promise;
+        const index = jobs.indexOf(job);
+        if (index >= 0) jobs.splice(index, 1);
+      } finally { job.promise = null; }
+    }
+    if (!jobs.length) scopes.delete(scope);
+  }
 
   async function waitForCalendarIdle(provider) {
     const key = (provider && provider[LEASE_PROVIDER_ORIGINAL]) || provider;
@@ -26364,6 +26754,7 @@
       pending = key && calendarLeaseQueues.get(key);
       if (pending) await pending;
     } while (pending !== (key && calendarLeaseQueues.get(key)));
+    await releasePendingCalendarLeases(provider);
   }
 
   async function withCalendarLease(provider, operation, context = null) {
@@ -26387,6 +26778,7 @@
       fail('カレンダーは別の更新の途中です。少し待ってから再試行してください', 409, 'calendar_lease_conflict');
     }
     try {
+      await releasePendingCalendarLeases(provider);
       return await withCalendarLeaseNow(provider, operation, context);
     } finally {
       releaseTurn();
@@ -26394,6 +26786,7 @@
   }
 
   async function withCalendarLeaseNow(provider, operation, context = null) {
+    const releaseScope = calendarReleaseScope();
     const store = window.MeldexActiveLockStore;
     if (!store?.acquire || !store?.release || !store?.heartbeat) {
       fail('共有カレンダーの更新ロックを利用できません。再読み込みしてから再試行してください', 503, 'CALENDAR_LOCK_UNAVAILABLE');
@@ -26473,7 +26866,10 @@
         if (activeCalendarLeases.get(alias)?.token === token) activeCalendarLeases.delete(alias);
       });
       try { await store.release(provider, lease.path, PAGE_LEASE_TOKEN, holderId); }
-      catch (error) { console.warn('[Calendar] 共有更新ロックの解放に失敗しました', error); }
+      catch (error) {
+        rememberCalendarRelease(provider, releaseScope, lease, holderId);
+        console.warn('[Calendar] 共有更新ロックの解放に失敗しました', error);
+      }
     }
   }
 
@@ -26885,7 +27281,7 @@
       async list(kind, itemId) {
         const ctx = await context(kind, itemId);
         return {
-          itemKind: kind, itemId: String(itemId), currentRevision: await revision(ctx.current),
+          itemKind: kind, itemId: String(itemId), currentRevision: await revision(ctx.current), current: clone(ctx.current),
           versions: ctx.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
         };
       },
@@ -27427,7 +27823,7 @@
   async function listHistory(doc, kind, itemId) {
     const context = historyContext(doc, kind, itemId);
     return {
-      itemKind: kind, itemId: String(itemId), currentRevision: await revision(context.current),
+      itemKind: kind, itemId: String(itemId), currentRevision: await revision(context.current), current: clone(context.current),
       versions: context.versions.map(({ snapshot, ...row }) => ({ ...row, deleted: snapshot == null })),
     };
   }
@@ -28013,7 +28409,7 @@
   }
 
   function _normalizeCreateProperties(rawProps) {
-    const out = {};
+    const out = Object.create(null);
     Object.entries(rawProps || {}).forEach(([prop, value]) => {
       const rawList = Array.isArray(value) ? value : [value];
       out[String(prop)] = rawList.map((rawCandidate) => {
@@ -28604,7 +29000,7 @@
   // 消す」という、この関数が解消しようとしている元のバグをそのまま
   // 再現してしまう（デスクトップ版の delete_sheet_entry_if_needed が
   // strict=True で例外を上位へ投げるのと対称）。
-  async function _deleteSheetStoreEntryIfNeeded(provider, rawPath) {
+  async function _deleteSheetStoreEntryIfNeeded(provider, rawPath, options = {}) {
     const path = _normalizeFolderPath(rawPath || '');
     if (!path || !/\.md$/i.test(path) || _basename(path).startsWith('_')) return null;
     const dbPath = _dirname(path);
@@ -28616,7 +29012,11 @@
     if (!existing || existing.deleted) return null;
     const previousRow = { ...existing };
     const now = _nowIso();
-    store.rows[fileName] = { file_name: fileName, deleted: true, deletedAt: now, updated: now };
+    const tombstone = { file_name: fileName, deleted: true, deletedAt: now, updated: now };
+    // A virtual row has no physical file to move. Persist its recovery copy
+    // before the first destructive write, including an exact deletion version.
+    await options.beforeDelete?.({ schema_version: 1, dbPath, fileName, previousRow, tombstone });
+    store.rows[fileName] = tombstone;
     await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
     return { ok: true, deleted_id: fileName, dbPath, fileName, previousRow };
   }
@@ -28659,6 +29059,67 @@
     await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] }).catch(() => {});
   }
   internals._restoreSheetStoreEntryAfterFailedDelete = _restoreSheetStoreEntryAfterFailedDelete;
+
+  async function _restoreTrashedSheetStoreEntry(provider, path, meta) {
+    const backup = meta?.sheet_row_backup;
+    const receipt = meta?.sheet_row_restored;
+    if (!backup && !receipt) return false;
+    if ((backup || receipt).schema_version !== 1) throw new Error('回答の復元情報の版に対応していません');
+    const normalized = _normalizeFolderPath(path);
+    const { dbPath, fileName, previousRow, tombstone } = backup || receipt;
+    if (normalized !== _joinPath(dbPath, fileName) || (backup && (!previousRow?.frontmatter || !tombstone?.deleted))) {
+      throw new Error('回答の復元情報が一致しません');
+    }
+    await _requireUnlocked(provider, dbPath, { action: 'restore' });
+    await _requireUnlocked(provider, normalized, { action: 'restore' });
+    if (await _pathExists(provider, normalized)) {
+      throw Object.assign(new Error('回答の復元先に同名のファイルがあります'), { status: 409, code: 'RESTORE_CONFLICT' });
+    }
+    const store = await _sheetStoreForRead(provider, dbPath);
+    if (!store) throw new Error('回答の復元先が見つかりません');
+    const current = store.rows[fileName];
+    const contents = row => JSON.stringify(row ? { ...row, updated: '' } : null);
+    if (receipt) {
+      const observed = await _sheetRowRecoveryReceipt(dbPath, fileName, current);
+      if (observed.row_hash !== receipt.row_hash) throw Object.assign(new Error('回答の復元先は他の操作で変更されています'), { status: 409, code: 'RESTORE_CONFLICT' });
+      return receipt;
+    }
+    // The response may have been lost after the successful write. Returning
+    // success for the same contents makes retry safe without recreating its ID.
+    const restoredReceipt = await _sheetRowRecoveryReceipt(dbPath, fileName, previousRow);
+    if (contents(current) === contents(previousRow)) return restoredReceipt;
+    if (JSON.stringify(current) !== JSON.stringify(tombstone)) {
+      throw Object.assign(new Error('回答の復元先は他の操作で変更されています'), { status: 409, code: 'RESTORE_CONFLICT' });
+    }
+    store.rows[fileName] = { ...previousRow, updated: _nowIso() };
+    await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
+    return restoredReceipt;
+  }
+  internals._restoreTrashedSheetStoreEntry = _restoreTrashedSheetStoreEntry;
+  async function _sheetRowRecoveryReceipt(dbPath, fileName, row) {
+    const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+    const bytes = new TextEncoder().encode(JSON.stringify(canonical(row ? { ...row, updated: '' } : null)));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return { schema_version: 1, dbPath, fileName, row_hash: [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('') };
+  }
+  async function _completeSheetRowTrashRestore(provider, metaPath, meta, receipt) {
+    if (typeof provider.writeJsonMerged !== 'function') throw new Error('回答の復元結果を安全に記録できません');
+    await provider.writeJsonMerged(metaPath, current => {
+      const sameBackup = !!meta.sheet_row_backup && JSON.stringify(current?.sheet_row_backup) === JSON.stringify(meta.sheet_row_backup);
+      const sameReceipt = !!current?.sheet_row_restored && JSON.stringify(current.sheet_row_restored) === JSON.stringify(receipt);
+      if (!current || (!sameBackup && !sameReceipt)) {
+        throw Object.assign(new Error('回答の復元情報は他の操作で変更されています'), { status: 409 });
+      }
+      // Preserve retry verification without retaining an invisible copy of the
+      // answer's contents once the restored row is durable.
+      const { sheet_row_backup, ...rest } = current;
+      return { ...rest, sheet_row_restored: receipt };
+    });
+  }
+  internals._completeSheetRowTrashRestore = _completeSheetRowTrashRestore;
+  internals._sheetRowTrashText = row => ['---', ...Object.entries(row.frontmatter || {}).map(
+    ([key, value]) => `${key}: ${_jsonValue(value)}`), '---', '', String(row.body || '')].join('\n');
 
   async function _uniqueSheetEntryStem(provider, dbPath, name) {
     const base = _safeFileStem(name, '無題');
@@ -28713,7 +29174,7 @@
   };
 
   function _entityPayloadFromParsed(path, parsed) {
-    const properties = {};
+    const properties = Object.create(null);
     Object.entries(parsed.frontmatter.properties || {}).forEach(([prop, rawList]) => {
       properties[prop] = _normalizeCandidates(rawList).map((candidate, index) => ({
         value: candidate.value || '',
@@ -28770,7 +29231,7 @@
   }
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
-    const entity = { _entry_path: entryPath, _revision: Number(frontmatter.meldex_revision || 0) };
+    const entity = Object.assign(Object.create(null), { _entry_path: entryPath, _revision: Number(frontmatter.meldex_revision || 0) });
     if (frontmatter.display_icon) entity._display_icon = String(frontmatter.display_icon);
     if (frontmatter.id) entity._id = frontmatter.id;
     if (frontmatter.modified) entity._modified = String(frontmatter.modified);
@@ -29584,7 +30045,77 @@
     return path;
   }
 
-  async function _createEntity(provider, body, publicSubmissionId = '') {
+  const _formCreateFlights = new WeakMap();
+  async function _createFormEntity(provider, body) {
+    const id = String(body.operation_id || '');
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(id)) throw Object.assign(new Error('保存操作IDが不正です'), {status:400});
+    const parent = _normalizeFolderPath(body.parent_path || '');
+    if (!parent) throw new Error('parent_path は必須です');
+    await _requireUnlocked(provider, parent, {action:'create-form-answer'});
+    const payload = {...body}; delete payload.operation_id;
+    const hash = await window.MeldexSystemStorage.computeRevision({operation:'form-create',payload});
+    const key = await window.MeldexSystemStorage.computeRevision({operation:'form-create-id',payload:{id}});
+    const stem = 'フォーム回答-' + key.slice(0,32), path = _joinPath(parent,stem+'.md');
+    const folder = _joinPath(parent,'_form-create-receipts'), receiptPath = _joinPath(folder,key+'.json');
+    let flights = _formCreateFlights.get(provider);
+    if (!flights) {flights=new Map();_formCreateFlights.set(provider,flights);}
+    const flightKey = JSON.stringify([provider._mediaScope || '',parent,id]);
+    if (flights.has(flightKey)) {
+      const previous = flights.get(flightKey);
+      if (previous.hash !== hash) throw Object.assign(new Error('保存操作IDが別の内容で再利用されています'), {status:409});
+      return previous.promise;
+    }
+    const validate = value => {
+      if (!value || value.fileType!=='meldex-form-create-receipt' || value.schema_version!==1
+        || value.id!==id || value.hash!==hash || value.path!==path || !/^ent_[a-zA-Z0-9_-]+$/.test(value.entry_id)
+        || !['prepared','writing','completed'].includes(value.state))
+        throw Object.assign(new Error('回答の保存記録が一致しません'), {status:409});
+      return value;
+    };
+    const promise = (async()=>{
+      if (typeof provider.writeJsonMerged!=='function') throw new Error('回答の保存記録を安全に保存できません');
+      let receipt = await _readVersionedJson(provider,receiptPath);
+      if (!receipt) {
+        const existing = await _readSheetStoreEntry(provider,path);
+        const marker = existing?.frontmatter?.meldex_form_create;
+        if (existing && (marker?.id!==id || marker?.hash!==hash))
+          throw Object.assign(new Error('回答の保存先が別のトピックに変わっています'), {status:409});
+        const proposed = {fileType:'meldex-form-create-receipt',schema_version:1,id,hash,path,
+          entry_id:existing?.frontmatter?.id || 'ent_'+crypto.randomUUID().replace(/-/g,''),state:'prepared'};
+        await _directoryHandle(provider,folder,true);
+        await provider.writeJsonMerged(receiptPath,(current,metadata)=>{
+          if (current) return validate(current);
+          if (metadata?.rev) throw Object.assign(new Error('回答の保存記録を読み取れません'), {status:409});
+          return proposed;
+        },{fallbackValue:null});
+        receipt = await _readVersionedJson(provider,receiptPath);
+      }
+      validate(receipt);
+      const store = await _sheetStoreForRead(provider,parent), row = store?.rows[stem+'.md'];
+      if (row?.deleted) throw Object.assign(new Error('保存済みの回答は削除されています'), {status:409});
+      const existing = row || (await _pathExists(provider,path) ? await _readFrontmatterFile(provider,path) : null);
+      let result;
+      if (existing) {
+        const fm=existing.frontmatter || {}, marker=fm.meldex_form_create;
+        if (fm.id!==receipt.entry_id || marker?.id!==id || marker?.hash!==hash)
+          throw Object.assign(new Error('保存済み回答が別のトピックに変わっています'), {status:409});
+        result={ok:true,replayed:true,path,name:fm.display_title || body.name,entry_id:fm.id,revision:Number(fm.meldex_revision || 0)};
+      } else {
+        if (receipt.state==='completed' || receipt.state==='writing') throw Object.assign(new Error('以前の回答の保存先を確認できません。入力を保持しています'), {status:409});
+        // A physical legacy row has no durable tombstone. An interrupted
+        // acknowledgement must never recreate a row removed by another client.
+        if (!store) await provider.writeJsonMerged(receiptPath,current=>({...validate(current),state:'writing'}));
+        result=await _createEntity(provider,body,'',{stem,entry_id:receipt.entry_id,marker:{id,hash}});
+      }
+      await provider.writeJsonMerged(receiptPath,current=>({...validate(current),state:'completed'}));
+      return result;
+    })();
+    flights.set(flightKey,{hash,promise});
+    try {return await promise;} finally {if(flights.get(flightKey)?.promise===promise)flights.delete(flightKey);}
+  }
+
+  async function _createEntity(provider, body, publicSubmissionId = '', formCreation = null) {
+    if (!publicSubmissionId && !formCreation && body?.source==='form' && body?.operation_id) return _createFormEntity(provider,body);
     const parent = _normalizeFolderPath(body?.parent_path || '');
     const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.name || '無題') || String(body?.name || '無題');
     const name = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _safeFileStem(rawTitle, '無題');
@@ -29603,7 +30134,7 @@
     if (rawTitle !== name && (await _readPivot(provider,parent)).entities?.[rawTitle]) {
       const error=new Error("同じ名前のトピックが既にあります"); error.status=409; throw error;
     }
-    const targetName = publicSubmissionId ? name : useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
+    const targetName = formCreation?.stem || (publicSubmissionId ? name : useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md'));
     const path = _joinPath(parent, targetName + '.md');
     await _requireUnlocked(provider, path, { action: 'create-entity' });
     if (publicSubmissionId) {
@@ -29618,8 +30149,9 @@
     const now = _nowIso();
     const frontmatter = {
       type: 'settings-entry',
-      id: 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
-      ...(rawTitle !== name ? {display_title:rawTitle} : {}),
+      id: formCreation?.entry_id || 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
+      ...(formCreation || rawTitle !== name ? {display_title:rawTitle} : {}),
+      ...(formCreation ? {meldex_form_create:formCreation.marker} : {}),
       category: String(body?.category || _basename(parent)),
       created: now,
       created_by: String(body?.user || 'anonymous'),
@@ -29642,12 +30174,19 @@
       snapshotKind: 'folder',
       fileKind: 'settings-entry',
     }, async () => {
-      if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, noteContent);
+      if (useStore && formCreation) {
+        const store=await _ensureSheetStore(provider,parent),fileName=targetName+'.md';
+        if (store.rows[fileName]) throw Object.assign(new Error('回答の保存先が別の操作で変更されています'), {status:409});
+        store.rows[fileName]={file_name:fileName,name:targetName,path,frontmatter,body:noteContent,updated:_nowIso()};
+        await _writeSheetStore(provider,parent,store,{changedFileNames:[fileName]});
+      }
+      else if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, noteContent);
       else await _writeFrontmatterFile(provider, path, frontmatter, noteContent);
       return {
         ok: true,
         path,
         entry_id: frontmatter.id,
+        ...(formCreation ? {name:rawTitle} : {}),
         revision: Number(frontmatter.meldex_revision || 0),
       };
     });
@@ -30699,20 +31238,28 @@
       const start = url.searchParams.get('start') || '';
       const end = url.searchParams.get('end') || '';
       const user = url.searchParams.get('user') || '';
+      const inRange = async row => {
+        const colored = _effectiveDropboxEventColor(row, calendars);
+        if (!start && !end) return [colored];
+        if (row.recurrence) {
+          colored._calendar_revision = await _calendarItemRevision(row);
+          return _expandCalendarRecurrence(colored, start, end);
+        }
+        return _dateInRange(row.start || row.due_date, start, end) ? [colored] : [];
+      };
       if (_calendarRoleIsAdmin()) {
         const filterUser = user && user !== _calendarActor() ? user : '';
-        return rows.filter(row => _calendarRowInWorkspace(row)
-          && (!filterUser || row.user === filterUser || row.creator === filterUser)
-          && _dateInRange(row.start || row.due_date, start, end))
-          .map(row => _effectiveDropboxEventColor(row, calendars));
+        return (await Promise.all(rows.filter(row => _calendarRowInWorkspace(row)
+          && (!filterUser || row.user === filterUser || row.creator === filterUser))
+          .map(inRange))).flat();
       }
       const actor = _calendarActor();
-      return rows.filter(row => {
+      return (await Promise.all(rows.filter(row => {
         let members = row?.members;
         try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
         const visible = row.user === actor || row.creator === actor || (Array.isArray(members) && members.map(String).includes(actor));
-        return _calendarRowInWorkspace(row) && visible && _dateInRange(row.start || row.due_date, start, end);
-      }).map(row => _effectiveDropboxEventColor(row, calendars));
+        return _calendarRowInWorkspace(row) && visible;
+      }).map(inRange))).flat();
     }
     if (name === 'time') {
       const user = url.searchParams.get('user') || '';
@@ -30891,9 +31438,20 @@
     if (name === 'events' || name === 'tasks') {
       const kind = name === 'events' ? 'event' : 'todo';
       return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
-        await _calendarCaptureVersion(provider, kind, id, null, '作成前');
-        rows.push(row);
-        await _writeStore(provider, name, rows);
+        if (name === 'tasks') {
+          rows.push(row);
+          // 別ファイルへの保存は重ねる。片方が失敗しても、もう片方の完了前に復旧を始めない。
+          const results = await Promise.allSettled([
+            _calendarCaptureVersion(provider, kind, id, null, '作成前'),
+            _writeStore(provider, name, rows),
+          ]);
+          const failed = results.find(result => result.status === 'rejected');
+          if (failed) throw failed.reason;
+        } else {
+          await _calendarCaptureVersion(provider, kind, id, null, '作成前');
+          rows.push(row);
+          await _writeStore(provider, name, rows);
+        }
         return { ok: true, id };
       });
     }
@@ -30984,6 +31542,14 @@
     }
     if (name === 'events') {
       if (!(await _calendarCanEditEvent(provider, previous))) throw _calendarError('この予定を編集する権限がありません', 403, 'EVENT_EDIT_FORBIDDEN');
+      const expected = String(body?.expectedRevision || body?._calendar_expected_revision || body?.expected_revision || '');
+      if (expected && expected !== await _calendarItemRevision(previous)) {
+        throw _calendarError('表示後に予定が変更されたため保存を中止しました。最新の内容を確認してください', 409, 'CALENDAR_REVISION_CONFLICT');
+      }
+      body = { ...(body || {}) };
+      delete body.expectedRevision;
+      delete body._calendar_expected_revision;
+      delete body.expected_revision;
       _assertOwnerFieldsUnchanged(previous, body, ['user', 'creator'], '予定の所有者は他のメンバーへ変更できません', 'EVENT_USER_MISMATCH');
       const nextCalendarId = body?.calendar_id ?? previous.calendar_id;
       if (!(await _calendarCanUseCalendar(provider, nextCalendarId))) {
@@ -31007,7 +31573,7 @@
         await _calendarCaptureVersion(provider, kind, id, previous, '更新前');
         rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
         await _writeStore(provider, name, rows);
-        return { ok: true };
+        return { ok: true, revision: await _calendarItemRevision(rows[idx]) };
       });
     }
     const patch = { ...(body || {}) };
@@ -31227,15 +31793,36 @@
       .replace(/;/g, '\\;');
   }
 
+  function _icalDayOffset(value, delta) {
+    const text = String(value || ''), date = _parseCalendarDate(text);
+    if (!date) return text;
+    const shifted = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate() + delta));
+    return shifted.toISOString().slice(0, 10);
+  }
+
   function _icalExport(events) {
     const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Meldex Cloud BETA//JA'];
-    events.forEach((event) => {
+    const records = events.flatMap(event => {
+      const records = [event], rule = _recurrenceObject(event.recurrence);
+      Object.entries(rule?.overrides || {}).forEach(([original, patch]) => {
+        if (!patch || typeof patch !== 'object') return;
+        const rows = _expandCalendarRecurrence(event, patch.start || original, patch.end || patch.start || original);
+        const changed = rows.find(row => Date.parse(row.original_start) === Date.parse(original));
+        if (changed) records.push({...changed, recurrence:'', _recurrence_id:original, _recurrence_all_day:event.all_day});
+      });
+      return records;
+    });
+    records.forEach((event) => {
       lines.push('BEGIN:VEVENT');
       lines.push('UID:' + _icalText(event.ical_uid || event.uid || event.id || event.name || _randomId('ev')));
+      if (event._recurrence_id) {
+        const dateOnly = _truthy(event._recurrence_all_day);
+        lines.push((dateOnly ? 'RECURRENCE-ID;VALUE=DATE:' : 'RECURRENCE-ID:') + _icalDate(event._recurrence_id, dateOnly));
+      }
       lines.push('SUMMARY:' + _icalText(event.title || event.name || '無題'));
       const dateOnly = _truthy(event.all_day) || /^\d{4}-\d{2}-\d{2}$/.test(String(event.start || ''));
-      if (event.start) lines.push((dateOnly ? 'DTSTART;VALUE=DATE:' : 'DTSTART:') + _icalDate(event.start, dateOnly));
-      if (event.end) lines.push((dateOnly ? 'DTEND;VALUE=DATE:' : 'DTEND:') + _icalDate(event.end, dateOnly));
+      if (event.start) lines.push((dateOnly ? 'DTSTART;VALUE=DATE:' : 'DTSTART:') + _icalDate(dateOnly ? _icalDayOffset(event.start, 0) : event.start, dateOnly));
+      if (event.end) lines.push((dateOnly ? 'DTEND;VALUE=DATE:' : 'DTEND:') + _icalDate(dateOnly ? _icalDayOffset(event.end, 1) : event.end, dateOnly));
       if (event.location) lines.push('LOCATION:' + _icalText(event.location));
       if (event.url) lines.push('URL:' + _icalText(event.url));
       if (event.description) lines.push('DESCRIPTION:' + _icalText(event.description));
@@ -31290,7 +31877,10 @@
         return;
       }
       if (name === 'END' && value.toUpperCase() === 'VEVENT') {
-        if (current) events.push(current);
+        if (current) {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(String(current.start || '')) && current.end) current.end = _icalDayOffset(current.end, -1);
+          events.push(current);
+        }
         current = null;
         return;
       }
@@ -31301,8 +31891,12 @@
       }
       if (name === 'SUMMARY') current.title = _icalUnescape(value);
       if (name === 'DESCRIPTION') current.description = _icalUnescape(value);
-      if (name === 'DTSTART') current.start = _icalDateValue(value, isDateOnly);
+      if (name === 'DTSTART') {
+        current.start = _icalDateValue(value, isDateOnly);
+        current.all_day = isDateOnly || /^\d{4}-\d{2}-\d{2}$/.test(String(current.start));
+      }
       if (name === 'DTEND') current.end = _icalDateValue(value, isDateOnly);
+      if (name === 'RECURRENCE-ID') current.recurrence_id = _icalDateValue(value, isDateOnly);
       if (name === 'LOCATION') current.location = _icalUnescape(value);
       if (name === 'URL') current.url = _icalUnescape(value);
       if (name === 'RRULE') current.recurrence = _rruleToRecurrenceJson(value);
@@ -31311,7 +31905,29 @@
         if (match) current.alert_minutes = Number(match[1]) * (match[2].toUpperCase() === 'H' ? 60 : 1);
       }
     });
-    return events.filter(event => event.start || event.title || event.uid);
+    const valid = events.filter(event => event.start || event.title || event.uid);
+    const masters = new Map(valid.filter(event => event.uid && !event.recurrence_id).map(event => [event.uid, event]));
+    const merged = valid.filter(event => !event.recurrence_id);
+    valid.filter(event => event.recurrence_id).forEach(event => {
+      const master = masters.get(event.uid), rule = _recurrenceObject(master?.recurrence);
+      if (master && rule?.type) {
+        const patch = {};
+        ['title','start','end','description','location','url','alert_minutes'].forEach(key => {
+          if (Object.hasOwn(event, key)) patch[key] = event[key];
+        });
+        patch.all_day = /^\d{4}-\d{2}-\d{2}$/.test(String(event.start || ''));
+        const originalAt = _parseCalendarDate(event.recurrence_id);
+        const pad = number => String(number).padStart(2, '0');
+        const key = originalAt ? _icalDayOffset(event.recurrence_id, 0)+'T'+pad(originalAt.getHours())+':'+pad(originalAt.getMinutes())
+          : event.recurrence_id.slice(0, 16);
+        rule.overrides = {...(rule.overrides || {}), [key]:patch};
+        master.recurrence = JSON.stringify(rule);
+      } else {
+        const uid = (event.uid || '') + '#' + event.recurrence_id;
+        merged.push({...event, uid, ical_uid:uid});
+      }
+    });
+    return merged;
   }
 
   async function _importCalendarStoreIcs(provider, body) {
@@ -32285,13 +32901,33 @@
     const baseStart = _parseCalendarDate(event.start);
     if (!rec || !rec.type || !baseStart) return [event];
     const rangeStart = _parseCalendarDate(startDate) || baseStart;
-    const rangeEnd = _parseCalendarDate(endDate) || new Date(rangeStart.getTime() + 90 * 86400000);
+    const rangeEnd = _parseCalendarRangeEndDate(endDate) || new Date(rangeStart.getTime() + 90 * 86400000);
     const baseEnd = _parseCalendarDate(event.end) || new Date(baseStart.getTime() + 3600000);
     const duration = Math.max(0, baseEnd.getTime() - baseStart.getTime());
     const interval = Math.max(1, Number(rec.interval || 1) || 1);
     const countLimit = Math.max(0, Number(rec.count || 0) || 0);
     const recurrenceEnd = rec.endDate ? (_parseCalendarRangeEndDate(rec.endDate) || rangeEnd) : new Date(rangeStart.getTime() + 365 * 86400000);
     const results = [];
+    const occurrenceKey = date => {
+      const pad = n => String(n).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+    const overrides = new Map();
+    const allowed = new Set(['title', 'start', 'end', 'all_day', 'color', 'color_override', 'description', 'location', 'url', 'alert_minutes']);
+    if (rec.overrides && typeof rec.overrides === 'object' && !Array.isArray(rec.overrides)) {
+      for (const [original, patch] of Object.entries(rec.overrides)) {
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) continue;
+        const originalAt = _parseCalendarDate(original);
+        if (!originalAt) continue;
+        const changedStart = patch.start ? _parseCalendarDate(patch.start) : originalAt;
+        const changedEnd = patch.end ? (event.all_day ? _parseCalendarRangeEndDate(patch.end) : _parseCalendarDate(patch.end)) : (changedStart && new Date(changedStart.getTime() + duration));
+        if (!changedStart || !changedEnd || changedEnd <= changedStart) continue;
+        const changed = { ...event };
+        Object.entries(patch).forEach(([key, value]) => { if (allowed.has(key)) changed[key] = value; });
+        overrides.set(occurrenceKey(originalAt), { ...changed, start: changedStart.toISOString(), end: changedEnd.toISOString(),
+          original_start: originalAt.toISOString(), _recurrence_instance: true });
+      }
+    }
     let current = new Date(baseStart.getTime());
     let generated = 0;
     for (let guard = 0; guard < 2000 && current <= rangeEnd && current <= recurrenceEnd; guard += 1) {
@@ -32302,8 +32938,9 @@
       if (weeklyOk) {
         generated += 1;
         if (!countLimit || generated <= countLimit) {
-          if (current >= rangeStart && current <= rangeEnd) {
-            const occurrence = { ...event, start: current.toISOString(), end: new Date(current.getTime() + duration).toISOString(), _recurrence_instance: true };
+          if (!overrides.has(occurrenceKey(current)) && current <= rangeEnd && new Date(current.getTime() + duration) >= rangeStart) {
+            const occurrence = { ...event, start: current.toISOString(), end: new Date(current.getTime() + duration).toISOString(),
+              original_start: current.toISOString(), _recurrence_instance: true };
             results.push(occurrence);
           }
         }
@@ -32317,7 +32954,11 @@
       else if (rec.type === 'yearly') current = _addCalendarYears(current, interval);
       else break;
     }
-    return results.length ? results : [event];
+    for (const changed of overrides.values()) {
+      if (_parseCalendarDate(changed.start) <= rangeEnd && _parseCalendarDate(changed.end) >= rangeStart) results.push(changed);
+    }
+    if (overrides.size) results.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+    return results;
   }
 
   async function _calendarAlerts(provider, url) {
@@ -33458,7 +34099,8 @@
       return { settings: { daily_budget_usd: 0, monthly_budget_usd: 0 }, totals: { day: { cost_usd: 0 }, month: { cost_usd: 0 } }, cloud: true };
     }
     if (pathname === '/chat/budget' && method === 'PUT') {
-      try { localStorage.setItem('meldex-cloud-chat-budget', JSON.stringify(body || {})); } catch {}
+      try { localStorage.setItem('meldex-cloud-chat-budget', JSON.stringify(body || {})); }
+      catch { throw new Error('このブラウザーにAI予算を保存できません。保存領域を確認して再試行してください。'); }
       return { ok: true, cloud: true };
     }
     if (pathname === '/chat/usage/reset' && method === 'POST') {
@@ -34404,8 +35046,8 @@
     const split = _splitNameAndExt(originalName);
     let destName = originalName;
     let destPath = _joinPath(trashDir, destName);
-    for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-      destName = source?.kind === 'file'
+    for (let counter = 1; await _pathExists(provider, destPath) || (!source && await _pathExists(provider, destPath + '._trash_meta.json')); counter += 1) {
+      destName = source?.kind !== 'directory'
         ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
         : `${originalName}_${String(counter).padStart(4, '0')}`;
       destPath = _joinPath(trashDir, destName);
@@ -34426,8 +35068,29 @@
       queryImpact: confirmation.queryImpact,
     });
     // tombstone を含む最初の書き込みは、上のfresh再検証より後に限定する。
-    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath);
-    if (!source) return { ok: true };
+    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath, {
+      beforeDelete: source ? undefined : async backup => {
+        await _directoryHandle(provider, trashDir, true);
+        // Keep an ordinary readable Markdown copy as well as the complete row.
+        // Do not remove these backups after an uncertain/failed tombstone write.
+        if (typeof provider.uploadBytesConditional !== 'function') throw new Error('回答の回復用保存を利用できません');
+        await provider.uploadBytesConditional(destPath, new TextEncoder().encode(internals._sheetRowTrashText(backup.previousRow)), null);
+        await provider.uploadBytesConditional(metaPath, new TextEncoder().encode(JSON.stringify({
+          original_path: targetPath, trash_root: trashDir, deleted_at: backup.tombstone.deletedAt,
+          sheet_row_backup: backup,
+        })), null);
+        // The recovery uploads take time. Recheck the confirmed row after them;
+        // the subsequent sheet write still uses the revision read for backup.
+        await gate.revalidateProviderDelete({
+          provider, receipt: confirmation.receipt, items: [confirmation.item],
+          queryImpact: confirmation.queryImpact,
+        });
+      },
+    });
+    if (!source) {
+      if (!sheetTombstone) throw Object.assign(new Error('削除する回答が見つかりません'), { status: 404 });
+      return { ok: true, trash_name: destName, trash_root: trashDir };
+    }
     const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
       action: 'delete', oldPath: targetPath, newPath: destPath,
       isFolder: source.kind === 'directory',
@@ -36357,7 +37020,8 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = options.records || await adapter.listDocuments(kind);
+  const records = options.records || await adapter.listDocuments(kind,
+    options.documentIdPrefix ? { documentIdPrefix: options.documentIdPrefix } : undefined);
   const visible = records.filter(row => {
     const payload = row?.payload || {};
     const currentPath = _normalizeFolderPath(payload.original_relative_path || '');
@@ -36397,12 +37061,21 @@ async function _listSharedEditRecords(provider, path, recursive, options = {}) {
 }
 const _verifiedIntegrityMemo = new Map();
 
+// 保存の前処理が読む編集履歴は、対象パスのものだけ（記録名の先頭が対象パスのハッシュ）。
+// 種別全体を読むと、無関係な履歴・フォルダの控え（実データで3199件・307MB）を保存のたびに
+// ダウンロードし、スマホのクイックメモ送信が終わらなかった（2026-11-26）。
+// 移動で付け替えた記録は元の名前のままなので、ここでは読まない（直前の編集者の判定と
+// 未確定の記録の回収が、移動後の最初の1回だけ効かない。内容は失われない）。
+function _editRecordPrefix(path) {
+  return `edit-${_fnvFileId(_normalizeFolderPath(path))}-`;
+}
+
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
   await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
-  const records = await adapter.listDocuments(kind);
+  const records = await adapter.listDocuments(kind, { documentIdPrefix: _editRecordPrefix(normalized) });
   const currentHash = _contentHistoryHash(currentContent);
   let changed = false;
   for (const row of records) {
@@ -36441,7 +37114,9 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
   if (_stableHistoryContent(currentContent) === _stableHistoryContent(nextContent)) {
     return { adapter, kind, skipped: true, eventId: '', documentId: '', payload: null };
   }
-  const latest = (await _listSharedEditRecords(provider, normalized, false, { skipIntegrity: true, records }))[0]?.payload || {};
+  const latest = (await _listSharedEditRecords(provider, normalized, false, {
+    skipIntegrity: true, records, documentIdPrefix: _editRecordPrefix(normalized),
+  }))[0]?.payload || {};
   const previous = latest.actor_id ? latest : actor;
   const transition = !!(latest.actor_id && actor.actor_id && latest.actor_id !== actor.actor_id);
   const eventId = `edit-${_versionTimestamp()}-${_randomId('e').slice(-8)}`;
@@ -36687,18 +37362,6 @@ async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
     moved += 1;
   }
   return moved > 0;
-}
-
-async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-  let size = 0;
-  async function walk(current) {
-    for (const entry of await _listDirectoryEntries(provider, current)) {
-      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-      else size += 1;
-    }
-  }
-  await walk(folderPath);
-  return size;
 }
 
 function _fileVersionName(path, options) {
@@ -37091,6 +37754,25 @@ async function _restoreVersionAnnotations(provider, path, snapshot, expectedRevi
   return rollback;
 }
 
+window.MeldexFileVersionProviderOps = Object.freeze({
+  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
+  read: (provider, path, version) => _readFileVersion(provider, path, version),
+  captureAnnotations: (provider,path) => _captureVersionAnnotations(provider,path),
+});
+  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
+  /* 以下の3つは gb-data-access-dropbox-fileops-versions.js が1000行を超えたため、ここへ移した（同じ関数スコープに連結される）: フォルダの中身の件数・ファイルの版の論理削除と復元。 */
+async function _countFolderEntriesIncludingTrash(provider, folderPath) {
+  let size = 0;
+  async function walk(current) {
+    for (const entry of await _listDirectoryEntries(provider, current)) {
+      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
+      else size += 1;
+    }
+  }
+  await walk(folderPath);
+  return size;
+}
+
 async function _deleteFileVersion(provider, path, version) {
   const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
   if (!record) throw new Error('バージョンが見つかりません');
@@ -37121,12 +37803,6 @@ async function _undeleteFileVersion(provider, path, token) {
   return { ok: true, version: record.payload.version_name };
 }
 
-window.MeldexFileVersionProviderOps = Object.freeze({
-  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
-  read: (provider, path, version) => _readFileVersion(provider, path, version),
-  captureAnnotations: (provider,path) => _captureVersionAnnotations(provider,path),
-});
-  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
   function _relativeToFolder(folderPath, filePath) {
     const folder = _normalizeFolderPath(folderPath);
     const file = _normalizeFolderPath(filePath);
@@ -39592,10 +40268,36 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const trashPath = _joinPath(trashRoot.path, trashName);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
       const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
+      let originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, originalPath, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        // The metadata is the durable retry receipt. Remove the visible trash
+        // copy only after the row is safely restored; an uncertain write keeps it.
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
+      if (await _pathExists(provider, originalPath)) {
+        // 同じ名前を黙って上書きも別名にもしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        // 置き換えは、Dropbox では今ある方を回復できる形で退避できないので受け付けない。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true, trash_name: trashName };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${originalPath}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
+        const split = _splitNameAndExt(_basename(originalPath));
+        const baseDir = _dirname(originalPath);
+        const basePath = originalPath;
+        for (let counter = 2; await _pathExists(provider, originalPath); counter += 1) {
+          originalPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(basePath)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
+        }
+      }
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
       const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
@@ -39693,19 +40395,31 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const trashPath = _joinPath(trashRoot.path, name);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error('ゴミ箱に見つかりません');
       const meta = await _readJsonSafe(provider, metaPath, {});
       const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, baseDest, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_to: baseDest, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error('ゴミ箱に見つかりません');
       let destPath = baseDest;
       if (await _pathExists(provider, destPath)) {
+        // 同じ名前がある時は、黙って別名にしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${baseDest}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
         const split = _splitNameAndExt(_basename(baseDest));
         const baseDir = _dirname(baseDest);
-        for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-          const stem = source.kind === 'directory' ? _basename(baseDest).replace(/_\d{4}$/, '') : split.stem;
-          const nextName = source.kind === 'directory'
-            ? `${stem}_restored_${String(counter).padStart(4, '0')}`
-            : `${stem}_restored_${String(counter).padStart(4, '0')}${split.ext}`;
-          destPath = _joinPath(baseDir, nextName);
+        for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
+          destPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(baseDest)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
         }
       }
       await _moveEntry(provider, trashPath, destPath);
@@ -41039,6 +41753,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     _normalizeFolderPath,
     _joinPath,
     _basename,
+    _folderLinkPathKey,
     _requirePwaProvider,
     _requireUnlockedPath,
   } = internals;
@@ -41935,14 +42650,30 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return { ok: true, tags: requested, match_mode: matchMode, source_folder: '', results, total: results.length };
       }
       const tag = tagForValue(catalog, query.get('tag') || '');
-      const results = tag ? Object.entries(store.assignments)
-        .filter(([, ids]) => Array.isArray(ids) && ids.includes(tag.id))
-        .map(([path, ids]) => ({
-          path,
-          name: _basename(path),
-          type: '',
-          tags: ids.map(id => catalog.tags.find(item => item.id === id)).filter(Boolean),
-        })) : [];
+      // フォルダパネルは空のtagとpathで、配下のタグを一度に取得する（デスクトップと同じ契約）。
+      // 名前が似た隣接フォルダや別の保存先は含めず、割当や辞書を書き換えない。
+      const folder = !String(query.get('tag') || '').trim() && query.get('path')
+        ? safeTargetPath(query.get('path')).replace(/\/+$/, '') : '';
+      const pathKey = path => typeof _folderLinkPathKey === 'function'
+        ? _folderLinkPathKey(provider, path) : _normalizeFolderPath(path);
+      const folderKey = folder ? pathKey(folder) : '';
+      const prefix = folderKey.endsWith(':') ? folderKey : folderKey + '/';
+      const results = tag || folder ? Object.entries(store.assignments)
+        .filter(([path, ids]) => folder
+          ? (!!folderKey && (pathKey(path) === folderKey || pathKey(path).startsWith(prefix)))
+          : (Array.isArray(ids) && ids.includes(tag.id)))
+        .map(([path, ids]) => {
+          // 同じ保存先を指す短いパス／仮想ルートの別表記を、要求側の表記へ揃える。
+          const depth = folder ? pathKey(path).slice(folderKey.length).split('/').filter(Boolean).length : 0;
+          const suffix = depth ? _normalizeFolderPath(path).split('/').slice(-depth).join('/') : '';
+          const resultPath = folder ? (suffix ? folder + '/' + suffix : folder) : path;
+          return {
+            path: resultPath,
+            name: _basename(resultPath),
+            type: '',
+            tags: ids.map(id => catalog.tags.find(item => item.id === id)).filter(Boolean),
+          };
+        }) : [];
       return { ok: true, tag: query.get('tag') || '', source_folder: '', results, total: results.length };
     }
     return NOT_HANDLED;
@@ -45208,7 +45939,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (item.id === columnsId || item.id === inlineNoteId || item.id === htmlId || item.topicLayoutId) {
           editors.get(selectedId)?.deactivate?.();
           if ((item.id === columnsId || item.topicLayoutId)
-            && await options.selectTopicLayout?.(item.topicLayoutId || window.GBEntityLayout?.COLUMNS_TAB_ID) === false) {
+            && await options.selectTopicLayout?.(item.topicLayoutId || window.GBEntityLayout?.COLUMNS_TAB_ID, { initial: selectionOptions.initial === true }) === false) {
             return false;
           }
           selectedId = item.id; updateSelection();
@@ -45414,8 +46145,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (closedCount > 0) add(`閉じたタブを再表示（${closedCount}）`, 'eye', reopenClosedTabs);
       // レイアウトのタブの「…」に、トピックレイアウトの編集・名前の変更・複製・書き出し・削除を出す（2026-11-21 ユーザー決定）
       const layoutId = desc.selectable?.topicLayoutId;
-      if (layoutId && !options.readOnly && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.topicLayoutTabMenuItems) {
-        const layoutItems = window.GBEntityLayout.topicLayoutTabMenuItems(more, { ...options.topicLayoutContext(), layoutId });
+      if (layoutId && typeof options.topicLayoutContext === 'function' && window.GBEntityLayout?.topicLayoutTabMenuItems) {
+        // 閲覧専用でも書き出しは使える（変更しない操作。旧タブ行の書き出しボタンは閲覧専用でも出ていた。2026-11-24）。
+        const layoutItems = window.GBEntityLayout.topicLayoutTabMenuItems(more, { ...options.topicLayoutContext(), layoutId })
+          .filter(entry => !options.readOnly || entry.key === 'export');
         if (layoutItems.length) {
           separator();
           layoutItems.forEach(entry => add(entry.label, entry.icon, async () => {
@@ -45797,7 +46530,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (options.selectedId === initial.id) { initialRow.hidden = false; saveTabPrefs(); }
       else firstSelection = tabItems.get(visibleTabRows()[0]?.dataset.attachmentId) || initial;
     }
-    if (firstSelection) selectAttachment(firstSelection, { activate: !!options.selectedId });
+    if (firstSelection) selectAttachment(firstSelection, { activate: !!options.selectedId, initial: !options.selectedId });
     return section;
   }
 
@@ -46969,7 +47702,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   }
 
   function cloudErrorStatus(err) {
-    const explicit = Number(err?.status || err?.status_code || 0);
+    const explicit = Number(err?.status || err?.status_code || err?.httpStatus || 0);
     if (explicit) return Math.max(400, Math.min(599, explicit));
     return isSystemStorageConflict(err) ? 409 : 501;
   }
@@ -50501,15 +51234,21 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   function _syncPaneSafeTopBars() {
     const tabBars = Array.from(document.querySelectorAll('#gb-layout-root .gb-pane-tabs'));
-    tabBars.forEach(tabBar => tabBar.classList.remove('cloud-mobile-safe-top-bar'));
-    if (!shouldUseSidebarDrawer()) return;
+    const mobile = shouldUseSidebarDrawer();
     const visualTop = Math.max(0, Math.round(window.visualViewport?.offsetTop || 0));
-    tabBars.forEach((tabBar) => {
+    // Batch reads before writes, and keep an unchanged safe-area class intact.
+    // MAP marker edits otherwise force full layout through every pane header.
+    const updates = tabBars.map((tabBar) => {
+      if (!mobile) return { tabBar, safe: false };
       const rect = tabBar.getBoundingClientRect();
       const hasTreeBack = !!tabBar.querySelector('.cloud-mobile-pane-tree-back:not([hidden])');
-      if (rect.width > 0 && rect.height > 0 && (hasTreeBack || rect.top <= visualTop + 2)) {
+      return { tabBar, safe: rect.width > 0 && rect.height > 0 && (hasTreeBack || rect.top <= visualTop + 2) };
+    });
+    updates.forEach(({ tabBar, safe }) => {
+      if (tabBar.classList.contains('cloud-mobile-safe-top-bar') === safe) return;
+      if (safe) {
         tabBar.classList.add('cloud-mobile-safe-top-bar');
-      }
+      } else tabBar.classList.remove('cloud-mobile-safe-top-bar');
     });
   }
 
@@ -50518,8 +51257,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     _paneBackObserverInstalled = true;
     const root = document.getElementById('gb-layout-root') || document.body;
     if (!root) return;
-    new MutationObserver(() => {
-      if (shouldUseSidebarDrawer()) _ensurePaneTreeBackButtons();
+    new MutationObserver(records => {
+      if (!shouldUseSidebarDrawer()) return;
+      // Pane chrome changes require controls; edits inside a MAP/canvas do not.
+      const changed = records.some(record => record.target.closest?.('.gb-pane-tabs')
+        || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1
+          && (node.matches?.('.gb-pane-tabs') || node.querySelector?.('.gb-pane-tabs'))));
+      if (changed) _ensurePaneTreeBackButtons();
     }).observe(root, { childList: true, subtree: true });
   }
 
@@ -51710,8 +52454,8 @@ const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/settings-transfer/export', 315000],
 ]);
 const API_FETCH_FILE_OPERATIONS = new Set([
-  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
-  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/move-batch', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore', '/outliner/restore-batch',
   '/trash/restore', '/trash/delete', '/trash/empty',
   '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
   '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
@@ -51879,6 +52623,10 @@ async function apiFetch(path, opts) {
     window.MeldexSaveSafety?.reportApiSuccess?.(path, opts, payload);
     return _apiFetchClonePayload(payload);
   } catch (e) {
+    // 注釈は専用の記録を持つ。共有タグの書込失敗だけを共通記録へ渡す。
+    if (/^\/(?:api\/)?global-tags\/target(?:\/|\?|$)/.test(String(path)) && _apiFetchMethod(opts) !== 'GET') {
+      try { window.MeldexDiagnostics?.noteRequestFailure?.(path, opts, e); } catch {}
+    }
     if (e.name === 'AbortError' && timedOut) {
       // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
       try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
@@ -52102,6 +52850,7 @@ document.addEventListener('DOMContentLoaded', scheduleMeldexViewportSizeUpdate, 
 window.addEventListener('load', scheduleMeldexViewportSizeUpdate, { once: true });
 
 function clampPopupToViewport(el) {
+  window.MeldexMenuIcons?.decorate?.(el);
   if (!el.matches('.modal-overlay, .gb-modal-overlay, [aria-modal="true"]')) el.classList.add('gb-popup-surface');
   const z = _getZoom();
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
@@ -52552,8 +53301,13 @@ function _isMobileStatusToastNeeded() {
 }
 
 function _showMobileStatusToast(text, isError) {
-  if (!text || !document.body || !_isMobileStatusToastNeeded()) return;
+  if (!document.body) return;
   let toast = document.getElementById('gb-mobile-status-toast');
+  if (!text || !_isMobileStatusToastNeeded()) {
+    clearTimeout(_mobileStatusToastTimer);
+    toast?.classList.remove('is-visible');
+    return;
+  }
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'gb-mobile-status-toast';
@@ -52650,6 +53404,8 @@ function showStatus(msg, isError, options) {
     if (_isSaveSuccessStatusMessage(text, isError, options)) _queueSaveDialog(text);
     return;
   }
+  const messageToken = {};
+  el._statusMessageToken = messageToken;
   el.textContent = text;
   el.style.color = isError ? 'var(--red)' : 'var(--fg2)';
   if (text) {
@@ -52662,7 +53418,7 @@ function showStatus(msg, isError, options) {
   _showMobileStatusToast(text, !!isError);
   if (isError) {
     setTimeout(() => {
-      if (el.textContent === text) {
+      if (el._statusMessageToken === messageToken && el.textContent === text) {
         el.textContent = '';
         delete el.dataset.statusKind;
         el.removeAttribute('aria-label');
@@ -52883,6 +53639,8 @@ const LUCIDE = {
   underline: '<path d="M6 4v6a6 6 0 0 0 12 0V4"/><line x1="4" x2="20" y1="20" y2="20"/>',
   strikethrough: '<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/>',
   list: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  // フォルダパネルの表示形式「リスト・小」（行の詰まったリスト）
+  listCompact: '<line x1="8" x2="21" y1="5" y2="5"/><line x1="8" x2="21" y1="9.67" y2="9.67"/><line x1="8" x2="21" y1="14.33" y2="14.33"/><line x1="8" x2="21" y1="19" y2="19"/><line x1="3" x2="3.01" y1="5" y2="5"/><line x1="3" x2="3.01" y1="9.67" y2="9.67"/><line x1="3" x2="3.01" y1="14.33" y2="14.33"/><line x1="3" x2="3.01" y1="19" y2="19"/>',
   listOrdered: '<line x1="10" x2="21" y1="6" y2="6"/><line x1="10" x2="21" y1="12" y2="12"/><line x1="10" x2="21" y1="18" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
   quote: '<path d="M16 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M8 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/>',
   heading: '<path d="M6 12h12"/><path d="M6 20V4"/><path d="M18 20V4"/>',
@@ -52906,6 +53664,7 @@ const LUCIDE = {
   // 取り消し・やり直しボタン展開 v0.6.196（undo-redo-toolbar-plan フェーズ1-3）
   undo2: '<path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />',
   redo2: '<path d="m15 14 5-5-5-5" /><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" />',
+  ganttChart: '<path d="M10 6h8" /><path d="M12 16h6" /><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M8 11h7" />',
   workflow: '<rect width="8" height="8" x="3" y="3" rx="2" /><path d="M7 11v4a2 2 0 0 0 2 2h4" /><rect width="8" height="8" x="13" y="13" rx="2" />',
 };
 // gb-icon-assets.js (hasLucideName) が独自アイコン (page / db / scenario 等) を
@@ -53001,11 +53760,7 @@ function toolbarAppIconName(type) {
   return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
 }
 
-// メインメニューボタンの右下に付けるメニューの印。左隣のファイルアイコン（既定ではアプリと同じ種別のアイコン）と
-// 役割を見分けられるようにする（2026-11-21。同じアイコンが2つ並んでいた）。寸法は変えない（重ねて表示する）。
-function toolbarMainMenuCaretHtml() {
-  return `<span class="tb-main-menu-caret" aria-hidden="true">${lucide('chevronDown', 10)}</span>`;
-}
+// メインメニューボタンには印（右下の下向き矢印）を付けない（2026-11-24 利用者判断で撤去。不要とのこと）。
 
 function toolbarMainMenuLabel(type) {
   const label = UI_TOOLBAR_APP_ICON_LABELS[String(type ?? '')] || '';
@@ -53025,7 +53780,7 @@ function toolbarAppIconHtml(type, options) {
   const menuType = String(options?.menu || key).replace(/[^A-Za-z0-9_-]/g, '');
   const action = options?.action === false ? '' : ` data-action="showToolMenu(event,'${menuType}')"`;
   return `<button type="button" class="tb-app-icon tb-main-menu-btn tool-menu-btn" data-app-icon="${key}" data-main-menu="${menuType}" data-gb-tooltip-key="toolbar.mainMenu"`
-    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}${toolbarMainMenuCaretHtml()}</button>`;
+    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}</button>`;
 }
 
 // JSで組むツールバー用。onClick を渡すとその処理で開く（マップ・フォームのように部品を渡す場合）。
@@ -53053,7 +53808,8 @@ function hydrateToolbarAppIcons(root) {
     if (el.tagName === 'BUTTON') {
       // 同じ値でも書くと変更通知が積まれる（あふれ判定等の監視と押し合う）ため、足りない時だけ書く。
       if (!el.classList.contains('tb-main-menu-btn')) el.classList.add('tb-main-menu-btn');
-      if (!el.querySelector('.tb-main-menu-caret')) el.insertAdjacentHTML('beforeend', toolbarMainMenuCaretHtml());
+      // 旧版で付けた印が残っていれば取り除く（無ければ何も書かない）。
+      el.querySelector('.tb-main-menu-caret')?.remove();
       if (!el.dataset.gbTooltipKey) el.dataset.gbTooltipKey = 'toolbar.mainMenu';
       if (!el.getAttribute('title')) el.setAttribute('title', UI_TOOLBAR_MAIN_MENU_TITLE);
       if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', toolbarMainMenuLabel(key));
@@ -53255,7 +54011,9 @@ function replaceIcons(root) {
 function inheritParentTheme() {
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
-    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
+    // --theme-native-os-accent / --ui-accent: 「OSアクセント」の色は本体だけがOSから読むため、ここで渡さないと
+    // 埋め込みの画面が AccentColor（ブラウザ既定の明るい青）へ落ちる（2026-11-24）。
+    const themeVars = ['--theme-native-os-accent', '--ui-accent', '--ui-accent-fg', '--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
     themeVars.forEach(v => {
       const val = parentComputed.getPropertyValue(v).trim();
       if (val) document.documentElement.style.setProperty(v, val);
@@ -54843,7 +55601,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
       _ann.targetPath = msg.targetPath || '';
       svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
       svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
+      if (_ann.active && !options.localSurface) svg.style.outline = '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)';
       else svg.style.outline = '';
       hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
       _updateSize();
@@ -55405,7 +56163,7 @@ function initStandaloneMarkup(container, getTargetPath) {
     _ann.active = active;
     svg.style.pointerEvents = active ? 'auto' : 'none';
     svg.style.cursor = active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-    svg.style.outline = active ? '2px solid rgba(86,156,214,0.3)' : '';
+    svg.style.outline = active ? '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)' : '';
     hitRect.setAttribute('pointer-events', active ? 'all' : 'none');
     _syncStandaloneNoteInteractivity();
   }
@@ -55734,6 +56492,7 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
 }
 
 function positionPopup(popup, anchorRect, options = {}) {
+  window.MeldexMenuIcons?.decorate?.(popup);
   popup.classList.add('gb-popup-surface');
   window.GBModalShell?.raiseLayer?.(popup);
   const z = _getZoom();
@@ -56055,6 +56814,139 @@ function enableCheckboxDragToggle(container, scopeSelector) {
 document.addEventListener('DOMContentLoaded', () => {
   enableCheckboxDragToggle(document.body, '.modal-overlay');
 }, { once: true });
+
+// ================================================================
+// メニュー項目の共通アイコン対応表（2026-11-24）
+// メインメニュー・右クリックメニューで、同じ操作には同じアイコンを出すための単一正本。
+// 項目側でアイコンを指定していない時だけ、表示名（末尾の「...」「（N件）」等を除いた形）で引く。
+// 表にない名前（ファイル名・タグ名など利用者のデータ）には何も足さない。
+// ICONLESS は「意図してアイコンを付けない」項目（状態の選択肢・空の印）。
+// 対応表は app/tests/test_meldex_menu_icons.py が全メニュー定義と突き合わせる。
+// ================================================================
+(function () {
+  const ICONS = Object.freeze({
+    '新規作成': 'plus',
+    '検索・置換': 'replace',
+    '検索': 'search',
+    '開く': 'folderOpen',
+    '現在のフォルダを開く': 'folderOpen',
+    'Markdownファイルを開く': 'fileText',
+    'スライドショー': 'image',
+    '表示設定': 'eye',
+    'オプションを表示': 'slidersHorizontal',
+    'フォルダツリーで表示': 'folderTree',
+    'バージョン管理': 'gitBranch',
+    'バージョンを保存': 'save',
+    'パスをコピー': 'copy',
+    'リンクをコピー': 'link',
+    'Markdownをコピー': 'copy',
+    '最近使ったファイル': 'clock',
+    '閉じる': 'x',
+    '別名で保存': 'save',
+    '名前を付けて保存': 'save',
+    'ファイルを複製': 'copyPlus',
+    'ファイルを削除': 'trash2',
+    '印刷': 'printer',
+    'CSVからインポート': 'import',
+    'Excelからインポート': 'import',
+    '旧シナリオからインポート': 'import',
+    'シフト表を取り込む': 'import',
+    'Excelからシナリオを作成': 'fileSpreadsheet',
+    'CSVとして保存': 'download',
+    'Excelとして保存': 'download',
+    'HTMLとして保存': 'download',
+    'Markdownとして保存': 'download',
+    'Wordとして保存': 'download',
+    'シナリオ形式として保存': 'download',
+    '勤怠CSVとして保存': 'download',
+    '辞書ファイルを出力': 'download',
+    'シフト、実績、作業予定を書き出す': 'download',
+    'PNG画像として保存': 'image',
+    '画像（PNG）として保存': 'image',
+    'SVG画像として保存': 'image',
+    'B-MANGAへ送信': 'send',
+    'CLIP STUDIO PAINTへ送信': 'send',
+    'アーカイブ管理': 'archive',
+    'シートに変換': 'db',
+    'シートから一括読込': 'db',
+    'テンプレート': 'layoutTemplate',
+    'シートテンプレート': 'layoutTemplate',
+    'ノートテンプレート': 'layoutTemplate',
+    '新規トピックのノートテンプレート': 'layoutTemplate',
+    'テンプレートに登録': 'bookmarkPlus',
+    '現在のノートからテンプレートを作成': 'layoutTemplate',
+    '現在のシナリオからテンプレートを作成': 'layoutTemplate',
+    '現在のシートからテンプレートを作成': 'layoutTemplate',
+    '現在のボードからテンプレートを作成': 'layoutTemplate',
+    'シート横断検索': 'databaseSearch',
+    '整合性検証': 'shieldCheck',
+    '検証ルール管理': 'listChecks',
+    '列の表示と順序': 'columns',
+    '列を追加': 'columns',
+    '行を追加': 'rows3',
+    '公開設定': 'globe',
+    '公開を更新': 'refreshCw',
+    '新規イベント': 'calendarPlus',
+    '同期設定': 'calendarSync',
+    '新規リンクトピック: ノート': 'link2',
+    '新規リンクトピック: シート': 'link2',
+    '新規リンクトピック: ボード': 'link2',
+    '既存ファイルへのリンクトピック': 'link2',
+    'ツール': 'wrench',
+    '重複画像を検出': 'scanSearch',
+    'このフォルダで重複検出': 'scanSearch',
+    '画像インデックスを作成': 'fileSearch',
+    'このフォルダのインデックス作成': 'fileSearch',
+    'この階層を閉じる': 'chevronsDownUp',
+    'リネーム': 'pencil',
+    'パスを変更': 'folderPen',
+    'ワークスペースの管理': 'settings',
+    'システム保護': 'shield',
+    'プロパティ': 'info',
+    'チャットを開く': 'messageSquare',
+    '比較': 'columns',
+  });
+  // 色見本が先頭に付く行（色設定）は色見本をアイコンとして扱う。読み込み中の一時表示は付けない。
+  const ICONLESS = Object.freeze(new Set(['(なし)', '（なし）', '設定する', '解除する', 'OS メニュー 読み込み中']));
+
+  function normalizeLabel(label) {
+    let text = String(label ?? '').replace(/\s+/g, ' ').trim();
+    text = text.replace(/^[✓✔]\s*/, '');
+    text = text.replace(/(?:\.\.\.|…)$/, '').trim();
+    text = text.replace(/\s*[（(][^（）()]*(?:件|枚)[）)]$/, '').trim();
+    return text;
+  }
+
+  function resolve(label) {
+    const key = normalizeLabel(label);
+    if (!key || ICONLESS.has(key)) return '';
+    return ICONS[key] || '';
+  }
+
+  // 既に描画済みのメニューで、アイコンの無い項目へ対応表のアイコンを足す。
+  // 位置合わせの共通処理（positionPopup / clampPopupToViewport）から呼ばれる。何度呼んでもよい。
+  function decorate(menu) {
+    if (!menu?.querySelectorAll || typeof lucide !== 'function') return;
+    if (!menu.matches?.('.gb-context-menu, .ab-dropdown') && !menu.querySelector?.('.gb-context-menu-item')) return;
+    menu.querySelectorAll('.gb-context-menu-item, .ab-dropdown-item').forEach((row) => {
+      if (row.dataset.menuIconResolved === '1') return;
+      row.dataset.menuIconResolved = '1';
+      if (row.querySelector('svg, img, .menu-icon, [data-icon], .gb-color-swatch')) return;
+      const labelEl = row.querySelector('.menu-label');
+      const name = resolve(labelEl ? labelEl.textContent : row.textContent);
+      if (!name) return;
+      const icon = document.createElement('span');
+      icon.className = 'menu-icon';
+      icon.dataset.menuIconSource = 'shared';
+      icon.innerHTML = lucide(name, 14);
+      row.insertBefore(icon, row.firstChild);
+    });
+  }
+
+  if (typeof window !== 'undefined') {
+    window.MeldexMenuIcons = Object.freeze({ icons: ICONS, iconless: ICONLESS, normalizeLabel, resolve, decorate });
+  }
+})();
 
 ;
 
@@ -56411,6 +57303,91 @@ document.addEventListener('DOMContentLoaded', () => {
   else start();
 })();
 
+/* ツールバーの自動非表示（2026-11-24 利用者要望。UI共通ルール19「ツールバー」）。
+ * 主要アプリの上部ツールバーは、メインメニューボタン・ファイルアイコン・ファイル名だけを常に表示し、
+ * それ以外の操作はビューワーと同じく使う時だけ表示する。行は残すので本文の位置は動かない。
+ * 表示する条件（CSSは gb-toolbar-overflow.css）: ツールバーへのマウス、キーボードのフォーカス、
+ * ツールバーから開いたメニューやポップアップが開いている間。隠すのは条件が消えて少し経ってから。
+ * 設定「ツールバーを自動で隠す」（localStorage 'meldex-toolbar-autohide' が '0' でオフ。既定オン）。 */
+(function () {
+  'use strict';
+  if (window.MeldexToolbarAutoHide) return;
+  const KEY = 'meldex-toolbar-autohide';
+  const TOOLBAR = '.gb-toolbar.gb-toolbar-main:not(.gb-toolbar-viewer):not(.chat-session-toolbar):not([data-annotation-toolbar]):not(.qm-header):not([data-tb-autohide="off"])';
+  const HOLD_CLASS = 'tb-autohide-hold';
+  // ツールバーから開くメニュー・ポップアップ（本体へ追加されるもの）。開いている間は隠さない。
+  const POPUPS = '.gb-toolbar-overflow-popup, .gb-context-menu, .tool-menu-dropdown, .sa-menu, .gb-color-palette, .gb-format-popup, [role="menu"], [role="dialog"]:not(.modal-overlay)';
+  // 押した時点で既に出ていたポップアップは数えない（常時表示の一覧などで隠れなくなるのを防ぐ）。
+  const held = new Map();
+  let timer = 0;
+
+  function isEnabled() {
+    try { return localStorage.getItem(KEY) !== '0'; } catch { return true; }
+  }
+  function applyRootState() {
+    document.documentElement.dataset.toolbarAutohide = isEnabled() ? 'on' : 'off';
+  }
+  function setEnabled(enabled) {
+    try {
+      if (enabled) localStorage.removeItem(KEY);
+      else localStorage.setItem(KEY, '0');
+    } catch { /* 保存できない環境でもこの画面には反映する */ }
+    applyRootState();
+    window.dispatchEvent(new CustomEvent('meldex:toolbar-autohide-change', { detail: { enabled: !!enabled } }));
+  }
+  function visiblePopups(toolbar) {
+    const found = [];
+    for (const el of document.querySelectorAll(POPUPS)) {
+      if (toolbar.contains(el) && !el.matches('.sa-menu')) continue;
+      if (el.hidden || !el.getClientRects().length) continue;
+      const style = getComputedStyle(el);
+      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') found.push(el);
+    }
+    return found;
+  }
+  function popupOpen(toolbar, before) {
+    if (toolbar.querySelector('[aria-expanded="true"]')) return true;
+    return visiblePopups(toolbar).some(el => !before.includes(el));
+  }
+  function stillNeeded(toolbar, before) {
+    if (!toolbar.isConnected) return false;
+    return toolbar.matches(':hover') || popupOpen(toolbar, before);
+  }
+  function check() {
+    timer = 0;
+    for (const [toolbar, before] of [...held]) {
+      if (stillNeeded(toolbar, before)) continue;
+      toolbar.classList.remove(HOLD_CLASS);
+      held.delete(toolbar);
+    }
+    if (held.size) timer = setTimeout(check, 500);
+  }
+  // ツールバーを押した時から、開いたメニュー等が閉じるまで表示を保つ。
+  function hold(toolbar) {
+    if (!toolbar || !isEnabled()) return;
+    if (!held.has(toolbar)) held.set(toolbar, visiblePopups(toolbar));
+    toolbar.classList.add(HOLD_CLASS);
+    if (!timer) timer = setTimeout(check, 700);
+  }
+  function start() {
+    applyRootState();
+    document.addEventListener('pointerdown', event => {
+      const toolbar = event.target?.closest?.(TOOLBAR);
+      if (toolbar) hold(toolbar);
+    }, true);
+    // 共有の設定は他の画面（本体内のビューワーや別ウィンドウ）の変更にも追従する。
+    window.addEventListener('storage', event => {
+      if (event.key !== KEY && event.key !== null) return;
+      applyRootState();
+      window.dispatchEvent(new CustomEvent('meldex:toolbar-autohide-change', { detail: { enabled: isEnabled() } }));
+    });
+  }
+  window.MeldexToolbarAutoHide = Object.freeze({ KEY, TOOLBAR, isEnabled, setEnabled, applyRootState, hold });
+  applyRootState();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+})();
+
 ;
 
 /* === gb-operation-progress.js === */
@@ -56611,6 +57588,13 @@ document.addEventListener('DOMContentLoaded', () => {
     return text;
   }
 
+  function endedLabel(label) {
+    const text = String(label || '').replace(/(?:\.{3}|…|・・・)\s*$/, '').trim();
+    const match = text.match(/^(.*[一-鿿゠-ヿA-Za-z0-9ぁ-ん])中$/);
+    if (match && match[1].length >= 2) return match[1];
+    return text;
+  }
+
   function _finish(record, status, values) {
     if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
     const next = values || {};
@@ -56619,6 +57603,12 @@ document.addEventListener('DOMContentLoaded', () => {
       record.state.label = next.label !== undefined && String(next.label || '').trim()
         ? String(next.label)
         : completedLabel(record.state.label);
+    } else if (next.label !== undefined && String(next.label || '').trim()) {
+      record.state.label = String(next.label);
+    } else {
+      // 終わった処理に「〜中」「〜しています」を残さない（「ファイルを移動中 一部失敗」は、まだ動いているのか
+      // 止まったのか分からず不安にさせていた: 2026-11-24 利用者の報告）。
+      record.state.label = endedLabel(record.state.label);
     }
     record.state.status = status;
     record.state.cancellable = false;
@@ -56820,6 +57810,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const label = String(options.label || '処理中');
     const kind = String(options.kind || 'operation');
     const quiet = !!options.quiet;
+    const retryIds = Array.isArray(options.retryIds) ? options.retryIds.slice() : [];
     let complete = options.onComplete;
     let ownerFrame = options.ownerFrame, ownerDocument = options.ownerDocument;
     options = null;
@@ -56842,6 +57833,7 @@ document.addEventListener('DOMContentLoaded', () => {
       retry: () => {
         discardClosedOwner();
         return runRemoteJob({ endpoint, body: JSON.parse(bodyText), label, kind, quiet,
+          retryIds: [...retryIds, operation.id],
           onComplete: complete, ownerFrame, ownerDocument });
       },
     });
@@ -56862,9 +57854,16 @@ document.addEventListener('DOMContentLoaded', () => {
       discardClosedOwner();
       complete?.(current.result);
       operation?.succeed();
+      // Retain the historical failed status, but resolve its visible warning
+      // only after the retry is confirmed saved. Failed/cancelled retries keep
+      // every earlier warning and never dismiss an unrelated operation.
+      retryIds.forEach(id => _disposeRecord(records.get(id), 'retry-resolved'));
       return current.result;
     } catch (error) {
-      operation?.fail({ message: error.message, error });
+      operation?.fail(window.describeJobFailure
+        ? window.describeJobFailure(error, {label})
+        : {error: label + 'を完了できませんでした。' + error.message,
+          details: [{stage: '原因と対処', message: error.message + '。接続先や保存先を確認してください。'}]});
       if (!quiet) throw error;
       return null;
     }
@@ -56956,9 +57955,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function _detailText(operation) {
-    if (operation.error) return operation.error;
-    if (operation.summary) return operation.summary;
+    const state = _statusLabel(operation);
+    const outcome = operation.error || operation.summary;
+    if (outcome) return state && !_text(outcome).includes(state) ? state + ' · ' + outcome : outcome;
     const parts = [];
+    // 状態と説明は名前の下だけに表示する。同じ工程をmessageが説明して
+    // いる場合はmessageを使い、停滞などの状態だけを残す。
+    const phase = _text(operation.phase).replace(/^(?:停滞|外部待機):\s*/, '');
+    const messageHasPhase = phase && _text(operation.message).includes(phase);
+    if (state && !messageHasPhase) parts.push(state);
     if (operation.mode === 'determinate' && operation.total > 0) {
       if (operation.kind === 'download') {
         parts.push((Math.min(operation.processed, operation.total) / 1048576).toFixed(1)
@@ -56968,7 +57973,10 @@ document.addEventListener('DOMContentLoaded', () => {
       parts.push(operation.processed + '件確認済み');
     }
     if (operation.currentItem) parts.push(operation.currentItem);
-    if (operation.message) parts.push(operation.message);
+    if (operation.message) {
+      const prefix = messageHasPhase ? _text(operation.phase).match(/^(?:停滞|外部待機):\s*/) : null;
+      parts.push((prefix ? prefix[0] : '') + operation.message);
+    }
     if (operation.eta) parts.push('残り約' + _formatEta(operation.eta));
     return parts.join(' · ');
   }
@@ -57193,13 +58201,30 @@ document.addEventListener('DOMContentLoaded', () => {
     let actionTop = window.innerHeight;
     // 個々のボタンではなく操作面全体を避ける。ビューワーの #controls のように
     // ボタン同士に隙間があるフッターでも、トレイが隙間へ重ならないようにする。
-    for (const action of _collectTrayAvoidRects()) {
+    const obstacles = _collectTrayAvoidRects();
+    for (const action of obstacles) {
       if (action.width && action.height && action.left < box.right && action.right > box.left
           && action.top < box.bottom && action.bottom > box.top) actionTop = Math.min(actionTop, action.top);
     }
     if (actionTop > 112 && actionTop < window.innerHeight) {
       tray.style.bottom = ((window.innerHeight - actionTop + 8) / zoom) + 'px';
       tray.style.setProperty('--meldex-operation-available-height', ((actionTop - 16) / zoom) + 'px');
+    }
+    // A tall menu can start near the top edge, leaving no vertical space.
+    // Use a free side of the viewport before covering its retry/undo controls.
+    const placed = tray.getBoundingClientRect();
+    const overlaps = (candidate, other) => other.width && other.height && candidate.left < other.right
+      && candidate.right > other.left && candidate.top < other.bottom && candidate.bottom > other.top;
+    if (obstacles.some(other => overlaps(placed, other))) {
+      const candidates = [8, ...obstacles.map(other => other.left - placed.width - 8),
+        ...obstacles.map(other => other.right + 8)];
+      for (const left of candidates) {
+        if (left < 8 || left + placed.width > window.innerWidth - 8) continue;
+        const candidate = {left, right: left + placed.width, top: placed.top, bottom: placed.bottom};
+        if (obstacles.some(other => overlaps(candidate, other))) continue;
+        tray.style.right = ((window.innerWidth - candidate.right) / zoom) + 'px';
+        break;
+      }
     }
   }
 
@@ -57264,10 +58289,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const label = document.createElement('span');
     label.className = 'meldex-operation-label';
     label.textContent = operation.label;
-    const state = document.createElement('span');
-    state.className = 'meldex-operation-state';
-    state.textContent = _statusLabel(operation);
-    heading.append(ring, label, state);
+    heading.append(ring, label);
     row.appendChild(heading);
 
     if (operation.status === 'running' || operation.status === 'queued' || operation.status === 'cancelling') {
@@ -57465,7 +58487,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const list = document.createElement('div');
     list.className = 'meldex-operation-list';
-    visible.slice(0, 6).forEach(function (operation) {
+    // The scrollable tray must retain every retry/cancel action. Truncating
+    // the first six records made a seventh failed job impossible to retry.
+    visible.forEach(function (operation) {
       const row = _operationRow(operation, false);
       const details = row.querySelector('details');
       if (details && expanded.has(operation.id)) details.open = true;
@@ -59188,11 +60212,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 /* === gb-icon-assets.js === */
 ;
-/* gb-icon-assets.js - Lucide / Noto Emoji shared picker and renderer */
+/* gb-icon-assets.js - Lucide / Material Symbols / Noto Emoji shared picker and renderer */
 (function(global) {
   'use strict';
 
   const HEX_SEQ_RE = /^[0-9a-f]{1,6}(?:[-_][0-9a-f]{1,6})*$/i;
+  const MATERIAL_NAME_RE = /^[a-z0-9][a-z0-9_]{0,79}$/;
+  const PACK_SPEC_RE = /^pack:([0-9a-f]{12})\/([a-z0-9][a-z0-9_-]{0,63})$/;
 
   function _esc(value) {
     return MeldexEscape.html(value);
@@ -59390,6 +60416,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const name = raw.slice(raw.indexOf(':') + 1).trim();
       return name ? 'lucide:' + name : '';
     }
+    if (lower.startsWith('material:')) {
+      const name = raw.slice(raw.indexOf(':') + 1).trim().toLowerCase();
+      return MATERIAL_NAME_RE.test(name) ? 'material:' + name : '';
+    }
+    if (lower.startsWith('pack:')) {
+      const value = 'pack:' + raw.slice(5).trim().toLowerCase();
+      return PACK_SPEC_RE.test(value) ? value : '';
+    }
     if (lower.startsWith('noto:') || lower.startsWith('emoji:') || lower.startsWith('twemoji:')) {
       const code = _normalizeCode(raw.slice(raw.indexOf(':') + 1));
       return code ? 'noto:' + code : '';
@@ -59411,6 +60445,16 @@ document.addEventListener('DOMContentLoaded', () => {
       return { type: 'lucide', spec: 'lucide:' + name, name, label: _toKebab(name), search: name + ' ' + _toKebab(name) };
     }
     if (spec.toLowerCase().startsWith('noto:')) return _findNoto(spec.slice(5));
+    if (spec.startsWith('pack:')) {
+      const match = PACK_SPEC_RE.exec(spec);
+      const info = global.MeldexIconPacks?.describe?.(spec) || { state: 'missing' };
+      return { type: 'pack', spec, packId: match[1], iconId: match[2], label: info.icon?.name || match[2],
+        search: (info.icon?.name || '') + ' ' + match[2] };
+    }
+    if (spec.startsWith('material:')) {
+      const name = spec.slice(9);
+      return { type: 'material', spec, name, label: name.replace(/_/g, ' '), search: name + ' ' + name.replace(/_/g, ' ') };
+    }
     if (hasLucideName(spec)) return parseSpec('lucide:' + spec);
     return { type: 'text', spec, label: spec, search: spec };
   }
@@ -59437,6 +60481,26 @@ document.addEventListener('DOMContentLoaded', () => {
       if (typeof global.lucide === 'function' && hasLucideName(parsed.name)) {
         return global.lucide(parsed.name, px);
       }
+    }
+    if (parsed.type === 'pack') {
+      // 利用者が登録した素材集。読み込み前・見つからない時は仮の絵を置き、素材集の状態が変わると描き直される。
+      const info = global.MeldexIconPacks?.describe?.(parsed.spec) || { state: 'missing' };
+      const base = `class="gb-icon-render gb-icon-pack${className}" data-icon="${_escAttr(parsed.spec)}" data-pack-state="${info.state}"`
+        + (options.className ? ` data-extra-class="${_escAttr(options.className)}"` : '');
+      if (info.state === 'ready') {
+        const url = global.MeldexIconPacks.iconDataUrl(info.icon);
+        if (info.icon.tint) {
+          return `<span ${base} role="img" aria-label="${_escAttr(info.icon.name)}" style="--gb-icon-size:${px}px;--gb-icon-pack-mask:url(&quot;${_escAttr(url)}&quot;);" data-tint="1"></span>`;
+        }
+        return `<span ${base} role="img" aria-label="${_escAttr(info.icon.name)}" style="--gb-icon-size:${px}px;"><img src="${_escAttr(url)}" alt="" width="${px}" height="${px}" decoding="async" draggable="false"></span>`;
+      }
+      const glyph = info.state === 'pending' ? '' : (typeof global.lucide === 'function' ? global.lucide('image-off', Math.round(px * 0.8)) : '?');
+      const label = info.state === 'pending' ? '読み込み中' : 'アイコンの素材集が見つかりません';
+      return `<span ${base} role="img" aria-label="${label}" style="--gb-icon-size:${px}px;">${glyph}</span>`;
+    }
+    if (parsed.type === 'material') {
+      // 合字で描くため、名前→文字コードの対応表なしで描ける（一覧の読み込みは選択画面を開いた時だけ）。
+      return `<span class="gb-icon-render gb-material-symbol${className}" data-icon="${_escAttr(parsed.spec)}" role="img" aria-label="${_escAttr(parsed.label)}" translate="no" style="--gb-icon-size:${px}px;">${_esc(parsed.name)}</span>`;
     }
     if (parsed.type === 'noto') {
       const label = parsed.label || parsed.code;
@@ -59484,6 +60548,53 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Material Symbols の名前・分類・検索語は大きいので、選択画面を開いた時に一度だけ読む。
+  let _materialIndexPromise = null;
+  function _materialIndexUrl() {
+    const script = document.querySelector('script[src*="gb-icon-assets.js"]');
+    const base = script ? script.src.replace(/gb-icon-assets\.js(?:\?.*)?$/, '') : '';
+    return base + 'vendor/material-symbols-index.js';
+  }
+  function loadMaterialIndex() {
+    if (global.MATERIAL_SYMBOLS_INDEX) return Promise.resolve(global.MATERIAL_SYMBOLS_INDEX);
+    if (_materialIndexPromise) return _materialIndexPromise;
+    _materialIndexPromise = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = _materialIndexUrl();
+      el.async = true;
+      el.dataset.meldexAsset = 'material-symbols-index';
+      el.onload = () => global.MATERIAL_SYMBOLS_INDEX ? resolve(global.MATERIAL_SYMBOLS_INDEX)
+        : reject(new Error('Material Symbols の一覧を読み込めませんでした'));
+      el.onerror = () => { el.remove(); reject(new Error('Material Symbols の一覧を読み込めませんでした')); };
+      document.head.appendChild(el);
+    }).catch((error) => { _materialIndexPromise = null; throw error; });
+    return _materialIndexPromise;
+  }
+
+  let _materialItems = null;
+  let _materialItemsSource = null;
+  function listMaterialSymbols() {
+    const index = global.MATERIAL_SYMBOLS_INDEX;
+    if (!index || !Array.isArray(index.icons)) return [];
+    if (_materialItems && _materialItemsSource === index) return _materialItems;
+    const categories = Array.isArray(index.categories) ? index.categories : [];
+    _materialItemsSource = index;
+    _materialItems = index.icons.map(([name, cats, tags]) => {
+      const catLabels = (cats || []).map(i => categories[i]).filter(Boolean);
+      const spaced = String(name).replace(/_/g, ' ');
+      return {
+        type: 'material',
+        spec: 'material:' + name,
+        name,
+        label: spaced,
+        categories: catLabels.map(([key]) => key),
+        search: [name, spaced, tags || '', catLabels.map(([key, ja]) => key + ' ' + ja).join(' '),
+          _japaneseKeywords(String(name).replace(/_/g, '-'), tags || '')].filter(Boolean).join(' '),
+      };
+    });
+    return _materialItems;
+  }
+
   function listNotoEmoji() {
     return _notoEntries();
   }
@@ -59507,6 +60618,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const includeNoto = options.includeNoto !== false;
     const items = [];
     if (includeLucide) items.push(...listLucideIcons());
+    if (options.includeMaterial) items.push(...listMaterialSymbols());
+    if (options.includePacks) items.push(...(global.MeldexIconPacks?.pickerItems?.() || []));
     if (includeNoto) items.push(...listNotoEmoji());
     const seen = new Set();
     for (const item of options.imageItems || []) {
@@ -59520,7 +60633,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return items;
   }
 
-  function _normalizeSourceDefs(options, includeLucide, includeNoto) {
+  function _normalizeSourceDefs(options, includeLucide, includeNoto, includeMaterial, includePacks) {
     const custom = Array.isArray(options.sources) ? options.sources : [];
     if (custom.length) {
       return custom.map((source) => {
@@ -59543,7 +60656,9 @@ document.addEventListener('DOMContentLoaded', () => {
       defs.push({ id: 'all', label: 'すべて' });
     }
     if (includeLucide) defs.push({ id: 'lucide', label: 'Lucide', type: 'lucide' });
+    if (includeMaterial) defs.push({ id: 'material', label: 'Material', type: 'material', description: 'Google Material Symbols（丸型・塗りつぶし）' });
     if (includeNoto) defs.push({ id: 'noto', label: 'Noto Emoji', type: 'noto' });
+    if (includePacks) defs.push({ id: 'packs', label: '素材集', type: 'pack', description: '設定の「アイコン素材集」で登録したアイコン' });
     if (options.onUploadImage) defs.push({ id: 'image', label: '登録画像', type: 'image' });
     return defs;
   }
@@ -59566,10 +60681,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const includeLucide = options.includeLucide !== false;
     const includeNoto = options.includeNoto !== false;
+    // Material Symbols は線画アイコンの仲間なので、Lucide を出す選択画面に既定で並べる。
+    const includeMaterial = options.includeMaterial ?? includeLucide;
+    // 利用者の素材集も同じ所に並べる（使う設定の素材集が1つも無ければタブを出さない）。
+    const includePacks = (options.includePacks ?? includeLucide)
+      && (global.MeldexIconPacks?.pickerItems?.() || []).length > 0;
+    options = { ...options, includeMaterial, includePacks };
+    // 絵文字の種類を押してから大きなフォントを初めて解決しないよう、選択画面を開いた時に準備する。
+    if (includeNoto) {
+      try { document.fonts?.load?.('22px "Meldex Noto Emoji"', '😀')?.catch?.(() => {}); } catch (_) {}
+    }
     let allItems = null;
+    const cellNodes = new WeakMap();
     const presets = _makePresetItems(options.presets);
     const current = normalizeSpec(options.current || '');
-    const sourceDefs = _normalizeSourceDefs(options, includeLucide, includeNoto);
+    const sourceDefs = _normalizeSourceDefs(options, includeLucide, includeNoto, includeMaterial, includePacks);
     const defaultSource = includeLucide && includeNoto ? 'all' : includeNoto ? 'noto' : 'lucide';
     let activeSource = options.defaultSource || defaultSource;
     if (!sourceDefs.some((source) => source.id === activeSource)) {
@@ -59706,6 +60832,56 @@ document.addEventListener('DOMContentLoaded', () => {
     search.setAttribute('aria-label', options.searchLabel || 'アイコンを検索');
     picker.appendChild(search);
 
+    let materialCategory = '';
+    let materialCategorySelect = null;
+    if (sourceDefs.some(def => def.id === 'material')) {
+      materialCategorySelect = document.createElement('select');
+      materialCategorySelect.className = 'gb-input gb-icon-picker-category';
+      materialCategorySelect.dataset.e2eId = 'icon-picker-material-category';
+      materialCategorySelect.setAttribute('aria-label', 'Material Symbols の分類');
+      materialCategorySelect.hidden = activeSource !== 'material';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'すべての分類';
+      materialCategorySelect.appendChild(allOption);
+      materialCategorySelect.addEventListener('change', () => {
+        materialCategory = materialCategorySelect.value;
+        resetAndRenderGrid();
+      });
+      picker.appendChild(materialCategorySelect);
+    }
+    let packFilter = '';
+    let packSelect = null;
+    if (sourceDefs.some(def => def.id === 'packs')) {
+      packSelect = document.createElement('select');
+      packSelect.className = 'gb-input gb-icon-picker-category';
+      packSelect.dataset.e2eId = 'icon-picker-pack-filter';
+      packSelect.setAttribute('aria-label', '素材集');
+      packSelect.hidden = activeSource !== 'packs';
+      const allPacks = document.createElement('option');
+      allPacks.value = '';
+      allPacks.textContent = 'すべての素材集';
+      packSelect.appendChild(allPacks);
+      for (const pack of global.MeldexIconPacks.list().filter(p => p.enabled)) {
+        const option = document.createElement('option');
+        option.value = pack.id;
+        option.textContent = pack.name;
+        packSelect.appendChild(option);
+      }
+      packSelect.addEventListener('change', () => { packFilter = packSelect.value; resetAndRenderGrid(); });
+      picker.appendChild(packSelect);
+    }
+    function fillMaterialCategories() {
+      const cats = global.MATERIAL_SYMBOLS_INDEX?.categories;
+      if (!materialCategorySelect || !Array.isArray(cats) || materialCategorySelect.options.length > 1) return;
+      for (const [key, label] of cats) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = label;
+        materialCategorySelect.appendChild(option);
+      }
+    }
+
     let imageRegistration = null;
     if (typeof options.onUploadImage === 'function') {
       const form = document.createElement('div'); form.className = 'gb-icon-image-register';
@@ -59749,9 +60925,8 @@ document.addEventListener('DOMContentLoaded', () => {
     footer.className = 'gb-icon-picker-footer';
     const credit = document.createElement('div');
     credit.className = 'gb-icon-picker-credit';
-    credit.textContent = includeLucide && includeNoto
-      ? 'Lucide (ISC) / Noto Emoji (OFL 1.1)'
-      : includeNoto ? 'Noto Emoji (OFL 1.1)' : 'Lucide (ISC)';
+    credit.textContent = [includeLucide ? 'Lucide (ISC)' : '', includeMaterial ? 'Material Symbols (Apache-2.0)' : '',
+      includeNoto ? 'Noto Emoji (OFL 1.1)' : ''].filter(Boolean).join(' / ');
     const actions = document.createElement('div');
     actions.className = 'gb-icon-picker-actions';
     if (options.allowReset) {
@@ -59788,33 +60963,46 @@ document.addEventListener('DOMContentLoaded', () => {
       return _sourceDefMatches(sourceDef, item);
     }
 
-    function renderGrid() {
+    function renderGrid(appendPage = false) {
       if (!picker.isConnected) return;
       if (imageRegistration) imageRegistration.hidden = activeSource !== 'image';
+      if (materialCategorySelect) materialCategorySelect.hidden = activeSource !== 'material';
+      if (packSelect) packSelect.hidden = activeSource !== 'packs';
       const qRaw = search.value.trim();
       const q = _normalizeSearch(qRaw);
       const exactEmoji = qRaw && qRaw.length <= 8 ? qRaw : '';
       const filtered = getAllItems().filter((item) => {
         if (!sourceMatches(item)) return false;
+        if (materialCategory && activeSource === 'material' && !(item.categories || []).includes(materialCategory)) return false;
+        if (packFilter && activeSource === 'packs' && item.packId !== packFilter) return false;
         if (!q) return true;
         if (exactEmoji && item.emoji === exactEmoji) return true;
         return _normalizeSearch(item.search || item.label || item.spec).includes(q);
       });
-      grid.textContent = '';
+      const previousMore = appendPage === true ? grid.querySelector('.gb-icon-picker-more') : null;
+      const keepFocus = previousMore && document.activeElement === previousMore;
+      const start = previousMore ? grid.querySelectorAll('.gb-icon-picker-cell').length : 0;
+      if (!previousMore) grid.textContent = '';
       const fragment = document.createDocumentFragment();
-      filtered.slice(0, visibleLimit).forEach((item) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'gb-icon-picker-cell';
-        // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
-        btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
-        btn.title = _itemTooltip(item);
-        btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
-        btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
-        if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
-        btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
-        btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
-        btn.addEventListener('click', () => selectItem(item));
+      let firstAdded = null;
+      filtered.slice(start, visibleLimit).forEach((item) => {
+        let btn = cellNodes.get(item);
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'gb-icon-picker-cell';
+          // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
+          btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
+          btn.title = _itemTooltip(item);
+          btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
+          btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
+          if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
+          btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
+          btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
+          btn.addEventListener('click', () => selectItem(item));
+          cellNodes.set(item, btn);
+        }
+        if (!firstAdded) firstAdded = btn;
         fragment.appendChild(btn);
       });
       if (!filtered.length) {
@@ -59824,19 +61012,26 @@ document.addEventListener('DOMContentLoaded', () => {
         fragment.appendChild(empty);
       }
       if (filtered.length > visibleLimit) {
-        const more = document.createElement('button');
+        const more = previousMore || document.createElement('button');
         more.type = 'button';
         more.className = 'gb-icon-picker-more';
         more.dataset.e2eId = 'icon-picker-more';
         more.textContent = 'さらに表示（残り' + (filtered.length - visibleLimit) + '件）';
         more.setAttribute('aria-label', more.textContent);
-        more.addEventListener('click', () => {
-          visibleLimit += pageSize;
-          renderGrid();
-        });
-        fragment.appendChild(more);
+        if (!previousMore) {
+          more.addEventListener('click', () => {
+            visibleLimit += pageSize;
+            renderGrid(true);
+          });
+          fragment.appendChild(more);
+        }
+      } else if (previousMore) {
+        previousMore.remove();
       }
-      grid.appendChild(fragment);
+      if (previousMore?.isConnected) grid.insertBefore(fragment, previousMore);
+      else grid.appendChild(fragment);
+      // 最後のページで「さらに表示」が消えても、キーボードの行き先を失わない。
+      if (keepFocus && !previousMore.isConnected) firstAdded?.focus();
     }
 
     function resetAndRenderGrid() {
@@ -59866,17 +61061,37 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (typeof global.clampPopupToViewport === 'function') global.clampPopupToViewport(picker);
     search.focus();
     scheduleInitialRender();
+    if (includeMaterial) {
+      loadMaterialIndex().then(() => {
+        if (!picker.isConnected) return;
+        fillMaterialCategories();
+        allItems = null;
+        renderGrid();
+      }).catch((error) => {
+        if (picker.isConnected && activeSource === 'material') grid.textContent = error.message;
+      });
+    }
     if (global.MeldexCloudAssets) {
       global.MeldexCloudAssets.load('icons').then(() => {
         allItems = null;
         renderGrid();
       }).catch(error => {
         if (picker.isConnected) {
-          grid.textContent = error.message;
+          // 一覧（grid）は直後の描画・検索・種類の切替で作り直されるため、失敗の案内は一覧の外の
+          // 共通の領域内エラーへ出す（一覧の中に置くと、直後の描画で消えて再試行できなかった）。
+          picker.querySelector('.gb-icon-picker-load-error')?.remove();
+          const failure = document.createElement('div');
+          failure.className = 'gb-inline-error gb-icon-picker-load-error';
+          failure.setAttribute('role', 'alert');
+          const message = document.createElement('span');
+          message.textContent = error?.message || 'アイコン素材を読み込めませんでした';
           const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'gb-btn';
           retry.textContent = '再試行';
           retry.onclick = () => { removePicker(); openPicker(options); };
-          grid.appendChild(retry);
+          failure.append(message, retry);
+          grid.parentNode?.insertBefore(failure, grid);
         }
       });
     }
@@ -59931,7 +61146,66 @@ document.addEventListener('DOMContentLoaded', () => {
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
 
+  // Material Symbols は合字フォントなので、<img> 用の画像が要る所（画像セル・ユーザーアイコン）では
+  // 読み込み済みのフォントをキャンバスへ描いて PNG にする。
+  const MATERIAL_FONT = '"Meldex Material Symbols Rounded"';
+  function _materialFontReady(name, px) {
+    try { return !!document.fonts?.check?.(`${px}px ${MATERIAL_FONT}`, name); } catch { return false; }
+  }
+  function _drawMaterialPng(name, options) {
+    const size = Math.max(16, Math.min(512, Number(options.size) || 128));
+    const glyph = Math.round(size * (options.scale || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    if (options.bg) {
+      ctx.fillStyle = options.bg;
+      ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = options.color || '#9aa0a6';
+    ctx.font = `${glyph}px ${MATERIAL_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const metrics = ctx.measureText(name);
+    const asc = metrics.actualBoundingBoxAscent || glyph * 0.9;
+    const desc = metrics.actualBoundingBoxDescent || 0;
+    ctx.fillText(name, size / 2, (size + asc - desc) / 2);
+    return canvas.toDataURL('image/png');
+  }
+  // フォントが読み込み済みなら即座に返す。未読込なら '' を返す（非同期版を使う）。
+  function materialImageDataUrlSync(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') {
+      // 塗らない素材（色付きのSVG・PNG）はそのまま使える。塗る素材は非同期版で色を付ける。
+      const info = global.MeldexIconPacks?.describe?.(spec);
+      return info?.state === 'ready' && !info.icon.tint ? global.MeldexIconPacks.iconDataUrl(info.icon) : '';
+    }
+    if (parsed.type !== 'material') return '';
+    return _materialFontReady(parsed.name, 24) ? _drawMaterialPng(parsed.name, options) : '';
+  }
+  async function materialImageDataUrl(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') return (await global.MeldexIconPacks?.imageDataUrl?.(spec, options)) || '';
+    if (parsed.type !== 'material') return '';
+    try { await document.fonts?.load?.(`24px ${MATERIAL_FONT}`, parsed.name); } catch (_) {}
+    return _drawMaterialPng(parsed.name, options);
+  }
+  async function toAvatarDataUrlAsync(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') {
+      return (await global.MeldexIconPacks?.imageDataUrl?.(spec, { size: 128, scale: 0.55, bg: _avatarColor(options.bg, '#000000'),
+        color: _avatarColor(options.fg || options.color, '#d4d4d4') })) || toAvatarDataUrl(spec, options);
+    }
+    if (parsed.type !== 'material') return toAvatarDataUrl(spec, options);
+    return materialImageDataUrl(spec, { size: 128, scale: 0.5, bg: _avatarColor(options.bg, '#000000'),
+      color: _avatarColor(options.fg || options.color, '#d4d4d4') });
+  }
+
   global.GBIconAssets = {
+    materialImageDataUrl,
+    materialImageDataUrlSync,
+    toAvatarDataUrlAsync,
     normalizeSpec,
     parseSpec,
     sameSpec,
@@ -59939,11 +61213,773 @@ document.addEventListener('DOMContentLoaded', () => {
     renderInto,
     listLucideIcons,
     listNotoEmoji,
+    listMaterialSymbols,
+    loadMaterialIndex,
     codeToEmoji,
     hasLucideName,
     openPicker,
     toAvatarDataUrl,
   };
+})(window);
+
+;
+
+/* === gb-icon-packs.js === */
+;
+/* gb-icon-packs.js - 利用者が登録するアイコン素材集（SVG / PNG）
+ *
+ * - 登録: フォルダ（SVG/PNG）またはZIPから。SVGは安全な要素・属性だけ残して作り直し、PNGは縮小して描き直す。
+ * - 保存: 個人設定の保存先（Dropboxの個人管理領域。デスクトップ版・Cloud版共通）へ、目録1つ
+ *   （icon-packs）と素材集ごとの文書（icon-pack-<id>）で置く。利用者のファイルの隣には置かない。
+ *   端末内（IndexedDB）にも写しを持ち、起動直後の描画は写しから行う（通信を待たない）。
+ *   Dropboxへ接続していない環境では端末内だけで動き、接続後に送る。
+ * - 描画: アイコンの値は `pack:<素材集ID>/<アイコンID>`。素材集が無い時は代わりの絵を出す。
+ */
+(function (global) {
+  'use strict';
+
+  if (global.MeldexIconPacks) return;
+
+  const INDEX_DOC = 'icon-packs';
+  const PACK_DOC_PREFIX = 'icon-pack-';
+  const DB_NAME = 'meldex-icon-packs';
+  const DB_STORE = 'kv';
+  const STATE_KEY = 'state';
+  const LIMITS = Object.freeze({
+    maxPacks: 20,
+    maxIconsPerPack: 500,
+    maxSvgInputBytes: 100 * 1024,
+    maxSvgOutputBytes: 48 * 1024,
+    maxPngInputBytes: 512 * 1024,
+    maxPngSide: 128,
+    maxPackBytes: 900 * 1024,
+    maxZipBytes: 20 * 1024 * 1024,
+    maxNameLength: 60,
+  });
+  const PACK_ID_RE = /^[0-9a-f]{12}$/;
+  const ICON_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+  const SPEC_RE = /^pack:([0-9a-f]{12})\/([a-z0-9][a-z0-9_-]{0,63})$/;
+
+  // ---- SVG の無害化 ---------------------------------------------------------
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const XLINK_NS = 'http://www.w3.org/1999/xlink';
+  const ALLOWED_ELEMENTS = new Set(['svg', 'g', 'path', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'rect',
+    'defs', 'use', 'symbol', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask', 'title']);
+  const ALLOWED_ATTRIBUTES = new Set(['viewbox', 'width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r',
+    'rx', 'ry', 'd', 'points', 'fill', 'fill-rule', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-linecap',
+    'stroke-linejoin', 'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-opacity', 'opacity',
+    'transform', 'clip-path', 'clip-rule', 'mask', 'id', 'offset', 'stop-color', 'stop-opacity', 'gradientunits',
+    'gradienttransform', 'spreadmethod', 'fx', 'fy', 'preserveaspectratio', 'href', 'xlink:href', 'color',
+    'vector-effect', 'shape-rendering', 'clippathunits', 'maskunits', 'maskcontentunits', 'display', 'visibility',
+    'xmlns', 'xmlns:xlink', 'version', 'style']);
+  const ALLOWED_STYLE_PROPS = new Set(['fill', 'fill-rule', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-linecap',
+    'stroke-linejoin', 'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-opacity', 'opacity',
+    'stop-color', 'stop-opacity', 'color', 'display', 'visibility', 'clip-rule', 'vector-effect']);
+  const MONO_COLORS = new Set(['', 'none', 'currentcolor', 'transparent', 'black', '#000', '#000000', '#000f', '#000000ff',
+    'rgb(0,0,0)', 'rgba(0,0,0,1)', 'inherit']);
+
+  function _safeValue(value) {
+    const text = String(value || '');
+    if (/[<>]/.test(text) || /javascript:|data:|expression\s*\(|@import|\\/i.test(text)) return null;
+    // url(...) は文書内の参照（#id）だけ許す。外部の参照は落とす。
+    const urls = text.match(/url\s*\(([^)]*)\)/gi) || [];
+    if (urls.some(u => !/^url\s*\(\s*['"]?#[A-Za-z0-9_.:-]+['"]?\s*\)$/i.test(u))) return null;
+    return text;
+  }
+
+  function _sanitizeStyle(value) {
+    const kept = [];
+    for (const part of String(value || '').split(';')) {
+      const idx = part.indexOf(':');
+      if (idx < 0) continue;
+      const prop = part.slice(0, idx).trim().toLowerCase();
+      const val = _safeValue(part.slice(idx + 1).trim());
+      if (ALLOWED_STYLE_PROPS.has(prop) && val != null && val !== '') kept.push(prop + ':' + val);
+    }
+    return kept.join(';');
+  }
+
+  /** SVG文字列を無害化して返す。使えない時は Error を投げる。戻り値 { svg, tint }。 */
+  function sanitizeSvg(text) {
+    const source = String(text || '');
+    if (!source.trim()) throw new Error('空のSVGです');
+    if (new Blob([source]).size > LIMITS.maxSvgInputBytes) throw new Error('SVGが大きすぎます（100KBまで）');
+    if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('外部定義を含むSVGは登録できません');
+    const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
+    const root = doc.documentElement;
+    if (!root || root.nodeName.toLowerCase() !== 'svg' || doc.getElementsByTagName('parsererror').length) {
+      throw new Error('SVGとして読めません');
+    }
+    const colors = new Set();
+    const ids = new Set();
+    const out = document.implementation.createDocument(SVG_NS, 'svg', null);
+    const copy = (node, target) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3) {
+          // 文字はタイトルの中だけ残す（描画に使う文字要素は許していない）。
+          if (target.nodeName.toLowerCase() === 'title') target.appendChild(out.createTextNode(child.nodeValue.slice(0, 200)));
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        const name = String(child.localName || '').toLowerCase();
+        if (!ALLOWED_ELEMENTS.has(name) || child.namespaceURI !== SVG_NS) continue;
+        const el = out.createElementNS(SVG_NS, child.localName);
+        copyAttributes(child, el);
+        copy(child, el);
+        target.appendChild(el);
+      }
+    };
+    const copyAttributes = (from, to) => {
+      for (const attr of Array.from(from.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on') || !ALLOWED_ATTRIBUTES.has(name) || name === 'xmlns' || name === 'xmlns:xlink') continue;
+        let value = attr.value;
+        if (name === 'href' || name === 'xlink:href') {
+          // <use> などの参照は文書内（#id）だけ。
+          if (!/^#[A-Za-z0-9_.:-]+$/.test(value.trim())) continue;
+          to.setAttribute('href', value.trim());
+          continue;
+        }
+        if (name === 'style') {
+          value = _sanitizeStyle(value);
+          if (!value) continue;
+          for (const m of value.matchAll(/(?:^|;)(fill|stroke|stop-color|color):([^;]*)/g)) colors.add(m[2].trim().toLowerCase().replace(/\s+/g, ''));
+        } else {
+          value = _safeValue(value);
+          if (value == null) continue;
+          if (['fill', 'stroke', 'stop-color', 'color'].includes(name)) colors.add(value.trim().toLowerCase().replace(/\s+/g, ''));
+        }
+        if (name === 'id') ids.add(value);
+        to.setAttribute(attr.name, value);
+      }
+    };
+    const svg = out.documentElement;
+    copyAttributes(root, svg);
+    copy(root, svg);
+    // 大きさは表示側で決める。縦横の比は viewBox に残す。
+    if (!svg.getAttribute('viewBox')) {
+      const w = parseFloat(root.getAttribute('width')) || 24;
+      const h = parseFloat(root.getAttribute('height')) || 24;
+      svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    }
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    if (!svg.querySelector('path,circle,ellipse,line,polyline,polygon,rect,use')) throw new Error('描く図形がありません');
+    const result = new XMLSerializer().serializeToString(svg);
+    if (new Blob([result]).size > LIMITS.maxSvgOutputBytes) throw new Error('SVGが大きすぎます');
+    // 黒・現在の色だけで描くアイコンは、テーマの文字色で塗る（黒いままだと暗いテーマで見えない）。
+    const tint = [...colors].every(color => MONO_COLORS.has(color));
+    return { svg: result, tint };
+  }
+
+  // ---- PNG の描き直し -------------------------------------------------------
+  async function sanitizePng(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length < 8) throw new Error('PNGとして読めません');
+    if (bytes.length > LIMITS.maxPngInputBytes) throw new Error('PNGが大きすぎます（512KBまで）');
+    const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    if (!sig.every((b, i) => bytes[i] === b)) throw new Error('PNGとして読めません');
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const bitmap = await createImageBitmap(blob).catch(() => { throw new Error('PNGとして読めません'); });
+    const scale = Math.min(1, LIMITS.maxPngSide / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    // 描き直すことで、埋め込まれた付随情報（撮影情報・文字列など）を落とす。
+    return canvas.toDataURL('image/png');
+  }
+
+  // ---- 状態 -----------------------------------------------------------------
+  // packs: { [id]: { id, name, enabled, updatedAt, icons: [{ id, name, kind, data, tint }], revision, synced, dirty } }
+  let state = { order: [], packs: {}, indexRevision: null, removed: [] };
+  let iconMap = new Map();
+  let loaded = false;
+  let remoteAvailable = null;
+  let syncing = null;
+  const listeners = new Set();
+
+  function _rebuildMap() {
+    iconMap = new Map();
+    for (const id of state.order) {
+      const pack = state.packs[id];
+      if (!pack) continue;
+      for (const icon of pack.icons || []) iconMap.set(id + '/' + icon.id, { pack, icon });
+    }
+  }
+
+  function _emit() {
+    _rebuildMap();
+    for (const fn of listeners) { try { fn(); } catch (_) {} }
+    _refreshRenderedIcons();
+    try { global.dispatchEvent(new CustomEvent('meldex-icon-packs-change')); } catch (_) {}
+  }
+
+  // 読み込み前・素材集が無い時に置いた仮の絵を、今の状態で描き直す（同じ絵なら触らない）。
+  function _refreshRenderedIcons() {
+    if (typeof document === 'undefined' || !global.GBIconAssets?.render) return;
+    document.querySelectorAll('.gb-icon-pack[data-icon]').forEach((el) => {
+      const spec = el.dataset.icon;
+      const size = parseFloat(el.style.getPropertyValue('--gb-icon-size')) || 20;
+      if (el.dataset.packState === describe(spec).state) return;
+      const holder = document.createElement('span');
+      holder.innerHTML = global.GBIconAssets.render(spec, size, { className: el.dataset.extraClass || '' });
+      const next = holder.firstElementChild;
+      if (next) el.replaceWith(next);
+    });
+  }
+
+  // ---- 端末内の写し（IndexedDB） --------------------------------------------
+  let _dbPromise = null;
+  function _db() {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve) => {
+      try {
+        if (!global.indexedDB) { resolve(null); return; }
+        const req = global.indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch (_) { resolve(null); }
+    });
+    return _dbPromise;
+  }
+  async function _loadLocal() {
+    const db = await _db();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      try {
+        const req = db.transaction(DB_STORE, 'readonly').objectStore(DB_STORE).get(STATE_KEY);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch (_) { resolve(null); }
+    });
+  }
+  async function _saveLocal() {
+    const db = await _db();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put(JSON.parse(JSON.stringify(state)), STATE_KEY);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (_) { resolve(false); }
+    });
+  }
+
+  function _normalizeState(raw) {
+    const next = { order: [], packs: {}, indexRevision: null, removed: [] };
+    if (!raw || typeof raw !== 'object') return next;
+    next.indexRevision = raw.indexRevision || null;
+    next.removed = Array.isArray(raw.removed) ? raw.removed.filter(r => PACK_ID_RE.test(r?.id || '')) : [];
+    for (const id of Array.isArray(raw.order) ? raw.order : []) {
+      const pack = raw.packs?.[id];
+      if (!PACK_ID_RE.test(id) || !pack || next.packs[id]) continue;
+      next.packs[id] = _normalizePack(pack, id);
+      next.order.push(id);
+    }
+    return next;
+  }
+  function _normalizePack(pack, id) {
+    return {
+      id,
+      name: String(pack.name || '素材集').slice(0, LIMITS.maxNameLength),
+      enabled: pack.enabled !== false,
+      updatedAt: String(pack.updatedAt || ''),
+      icons: (Array.isArray(pack.icons) ? pack.icons : []).filter(icon => ICON_ID_RE.test(icon?.id || '')
+        && (icon.kind === 'svg' || icon.kind === 'png') && typeof icon.data === 'string')
+        .slice(0, LIMITS.maxIconsPerPack)
+        .map(icon => ({ id: icon.id, name: String(icon.name || icon.id).slice(0, 120), kind: icon.kind, data: icon.data, tint: !!icon.tint })),
+      revision: pack.revision || null,
+      synced: !!pack.synced,
+      dirty: !!pack.dirty,
+      // 中身（アイコン）を送る必要があるか。使う／使わない・名前の変更は目録だけ送る。
+      contentDirty: !!pack.contentDirty || (!!pack.dirty && !pack.synced),
+    };
+  }
+
+  // ---- 個人設定の保存先 -----------------------------------------------------
+  function _hasRemote() { return typeof global.apiFetch === 'function'; }
+  async function _prefGet(name) {
+    if (!_hasRemote()) return null;
+    return global.apiFetch('/personal-preferences/' + name, { silentError: true, skipBrowseCache: true });
+  }
+  async function _prefPut(name, payload, expectedRevision) {
+    return global.apiFetch('/personal-preferences/' + name, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, silentError: true,
+      body: JSON.stringify({ payload, expectedRevision: expectedRevision || null }),
+    });
+  }
+  function _isConflict(error) {
+    return Number(error?.status || error?.response?.status || 0) === 409 || /409|競合/.test(String(error?.message || ''));
+  }
+
+  function _packPayload(pack) {
+    return { version: 1, id: pack.id, name: pack.name, updatedAt: pack.updatedAt,
+      icons: pack.icons.map(({ id, name, kind, data, tint }) => ({ id, name, kind, data, tint })) };
+  }
+  function _indexPayload() {
+    return { version: 1, updatedAt: new Date().toISOString(),
+      packs: state.order.map(id => state.packs[id]).filter(Boolean).map(p => ({
+        id: p.id, name: p.name, enabled: p.enabled, iconCount: p.icons.length, updatedAt: p.updatedAt })) };
+  }
+
+  async function _pushPack(pack) {
+    let expected = pack.revision;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await _prefPut(PACK_DOC_PREFIX + pack.id, _packPayload(pack), expected);
+        if (!result?.available) return false;
+        pack.revision = result.revision || null;
+        pack.dirty = false;
+        pack.contentDirty = false;
+        pack.synced = true;
+        return true;
+      } catch (error) {
+        if (!_isConflict(error) || attempt) throw error;
+        expected = (await _prefGet(PACK_DOC_PREFIX + pack.id))?.revision || null;
+      }
+    }
+    return false;
+  }
+
+  async function _tombstone(entry) {
+    let expected = entry.revision || null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await _prefPut(PACK_DOC_PREFIX + entry.id, { version: 1, id: entry.id, removed: true, updatedAt: new Date().toISOString() }, expected);
+        return;
+      } catch (error) {
+        if (!_isConflict(error) || attempt) throw error;
+        expected = (await _prefGet(PACK_DOC_PREFIX + entry.id))?.revision || null;
+      }
+    }
+  }
+
+  /** 個人設定の保存先と突き合わせる。他の端末の追加・変更・削除を取り込み、この端末の変更を送る。 */
+  function sync() {
+    if (syncing) return syncing;
+    syncing = (async () => {
+      try {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const remote = await _prefGet(INDEX_DOC).catch(() => null);
+          if (!remote || remote.available !== true) { remoteAvailable = false; return { available: false }; }
+          remoteAvailable = true;
+          const remoteEntries = remote.exists && Array.isArray(remote.payload?.packs) ? remote.payload.packs : [];
+          const removedIds = new Set(state.removed.map(r => r.id));
+          const remoteById = new Map(remoteEntries.filter(e => PACK_ID_RE.test(e?.id || '') && !removedIds.has(e.id)).map(e => [e.id, e]));
+          let changedIndex = state.removed.length > 0;
+          // 他の端末で消えた素材集（この端末で送信済みのもの）は消す。未送信のものは残して送る。
+          for (const id of [...state.order]) {
+            const pack = state.packs[id];
+            if (!remoteById.has(id)) {
+              if (pack.synced && !pack.dirty) { delete state.packs[id]; state.order = state.order.filter(x => x !== id); }
+              else changedIndex = true;
+            }
+          }
+          // 他の端末で増えた・変わった素材集を取り込む。
+          for (const [id, entry] of remoteById) {
+            const local = state.packs[id];
+            if (local?.dirty) {
+              if (local.enabled !== (entry.enabled !== false) || local.name !== entry.name) changedIndex = true;
+              continue;
+            }
+            if (local && local.updatedAt === String(entry.updatedAt || '')) {
+              local.enabled = entry.enabled !== false;
+              local.name = String(entry.name || local.name).slice(0, LIMITS.maxNameLength);
+              continue;
+            }
+            const doc = await _prefGet(PACK_DOC_PREFIX + id).catch(() => null);
+            if (!doc?.exists || !doc.payload || doc.payload.removed) continue;
+            const pack = _normalizePack({ ...doc.payload, enabled: entry.enabled, name: entry.name || doc.payload.name }, id);
+            pack.revision = doc.revision || null;
+            pack.synced = true;
+            state.packs[id] = pack;
+            if (!state.order.includes(id)) state.order.push(id);
+          }
+          // この端末の変更を送る（素材集の中身→目録の順。目録だけ先に届いて中身が無い状態を作らない）。
+          for (const id of state.order) {
+            const pack = state.packs[id];
+            if (pack?.dirty && (pack.contentDirty || !pack.synced)) { await _pushPack(pack); changedIndex = true; }
+            else if (pack?.dirty) { pack.dirty = false; pack.synced = true; changedIndex = true; }
+          }
+          if (changedIndex) {
+            try {
+              const result = await _prefPut(INDEX_DOC, _indexPayload(), remote.revision || null);
+              state.indexRevision = result?.revision || null;
+            } catch (error) {
+              if (_isConflict(error)) continue;
+              throw error;
+            }
+            for (const entry of state.removed.splice(0)) await _tombstone(entry).catch(() => {});
+          } else {
+            state.indexRevision = remote.revision || null;
+          }
+          await _saveLocal();
+          _emit();
+          return { available: true };
+        }
+        return { available: true, conflict: true };
+      } finally {
+        syncing = null;
+      }
+    })();
+    return syncing;
+  }
+
+  function _scheduleSync() {
+    const run = () => sync().catch((error) => {
+      global.console?.warn?.('[Meldex] アイコン素材集を同期できませんでした', error);
+    });
+    if (typeof global.requestIdleCallback === 'function') global.requestIdleCallback(run, { timeout: 8000 });
+    else setTimeout(run, 3000);
+  }
+
+  // ---- 取り込み -------------------------------------------------------------
+  function _newPackId() {
+    const bytes = new Uint8Array(6);
+    (global.crypto || {}).getRandomValues?.(bytes);
+    if (!bytes.some(Boolean)) for (let i = 0; i < 6; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  }
+  function _iconSlug(name, used) {
+    const base = String(name || '').replace(/\.[^.]+$/, '').normalize('NFKC').toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '').slice(0, 56) || 'icon';
+    let slug = /^[a-z0-9]/.test(base) ? base : 'i-' + base;
+    let n = 2;
+    while (used.has(slug)) slug = (base.slice(0, 52) + '-' + n++);
+    used.add(slug);
+    return slug;
+  }
+  function _hash(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(16) + ':' + text.length;
+  }
+
+  /** files: [{ name, bytes: Uint8Array }]。戻り値 { pack, added, skipped: [{ name, reason }] } */
+  async function importEntries(files, options = {}) {
+    if (state.order.length >= LIMITS.maxPacks) throw new Error(`素材集は${LIMITS.maxPacks}個まで登録できます`);
+    const used = new Set();
+    const seen = new Set();
+    const icons = [];
+    const skipped = [];
+    let bytesTotal = 0;
+    const sorted = [...files].sort((a, b) => String(a.name).localeCompare(String(b.name), 'ja'));
+    for (const file of sorted) {
+      const name = String(file.name || '').split(/[\\/]/).pop();
+      const lower = name.toLowerCase();
+      if (!lower.endsWith('.svg') && !lower.endsWith('.png')) continue;
+      if (icons.length >= LIMITS.maxIconsPerPack) { skipped.push({ name, reason: `1つの素材集は${LIMITS.maxIconsPerPack}個まで` }); continue; }
+      try {
+        let icon;
+        if (lower.endsWith('.svg')) {
+          const text = new TextDecoder('utf-8', { fatal: false }).decode(file.bytes);
+          const { svg, tint } = sanitizeSvg(text);
+          icon = { kind: 'svg', data: svg, tint };
+        } else {
+          icon = { kind: 'png', data: await sanitizePng(file.bytes), tint: false };
+        }
+        const key = _hash(icon.data);
+        if (seen.has(key)) { skipped.push({ name, reason: '同じ絵が登録済み' }); continue; }
+        if (bytesTotal + icon.data.length > LIMITS.maxPackBytes) { skipped.push({ name, reason: '素材集の容量の上限（約900KB）' }); continue; }
+        seen.add(key);
+        bytesTotal += icon.data.length;
+        const display = name.replace(/\.[^.]+$/, '');
+        icons.push({ id: _iconSlug(display, used), name: display, ...icon });
+      } catch (error) {
+        skipped.push({ name, reason: error.message || '読めません' });
+      }
+    }
+    if (!icons.length) {
+      const error = new Error('登録できるSVG・PNGがありませんでした');
+      error.skipped = skipped;
+      throw error;
+    }
+    const id = _newPackId();
+    const pack = _normalizePack({ name: String(options.name || '素材集').trim() || '素材集', enabled: true,
+      updatedAt: new Date().toISOString(), icons, dirty: true, contentDirty: true }, id);
+    state.packs[id] = pack;
+    state.order.push(id);
+    await _saveLocal();
+    _emit();
+    _scheduleSyncNow();
+    return { pack: summary(pack), added: icons.length, skipped };
+  }
+
+  async function importFileList(fileList, options = {}) {
+    const files = [];
+    for (const file of Array.from(fileList || [])) {
+      const lower = String(file.name || '').toLowerCase();
+      if (!lower.endsWith('.svg') && !lower.endsWith('.png')) continue;
+      if (file.size > Math.max(LIMITS.maxSvgInputBytes, LIMITS.maxPngInputBytes)) {
+        files.push({ name: file.name, bytes: new Uint8Array(LIMITS.maxPngInputBytes + 1) });
+        continue;
+      }
+      files.push({ name: file.webkitRelativePath || file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    }
+    const first = Array.from(fileList || [])[0];
+    const folder = String(first?.webkitRelativePath || '').split('/')[0];
+    return importEntries(files, { name: options.name || folder || '素材集' });
+  }
+
+  async function importZip(file, options = {}) {
+    const engine = global.MeldexArchiveZipEngine;
+    if (!engine) throw new Error('この画面ではZIPを読めません');
+    if (file.size > LIMITS.maxZipBytes) throw new Error('ZIPが大きすぎます（20MBまで）');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const { members } = await engine.parseZip(bytes);
+    const files = [];
+    for (const member of members.values()) {
+      if (member.isDir || engine.isSymlinkExternalAttr?.(member.externalAttr)) continue;
+      const lower = member.name.toLowerCase();
+      if ((!lower.endsWith('.svg') && !lower.endsWith('.png')) || /(^|\/)(__macosx|\.)/i.test(member.name)) continue;
+      if (member.uncompressedSize > Math.max(LIMITS.maxSvgInputBytes, LIMITS.maxPngInputBytes)) {
+        files.push({ name: member.name, bytes: new Uint8Array(LIMITS.maxPngInputBytes + 1) });
+        continue;
+      }
+      files.push({ name: member.name, bytes: await engine.extractMember(bytes, member) });
+    }
+    return importEntries(files, { name: options.name || String(file.name || '素材集').replace(/\.zip$/i, '') });
+  }
+
+  function _scheduleSyncNow() {
+    sync().catch((error) => global.showStatus?.('アイコン素材集を同期できませんでした: ' + (error?.message || error), true));
+  }
+
+  async function _mutate(id, fn) {
+    const pack = state.packs[id];
+    if (!pack) throw new Error('素材集が見つかりません');
+    fn(pack);
+    pack.dirty = true;
+    await _saveLocal();
+    _emit();
+    _scheduleSyncNow();
+    return summary(pack);
+  }
+  function setEnabled(id, enabled) {
+    return _mutate(id, (pack) => { pack.enabled = !!enabled; });
+  }
+  function rename(id, name) {
+    const clean = String(name || '').trim().slice(0, LIMITS.maxNameLength);
+    if (!clean) return Promise.reject(new Error('名前を入力してください'));
+    return _mutate(id, (pack) => { pack.name = clean; });
+  }
+  async function remove(id) {
+    const pack = state.packs[id];
+    if (!pack) return false;
+    delete state.packs[id];
+    state.order = state.order.filter(x => x !== id);
+    if (pack.synced) state.removed.push({ id, revision: pack.revision || null });
+    await _saveLocal();
+    _emit();
+    _scheduleSyncNow();
+    return true;
+  }
+
+  // ---- 参照 -----------------------------------------------------------------
+  function summary(pack) {
+    return { id: pack.id, name: pack.name, enabled: pack.enabled, iconCount: pack.icons.length,
+      synced: pack.synced && !pack.dirty, preview: pack.icons.slice(0, 12).map(icon => 'pack:' + pack.id + '/' + icon.id) };
+  }
+  function list() { return state.order.map(id => state.packs[id]).filter(Boolean).map(summary); }
+
+  /** 値の状態: ready（描ける）/ pending（写しの読み込み前）/ disabled（使わない設定）/ missing（見つからない）。 */
+  function describe(spec) {
+    const match = SPEC_RE.exec(String(spec || ''));
+    if (!match) return { state: 'missing' };
+    const found = iconMap.get(match[1] + '/' + match[2]);
+    if (found) return { state: 'ready', pack: found.pack, icon: found.icon, packEnabled: found.pack.enabled };
+    return { state: loaded ? 'missing' : 'pending', packId: match[1], iconId: match[2] };
+  }
+
+  function iconDataUrl(icon) {
+    if (icon.kind === 'png') return icon.data;
+    return 'data:image/svg+xml,' + encodeURIComponent(icon.data).replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
+  }
+
+  /** 選択画面用: 使う設定の素材集のアイコン。 */
+  function pickerItems() {
+    const items = [];
+    for (const id of state.order) {
+      const pack = state.packs[id];
+      if (!pack?.enabled) continue;
+      for (const icon of pack.icons) {
+        items.push({ type: 'pack', spec: 'pack:' + id + '/' + icon.id, packId: id, label: icon.name,
+          search: [icon.name, icon.id, pack.name, '素材集'].join(' ') });
+      }
+    }
+    return items;
+  }
+
+  /** 画像が要る所向け。塗る指定のSVGは色を付けたPNGにする。 */
+  async function imageDataUrl(spec, options = {}) {
+    const info = describe(spec);
+    if (info.state !== 'ready') return '';
+    const url = iconDataUrl(info.icon);
+    if (!info.icon.tint && !options.bg) return url;
+    const size = Math.max(16, Math.min(512, Number(options.size) || 128));
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const glyph = Math.round(size * (options.scale || 1));
+    const offset = (size - glyph) / 2;
+    const layer = document.createElement('canvas');
+    layer.width = size; layer.height = size;
+    const lctx = layer.getContext('2d');
+    lctx.drawImage(img, offset, offset, glyph, glyph);
+    if (info.icon.tint) {
+      lctx.globalCompositeOperation = 'source-in';
+      lctx.fillStyle = options.color || '#9aa0a6';
+      lctx.fillRect(0, 0, size, size);
+    }
+    if (!options.bg) return layer.toDataURL('image/png');
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = options.bg;
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); ctx.fill();
+    ctx.drawImage(layer, 0, 0);
+    return canvas.toDataURL('image/png');
+  }
+
+  // ---- 設定画面 -------------------------------------------------------------
+  function _el(tag, attrs = {}, text) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'className') el.className = v;
+      else if (k === 'dataset') Object.assign(el.dataset, v);
+      else el.setAttribute(k, v);
+    }
+    if (text != null) el.textContent = text;
+    return el;
+  }
+
+  function _confirm(message) {
+    if (typeof global.cfConfirm === 'function') return global.cfConfirm(message);
+    if (typeof global.showConfirmDialog === 'function') {
+      return new Promise(resolve => global.showConfirmDialog(message, () => resolve(true), () => resolve(false)));
+    }
+    return Promise.resolve(false);
+  }
+
+  function renderSettings(container) {
+    if (!container) return;
+    container.textContent = '';
+    container.classList.add('gb-icon-packs-settings');
+    const section = _el('section', { className: 'gb-section gb-section--boxed', dataset: { e2eId: 'icon-packs-settings' } });
+    const title = _el('div', { className: 'gb-section-title' });
+    title.innerHTML = (typeof global.lucide === 'function' ? global.lucide('shapes', 14) : '') + ' アイコン素材集';
+    if (typeof global.fieldHelp === 'function') {
+      title.insertAdjacentHTML('beforeend', ' ' + global.fieldHelp('フォルダやZIPに入ったSVG・PNGのアイコンを登録すると、アイコンを選ぶ画面の「素材集」タブから選べます。SVGは安全のため、スクリプト・外部の参照・操作で動く指定を取り除いて登録します。Dropboxに接続していれば個人設定として保存され、他の端末でも使えます。', { e2eId: 'icon-packs-help' }));
+    }
+    section.appendChild(title);
+
+    const actions = _el('div', { className: 'gb-icon-packs-actions' });
+    const folderBtn = _el('button', { type: 'button', className: 'gb-btn gb-btn-sm', dataset: { e2eId: 'icon-packs-add-folder' } }, 'フォルダから登録');
+    const zipBtn = _el('button', { type: 'button', className: 'gb-btn gb-btn-sm', dataset: { e2eId: 'icon-packs-add-zip' } }, 'ZIPから登録');
+    const folderInput = _el('input', { type: 'file', hidden: '', multiple: '', accept: '.svg,.png,image/svg+xml,image/png', dataset: { e2eId: 'icon-packs-folder-input' } });
+    folderInput.webkitdirectory = true;
+    const zipInput = _el('input', { type: 'file', hidden: '', accept: '.zip,application/zip', dataset: { e2eId: 'icon-packs-zip-input' } });
+    const status = _el('div', { className: 'gb-icon-packs-status', role: 'status', dataset: { e2eId: 'icon-packs-status' } });
+    folderBtn.addEventListener('click', () => folderInput.click());
+    zipBtn.addEventListener('click', () => zipInput.click());
+    const runImport = async (job) => {
+      folderBtn.disabled = true; zipBtn.disabled = true;
+      status.textContent = '登録中…';
+      try {
+        const result = await job();
+        status.textContent = `「${result.pack.name}」に${result.added}個のアイコンを登録しました`
+          + (result.skipped.length ? `（登録しなかったもの${result.skipped.length}件: ${result.skipped.slice(0, 3).map(s => s.name + '＝' + s.reason).join('、')}${result.skipped.length > 3 ? ' ほか' : ''}）` : '');
+      } catch (error) {
+        status.textContent = (error.message || '登録できませんでした')
+          + (error.skipped?.length ? `（${error.skipped.slice(0, 3).map(s => s.name + '＝' + s.reason).join('、')}）` : '');
+      } finally {
+        folderBtn.disabled = false; zipBtn.disabled = false;
+        folderInput.value = ''; zipInput.value = '';
+      }
+    };
+    folderInput.addEventListener('change', () => { if (folderInput.files?.length) runImport(() => importFileList(folderInput.files)); });
+    zipInput.addEventListener('change', () => { const f = zipInput.files?.[0]; if (f) runImport(() => importZip(f)); });
+    actions.append(folderBtn, zipBtn, folderInput, zipInput);
+    section.append(actions, status);
+
+    const listEl = _el('div', { className: 'gb-icon-packs-list', role: 'list', dataset: { e2eId: 'icon-packs-list' } });
+    const where = _el('div', { className: 'gb-icon-packs-where', dataset: { e2eId: 'icon-packs-where' } });
+    section.append(listEl, where);
+    container.appendChild(section);
+
+    const draw = () => {
+      if (!listEl.isConnected) { listeners.delete(draw); return; }
+      listEl.textContent = '';
+      where.textContent = remoteAvailable === true ? '個人設定（Dropbox）に保存し、他の端末と同期します'
+        : remoteAvailable === false ? 'この端末にだけ保存しています（Dropboxに接続すると同期します）' : '';
+      const packs = list();
+      if (!packs.length) {
+        listEl.appendChild(_el('div', { className: 'gb-section-desc' }, 'まだ登録されていません'));
+        return;
+      }
+      for (const pack of packs) {
+        const row = _el('div', { className: 'gb-icon-packs-row', role: 'listitem', dataset: { e2eId: 'icon-packs-row:' + pack.id, packId: pack.id } });
+        const preview = _el('div', { className: 'gb-icon-packs-preview', 'aria-hidden': 'true' });
+        preview.innerHTML = pack.preview.map(spec => global.GBIconAssets?.render?.(spec, 18) || '').join('');
+        const name = _el('input', { type: 'text', className: 'gb-input gb-icon-packs-name', maxlength: String(LIMITS.maxNameLength),
+          'aria-label': '素材集の名前', dataset: { e2eId: 'icon-packs-name:' + pack.id } });
+        name.value = pack.name;
+        name.addEventListener('change', () => rename(pack.id, name.value).catch(error => { status.textContent = error.message; name.value = pack.name; }));
+        const count = _el('span', { className: 'gb-icon-packs-count' }, pack.iconCount + '個');
+        const toggleLabel = _el('label', { className: 'gb-icon-packs-toggle' });
+        const toggle = _el('input', { type: 'checkbox', dataset: { e2eId: 'icon-packs-enabled:' + pack.id } });
+        toggle.checked = pack.enabled;
+        toggle.addEventListener('change', () => setEnabled(pack.id, toggle.checked));
+        toggleLabel.append(toggle, document.createTextNode('使う'));
+        const removeBtn = _el('button', { type: 'button', className: 'gb-btn gb-btn-xs gb-btn-quiet', 'aria-label': `素材集「${pack.name}」を削除`,
+          dataset: { e2eId: 'icon-packs-remove:' + pack.id } }, '削除');
+        removeBtn.addEventListener('click', async () => {
+          const ok = await _confirm(`素材集「${pack.name}」を削除しますか？\nこの素材集のアイコンを使っている所は、代わりの絵で表示されます。他の端末からも削除されます。`);
+          if (ok) await remove(pack.id);
+        });
+        row.append(preview, name, count, toggleLabel, removeBtn);
+        listEl.appendChild(row);
+      }
+    };
+    listeners.add(draw);
+    draw();
+    if (remoteAvailable == null) sync().catch(() => {}).finally(draw);
+  }
+
+  const ready = _loadLocal().then((raw) => {
+    state = _normalizeState(raw);
+  }).catch(() => {}).then(() => {
+    loaded = true;
+    _emit();
+    _scheduleSync();
+  });
+
+  global.MeldexIconPacks = Object.freeze({
+    LIMITS,
+    ready,
+    sanitizeSvg,
+    sanitizePng,
+    importEntries,
+    importFileList,
+    importZip,
+    setEnabled,
+    rename,
+    remove,
+    sync,
+    list,
+    describe,
+    iconDataUrl,
+    imageDataUrl,
+    pickerItems,
+    renderSettings,
+    onChange: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+    isLoaded: () => loaded,
+    remoteAvailable: () => remoteAvailable,
+  });
 })(window);
 
 ;
@@ -60012,7 +62048,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (spec === '') return '';
     if (typeof spec !== 'string' || spec.length > 2500) throw new Error('アイコンの形式が不正です');
     const parsed = GBIconAssets.parseSpec(spec);
-    if (!['lucide', 'noto', 'image'].includes(parsed.type) || !parsed.spec || /[\x00-\x1f\x7f]/.test(parsed.spec)) throw new Error('アイコンの形式が不正です');
+    if (!['lucide', 'material', 'pack', 'noto', 'image'].includes(parsed.type) || !parsed.spec || /[\x00-\x1f\x7f]/.test(parsed.spec)) throw new Error('アイコンの形式が不正です');
     if (parsed.type === 'lucide' && !/^[A-Za-z][A-Za-z0-9_-]{0,99}$/.test(parsed.name)) throw new Error('アイコンの形式が不正です');
     if (parsed.type === 'noto') {
       const points = parsed.spec.slice(5).split('-').map(part => parseInt(part,16));
@@ -60072,7 +62108,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const spec = item?.display_icon ?? cache.get(key(item?.path));
     if (!spec || !global.GBIconAssets) return fallback;
     const parsed = GBIconAssets.parseSpec(spec);
-    if (!['lucide', 'noto', 'image'].includes(parsed.type) || (parsed.type === 'lucide' && !GBIconAssets.hasLucideName(parsed.name))) return fallback;
+    if (!['lucide', 'material', 'pack', 'noto', 'image'].includes(parsed.type) || (parsed.type === 'lucide' && !GBIconAssets.hasLucideName(parsed.name))) return fallback;
     const markup = GBIconAssets.render(spec, size || 18, {contextPath: item.path, className: 'gb-file-custom-icon'});
     return parsed.type === 'image' ? '<span data-file-icon-type="' + MeldexEscape.attr(item.type || 'page') + '">' + markup + '</span>' : markup;
   }
@@ -60174,8 +62210,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const previousIcon = loaded.icon || '';
         const reservation = typeof global.historyReserve === 'function' ? global.historyReserve('アイコンを変更', '') : null;
         try {
-          const result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({path, icon: spec || '', if_match_etag: loaded.etag}), silentError: true});
+          let result;
+          try {
+            result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({path, icon: spec || '', if_match_etag: loaded.etag}), silentError: true});
+          } catch (error) {
+            // 応答が届かなくても（時間切れ・通信の失敗）、サーバーは書き込み済みのことがある。
+            // 読み直して選んだアイコンになっていれば成功として扱う（失敗表示なのに変わっている、を防ぐ）。
+            if (error?.status) throw error;
+            const saved = await apiFetch('/file-icon?path=' + encodeURIComponent(path), {silentError: true}).catch(() => null);
+            if (!saved || (saved.icon || '') !== (spec || '') || !saved.etag || saved.etag === loaded.etag) throw error;
+            result = saved;
+          }
           if (!isCurrent()) { reservation?.cancel(); return; }
           item.display_icon = result.icon || '';
           adoptRevision(path, loaded.etag, result.etag);
@@ -60187,7 +62233,9 @@ document.addEventListener('DOMContentLoaded', () => {
           await refresh(path, result.icon);
         } catch (error) {
           reservation?.cancel();
-          showStatus('アイコンを保存できませんでした。開き直して再試行してください: ' + (error.userMessage || error.message || error), true);
+          const busy = error?.payload?.detail?.code === 'write_busy' ? error.payload.detail.message : '';
+          showStatus(busy ? 'アイコンを保存できませんでした。' + busy
+            : 'アイコンを保存できませんでした。開き直して再試行してください: ' + (error.userMessage || error.message || error), true);
         }
       };
       GBIconAssets.openPicker({...imageOptions, title: 'ファイルアイコン', anchorEl, current: loaded.icon || '',
@@ -61695,7 +63743,7 @@ const MeldexDnD = (() => {
     if (!result?.ok) throw new Error(result?.error || '貼り付け処理の完了を確認できませんでした');
     if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'os-clipboard' });
     if (typeof openFolder === 'function' && typeof _folderPath !== 'undefined' && _folderPath === path) {
-      await openFolder(document.getElementById('folder-title')?.textContent || path, path, { silent: true, skipNavPush: true });
+      await openFolder(document.getElementById('folder-title')?.textContent || path, path, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}), silent: true, skipNavPush: true });
     }
     showStatus(`${result.paths.length}件を${data.cut ? '移動' : '貼り付け'}しました`);
     return true;
@@ -71271,7 +73319,7 @@ ${reason.message}`
       action: '添付や選択範囲を減らしてから、もう一度試してください。',
     },
     {
-      test: info => /no space|disk full|空き容量|ENOSPC/i.test(info.raw),
+      test: info => info.status === 507 || /no space|disk full|空き容量|ENOSPC/i.test(info.raw),
       title: '保存先の空き容量が不足しています',
       message: '保存先ドライブまたは同期フォルダの空き容量が足りません。',
       action: '不要なファイルを整理し、空き容量を確保してから保存してください。',
@@ -72203,8 +74251,10 @@ ${reason.message}`
   const SCHEDULE_INCIDENT_ROUTES = /^\/cal\/(?:events|tasks|calendars|shifts|time|schedule-templates|history)(?:\/|$)/;
   // フォルダツリー・フォルダパネルのファイル操作（作成・改名・移動・削除・復元・複製・貼り付け・リンク・アイコン）の
   // 失敗も同じ記録へ残す（2026-11-22 M-014 フォルダ網羅テスト: 改名の保存の失敗が記録0件だった）。
-  const FOLDER_INCIDENT_ROUTES = /^\/(?:outliner\/(?:add|rename|move|delete|delete-batch|restore|duplicate|save-as)|folder-links(?:\/[\w-]+)*|trash\/restore|file-icon|folder-display)(?:\/|$)/;
+  const FOLDER_INCIDENT_ROUTES = /^\/(?:outliner\/(?:add|rename|move|move-batch|delete|delete-batch|restore|duplicate|save-as)|upload-files?|folder-links(?:\/[\w-]+)*|trash\/restore|file-icon|folder-display|global-tags\/target)(?:\/|$)/;
   const CHAT_INCIDENT_ROUTES = /^\/(?:chat|cli-chat|chat_rules)(?:\/|$)/;
+  // 画面内で失敗を扱うアノテートと撮影も、重複通知とは別に本文を含めず記録する。
+  const ANNOTATION_INCIDENT_ROUTES = /^\/(?:annotations|annotation\/screenshot)(?:\/|$)/;
   const SHEET_INCIDENT_LOCAL_KEY = 'meldex:sheet-incidents';
   const _sheetIncidentRecent = new Map();
   function _incidentRoute(path) {
@@ -72268,7 +74318,7 @@ ${reason.message}`
       _sheetIncidentRecent.set(fingerprint, now);
       if (_sheetIncidentRecent.size > 200) _sheetIncidentRecent.delete(_sheetIncidentRecent.keys().next().value);
       _push(operationLogs, { label: /^(chat|cli-chat)/.test(entry.op) ? 'チャットの問題' : 'シートの問題', detail: { kind: entry.kind, op: entry.op, endpoint: entry.endpoint, status: entry.status } });
-      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() || window.MeldexStandaloneNative) {
         try {
           const list = JSON.parse(localStorage.getItem(SHEET_INCIDENT_LOCAL_KEY) || '[]');
           list.push({ time: _now(), ...entry });
@@ -72290,7 +74340,8 @@ ${reason.message}`
     if (!route || route.startsWith('/diagnostics') || route.startsWith('/debug-log')) return;
     const schedule = SCHEDULE_INCIDENT_ROUTES.test(route);
     const chat = CHAT_INCIDENT_ROUTES.test(route);
-    if (!schedule && !chat && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)) return;
+    if (!schedule && !chat && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)
+      && !ANNOTATION_INCIDENT_ROUTES.test(route)) return;
     const method = String(opts?.method || 'GET').toUpperCase();
     if (method === 'GET' && (opts?.silentError || error?.name === 'AbortError')) return;
     // 予定などの ID はパスに入るので、記録の操作名からは外す（/cal/events/<id> → schedule.cal.events.put）。
@@ -74019,7 +76070,7 @@ ${reason.message}`
 
   // フォルダ表示レイアウト
   regId('folder-layout-select', { label: 'フォルダ表示', desc: 'フォルダビューの表示形式（リスト/グリッド等）を選びます' });
-  regId('folder-layout-menu-btn', { label: '表示形式', desc: 'グリッド、ウォーターフォール、横並び、リストから表示方法を選びます' });
+  regId('folder-layout-menu-btn', { label: '表示形式', desc: 'グリッド、ウォーターフォール、横並び、リスト、リスト・小から表示方法を選びます' });
   regId('folder-display-btn', { label: '表示設定', desc: 'フォルダパネルのサムネイルサイズや表示項目を変更します' });
 
   // チャットモデル選択
@@ -76531,6 +78582,7 @@ ${reason.message}`
 
   // 矢印キーの本来の意味（キャレット移動・値変更・一覧内移動等）を奪ってはいけない要素。
   const NATIVE_ARROW_SELECTOR = [
+    '[data-db-reorder-handle]',
     'input', 'textarea', 'select',
     '[contenteditable="true"]', '[contenteditable=""]',
     '[role="slider"]', '[role="spinbutton"]', '[role="combobox"]',
@@ -77062,7 +79114,8 @@ ${reason.message}`
 .gb-palette-slider-row .gb-slider-val::-webkit-inner-spin-button,
 .gb-palette-slider-row .gb-slider-val::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .gb-palette-picker-row {
-  width: 100%; display: flex; align-items: center; gap: 8px;
+  /* 48+28+28+24×3=176px と5か所の間隔を、色見本8列の内幅213px以内へ収める（8pxでは216pxで右端のOS色が切れた）。 */
+  width: 100%; display: flex; align-items: center; gap: 6px;
   padding-top: 6px; margin-top: 2px; border-top: 1px solid var(--border);
 }
 .gb-palette-picker-row input[type="color"] {
@@ -77107,17 +79160,29 @@ ${reason.message}`
     max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
     overflow-y: auto;
   }
+  /* 公式変種（共通ルール「色選択」）: テーマの色は1行8色の並びに意味があるため、電話幅でも8列を保つ。
+     44pxの8列が入らない幅では、8列に収まる大きさ（390px幅で約40px）まで縮める。
+     7列の幅に8色を入れると、各行の8色目だけが次の行へ落ちていた（2026-11-24）。 */
   .gb-palette {
-    width: min(calc(100vw - 32px), calc(44px * 7 + 3px * 6 + 16px));
+    width: min(calc(100vw - 32px), calc(44px * 8 + 3px * 7 + 16px));
   }
+  .gb-palette-matrix { width: 100%; }
   .gb-palette-grid,
-  .gb-palette-matrix,
   .gb-palette-row-swatches {
-    width: min(calc(100vw - 48px), calc(44px * 7 + 3px * 6));
+    width: 100%;
+    display: grid;
+    gap: 2px;
+    grid-template-columns: repeat(8, minmax(0, 44px));
   }
   .gb-swatch {
     width: 44px;
     height: 44px;
+  }
+  .gb-palette-grid > .gb-swatch,
+  .gb-palette-row-swatches > .gb-swatch {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
   }
   .gb-palette-standard-toggle,
   .gb-palette-reset-btn,
@@ -77238,7 +79303,24 @@ function _saveCustomColors(colors, options) {
   const before = (typeof captureLocalStorageSettings === 'function')
     ? captureLocalStorageSettings([GB_CUSTOM_COLORS_KEY])
     : null;
-  try { localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors)); } catch {}
+  const previousColors = before ? null : getCustomColors();
+  try {
+    localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors));
+  } catch (_) {
+    // 保存できなかった時は黙って捨てず、原因を知らせて履歴・同期も進めない。
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存できませんでした（端末内の保存先に書けません）', true);
+    return false;
+  }
+  if (!before && options?.skipHistory !== true && typeof window !== 'undefined' && window.MeldexViewerHistory?.push) {
+    // 本体の設定履歴を持たない単独版ビューワーでは、評価・メモと同じ閲覧の履歴で取り消す。
+    const nextColors = getCustomColors();
+    const apply = list => {
+      _saveCustomColors(list, { skipHistory: true });
+      document.querySelectorAll('.gb-palette').forEach(palette => palette.remove());
+    };
+    window.MeldexViewerHistory.push(options?.label || '設定: カスタムカラー変更',
+      () => apply(previousColors), () => apply(nextColors));
+  }
   if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
     pushLocalStorageSettingsHistory(
       options?.label || '設定: カスタムカラー変更',
@@ -77254,6 +79336,7 @@ function _saveCustomColors(colors, options) {
   if (options?.skipServerSync !== true && typeof _queuePersonalColorsSync === 'function') {
     _queuePersonalColorsSync();
   }
+  return true;
 }
 function saveCustomColor(color) {
   const next = _normalizeCustomColor(color);
@@ -77735,7 +79818,11 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
-    anchor.focus({ preventScroll: true });
+    // 狭い画面で起点のボタンがツールバーの「▼」にしまわれている時は、その「▼」へ戻す
+    // （見えないボタンへは戻せず、フォーカスが画面全体へ外れていた）。
+    const hidden = typeof anchor.getClientRects === 'function' && anchor.getClientRects().length === 0;
+    const overflow = hidden ? anchor.closest?.('.gb-toolbar-overflow-host')?.querySelector?.('.gb-toolbar-overflow-button') : null;
+    (overflow || anchor).focus({ preventScroll: true });
   }
 }
 
@@ -77785,6 +79872,8 @@ function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
     if (ev.key !== 'Escape') return;
     if (document.querySelector('.gb-palette-context-menu, .gb-ctx-menu')) return;
     ev.preventDefault();
+    // 色選択を閉じるEscapeを、開いている画面（閲覧のアノテート等）の「閉じる」へ渡さない。
+    ev.stopPropagation();
     closeColorPalette({ restoreFocus: true });
   };
   requestAnimationFrame(() => {
@@ -78035,6 +80124,33 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const customGrid = document.createElement('div'); customGrid.className = 'gb-palette-grid';
   palette.appendChild(customGrid);
 
+  // 共有先への保存が失敗している間は、操作した場所（色選択の中）に案内と再試行を出す。
+  // 右上の案内だけでは、電話幅で色選択に覆われて見えなかった。
+  const syncNotice = document.createElement('div');
+  syncNotice.className = 'gb-palette-sync-notice';
+  syncNotice.dataset.e2eId = 'color-palette-sync-error';
+  syncNotice.hidden = true;
+  palette.appendChild(syncNotice);
+  const renderSyncNotice = (failed) => {
+    if (!failed || !window.GBUI?.createInlineError) { syncNotice.replaceChildren(); syncNotice.hidden = true; return; }
+    if (syncNotice.firstChild) { syncNotice.hidden = false; return; }
+    syncNotice.replaceChildren(window.GBUI.createInlineError({
+      message: 'カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します。',
+      onRetry: async () => {
+        if (typeof _retryPersonalColorsSyncNow === 'function' && !(await _retryPersonalColorsSyncNow())) {
+          throw new Error('カスタムカラーを保存できませんでした。時間をおいて、もう一度お試しください。');
+        }
+      },
+    }));
+    syncNotice.hidden = false;
+  };
+  const onSyncState = (event) => {
+    if (!palette.isConnected) { window.removeEventListener('meldex-personal-colors-sync-state', onSyncState); return; }
+    renderSyncNotice(!!event?.detail?.failed);
+  };
+  window.addEventListener('meldex-personal-colors-sync-state', onSyncState);
+  renderSyncNotice(typeof _personalColorsFailureShown !== 'undefined' && _personalColorsFailureShown);
+
   let dragIdx = -1;
 
   function renderCustomGrid() {
@@ -78101,6 +80217,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
           renderCustomGrid(); updateSwatchHighlights();
+          // 削除した色の位置（無ければ追加ボタン）へフォーカスを残し、色選択の外へ外さない。
+          const swatches = customGrid.querySelectorAll('.gb-swatch');
+          (swatches[Math.min(i, swatches.length - 1)] || saveBtn)?.focus?.({ preventScroll: true });
         });
         menu.appendChild(del);
         document.body.appendChild(menu);
@@ -78199,11 +80318,14 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   picker.type = 'color'; picker.value = selectedHex; picker.title = 'カラーピッカー';
   picker.dataset.e2eId = 'color-palette-picker';
   picker.setAttribute('aria-label', 'カラーピッカー');
-  const onPickerChange = () => {
+  const onPickerChange = (event) => {
+    // 入力中の input と確定の change が同じ色を2回適用し、取り消しの区切りを増やさない。
+    if (event?.type === 'change' && !selectedIsTransparent && selectedHex === picker.value) return;
     if (selectedIsTransparent) selectedAlpha = 1;
     selectedHex = picker.value;
     hsb = _hexToHsb(picker.value);
-    selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
+    // 選んだカスタムカラーの調整中は選択を保ち、＋で上書きできるようにする（下の saveBtn 参照）。
+    selectedIsTransparent = false; selectedPresetIdx = -1;
     selectedOsAccentTone = '';
     updateSliders(); updateSwatchHighlights();
     applyLive();
@@ -78254,7 +80376,6 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
-      selectedCustomIdx = -1;
       selectedPresetIdx = -1;
       selectedOsAccentTone = '';
       updateSliders(); updatePicker(); updateSwatchHighlights();
@@ -78341,7 +80462,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const hSlider = makeSlider('色相', 0, 360, hsb.h, v => { hsb.h = v; onSliderChange(); });
   const sSlider = makeSlider('彩度', 0, 100, hsb.s, v => { hsb.s = v; onSliderChange(); });
   const bSlider = makeSlider('明度', 0, 100, hsb.b, v => { hsb.b = v; onSliderChange(); });
-  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
+  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
   aSlider.row.dataset.e2eId = 'color-palette-opacity';
   sliderSection.append(hSlider.row, sSlider.row, bSlider.row, aSlider.row);
   palette.appendChild(sliderSection);
@@ -78360,7 +80481,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  // 選んだカスタムカラーを調整している間は選択を保つ。＋ボタンはその色を上書きする（以前は調整した瞬間に選択が外れ、上書きできなかった）。
+  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
@@ -78543,6 +80665,12 @@ function _ensurePersonalColorsInit() {
     try { migrated = localStorage.getItem(GB_PERSONAL_COLORS_MIGRATED_KEY) === '1'; } catch {}
 
     if (migrated) {
+      // 前回の共有先への保存が失敗したままの色は、共有先の古い一覧で上書きせず送り直す
+      // （以前は再読込で、追加・削除・並べ替えが黙って元に戻っていた）。
+      if (_personalColorsHasUnsynced()) {
+        queueMicrotask(() => _queuePersonalColorsSync());
+        return;
+      }
       _adoptPersonalColorsRecord(record, { applyToLocal: true });
       return;
     }
@@ -78580,6 +80708,67 @@ function _ensurePersonalColorsInit() {
 // 一度だけ再試行する（計画書「公開インターフェースと保存形式 > カスタムカラー」の
 // 規約通り）。再試行成功後のローカルへの書き戻しは mergeWithLocal で行い、
 // 再試行の実行中に積まれた別の編集（ローカルの直近値）を上書きで消さない。
+// 共有先への保存の失敗は、この画面の色を残したまま知らせて自動で再試行する。
+// 再試行が尽きても未送信の印は残り、次の色の変更か再読込で送り直す。
+const GB_PERSONAL_COLORS_UNSYNCED_KEY = '_gb-colors-server-unsynced';
+const GB_PERSONAL_COLORS_RETRY_DELAYS_MS = [2000, 10000, 35000];
+let _personalColorsRetryTimer = 0;
+let _personalColorsRetryAttempt = 0;
+let _personalColorsFailureShown = false;
+
+function _personalColorsHasUnsynced() {
+  try { return localStorage.getItem(GB_PERSONAL_COLORS_UNSYNCED_KEY) === '1'; } catch { return false; }
+}
+
+function _personalColorsMarkUnsynced(unsynced) {
+  try {
+    if (unsynced) localStorage.setItem(GB_PERSONAL_COLORS_UNSYNCED_KEY, '1');
+    else localStorage.removeItem(GB_PERSONAL_COLORS_UNSYNCED_KEY);
+  } catch {}
+}
+
+function _personalColorsReportSyncFailure() {
+  if (!_personalColorsFailureShown && typeof showStatus === 'function') {
+    showStatus('カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します', true);
+  }
+  _personalColorsFailureShown = true;
+  _personalColorsDispatchSyncState(true);
+  if (_personalColorsRetryTimer || _personalColorsRetryAttempt >= GB_PERSONAL_COLORS_RETRY_DELAYS_MS.length) return;
+  const delay = GB_PERSONAL_COLORS_RETRY_DELAYS_MS[_personalColorsRetryAttempt++];
+  _personalColorsRetryTimer = setTimeout(() => {
+    _personalColorsRetryTimer = 0;
+    _queuePersonalColorsSync();
+  }, delay);
+}
+
+function _personalColorsReportSyncSuccess(sentColors) {
+  // 送信中に別の変更が積まれた場合は、その変更の同期が終わるまで未送信の印を残す。
+  const current = _personalColorsNormalizeList(getCustomColors());
+  const sent = Array.isArray(sentColors) ? sentColors : current;
+  if (current.length === sent.length && current.every((c, i) => c === sent[i])) _personalColorsMarkUnsynced(false);
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  _personalColorsRetryAttempt = 0;
+  if (_personalColorsFailureShown) {
+    _personalColorsFailureShown = false;
+    _personalColorsDispatchSyncState(false);
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存しました');
+  }
+}
+
+function _personalColorsDispatchSyncState(failed) {
+  try { window.dispatchEvent(new CustomEvent('meldex-personal-colors-sync-state', { detail: { failed: !!failed } })); } catch {}
+}
+
+// 色選択の「再試行」: 自動再試行を待たずに今すぐ送る。共有先へ届けば true。
+async function _retryPersonalColorsSyncNow() {
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  // 失敗直後の再接続の抑止を解き、利用者の明示操作として再確認する。
+  if (_personalColorsApiAvailable === false && !_personalColorsApiPermanentlyUnavailable) _personalColorsInitFailedAt = 0;
+  _queuePersonalColorsSync();
+  await _personalColorsSyncChain;
+  return !_personalColorsFailureShown;
+}
+
 function _queuePersonalColorsSync() {
   if (_personalColorsApiPermanentlyUnavailable) return;
   if (typeof apiFetch !== 'function') return;
@@ -78589,14 +80778,22 @@ function _queuePersonalColorsSync() {
     .then(() => _ensurePersonalColorsInit())
     .then(async () => {
       _personalColorsSyncPending = false;
-      if (!_personalColorsApiUsable()) return;
+      if (_personalColorsApiPermanentlyUnavailable) return;
+      // 未送信の印は送信前に付け、共有先が確定した時だけ外す。途中で閉じても再読込で送り直す。
+      _personalColorsMarkUnsynced(true);
+      if (!_personalColorsApiUsable()) {
+        _personalColorsReportSyncFailure();
+        return;
+      }
       const payload = _personalColorsNormalizeList(getCustomColors());
       try {
         const record = await _putPersonalColorsRecord(payload, _personalColorsRevision);
         _adoptPersonalColorsRecord(record, { applyToLocal: false });
+        _personalColorsReportSyncSuccess(payload);
       } catch (e) {
         if (e?.status !== 409) {
           console.warn('[gb-color-palette] personal colors sync failed:', e);
+          _personalColorsReportSyncFailure();
           return;
         }
         try {
@@ -78604,8 +80801,10 @@ function _queuePersonalColorsSync() {
           const merged = _personalColorsNormalizeList([...(latest?.colors || []), ...getCustomColors()]);
           const retryRecord = await _putPersonalColorsRecord(merged, latest?.revision == null ? null : latest.revision);
           _adoptPersonalColorsRecord(retryRecord, { applyToLocal: true, mergeWithLocal: true });
+          _personalColorsReportSyncSuccess(merged);
         } catch (retryErr) {
           console.warn('[gb-color-palette] personal colors sync retry failed:', retryErr);
+          _personalColorsReportSyncFailure();
         }
       }
     })
@@ -78727,6 +80926,8 @@ function _handleImportCustomColorsFile(file) {
 // 削除相当の確認として3択（キャンセル/追加/置き換え）で提示し、既定フォーカスは
 // 非破壊の「追加」に置く。
 function _showPersonalColorsImportModeDialog(onChoose) {
+  // 確認は色選択の外に出す。開いたままだと電話幅で色選択がダイアログを覆い、押せなかった。
+  if (typeof closeColorPalette === 'function') closeColorPalette();
   const body = document.createElement('div');
   body.className = 'modal-body';
   body.textContent = '読み込んだカスタムカラーを、現在のセットへ追加しますか、それとも置き換えますか。';
@@ -79016,6 +81217,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!hasOwn(node, 'bgColor') && color && applyTo !== 'border') base.bgColor = color;
     else if (!hasOwn(node, 'bgColor') && !base.bgColor && boardTheme.nodeBgColor) base.bgColor = boardTheme.nodeBgColor;
 
+    // テーマの色分けで背景だけを塗り替えた場合、既定スタイルの文字色（暗いテーマ用の明るい文字など）が
+    // 残ると淡い背景の上で読めなくなる。トピック自身が文字色を持たない限り、塗った色に合わせる。
+    const autoBackground = !hasOwn(node, 'bgColor') && color && applyTo !== 'border';
+    if (!hasOwn(node, 'textColor') && autoBackground && theme?.builtIn && base.textColor) {
+      base.textColor = automaticTextColor(color) || base.textColor;
+    }
     if (!hasOwn(node, 'textColor') && !base.textColor) {
       // Starter palettes contain both light and dark fills. Preserve explicit text,
       // but keep an automatically colored card readable without a custom style.
@@ -79236,35 +81443,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
       return acc;
     }, {})
   );
-  const OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS = Object.freeze(new Set([
-    'テストテーマ',
-    '旧テーマカラー',
-    'ネイビー',
-    'ネイビーカスタム',
-    'ネイビー カスタム',
-    'セピア',
-    'セピアカスタム',
-    'セピア カスタム',
-    'フォレスト',
-    'フォレストカスタム',
-    'フォレスト カスタム',
-    'ローズ',
-    'ローズカスタム',
-    'ローズ カスタム',
-    'ガーリー',
-    'ガーリーカスタム',
-    'ガーリー カスタム',
-    'グレースケール',
-    'グレースケールカスタム',
-    'グレースケール カスタム',
-    'レインボーブランチ',
-    'レインボー',
-    'レインボーカスタム',
-    'レインボー カスタム',
-    'ゲーミング',
-    'ゲーミングカスタム',
-    'ゲーミング カスタム',
-  ].map(_themeNameKey)));
   let _initialThemeCleanupDone = false;
   let _initialThemeCleanupRunning = false;
   let _activeThemeColorSet = null;
@@ -80584,14 +82762,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
     }
   }
 
-  function _isObsoleteInitialCustomTheme(theme, options = {}) {
-    // A user's saved preset must survive even when its name matches a builtin.
-    if (_promotedInitialThemeIdFromName(theme?.name)) return false;
-    if (options.force !== true && _initialCustomThemeCleanupVersionApplied()) return false;
-    const label = _themeNameKey(theme?.name);
-    return !!_promotedInitialThemeIdFromName(theme?.name) || OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS.has(label);
-  }
-
   function _promotedInitialThemeIdFromCustomId(id) {
     const rawId = String(id || '');
     if (!rawId) return '';
@@ -80607,7 +82777,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const rawId = String(id || '');
     if (!rawId || rawId === 'OSに合わせる') return true;
     if (BUILT_IN_THEMES.some(t => t.id === rawId)) return true;
-    return _readRawCustomThemes().some(t => String(t.id || '') === rawId && !_isObsoleteInitialCustomTheme(t));
+    return _readRawCustomThemes().some(t => String(t.id || '') === rawId);
   }
 
   function _normalizeDefaultThemeId(id) {
@@ -80719,7 +82889,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
         _writePromotedInitialThemeSources(Array.from(sourceByTarget, ([targetId, theme]) => ({ targetId, theme })));
       }
 
-      const nextThemes = rawThemes.filter(theme => !_isObsoleteInitialCustomTheme(theme, { force: true }));
+      // 利用者のカスタムテーマは読み込みでは決して削除しない（以前は表示名の一致だけで
+      // 毎回削除しており、旧テーマカラーの移行結果まで次の読み込みで消えていた）。
+      const nextThemes = rawThemes.slice();
       // Older releases moved named custom presets into this archive. Restore
       // their original identity without replacing any currently saved preset.
       sourceByTarget.forEach(theme => {
@@ -80800,7 +82972,22 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return normalized || 'builtin-dark';
   }
 
+  // 組み込みテーマは定数なので、整えた結果を1回だけ作り、呼ばれるたびに複製して返す。
+  // ボードはトピックの色を決めるたびにテーマを探し、そのたびに全テーマを複製・整形していた
+  // （2026-11-25 応答時間検査: ボードの長い処理の約4分の1）。
+  let _builtInThemeJsonCache = null;
+  function _builtInThemeJsonList() {
+    if (!_builtInThemeJsonCache) {
+      _builtInThemeJsonCache = _buildBuiltInThemes().map(theme => [theme.id, JSON.stringify(theme)]);
+    }
+    return _builtInThemeJsonCache;
+  }
+
   function getBuiltInThemes() {
+    return _builtInThemeJsonList().map(([, json]) => JSON.parse(json));
+  }
+
+  function _buildBuiltInThemes() {
     // All four starter themes use the current shipped defaults.
     return clone(BUILT_IN_THEMES).map(theme => {
       Object.assign(theme.ui.cssVars, {
@@ -80880,6 +83067,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const resolved = resolveThemeId(id);
     const legacy = getCustomThemes().find(theme => theme.id === resolved);
     if (legacy) return clone(legacy);
+    // 組み込みなら該当する1つだけを複製する（全テーマの複製はしない）
+    const builtIn = _builtInThemeJsonList().find(([themeId]) => themeId === resolved);
+    if (builtIn) return JSON.parse(builtIn[1]);
     const themes = getAllThemes();
     return clone(themes.find(t => t.id === resolved) || themes[0] || BUILT_IN_THEMES[0]);
   }
@@ -82153,6 +84343,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const whiteTextDefaults = clone(previous);
     whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
     legacyDefaults.push(whiteTextDefaults);
+    const unshadedTabsDefaults = clone(whiteTextDefaults);
+    unshadedTabsDefaults['panel-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    unshadedTabsDefaults['inner-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    legacyDefaults.push(unshadedTabsDefaults);
     // v1/v2 could stamp the original sequential defaults without upgrading them.
     // Treat that exact snapshot like the unversioned original; a current save
     // (including an intentional auto-color choice) is still returned above.
@@ -82915,7 +85109,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _bindPressAction(el, handler) {
     if (!el || typeof handler !== 'function') return el;
-    let touchHandled = false;
     const run = (ev) => {
       if (el.disabled) return;
       handler(ev);
@@ -82924,16 +85117,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
       if (ev.pointerType === 'mouse') return;
       ev.preventDefault();
       ev.stopPropagation();
-      touchHandled = true;
-      run(ev);
+      // Keep the selection, but open a new surface only after this gesture
+      // becomes a click. Opening on pointerdown lets its release hit a swatch.
     });
     el.addEventListener('click', (ev) => {
-      if (touchHandled) {
-        touchHandled = false;
-        ev.preventDefault();
-        ev.stopPropagation();
-        return;
-      }
       run(ev);
     });
     return el;
@@ -86688,8 +88875,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
       if (level === 'error') console.warn('[BrowserSystemStorage]', detail.message, { kind, documentId, operation });
     }
 
-    async listDocuments(kind) {
+    async listDocuments(kind, options) {
       const contract = _systemContract();
+      const prefix = String(options?.documentIdPrefix || '');
       const segment = contract?.kindSubpathSegment
         ? contract.kindSubpathSegment(kind)
         : _systemSegment(kind, '管理データ種別');
@@ -86707,6 +88895,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       for (const entry of entries) {
         if (entry?.kind !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
         const documentId = String(entry.name).slice(0, -5);
+        if (prefix && !documentId.startsWith(prefix)) continue;
         try {
           if (contract?.sanitizeDocumentId) contract.sanitizeDocumentId(documentId);
           else _systemSegment(documentId, '管理データID');
@@ -87445,7 +89634,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     }
     if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-batch-rename' });
     if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
-      await openFolder(basename(_folderPath), _folderPath, { silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true });
+      await openFolder(basename(_folderPath), _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}), silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true });
     }
   }
 
@@ -89629,7 +91818,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _normalizeLayout(mode) {
     const value = String(mode || '').trim();
+    // リスト・小はフォルダパネル（パソコン幅）の表示形式。スマホの一覧では通常のリストとして描き、値はそのまま保つ
+    if (value === 'list-small') return value;
     return LAYOUT_ITEMS.some(item => item[1] === value) ? value : 'waterfall';
+  }
+
+  // スマホの一覧で実際に使う形（リスト・小は通常のリスト）
+  function _viewLayout() {
+    return _layout === 'list-small' ? 'list' : _layout;
   }
 
   function _e2eIdPart(value) {
@@ -89909,7 +92105,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _syncLayoutButtons() {
     document.querySelectorAll('#sidebar .cloud-mobile-explorer-layout-button').forEach((button) => {
-      button.setAttribute('aria-pressed', button.dataset.layout === _layout ? 'true' : 'false');
+      button.setAttribute('aria-pressed', button.dataset.layout === _viewLayout() ? 'true' : 'false');
     });
     const select = document.getElementById('folder-layout-select');
     if (select) select.value = _layout;
@@ -89920,7 +92116,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     _syncLayoutButtons();
     const sidebar = _sidebar();
     const list = sidebar?.querySelector('#cloud-mobile-explorer-list-pane .cloud-mobile-explorer-list');
-    if (list) list.dataset.layout = _layout;
+    if (list) list.dataset.layout = _viewLayout();
     if (_mode === 'list' && _currentItems.length) {
       const pane = sidebar?.querySelector('#cloud-mobile-explorer-list-pane');
       if (pane) _renderItems(pane, _currentItems);
@@ -90022,7 +92218,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _setListState(pane, state, message) {
     const list = pane.querySelector('.cloud-mobile-explorer-list');
     if (!list) return;
-    list.dataset.layout = _layout;
+    list.dataset.layout = _viewLayout();
     list.dataset.state = state;
     list.replaceChildren();
     const empty = document.createElement('div');
@@ -90081,7 +92277,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const list = pane.querySelector('.cloud-mobile-explorer-list');
     window.GBOutlinerThumbnails?.detachWithin?.(list);
     list.replaceChildren();
-    list.dataset.layout = _layout;
+    list.dataset.layout = _viewLayout();
     list.dataset.state = items.length ? 'ready' : 'empty';
     if (!items.length) {
       const empty = document.createElement('div');
@@ -90106,15 +92302,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const type = String(item?.type || '').toLowerCase();
     if (window.GBOutlinerThumbnails?.canLoadThumbnail?.(item) && !item.display_icon) {
       const icon = document.createElement('span');
-      icon.innerHTML = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
+      icon.innerHTML = _iconHtml(_itemIcon(item), _viewLayout() === 'list' ? 20 : 28, '');
       el.replaceChildren(icon);
       window.GBOutlinerThumbnails.attachToElement(el, item, icon, 256);
       return;
     }
-    const canThumb = (type === 'image' || type === 'video') && item?.path && !item.display_icon && _layout !== 'list';
+    const canThumb = (type === 'image' || type === 'video') && item?.path && !item.display_icon && _viewLayout() !== 'list';
     if (!canThumb) {
-      const fallback = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
-      el.innerHTML = window.MeldexFileIcons?.render(item, _layout === 'list' ? 20 : 28, fallback) ?? fallback;
+      const fallback = _iconHtml(_itemIcon(item), _viewLayout() === 'list' ? 20 : 28, '');
+      el.innerHTML = window.MeldexFileIcons?.render(item, _viewLayout() === 'list' ? 20 : 28, fallback) ?? fallback;
       return;
     }
     const img = document.createElement('img');

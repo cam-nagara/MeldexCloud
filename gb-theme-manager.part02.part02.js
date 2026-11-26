@@ -32,6 +32,10 @@
     const whiteTextDefaults = clone(previous);
     whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
     legacyDefaults.push(whiteTextDefaults);
+    const unshadedTabsDefaults = clone(whiteTextDefaults);
+    unshadedTabsDefaults['panel-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    unshadedTabsDefaults['inner-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    legacyDefaults.push(unshadedTabsDefaults);
     // v1/v2 could stamp the original sequential defaults without upgrading them.
     // Treat that exact snapshot like the unversioned original; a current save
     // (including an intentional auto-color choice) is still returned above.

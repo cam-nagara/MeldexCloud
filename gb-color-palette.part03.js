@@ -117,6 +117,12 @@ function _ensurePersonalColorsInit() {
     try { migrated = localStorage.getItem(GB_PERSONAL_COLORS_MIGRATED_KEY) === '1'; } catch {}
 
     if (migrated) {
+      // 前回の共有先への保存が失敗したままの色は、共有先の古い一覧で上書きせず送り直す
+      // （以前は再読込で、追加・削除・並べ替えが黙って元に戻っていた）。
+      if (_personalColorsHasUnsynced()) {
+        queueMicrotask(() => _queuePersonalColorsSync());
+        return;
+      }
       _adoptPersonalColorsRecord(record, { applyToLocal: true });
       return;
     }
@@ -154,6 +160,67 @@ function _ensurePersonalColorsInit() {
 // 一度だけ再試行する（計画書「公開インターフェースと保存形式 > カスタムカラー」の
 // 規約通り）。再試行成功後のローカルへの書き戻しは mergeWithLocal で行い、
 // 再試行の実行中に積まれた別の編集（ローカルの直近値）を上書きで消さない。
+// 共有先への保存の失敗は、この画面の色を残したまま知らせて自動で再試行する。
+// 再試行が尽きても未送信の印は残り、次の色の変更か再読込で送り直す。
+const GB_PERSONAL_COLORS_UNSYNCED_KEY = '_gb-colors-server-unsynced';
+const GB_PERSONAL_COLORS_RETRY_DELAYS_MS = [2000, 10000, 35000];
+let _personalColorsRetryTimer = 0;
+let _personalColorsRetryAttempt = 0;
+let _personalColorsFailureShown = false;
+
+function _personalColorsHasUnsynced() {
+  try { return localStorage.getItem(GB_PERSONAL_COLORS_UNSYNCED_KEY) === '1'; } catch { return false; }
+}
+
+function _personalColorsMarkUnsynced(unsynced) {
+  try {
+    if (unsynced) localStorage.setItem(GB_PERSONAL_COLORS_UNSYNCED_KEY, '1');
+    else localStorage.removeItem(GB_PERSONAL_COLORS_UNSYNCED_KEY);
+  } catch {}
+}
+
+function _personalColorsReportSyncFailure() {
+  if (!_personalColorsFailureShown && typeof showStatus === 'function') {
+    showStatus('カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します', true);
+  }
+  _personalColorsFailureShown = true;
+  _personalColorsDispatchSyncState(true);
+  if (_personalColorsRetryTimer || _personalColorsRetryAttempt >= GB_PERSONAL_COLORS_RETRY_DELAYS_MS.length) return;
+  const delay = GB_PERSONAL_COLORS_RETRY_DELAYS_MS[_personalColorsRetryAttempt++];
+  _personalColorsRetryTimer = setTimeout(() => {
+    _personalColorsRetryTimer = 0;
+    _queuePersonalColorsSync();
+  }, delay);
+}
+
+function _personalColorsReportSyncSuccess(sentColors) {
+  // 送信中に別の変更が積まれた場合は、その変更の同期が終わるまで未送信の印を残す。
+  const current = _personalColorsNormalizeList(getCustomColors());
+  const sent = Array.isArray(sentColors) ? sentColors : current;
+  if (current.length === sent.length && current.every((c, i) => c === sent[i])) _personalColorsMarkUnsynced(false);
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  _personalColorsRetryAttempt = 0;
+  if (_personalColorsFailureShown) {
+    _personalColorsFailureShown = false;
+    _personalColorsDispatchSyncState(false);
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存しました');
+  }
+}
+
+function _personalColorsDispatchSyncState(failed) {
+  try { window.dispatchEvent(new CustomEvent('meldex-personal-colors-sync-state', { detail: { failed: !!failed } })); } catch {}
+}
+
+// 色選択の「再試行」: 自動再試行を待たずに今すぐ送る。共有先へ届けば true。
+async function _retryPersonalColorsSyncNow() {
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  // 失敗直後の再接続の抑止を解き、利用者の明示操作として再確認する。
+  if (_personalColorsApiAvailable === false && !_personalColorsApiPermanentlyUnavailable) _personalColorsInitFailedAt = 0;
+  _queuePersonalColorsSync();
+  await _personalColorsSyncChain;
+  return !_personalColorsFailureShown;
+}
+
 function _queuePersonalColorsSync() {
   if (_personalColorsApiPermanentlyUnavailable) return;
   if (typeof apiFetch !== 'function') return;
@@ -163,14 +230,22 @@ function _queuePersonalColorsSync() {
     .then(() => _ensurePersonalColorsInit())
     .then(async () => {
       _personalColorsSyncPending = false;
-      if (!_personalColorsApiUsable()) return;
+      if (_personalColorsApiPermanentlyUnavailable) return;
+      // 未送信の印は送信前に付け、共有先が確定した時だけ外す。途中で閉じても再読込で送り直す。
+      _personalColorsMarkUnsynced(true);
+      if (!_personalColorsApiUsable()) {
+        _personalColorsReportSyncFailure();
+        return;
+      }
       const payload = _personalColorsNormalizeList(getCustomColors());
       try {
         const record = await _putPersonalColorsRecord(payload, _personalColorsRevision);
         _adoptPersonalColorsRecord(record, { applyToLocal: false });
+        _personalColorsReportSyncSuccess(payload);
       } catch (e) {
         if (e?.status !== 409) {
           console.warn('[gb-color-palette] personal colors sync failed:', e);
+          _personalColorsReportSyncFailure();
           return;
         }
         try {
@@ -178,8 +253,10 @@ function _queuePersonalColorsSync() {
           const merged = _personalColorsNormalizeList([...(latest?.colors || []), ...getCustomColors()]);
           const retryRecord = await _putPersonalColorsRecord(merged, latest?.revision == null ? null : latest.revision);
           _adoptPersonalColorsRecord(retryRecord, { applyToLocal: true, mergeWithLocal: true });
+          _personalColorsReportSyncSuccess(merged);
         } catch (retryErr) {
           console.warn('[gb-color-palette] personal colors sync retry failed:', retryErr);
+          _personalColorsReportSyncFailure();
         }
       }
     })
@@ -301,6 +378,8 @@ function _handleImportCustomColorsFile(file) {
 // 削除相当の確認として3択（キャンセル/追加/置き換え）で提示し、既定フォーカスは
 // 非破壊の「追加」に置く。
 function _showPersonalColorsImportModeDialog(onChoose) {
+  // 確認は色選択の外に出す。開いたままだと電話幅で色選択がダイアログを覆い、押せなかった。
+  if (typeof closeColorPalette === 'function') closeColorPalette();
   const body = document.createElement('div');
   body.className = 'modal-body';
   body.textContent = '読み込んだカスタムカラーを、現在のセットへ追加しますか、それとも置き換えますか。';

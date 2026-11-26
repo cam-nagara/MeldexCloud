@@ -62,6 +62,7 @@
       localStorage.setItem(_storageKey(pmRoot), JSON.stringify({ order, hidden }));
       return true;
     } catch {
+      if (typeof showStatus === 'function') showStatus('作品タブの並び順・表示設定を保存できませんでした。設定は変更していません。もう一度操作してください', true);
       return false;
     }
   }
@@ -143,20 +144,28 @@
   /* --- コンテキストメニュー --- */
 
   function _closeMenu() {
-    document.querySelectorAll('.gb-production-list-tab-menu').forEach(menu => menu.remove());
+    document.querySelectorAll('.gb-production-list-tab-menu').forEach(menu => {
+      menu._dispose?.(); menu.remove();
+    });
   }
 
   function _openMenu(event, items, e2eId) {
     _closeMenu();
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-production-list-tab-menu';
+    menu.setAttribute('role', 'menu');
+    const target = event?.currentTarget || document.activeElement;
+    const opener = target?.closest?.('button') || target;
     menu.dataset.e2eId = e2eId || 'gb-production-list-tab-menu';
     items.forEach(item => {
       if (item.type === 'sep') {
         menu.appendChild(Object.assign(document.createElement('div'), { className: 'gb-context-menu-sep' }));
         return;
       }
-      const node = document.createElement('div');
+      const node = document.createElement('button');
+      node.type = 'button';
+      node.disabled = !!item.disabled;
+      node.setAttribute('role', 'menuitem');
       node.className = 'gb-context-menu-item' + (item.disabled ? ' disabled' : '');
       if (item.e2eId) node.dataset.e2eId = item.e2eId;
       if (typeof lucide === 'function' && item.icon) node.innerHTML = lucide(item.icon, 14) + ' ';
@@ -177,7 +186,22 @@
     menu.style.top = ((anchorRect.bottom + 2) / z) + 'px';
     document.body.appendChild(menu);
     if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+    const choices = () => Array.from(menu.querySelectorAll('button:not(:disabled)'));
+    menu.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault(); ev.stopPropagation(); _closeMenu(); opener?.focus?.(); return;
+      }
+      if (!['ArrowDown','ArrowUp','Home','End'].includes(ev.key)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      const rows = choices(); if (!rows.length) return;
+      const index = rows.indexOf(document.activeElement);
+      const next = ev.key === 'Home' ? 0 : ev.key === 'End' ? rows.length-1
+        : (index + (ev.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+      rows[next].focus();
+    });
+    choices()[0]?.focus({ preventScroll:true });
     setTimeout(() => {
+      if (!menu.isConnected) return;
       const closer = ev => {
         if (!menu.contains(ev.target)) {
           _closeMenu();
@@ -185,6 +209,7 @@
         }
       };
       document.addEventListener('pointerdown', closer);
+      menu._dispose = () => document.removeEventListener('pointerdown', closer);
     }, 0);
     return menu;
   }
@@ -308,8 +333,7 @@
         icon: 'listTodo',
         e2eId: 'gb-production-list-hidden-item-' + _sanitizeIdPart(sheet.sheet_name),
         action: () => {
-          showTab(opts.pmRoot, opts.sheets, sheet.sheet_name);
-          opts.onReopen?.(sheet);
+          if (showTab(opts.pmRoot, opts.sheets, sheet.sheet_name)) opts.onReopen?.(sheet);
         },
       })), 'gb-production-list-hidden-menu');
     });

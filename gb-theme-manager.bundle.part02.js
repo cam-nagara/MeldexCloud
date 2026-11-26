@@ -1,32 +1,3 @@
-      const apps = getThemeUiApplications();
-      const tone = getThemeUiAutoTone();
-      applyThemeUiApplications(apps, { forceTargets: true });
-      dispatchThemeUiApplicationsChange({ applications: apps, fromHistory: true });
-      dispatchThemeUiAutoToneChange({ tone, fromHistory: true });
-    }
-    if (typeof global._refreshSettingsThemePanel === 'function') global._refreshSettingsThemePanel();
-  }
-
-  function _pushThemeSettingsHistory(label, beforeSnapshot, keys, detail, options = {}) {
-    if (!beforeSnapshot || _themeSettingsHistorySuppressed(options)) return false;
-    if (typeof global.pushLocalStorageSettingsHistory !== 'function') return false;
-    return global.pushLocalStorageSettingsHistory(
-      label,
-      beforeSnapshot,
-      _captureThemeSettingsStorage(keys),
-      detail || '',
-      _refreshThemeSettingsAfterHistory
-    );
-  }
-
-  function saveThemeUiAutoTone(tone, options = {}) {
-    const next = normalizeThemeUiAutoTone(tone);
-    const before = _captureThemeSettingsStorage([THEME_UI_AUTO_TONE_KEY]);
-    try { localStorage.setItem(THEME_UI_AUTO_TONE_KEY, JSON.stringify(next)); } catch {}
-    _pushThemeSettingsHistory('設定: テーマ自動トーン変更', before, [THEME_UI_AUTO_TONE_KEY], '', options);
-    applyThemeUiApplications(getThemeUiApplications());
-    dispatchThemeUiAutoToneChange({ tone: next });
-    return next;
   }
 
   function setThemeUiAutoTone(kind, value, options = {}) {
@@ -501,14 +472,6 @@
     }
   }
 
-  function _isObsoleteInitialCustomTheme(theme, options = {}) {
-    // A user's saved preset must survive even when its name matches a builtin.
-    if (_promotedInitialThemeIdFromName(theme?.name)) return false;
-    if (options.force !== true && _initialCustomThemeCleanupVersionApplied()) return false;
-    const label = _themeNameKey(theme?.name);
-    return !!_promotedInitialThemeIdFromName(theme?.name) || OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS.has(label);
-  }
-
   function _promotedInitialThemeIdFromCustomId(id) {
     const rawId = String(id || '');
     if (!rawId) return '';
@@ -524,7 +487,7 @@
     const rawId = String(id || '');
     if (!rawId || rawId === 'OSに合わせる') return true;
     if (BUILT_IN_THEMES.some(t => t.id === rawId)) return true;
-    return _readRawCustomThemes().some(t => String(t.id || '') === rawId && !_isObsoleteInitialCustomTheme(t));
+    return _readRawCustomThemes().some(t => String(t.id || '') === rawId);
   }
 
   function _normalizeDefaultThemeId(id) {
@@ -636,7 +599,9 @@
         _writePromotedInitialThemeSources(Array.from(sourceByTarget, ([targetId, theme]) => ({ targetId, theme })));
       }
 
-      const nextThemes = rawThemes.filter(theme => !_isObsoleteInitialCustomTheme(theme, { force: true }));
+      // 利用者のカスタムテーマは読み込みでは決して削除しない（以前は表示名の一致だけで
+      // 毎回削除しており、旧テーマカラーの移行結果まで次の読み込みで消えていた）。
+      const nextThemes = rawThemes.slice();
       // Older releases moved named custom presets into this archive. Restore
       // their original identity without replacing any currently saved preset.
       sourceByTarget.forEach(theme => {
@@ -717,7 +682,22 @@
     return normalized || 'builtin-dark';
   }
 
+  // 組み込みテーマは定数なので、整えた結果を1回だけ作り、呼ばれるたびに複製して返す。
+  // ボードはトピックの色を決めるたびにテーマを探し、そのたびに全テーマを複製・整形していた
+  // （2026-11-25 応答時間検査: ボードの長い処理の約4分の1）。
+  let _builtInThemeJsonCache = null;
+  function _builtInThemeJsonList() {
+    if (!_builtInThemeJsonCache) {
+      _builtInThemeJsonCache = _buildBuiltInThemes().map(theme => [theme.id, JSON.stringify(theme)]);
+    }
+    return _builtInThemeJsonCache;
+  }
+
   function getBuiltInThemes() {
+    return _builtInThemeJsonList().map(([, json]) => JSON.parse(json));
+  }
+
+  function _buildBuiltInThemes() {
     // All four starter themes use the current shipped defaults.
     return clone(BUILT_IN_THEMES).map(theme => {
       Object.assign(theme.ui.cssVars, {
@@ -797,6 +777,9 @@
     const resolved = resolveThemeId(id);
     const legacy = getCustomThemes().find(theme => theme.id === resolved);
     if (legacy) return clone(legacy);
+    // 組み込みなら該当する1つだけを複製する（全テーマの複製はしない）
+    const builtIn = _builtInThemeJsonList().find(([themeId]) => themeId === resolved);
+    if (builtIn) return JSON.parse(builtIn[1]);
     const themes = getAllThemes();
     return clone(themes.find(t => t.id === resolved) || themes[0] || BUILT_IN_THEMES[0]);
   }
@@ -898,3 +881,20 @@
 
   function paletteInvalidationPending() {
     return !_paletteTargetCache && (!!_paletteBindRaf || !_activeThemeColorSet);
+  }
+
+  // 対象の選択子を1つにまとめ、要素1つあたりの検索を1回にする（選択子ごとに
+  // 部分木を検索すると、大きな画面の作り直しで数十回の全体検索になる）。
+  const PALETTE_TARGET_SELECTOR = PALETTE_TARGET_SPECS.map(([selector]) => selector).join(', ');
+
+  function paletteNodeTouchesTarget(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (paletteNodeIsBoardRenderMutation(node)) return false;
+    try {
+      return !!(node.matches?.(PALETTE_TARGET_SELECTOR) || node.querySelector?.(PALETTE_TARGET_SELECTOR));
+    } catch {
+      return PALETTE_TARGET_SPECS.some(([selector]) => {
+        try {
+          return node.matches?.(selector) || !!node.querySelector?.(selector);
+        } catch {
+          return true;

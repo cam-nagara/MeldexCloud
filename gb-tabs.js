@@ -296,10 +296,11 @@ const GBTabs = (() => {
     if (!alreadyActive && typeof GBPanelSet?.recordRightRailSwitch === 'function') {
       GBPanelSet.recordRightRailSwitch(paneId, tabId);
     }
-    pane.activeTabIndex = idx;
     // 狭い画面ではチャットの親ドックを開くだけでは中央パネルが残る。
+    // open() が旧タブと実表示の違いを検出できるよう、先にactiveTabIndexを変更しない。
     if (pane.tabs[idx]?.type === 'chat' && pane.meldexRole === 'chat-sidebar' && GBLayout.isMobileLayout?.()
         && window.GBChatSidebar?.open()) return;
+    pane.activeTabIndex = idx;
     const revealed = _ensurePaneVisible(paneId);
     const previousActivePane = GBLayout.activePane;
 
@@ -344,7 +345,10 @@ const GBTabs = (() => {
     // タブを閉じるとパネルごと消えてレールのアイコンも失われる。
     // タブ操作メニュー・ショートカット・窓外ドロップのどの経路でも
     // ここで止める（サイドバー自体はレール先頭のボタンで開閉する）。
-    if (typeof GBLayout.isFixedRailPane === 'function' && GBLayout.isFixedRailPane(paneId)) {
+    const fixedRail = typeof GBLayout.isFixedRailTab === 'function'
+      ? GBLayout.isFixedRailTab(paneId, tabId)
+      : (typeof GBLayout.isFixedRailPane === 'function' && GBLayout.isFixedRailPane(paneId));
+    if (fixedRail) {
       if (typeof showStatus === 'function') showStatus('サイドバーのパネルは閉じられません（レールのボタンで開閉できます）', true);
       return false;
     }

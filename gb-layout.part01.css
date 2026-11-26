@@ -853,9 +853,12 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   word-break: break-word;
   box-sizing: border-box;
 }
-.chat-rich-input:focus {
+.chat-rich-input:focus,
+#team-input:focus,
+#team-room-title-input:focus {
+  outline: none;
   border-color: var(--chat-border);
-  box-shadow: none;
+  box-shadow: inset 0 0 0 var(--ui-active-frame-width, 2px) var(--ui-active-frame-color, var(--accent));
 }
 .chat-rich-input:not([data-has-content="1"])::before {
   content: attr(data-placeholder);
@@ -1082,6 +1085,10 @@ body.chat-composer-resizing {
   --accent: var(--version-accent);
   background: var(--version-bg);
   color: var(--version-fg);
+}
+/* 電話幅・タッチでは、バージョン管理の絞り込み（種類・主体）も他のボタンと同じ44pxの操作面にする（共通ルール）。 */
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-tool-version select { min-height: var(--ui-h-touch, 44px); }
 }
 #rp-chat-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 #rp-annotation-content { flex: 1; overflow-y: auto; padding: 12px; }

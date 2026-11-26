@@ -41,6 +41,15 @@ SIL Open Font License 1.1 のもとで利用しています。
 - [app/fonts/NotoEmoji-LICENSE.txt](app/fonts/NotoEmoji-LICENSE.txt)
 - [app/fonts/NotoEmoji-SVG-APACHE-LICENSE.txt](app/fonts/NotoEmoji-SVG-APACHE-LICENSE.txt)
 
+### Google Material Symbols（Rounded・塗りつぶし）
+
+ファイル・フォルダ・ビュー・列などのアイコン選択用として [Google Material Symbols](https://github.com/google/material-design-icons) の Rounded 体を同梱しています。
+Apache License 2.0 のもとで利用しています。公式の可変フォントを「塗りつぶし・太さ400・グレード0・光学サイズ24」に固定した静的フォントへ変換しており（`app/build_material_symbols_assets.py`）、アイコンの形そのものは改変していません。
+
+- 取得元: google/material-design-icons `variablefont/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf`（commit 10ecc14790612ca8fd164e3f4ffe9c16fc50d5b7, 2026-10-23）
+- 名前・分類・検索語: Google Fonts のアイコン目録（同日取得）
+- ライセンス本文: [app/fonts/MaterialSymbols-LICENSE.txt](app/fonts/MaterialSymbols-LICENSE.txt)
+
 ## Emoji Graphics
 
 ### Twemoji

@@ -278,6 +278,34 @@
     return walk(GBLayout.root, null, '') || null;
   }
 
+  // 右サイドバー（固定レール）にある補助パネルのタブを、表示中の対象に関係なく探す。
+  // バージョン管理のように表示対象を追いかけるタブは path が空でなくなるため、path では探さない。
+  function _findRightRailToolTab(toolType) {
+    if (!toolType || typeof GBLayout === 'undefined' || !GBLayout.root) return null;
+    function walk(node, panelsetNode, groupId, inRail) {
+      if (!node) return null;
+      if (node.type === 'pane') {
+        if (!inRail && node.meldexRole !== 'right-sidebar') return null;
+        const tab = (node.tabs || []).find(t => t.type === toolType);
+        return tab ? { paneId: node.id, tabId: tab.id, panelsetNode, groupId } : null;
+      }
+      if (node.type === 'split' && Array.isArray(node.children)) {
+        for (const child of node.children) {
+          const found = walk(child, panelsetNode, groupId, inRail);
+          if (found) return found;
+        }
+      } else if (node.type === 'panelset' && Array.isArray(node.groups)) {
+        const rail = inRail || node.meldexRole === 'right-sidebar';
+        for (const group of node.groups) {
+          const found = walk(group?.root, node, group?.id || '', rail);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    return walk(GBLayout.root, null, '', false);
+  }
+
   function _findTabByIdInAnyGroup(tabId) {
     if (!tabId) return null;
     function walk(node, panelsetNode, groupId) {
@@ -392,8 +420,8 @@
       }
     }
 
-    // 既に開いているか確認
-    const existing = _findToolPaneInAnyGroup(toolType) || GBTabs.findPaneWithTab(toolType, '');
+    // 既に開いているか確認（右サイドバーの固定パネルを最優先する）
+    const existing = _findRightRailToolTab(toolType) || _findToolPaneInAnyGroup(toolType) || GBTabs.findPaneWithTab(toolType, '');
     if (existing) {
       const paneId = existing.paneId;
       const activePane = GBLayout.activePane;
@@ -747,6 +775,24 @@
   return {
     init,
     rememberDetailTab: _rememberDetailTab,
+    rememberChatViewport() {
+      const id = _getTabContainerId('chat');
+      _captureLiveScrollState(id, document.getElementById(id));
+    },
+    restoreChatViewport() {
+      const id = _getTabContainerId('chat');
+      const binding = _legacyLiveBindings.get(id);
+      const tab = binding && _findTabById(binding.tabId);
+      const saved = tab && _getLegacyUiState(tab);
+      const root = document.getElementById(id);
+      const messages = root?.querySelector('#chat-messages');
+      if (!messages?.getClientRects().length || saved?.chatContextKey !== _chatViewportContextKey()) return false;
+      const position = saved.scrolls?.find(item => item.selector === '#chat-messages');
+      if (!position) return false;
+      messages.scrollTop = position.top;
+      messages.scrollLeft = position.left;
+      return true;
+    },
     mountAllPanes: _mountAllPanes,
     mountFloatingAnnotationUi: _mountFloatingAnnotationUi,
     mountVirtualPane: _mountVirtualPane,

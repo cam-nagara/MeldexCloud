@@ -622,6 +622,7 @@
   if (_usesMainProfile() || _isConnected()) _resolveOnReady();
 
   window.MeldexStandaloneProfile = {
+    refresh: _resolveOnReady,
     isCloudMode: _isStandaloneCloud,
     renderBadge: _renderBadgeContent,
     _internals: { avatarHtml: _avatarHtml, displayName: _displayName },

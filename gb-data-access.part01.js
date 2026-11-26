@@ -149,6 +149,9 @@
     const lower = safeName.toLowerCase();
     if (lower.endsWith('.mel-form')) return { stem: safeName.slice(0, -9), ext: '.mel-form' };
     if (lower.endsWith('.mel-board')) return { stem: safeName.slice(0, -10), ext: '.mel-board' };
+    for (const suffix of ['.board.md', '.board.json', '.canvas.json']) {
+      if (lower.endsWith(suffix)) return { stem: safeName.slice(0, -suffix.length), ext: suffix };
+    }
     if (lower.endsWith('.mel-sheet')) return { stem: safeName.slice(0, -10), ext: '.mel-sheet' };
     if (lower.endsWith('.mel-scenario')) return { stem: safeName.slice(0, -13), ext: '.mel-scenario' };
     if (lower.endsWith('.mel-timer')) return { stem: safeName.slice(0, -10), ext: '.mel-timer' };

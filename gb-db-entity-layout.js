@@ -1092,6 +1092,8 @@ if (typeof window !== 'undefined') {
         _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, rerender);
       }
     },
+    // 追加・複製・テンプレートからの追加で選んだレイアウト（統合タブの描き直しで選択を合わせるため）。
+    sessionTab: (grid, entityPath) => (grid ? _elSessionByGrid.get(grid)?.entityPath === entityPath ? _elSessionByGrid.get(grid).tab : null : null),
     getState: _elGetState,
     mutateState: _elMutateState,
     session: _elSession,

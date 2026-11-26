@@ -130,7 +130,6 @@
 
   function _bindPressAction(el, handler) {
     if (!el || typeof handler !== 'function') return el;
-    let touchHandled = false;
     const run = (ev) => {
       if (el.disabled) return;
       handler(ev);
@@ -139,16 +138,10 @@
       if (ev.pointerType === 'mouse') return;
       ev.preventDefault();
       ev.stopPropagation();
-      touchHandled = true;
-      run(ev);
+      // Keep the selection, but open a new surface only after this gesture
+      // becomes a click. Opening on pointerdown lets its release hit a swatch.
     });
     el.addEventListener('click', (ev) => {
-      if (touchHandled) {
-        touchHandled = false;
-        ev.preventDefault();
-        ev.stopPropagation();
-        return;
-      }
       run(ev);
     });
     return el;

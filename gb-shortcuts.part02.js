@@ -147,7 +147,10 @@
 
   'explorer.selectAll': () => {
     if (state.view !== 'folder') return false;
-    const els = document.querySelectorAll('#folder-grid .fv-item');
+    if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.selectAll(); return; }
+    // 操作している面（メイン／サブパネル）の一覧を対象にする
+    const surfaceGrid = typeof _folderGridEl === 'function' ? _folderGridEl() : null;
+    const els = surfaceGrid ? surfaceGrid.querySelectorAll('.fv-item') : document.querySelectorAll('#folder-grid .fv-item');
     if (typeof _folderItems !== 'undefined') {
       _folderSelectedItems = [];
       const visibleItems = typeof _folderVisibleItems !== 'undefined' && _folderVisibleItems.length ? _folderVisibleItems : _folderItems;

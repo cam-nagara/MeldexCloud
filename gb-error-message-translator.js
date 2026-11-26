@@ -59,7 +59,7 @@
       action: '添付や選択範囲を減らしてから、もう一度試してください。',
     },
     {
-      test: info => /no space|disk full|空き容量|ENOSPC/i.test(info.raw),
+      test: info => info.status === 507 || /no space|disk full|空き容量|ENOSPC/i.test(info.raw),
       title: '保存先の空き容量が不足しています',
       message: '保存先ドライブまたは同期フォルダの空き容量が足りません。',
       action: '不要なファイルを整理し、空き容量を確保してから保存してください。',

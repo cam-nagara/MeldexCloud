@@ -41,6 +41,7 @@
   }
   // タグ・リレーション・ロールアップ列: 値の見た目どおりのプレビュー（クリックで書式設定）
   if (typeof renderDbColumnChipStyleField === 'function') renderDbColumnChipStyleField(optDiv, scope, type);
+  if (type === 'common-tags' && typeof renderDbTagOptionOrderField === 'function') renderDbTagOptionOrderField(optDiv, scope);
 
   // Phase 3 §5.1 / §12.1: 全型共通の自動初期値設定（autoFillOnCreate）。
   // $ 接頭辞で動的評価: $today / $now / $currentUser / $version（§15.4.2）
@@ -338,6 +339,7 @@ async function applyPropertyType(propName, root, options = {}) {
     config.icon = prev.icon;
   }
   // タグ・リレーション・ロールアップ列のチップ書式（列設定の「表示」）
+  if (type === 'common-tags') config.tagOrder = [...(scope._dbTagOrderBuffer || prev.tagOrder || [])];
   if (['relation', 'multi-relation', 'common-tags', 'rollup'].includes(type) && typeof collectDbColumnChipStyle === 'function') {
     const chipStyle = collectDbColumnChipStyle(scope, prev.chipStyle);
     if (Object.keys(chipStyle).length) config.chipStyle = chipStyle;
@@ -1176,6 +1178,7 @@ function _bindDbPropertySettingsAutosave(root, initialPropName) {
     timer = setTimeout(run, delay);
   };
   const run = async (force = false) => {
+    timer = null;
     // force=true はパネルを閉じる直前の確定保存。root が DOM から外れていても保存する
     // （切り離された入力欄も値は保持されるため、編集内容を取りこぼさない）。
     if (!force && !root.isConnected) return;

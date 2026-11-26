@@ -54,7 +54,14 @@
 
   function _normalizeLayout(mode) {
     const value = String(mode || '').trim();
+    // リスト・小はフォルダパネル（パソコン幅）の表示形式。スマホの一覧では通常のリストとして描き、値はそのまま保つ
+    if (value === 'list-small') return value;
     return LAYOUT_ITEMS.some(item => item[1] === value) ? value : 'waterfall';
+  }
+
+  // スマホの一覧で実際に使う形（リスト・小は通常のリスト）
+  function _viewLayout() {
+    return _layout === 'list-small' ? 'list' : _layout;
   }
 
   function _e2eIdPart(value) {
@@ -334,7 +341,7 @@
 
   function _syncLayoutButtons() {
     document.querySelectorAll('#sidebar .cloud-mobile-explorer-layout-button').forEach((button) => {
-      button.setAttribute('aria-pressed', button.dataset.layout === _layout ? 'true' : 'false');
+      button.setAttribute('aria-pressed', button.dataset.layout === _viewLayout() ? 'true' : 'false');
     });
     const select = document.getElementById('folder-layout-select');
     if (select) select.value = _layout;
@@ -345,7 +352,7 @@
     _syncLayoutButtons();
     const sidebar = _sidebar();
     const list = sidebar?.querySelector('#cloud-mobile-explorer-list-pane .cloud-mobile-explorer-list');
-    if (list) list.dataset.layout = _layout;
+    if (list) list.dataset.layout = _viewLayout();
     if (_mode === 'list' && _currentItems.length) {
       const pane = sidebar?.querySelector('#cloud-mobile-explorer-list-pane');
       if (pane) _renderItems(pane, _currentItems);
@@ -447,7 +454,7 @@
   function _setListState(pane, state, message) {
     const list = pane.querySelector('.cloud-mobile-explorer-list');
     if (!list) return;
-    list.dataset.layout = _layout;
+    list.dataset.layout = _viewLayout();
     list.dataset.state = state;
     list.replaceChildren();
     const empty = document.createElement('div');
@@ -506,7 +513,7 @@
     const list = pane.querySelector('.cloud-mobile-explorer-list');
     window.GBOutlinerThumbnails?.detachWithin?.(list);
     list.replaceChildren();
-    list.dataset.layout = _layout;
+    list.dataset.layout = _viewLayout();
     list.dataset.state = items.length ? 'ready' : 'empty';
     if (!items.length) {
       const empty = document.createElement('div');
@@ -531,15 +538,15 @@
     const type = String(item?.type || '').toLowerCase();
     if (window.GBOutlinerThumbnails?.canLoadThumbnail?.(item) && !item.display_icon) {
       const icon = document.createElement('span');
-      icon.innerHTML = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
+      icon.innerHTML = _iconHtml(_itemIcon(item), _viewLayout() === 'list' ? 20 : 28, '');
       el.replaceChildren(icon);
       window.GBOutlinerThumbnails.attachToElement(el, item, icon, 256);
       return;
     }
-    const canThumb = (type === 'image' || type === 'video') && item?.path && !item.display_icon && _layout !== 'list';
+    const canThumb = (type === 'image' || type === 'video') && item?.path && !item.display_icon && _viewLayout() !== 'list';
     if (!canThumb) {
-      const fallback = _iconHtml(_itemIcon(item), _layout === 'list' ? 20 : 28, '');
-      el.innerHTML = window.MeldexFileIcons?.render(item, _layout === 'list' ? 20 : 28, fallback) ?? fallback;
+      const fallback = _iconHtml(_itemIcon(item), _viewLayout() === 'list' ? 20 : 28, '');
+      el.innerHTML = window.MeldexFileIcons?.render(item, _viewLayout() === 'list' ? 20 : 28, fallback) ?? fallback;
       return;
     }
     const img = document.createElement('img');

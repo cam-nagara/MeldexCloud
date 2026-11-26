@@ -106,6 +106,9 @@
       menu.appendChild(row);
     });
     document.body.appendChild(menu);
+    // 携帯用の種類選択はbody直下へ出るが、開いたアイコン画面の子である。
+    // 指入力・Escape・親の終了を、親のポップアップ管理へ結び付ける。
+    trigger.closest?.('.gb-icon-picker')?._registerChildPopup?.(menu, () => closeMenu(menu, trigger, false));
     trigger.setAttribute('aria-expanded', 'true');
     if (typeof global.positionPopup === 'function') global.positionPopup(menu, trigger.getBoundingClientRect());
     else {
@@ -150,17 +153,10 @@
     });
   }
 
-  function syncOverflow(bar) {
-    if (!bar.classList.contains('gb-pane-tabs')) return;
+  function prepareOverflow(bar) {
+    if (!bar.classList.contains('gb-pane-tabs')) return null;
     const scroll = bar.querySelector(':scope > .gb-pane-tabs-scroll');
-    if (!scroll?.clientWidth) {
-      const existing = overflowBars.get(bar);
-      if (existing) {
-        if (!existing.trigger.hidden) existing.trigger.hidden = true;
-        if (existing.trigger._tabMenu) closeMenu(existing.trigger._tabMenu, existing.trigger, false);
-      }
-      return;
-    }
+    if (!scroll) return null;
     let state = overflowBars.get(bar);
     if (!state) {
       const trigger = document.createElement('button');
@@ -183,26 +179,45 @@
       scroll.addEventListener('scroll', scheduleSync, { passive: true });
       state = { scroll, trigger, resize, active: null, add: scroll.querySelector(':scope > .gb-pane-add-tab') }; overflowBars.set(bar, state);
     }
+    return { bar, scroll, state };
+  }
+
+  function measureOverflow(prepared) {
+    if (!prepared) return null;
+    const { bar, scroll, state } = prepared;
+    const width = scroll.clientWidth;
+    if (!width) return { ...prepared, visible: false };
+    const reserved = state.trigger.hidden ? 0 : state.trigger.getBoundingClientRect().width;
+    return { ...prepared, visible: true, slack: scroll.scrollWidth - (width + reserved), active: activeTab(tabItems(bar)) };
+  }
+
+  function syncOverflow(measured, phone) {
+    if (!measured) return;
+    const { bar, scroll, state } = measured;
     const { trigger } = state;
+    if (!measured.visible) {
+      if (!trigger.hidden) trigger.hidden = true;
+      if (trigger._tabMenu) closeMenu(trigger._tabMenu, trigger, false);
+      return;
+    }
     // Compare against the space without the trigger to avoid show/hide oscillation.
-    const reserved = trigger.hidden ? 0 : trigger.getBoundingClientRect().width;
     // あふれ表示へ切り替えると「＋」をスクロール枠の外へ移すため、枠の幅と中身の幅が同時に変わる。
     // 整数（scrollWidth/clientWidth）と小数（getBoundingClientRect）の丸め差で、境目の幅では
     // 判定が毎回反転し、下の MutationObserver 経由で同期が止まらなくなる（2026-11-11 実測:
     // パネル幅130pxで画面全体が停止、左サイドバーの境界線ドラッグ中・起動直後に発生）。
     // 一度あふれた後は、十分な余裕ができるまであふれ表示を保つ（ヒステリシス）。
-    const slack = scroll.scrollWidth - (scroll.clientWidth + reserved);
+    const slack = measured.slack;
     const wasOverflow = !trigger.hidden;
-    const overflow = !isPhone() && (wasOverflow ? slack > -OVERFLOW_RELEASE_PX : slack > 1);
+    const overflow = !phone && (wasOverflow ? slack > -OVERFLOW_RELEASE_PX : slack > 1);
     if (trigger.hidden === overflow) trigger.hidden = !overflow;
     // Keep creation available when the final tab and its following + are clipped.
     if (state.add && overflow && state.add.parentNode === scroll) bar.insertBefore(state.add, trigger);
     else if (state.add && !overflow && state.add.parentNode === bar) scroll.appendChild(state.add);
     if (!overflow && trigger._tabMenu) closeMenu(trigger._tabMenu, trigger, false);
-    const active = activeTab(tabItems(bar));
+    const active = measured.active;
     if (active !== state.active) {
       state.active = active;
-      if (active && !isPhone()) global.requestAnimationFrame(() => {
+      if (active && !phone) global.requestAnimationFrame(() => {
         if (active.isConnected) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       });
     }
@@ -287,7 +302,12 @@
     document.documentElement.toggleAttribute('data-meldex-phone-tabs', phone);
     const tablists = Array.from(document.querySelectorAll('[role="tablist"], .gb-pane-tabs'));
     const usedIds = new Map();
-    tablists.forEach((tablist) => { syncOne(tablist, usedIds); syncOverflow(tablist); });
+    tablists.forEach(tablist => syncOne(tablist, usedIds));
+    // Creating a switcher can invalidate layout. Finish those writes before
+    // measuring every bar, then apply overflow changes together.
+    const prepared = tablists.map(prepareOverflow);
+    const measured = prepared.map(measureOverflow);
+    measured.forEach(item => syncOverflow(item, phone));
     for (const [bar, state] of overflowBars) {
       if (bar.isConnected) continue;
       state.resize?.disconnect(); state.scroll.removeEventListener('scroll', scheduleSync);

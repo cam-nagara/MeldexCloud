@@ -87,6 +87,7 @@
   width: var(--ui-h-xs, 22px);
   height: var(--ui-h-xs, 22px);
   padding: 0;
+  color: var(--fg);
 }
 
 .gb-subpanel-promote-btn {

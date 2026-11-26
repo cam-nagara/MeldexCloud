@@ -118,7 +118,7 @@
       const value = String(msg[key] || '').trim();
       if (value) clean[key] = value;
     });
-    ['citations', 'code_exec_blocks', 'artifacts'].forEach(key => {
+    ['citations', 'code_exec_blocks', 'artifacts', 'skills'].forEach(key => {
       if (Array.isArray(msg[key])) clean[key] = msg[key];
     });
     if (msg.usage && typeof msg.usage === 'object' && !Array.isArray(msg.usage)) clean.usage = msg.usage;
@@ -127,6 +127,10 @@
     if (msg.aborted === true) clean.aborted = true;
     if (msg.error === true) clean.error = true;
     if (typeof msg.error_code === 'string' && msg.error_code.trim()) clean.error_code = msg.error_code.trim().slice(0, 128);
+    ['error_detail', 'action'].forEach(key => {
+      if (typeof msg[key] === 'string') clean[key] = msg[key];
+    });
+    if (typeof msg.auto_continue === 'boolean') clean.auto_continue = msg.auto_continue;
     if (str(msg.thinking).trim()) clean.thinking = str(msg.thinking).trim();
     if (str(msg.tool_audit_warning).trim()) clean.tool_audit_warning = str(msg.tool_audit_warning).trim();
     if (msg.compressed === true) clean.compressed = true;

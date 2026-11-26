@@ -348,3 +348,88 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
   else start();
 })();
+
+/* ツールバーの自動非表示（2026-11-24 利用者要望。UI共通ルール19「ツールバー」）。
+ * 主要アプリの上部ツールバーは、メインメニューボタン・ファイルアイコン・ファイル名だけを常に表示し、
+ * それ以外の操作はビューワーと同じく使う時だけ表示する。行は残すので本文の位置は動かない。
+ * 表示する条件（CSSは gb-toolbar-overflow.css）: ツールバーへのマウス、キーボードのフォーカス、
+ * ツールバーから開いたメニューやポップアップが開いている間。隠すのは条件が消えて少し経ってから。
+ * 設定「ツールバーを自動で隠す」（localStorage 'meldex-toolbar-autohide' が '0' でオフ。既定オン）。 */
+(function () {
+  'use strict';
+  if (window.MeldexToolbarAutoHide) return;
+  const KEY = 'meldex-toolbar-autohide';
+  const TOOLBAR = '.gb-toolbar.gb-toolbar-main:not(.gb-toolbar-viewer):not(.chat-session-toolbar):not([data-annotation-toolbar]):not(.qm-header):not([data-tb-autohide="off"])';
+  const HOLD_CLASS = 'tb-autohide-hold';
+  // ツールバーから開くメニュー・ポップアップ（本体へ追加されるもの）。開いている間は隠さない。
+  const POPUPS = '.gb-toolbar-overflow-popup, .gb-context-menu, .tool-menu-dropdown, .sa-menu, .gb-color-palette, .gb-format-popup, [role="menu"], [role="dialog"]:not(.modal-overlay)';
+  // 押した時点で既に出ていたポップアップは数えない（常時表示の一覧などで隠れなくなるのを防ぐ）。
+  const held = new Map();
+  let timer = 0;
+
+  function isEnabled() {
+    try { return localStorage.getItem(KEY) !== '0'; } catch { return true; }
+  }
+  function applyRootState() {
+    document.documentElement.dataset.toolbarAutohide = isEnabled() ? 'on' : 'off';
+  }
+  function setEnabled(enabled) {
+    try {
+      if (enabled) localStorage.removeItem(KEY);
+      else localStorage.setItem(KEY, '0');
+    } catch { /* 保存できない環境でもこの画面には反映する */ }
+    applyRootState();
+    window.dispatchEvent(new CustomEvent('meldex:toolbar-autohide-change', { detail: { enabled: !!enabled } }));
+  }
+  function visiblePopups(toolbar) {
+    const found = [];
+    for (const el of document.querySelectorAll(POPUPS)) {
+      if (toolbar.contains(el) && !el.matches('.sa-menu')) continue;
+      if (el.hidden || !el.getClientRects().length) continue;
+      const style = getComputedStyle(el);
+      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') found.push(el);
+    }
+    return found;
+  }
+  function popupOpen(toolbar, before) {
+    if (toolbar.querySelector('[aria-expanded="true"]')) return true;
+    return visiblePopups(toolbar).some(el => !before.includes(el));
+  }
+  function stillNeeded(toolbar, before) {
+    if (!toolbar.isConnected) return false;
+    return toolbar.matches(':hover') || popupOpen(toolbar, before);
+  }
+  function check() {
+    timer = 0;
+    for (const [toolbar, before] of [...held]) {
+      if (stillNeeded(toolbar, before)) continue;
+      toolbar.classList.remove(HOLD_CLASS);
+      held.delete(toolbar);
+    }
+    if (held.size) timer = setTimeout(check, 500);
+  }
+  // ツールバーを押した時から、開いたメニュー等が閉じるまで表示を保つ。
+  function hold(toolbar) {
+    if (!toolbar || !isEnabled()) return;
+    if (!held.has(toolbar)) held.set(toolbar, visiblePopups(toolbar));
+    toolbar.classList.add(HOLD_CLASS);
+    if (!timer) timer = setTimeout(check, 700);
+  }
+  function start() {
+    applyRootState();
+    document.addEventListener('pointerdown', event => {
+      const toolbar = event.target?.closest?.(TOOLBAR);
+      if (toolbar) hold(toolbar);
+    }, true);
+    // 共有の設定は他の画面（本体内のビューワーや別ウィンドウ）の変更にも追従する。
+    window.addEventListener('storage', event => {
+      if (event.key !== KEY && event.key !== null) return;
+      applyRootState();
+      window.dispatchEvent(new CustomEvent('meldex:toolbar-autohide-change', { detail: { enabled: isEnabled() } }));
+    });
+  }
+  window.MeldexToolbarAutoHide = Object.freeze({ KEY, TOOLBAR, isEnabled, setEnabled, applyRootState, hold });
+  applyRootState();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+})();

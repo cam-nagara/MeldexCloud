@@ -296,14 +296,14 @@
     if (typeof settings.getDocument !== 'function' || typeof settings.setDocument !== 'function') {
       throw new TypeError('getDocument and setDocument are required');
     }
-    const commit = (label, operation) => {
+    const commit = (label, operation, change) => {
       if (settings.readOnly === true) return { ok: false, reason: 'read-only' };
       const before = clone(settings.getDocument());
       const result = operation(before);
       const next = result?.document || result;
       if (typeof settings.pushUndo === 'function') settings.pushUndo(label, before, clone(next));
       settings.setDocument(next);
-      if (typeof settings.onChange === 'function') settings.onChange(clone(next), result);
+      if (typeof settings.onChange === 'function') settings.onChange(clone(next), result, change);
       return result;
     };
     return Object.freeze({
@@ -313,11 +313,12 @@
       remove: (id, activeId) => commit('ボードビューを削除', (doc) => removeView(doc, id, activeId)),
       duplicate: (id, value) => commit('ボードビューを複製', (doc) => duplicateView(doc, id, value)),
       addSheet: (value) => commit('シートビューを追加', (doc) => addSheetView(doc, value)),
-      renameMixed: (ref, name) => commit('ビュー名を変更', (doc) => renameMixedView(doc, ref, name)),
-      reorderMixed: (ref, index) => commit('ビューを並べ替え', (doc) => reorderMixedView(doc, ref, index)),
+      renameMixed: (ref, name) => commit('ビュー名を変更', (doc) => renameMixedView(doc, ref, name), { kind: 'view-name' }),
+      reorderMixed: (ref, index) => commit('ビューを並べ替え', (doc) => reorderMixedView(doc, ref, index), { kind: 'view-order' }),
       removeMixed: (ref) => commit('ビューを削除', (doc) => removeMixedView(doc, ref)),
       duplicateMixed: (ref, value) => commit('ビューを複製', (doc) => duplicateMixedView(doc, ref, value)),
-      setIconMixed: (ref, spec) => commit('ビューのアイコンを変更', (doc) => setMixedViewIcon(doc, ref, spec)),
+      setIconMixed: (ref, spec) => commit('ビューのアイコンを変更', (doc) => setMixedViewIcon(doc,
+        typeof settings.resolveViewRef === 'function' ? settings.resolveViewRef(ref) : ref, spec), { kind: 'view-icon' }),
     });
   }
 
@@ -437,6 +438,8 @@
         || (settings.getActiveBoardViewId?.() ? { surface: 'board', viewId: settings.getActiveBoardViewId() } : null);
     };
     const activate = (ref) => {
+      const current = activeRef();
+      if (current?.surface === ref.surface && current?.viewId === ref.viewId) return;
       if (settings.setActiveViewRef) settings.setActiveViewRef(clone(ref));
       else if (ref.surface === 'board') settings.setActiveBoardViewId?.(ref.viewId);
     };
@@ -484,6 +487,7 @@
         refresh();
       };
       input.addEventListener('keydown', event => {
+        if (event.isComposing || event.keyCode === 229) return;
         if (event.key === 'Enter') finish(false);
         else if (event.key === 'Escape') finish(true);
       });

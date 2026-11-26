@@ -131,7 +131,8 @@
 .gb-palette-slider-row .gb-slider-val::-webkit-inner-spin-button,
 .gb-palette-slider-row .gb-slider-val::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .gb-palette-picker-row {
-  width: 100%; display: flex; align-items: center; gap: 8px;
+  /* 48+28+28+24×3=176px と5か所の間隔を、色見本8列の内幅213px以内へ収める（8pxでは216pxで右端のOS色が切れた）。 */
+  width: 100%; display: flex; align-items: center; gap: 6px;
   padding-top: 6px; margin-top: 2px; border-top: 1px solid var(--border);
 }
 .gb-palette-picker-row input[type="color"] {
@@ -176,17 +177,29 @@
     max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
     overflow-y: auto;
   }
+  /* 公式変種（共通ルール「色選択」）: テーマの色は1行8色の並びに意味があるため、電話幅でも8列を保つ。
+     44pxの8列が入らない幅では、8列に収まる大きさ（390px幅で約40px）まで縮める。
+     7列の幅に8色を入れると、各行の8色目だけが次の行へ落ちていた（2026-11-24）。 */
   .gb-palette {
-    width: min(calc(100vw - 32px), calc(44px * 7 + 3px * 6 + 16px));
+    width: min(calc(100vw - 32px), calc(44px * 8 + 3px * 7 + 16px));
   }
+  .gb-palette-matrix { width: 100%; }
   .gb-palette-grid,
-  .gb-palette-matrix,
   .gb-palette-row-swatches {
-    width: min(calc(100vw - 48px), calc(44px * 7 + 3px * 6));
+    width: 100%;
+    display: grid;
+    gap: 2px;
+    grid-template-columns: repeat(8, minmax(0, 44px));
   }
   .gb-swatch {
     width: 44px;
     height: 44px;
+  }
+  .gb-palette-grid > .gb-swatch,
+  .gb-palette-row-swatches > .gb-swatch {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
   }
   .gb-palette-standard-toggle,
   .gb-palette-reset-btn,
@@ -307,7 +320,24 @@ function _saveCustomColors(colors, options) {
   const before = (typeof captureLocalStorageSettings === 'function')
     ? captureLocalStorageSettings([GB_CUSTOM_COLORS_KEY])
     : null;
-  try { localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors)); } catch {}
+  const previousColors = before ? null : getCustomColors();
+  try {
+    localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors));
+  } catch (_) {
+    // 保存できなかった時は黙って捨てず、原因を知らせて履歴・同期も進めない。
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存できませんでした（端末内の保存先に書けません）', true);
+    return false;
+  }
+  if (!before && options?.skipHistory !== true && typeof window !== 'undefined' && window.MeldexViewerHistory?.push) {
+    // 本体の設定履歴を持たない単独版ビューワーでは、評価・メモと同じ閲覧の履歴で取り消す。
+    const nextColors = getCustomColors();
+    const apply = list => {
+      _saveCustomColors(list, { skipHistory: true });
+      document.querySelectorAll('.gb-palette').forEach(palette => palette.remove());
+    };
+    window.MeldexViewerHistory.push(options?.label || '設定: カスタムカラー変更',
+      () => apply(previousColors), () => apply(nextColors));
+  }
   if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
     pushLocalStorageSettingsHistory(
       options?.label || '設定: カスタムカラー変更',
@@ -323,6 +353,7 @@ function _saveCustomColors(colors, options) {
   if (options?.skipServerSync !== true && typeof _queuePersonalColorsSync === 'function') {
     _queuePersonalColorsSync();
   }
+  return true;
 }
 function saveCustomColor(color) {
   const next = _normalizeCustomColor(color);
@@ -804,7 +835,11 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
-    anchor.focus({ preventScroll: true });
+    // 狭い画面で起点のボタンがツールバーの「▼」にしまわれている時は、その「▼」へ戻す
+    // （見えないボタンへは戻せず、フォーカスが画面全体へ外れていた）。
+    const hidden = typeof anchor.getClientRects === 'function' && anchor.getClientRects().length === 0;
+    const overflow = hidden ? anchor.closest?.('.gb-toolbar-overflow-host')?.querySelector?.('.gb-toolbar-overflow-button') : null;
+    (overflow || anchor).focus({ preventScroll: true });
   }
 }
 
@@ -854,6 +889,8 @@ function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
     if (ev.key !== 'Escape') return;
     if (document.querySelector('.gb-palette-context-menu, .gb-ctx-menu')) return;
     ev.preventDefault();
+    // 色選択を閉じるEscapeを、開いている画面（閲覧のアノテート等）の「閉じる」へ渡さない。
+    ev.stopPropagation();
     closeColorPalette({ restoreFocus: true });
   };
   requestAnimationFrame(() => {
@@ -1104,6 +1141,33 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const customGrid = document.createElement('div'); customGrid.className = 'gb-palette-grid';
   palette.appendChild(customGrid);
 
+  // 共有先への保存が失敗している間は、操作した場所（色選択の中）に案内と再試行を出す。
+  // 右上の案内だけでは、電話幅で色選択に覆われて見えなかった。
+  const syncNotice = document.createElement('div');
+  syncNotice.className = 'gb-palette-sync-notice';
+  syncNotice.dataset.e2eId = 'color-palette-sync-error';
+  syncNotice.hidden = true;
+  palette.appendChild(syncNotice);
+  const renderSyncNotice = (failed) => {
+    if (!failed || !window.GBUI?.createInlineError) { syncNotice.replaceChildren(); syncNotice.hidden = true; return; }
+    if (syncNotice.firstChild) { syncNotice.hidden = false; return; }
+    syncNotice.replaceChildren(window.GBUI.createInlineError({
+      message: 'カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します。',
+      onRetry: async () => {
+        if (typeof _retryPersonalColorsSyncNow === 'function' && !(await _retryPersonalColorsSyncNow())) {
+          throw new Error('カスタムカラーを保存できませんでした。時間をおいて、もう一度お試しください。');
+        }
+      },
+    }));
+    syncNotice.hidden = false;
+  };
+  const onSyncState = (event) => {
+    if (!palette.isConnected) { window.removeEventListener('meldex-personal-colors-sync-state', onSyncState); return; }
+    renderSyncNotice(!!event?.detail?.failed);
+  };
+  window.addEventListener('meldex-personal-colors-sync-state', onSyncState);
+  renderSyncNotice(typeof _personalColorsFailureShown !== 'undefined' && _personalColorsFailureShown);
+
   let dragIdx = -1;
 
   function renderCustomGrid() {
@@ -1170,6 +1234,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
           renderCustomGrid(); updateSwatchHighlights();
+          // 削除した色の位置（無ければ追加ボタン）へフォーカスを残し、色選択の外へ外さない。
+          const swatches = customGrid.querySelectorAll('.gb-swatch');
+          (swatches[Math.min(i, swatches.length - 1)] || saveBtn)?.focus?.({ preventScroll: true });
         });
         menu.appendChild(del);
         document.body.appendChild(menu);
@@ -1268,11 +1335,14 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   picker.type = 'color'; picker.value = selectedHex; picker.title = 'カラーピッカー';
   picker.dataset.e2eId = 'color-palette-picker';
   picker.setAttribute('aria-label', 'カラーピッカー');
-  const onPickerChange = () => {
+  const onPickerChange = (event) => {
+    // 入力中の input と確定の change が同じ色を2回適用し、取り消しの区切りを増やさない。
+    if (event?.type === 'change' && !selectedIsTransparent && selectedHex === picker.value) return;
     if (selectedIsTransparent) selectedAlpha = 1;
     selectedHex = picker.value;
     hsb = _hexToHsb(picker.value);
-    selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
+    // 選んだカスタムカラーの調整中は選択を保ち、＋で上書きできるようにする（下の saveBtn 参照）。
+    selectedIsTransparent = false; selectedPresetIdx = -1;
     selectedOsAccentTone = '';
     updateSliders(); updateSwatchHighlights();
     applyLive();
@@ -1323,7 +1393,6 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
-      selectedCustomIdx = -1;
       selectedPresetIdx = -1;
       selectedOsAccentTone = '';
       updateSliders(); updatePicker(); updateSwatchHighlights();
@@ -1410,7 +1479,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const hSlider = makeSlider('色相', 0, 360, hsb.h, v => { hsb.h = v; onSliderChange(); });
   const sSlider = makeSlider('彩度', 0, 100, hsb.s, v => { hsb.s = v; onSliderChange(); });
   const bSlider = makeSlider('明度', 0, 100, hsb.b, v => { hsb.b = v; onSliderChange(); });
-  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
+  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
   aSlider.row.dataset.e2eId = 'color-palette-opacity';
   sliderSection.append(hSlider.row, sSlider.row, bSlider.row, aSlider.row);
   palette.appendChild(sliderSection);
@@ -1429,7 +1498,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  // 選んだカスタムカラーを調整している間は選択を保つ。＋ボタンはその色を上書きする（以前は調整した瞬間に選択が外れ、上書きできなかった）。
+  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
@@ -1612,6 +1682,12 @@ function _ensurePersonalColorsInit() {
     try { migrated = localStorage.getItem(GB_PERSONAL_COLORS_MIGRATED_KEY) === '1'; } catch {}
 
     if (migrated) {
+      // 前回の共有先への保存が失敗したままの色は、共有先の古い一覧で上書きせず送り直す
+      // （以前は再読込で、追加・削除・並べ替えが黙って元に戻っていた）。
+      if (_personalColorsHasUnsynced()) {
+        queueMicrotask(() => _queuePersonalColorsSync());
+        return;
+      }
       _adoptPersonalColorsRecord(record, { applyToLocal: true });
       return;
     }
@@ -1649,6 +1725,67 @@ function _ensurePersonalColorsInit() {
 // 一度だけ再試行する（計画書「公開インターフェースと保存形式 > カスタムカラー」の
 // 規約通り）。再試行成功後のローカルへの書き戻しは mergeWithLocal で行い、
 // 再試行の実行中に積まれた別の編集（ローカルの直近値）を上書きで消さない。
+// 共有先への保存の失敗は、この画面の色を残したまま知らせて自動で再試行する。
+// 再試行が尽きても未送信の印は残り、次の色の変更か再読込で送り直す。
+const GB_PERSONAL_COLORS_UNSYNCED_KEY = '_gb-colors-server-unsynced';
+const GB_PERSONAL_COLORS_RETRY_DELAYS_MS = [2000, 10000, 35000];
+let _personalColorsRetryTimer = 0;
+let _personalColorsRetryAttempt = 0;
+let _personalColorsFailureShown = false;
+
+function _personalColorsHasUnsynced() {
+  try { return localStorage.getItem(GB_PERSONAL_COLORS_UNSYNCED_KEY) === '1'; } catch { return false; }
+}
+
+function _personalColorsMarkUnsynced(unsynced) {
+  try {
+    if (unsynced) localStorage.setItem(GB_PERSONAL_COLORS_UNSYNCED_KEY, '1');
+    else localStorage.removeItem(GB_PERSONAL_COLORS_UNSYNCED_KEY);
+  } catch {}
+}
+
+function _personalColorsReportSyncFailure() {
+  if (!_personalColorsFailureShown && typeof showStatus === 'function') {
+    showStatus('カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します', true);
+  }
+  _personalColorsFailureShown = true;
+  _personalColorsDispatchSyncState(true);
+  if (_personalColorsRetryTimer || _personalColorsRetryAttempt >= GB_PERSONAL_COLORS_RETRY_DELAYS_MS.length) return;
+  const delay = GB_PERSONAL_COLORS_RETRY_DELAYS_MS[_personalColorsRetryAttempt++];
+  _personalColorsRetryTimer = setTimeout(() => {
+    _personalColorsRetryTimer = 0;
+    _queuePersonalColorsSync();
+  }, delay);
+}
+
+function _personalColorsReportSyncSuccess(sentColors) {
+  // 送信中に別の変更が積まれた場合は、その変更の同期が終わるまで未送信の印を残す。
+  const current = _personalColorsNormalizeList(getCustomColors());
+  const sent = Array.isArray(sentColors) ? sentColors : current;
+  if (current.length === sent.length && current.every((c, i) => c === sent[i])) _personalColorsMarkUnsynced(false);
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  _personalColorsRetryAttempt = 0;
+  if (_personalColorsFailureShown) {
+    _personalColorsFailureShown = false;
+    _personalColorsDispatchSyncState(false);
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存しました');
+  }
+}
+
+function _personalColorsDispatchSyncState(failed) {
+  try { window.dispatchEvent(new CustomEvent('meldex-personal-colors-sync-state', { detail: { failed: !!failed } })); } catch {}
+}
+
+// 色選択の「再試行」: 自動再試行を待たずに今すぐ送る。共有先へ届けば true。
+async function _retryPersonalColorsSyncNow() {
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  // 失敗直後の再接続の抑止を解き、利用者の明示操作として再確認する。
+  if (_personalColorsApiAvailable === false && !_personalColorsApiPermanentlyUnavailable) _personalColorsInitFailedAt = 0;
+  _queuePersonalColorsSync();
+  await _personalColorsSyncChain;
+  return !_personalColorsFailureShown;
+}
+
 function _queuePersonalColorsSync() {
   if (_personalColorsApiPermanentlyUnavailable) return;
   if (typeof apiFetch !== 'function') return;
@@ -1658,14 +1795,22 @@ function _queuePersonalColorsSync() {
     .then(() => _ensurePersonalColorsInit())
     .then(async () => {
       _personalColorsSyncPending = false;
-      if (!_personalColorsApiUsable()) return;
+      if (_personalColorsApiPermanentlyUnavailable) return;
+      // 未送信の印は送信前に付け、共有先が確定した時だけ外す。途中で閉じても再読込で送り直す。
+      _personalColorsMarkUnsynced(true);
+      if (!_personalColorsApiUsable()) {
+        _personalColorsReportSyncFailure();
+        return;
+      }
       const payload = _personalColorsNormalizeList(getCustomColors());
       try {
         const record = await _putPersonalColorsRecord(payload, _personalColorsRevision);
         _adoptPersonalColorsRecord(record, { applyToLocal: false });
+        _personalColorsReportSyncSuccess(payload);
       } catch (e) {
         if (e?.status !== 409) {
           console.warn('[gb-color-palette] personal colors sync failed:', e);
+          _personalColorsReportSyncFailure();
           return;
         }
         try {
@@ -1673,8 +1818,10 @@ function _queuePersonalColorsSync() {
           const merged = _personalColorsNormalizeList([...(latest?.colors || []), ...getCustomColors()]);
           const retryRecord = await _putPersonalColorsRecord(merged, latest?.revision == null ? null : latest.revision);
           _adoptPersonalColorsRecord(retryRecord, { applyToLocal: true, mergeWithLocal: true });
+          _personalColorsReportSyncSuccess(merged);
         } catch (retryErr) {
           console.warn('[gb-color-palette] personal colors sync retry failed:', retryErr);
+          _personalColorsReportSyncFailure();
         }
       }
     })
@@ -1796,6 +1943,8 @@ function _handleImportCustomColorsFile(file) {
 // 削除相当の確認として3択（キャンセル/追加/置き換え）で提示し、既定フォーカスは
 // 非破壊の「追加」に置く。
 function _showPersonalColorsImportModeDialog(onChoose) {
+  // 確認は色選択の外に出す。開いたままだと電話幅で色選択がダイアログを覆い、押せなかった。
+  if (typeof closeColorPalette === 'function') closeColorPalette();
   const body = document.createElement('div');
   body.className = 'modal-body';
   body.textContent = '読み込んだカスタムカラーを、現在のセットへ追加しますか、それとも置き換えますか。';

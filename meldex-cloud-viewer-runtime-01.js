@@ -24,12 +24,12 @@
     complete(key) { if (key) pendingStableCopies.delete(key); },
   });
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '1ba65d966880', parts: { 'meldex-core.bundle.part01.js': '3c4c3c1221e5', 'meldex-core.bundle.part02.js': 'bea6fe13fdef', 'meldex-core.bundle.part03.js': 'b7d065a94905', 'meldex-core.bundle.part04.js': 'eba64e8ecb59', 'meldex-core.bundle.part05.js': 'f679da630ccb' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '891b9b29a7ef', parts: { 'gb-app.bundle.part01.js': 'eff796b060e9', 'gb-app.bundle.part02.js': 'c12645bd2e20', 'gb-app.bundle.part03.js': '17f9c9aa6811', 'gb-app.bundle.part04.js': 'f527e72db8e1', 'gb-app.bundle.part05.js': '0a45c97aea83', 'gb-app.bundle.part06.js': '417551d1d4a1', 'gb-app.bundle.part07.js': 'a76390640e49' } },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'ad1b53cd4da7', parts: { 'gb-theme-manager.bundle.part01.js': '4f7bb919a532', 'gb-theme-manager.bundle.part02.js': '80548a1e119f', 'gb-theme-manager.bundle.part03.js': '5fa6086dffb8', 'gb-theme-manager.bundle.part04.js': '91ff67796578' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '0fdb050340c6', parts: { 'gb-outliner.bundle.part01.js': '044f6dfd7146', 'gb-outliner.bundle.part02.js': '5210454aa542', 'gb-outliner.bundle.part03.js': '8793dbc907c9', 'gb-outliner.bundle.part04.js': '527e304611d8', 'gb-outliner.bundle.part05.js': '22c7a78dafb2', 'gb-outliner.bundle.part06.js': 'af671458366a', 'gb-outliner.bundle.part07.js': '98c24500a30d', 'gb-outliner.bundle.part08.js': 'db1944e3cb78' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'dc879a72b410', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': 'c8f6cbdb779d', 'gb-data-access-dropbox-fileops.bundle.part02.js': 'f6828493c456', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'bd923ceb790c', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'ccade547bdac', 'gb-data-access-dropbox-fileops.bundle.part05.js': 'a93864e29b07', 'gb-data-access-dropbox-fileops.bundle.part06.js': '9b821092180c', 'gb-data-access-dropbox-fileops.bundle.part07.js': '8229a6a41f20' } },
-    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '6a75f8a662cc', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': 'f2081ca2f162', 'gb-cloud-mobile-editbar.bundle.part02.js': '6b3059a02461' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '525b2698053f', parts: { 'meldex-core.bundle.part01.js': '6319b76cc9b1', 'meldex-core.bundle.part02.js': '3300b1c5ffd7', 'meldex-core.bundle.part03.js': '570bbe8f05cc', 'meldex-core.bundle.part04.js': 'cd7c8d725981', 'meldex-core.bundle.part05.js': '2bf09617cb49', 'meldex-core.bundle.part06.js': '7213b70fd525' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'ddc1075e2dc3', parts: { 'gb-app.bundle.part01.js': '527a873de9a7', 'gb-app.bundle.part02.js': '25827e9d48a2', 'gb-app.bundle.part03.js': '30fd9837b5ee', 'gb-app.bundle.part04.js': 'f492cff7449e', 'gb-app.bundle.part05.js': '164da8c5b02a', 'gb-app.bundle.part06.js': 'd1e000a0de36', 'gb-app.bundle.part07.js': '867b8c527f6f' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'fb9e1997dbe2', parts: { 'gb-theme-manager.bundle.part01.js': 'ebd3511355c6', 'gb-theme-manager.bundle.part02.js': '9f350dc0e5f6', 'gb-theme-manager.bundle.part03.js': 'c7abc148525e', 'gb-theme-manager.bundle.part04.js': '198020453e81' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '7be97daa65d7', parts: { 'gb-outliner.bundle.part01.js': '44422cf290a3', 'gb-outliner.bundle.part02.js': 'd44fc90862f5', 'gb-outliner.bundle.part03.js': '7066494430ac', 'gb-outliner.bundle.part04.js': 'd5543a48fd64', 'gb-outliner.bundle.part05.js': '834ad5ce271a', 'gb-outliner.bundle.part06.js': 'a9fd2b102648', 'gb-outliner.bundle.part07.js': '6a7bfd901d99', 'gb-outliner.bundle.part08.js': 'ac7a06b22668', 'gb-outliner.bundle.part09.js': 'b72cb9247d29' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '04760ee8b205', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': 'd9d698cda1f5', 'gb-data-access-dropbox-fileops.bundle.part02.js': '477ec9400b44', 'gb-data-access-dropbox-fileops.bundle.part03.js': '468ab9e9b3b0', 'gb-data-access-dropbox-fileops.bundle.part04.js': '3e9e863d9f94', 'gb-data-access-dropbox-fileops.bundle.part05.js': '74b680508477', 'gb-data-access-dropbox-fileops.bundle.part06.js': '480faf996e87', 'gb-data-access-dropbox-fileops.bundle.part07.js': '24bcf8c6ec71' } },
+    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: 'da6395634ac3', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': 'b3ccfe936e60', 'gb-cloud-mobile-editbar.bundle.part02.js': 'e16f9c166285', 'gb-cloud-mobile-editbar.bundle.part03.js': '5f72bb696475' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
@@ -448,35 +448,6 @@
       return acc;
     }, {})
   );
-  const OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS = Object.freeze(new Set([
-    'テストテーマ',
-    '旧テーマカラー',
-    'ネイビー',
-    'ネイビーカスタム',
-    'ネイビー カスタム',
-    'セピア',
-    'セピアカスタム',
-    'セピア カスタム',
-    'フォレスト',
-    'フォレストカスタム',
-    'フォレスト カスタム',
-    'ローズ',
-    'ローズカスタム',
-    'ローズ カスタム',
-    'ガーリー',
-    'ガーリーカスタム',
-    'ガーリー カスタム',
-    'グレースケール',
-    'グレースケールカスタム',
-    'グレースケール カスタム',
-    'レインボーブランチ',
-    'レインボー',
-    'レインボーカスタム',
-    'レインボー カスタム',
-    'ゲーミング',
-    'ゲーミングカスタム',
-    'ゲーミング カスタム',
-  ].map(_themeNameKey)));
   let _initialThemeCleanupDone = false;
   let _initialThemeCleanupRunning = false;
   let _activeThemeColorSet = null;
@@ -1796,14 +1767,6 @@
     }
   }
 
-  function _isObsoleteInitialCustomTheme(theme, options = {}) {
-    // A user's saved preset must survive even when its name matches a builtin.
-    if (_promotedInitialThemeIdFromName(theme?.name)) return false;
-    if (options.force !== true && _initialCustomThemeCleanupVersionApplied()) return false;
-    const label = _themeNameKey(theme?.name);
-    return !!_promotedInitialThemeIdFromName(theme?.name) || OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS.has(label);
-  }
-
   function _promotedInitialThemeIdFromCustomId(id) {
     const rawId = String(id || '');
     if (!rawId) return '';
@@ -1819,7 +1782,7 @@
     const rawId = String(id || '');
     if (!rawId || rawId === 'OSに合わせる') return true;
     if (BUILT_IN_THEMES.some(t => t.id === rawId)) return true;
-    return _readRawCustomThemes().some(t => String(t.id || '') === rawId && !_isObsoleteInitialCustomTheme(t));
+    return _readRawCustomThemes().some(t => String(t.id || '') === rawId);
   }
 
   function _normalizeDefaultThemeId(id) {
@@ -1931,7 +1894,9 @@
         _writePromotedInitialThemeSources(Array.from(sourceByTarget, ([targetId, theme]) => ({ targetId, theme })));
       }
 
-      const nextThemes = rawThemes.filter(theme => !_isObsoleteInitialCustomTheme(theme, { force: true }));
+      // 利用者のカスタムテーマは読み込みでは決して削除しない（以前は表示名の一致だけで
+      // 毎回削除しており、旧テーマカラーの移行結果まで次の読み込みで消えていた）。
+      const nextThemes = rawThemes.slice();
       // Older releases moved named custom presets into this archive. Restore
       // their original identity without replacing any currently saved preset.
       sourceByTarget.forEach(theme => {
@@ -2012,7 +1977,22 @@
     return normalized || 'builtin-dark';
   }
 
+  // 組み込みテーマは定数なので、整えた結果を1回だけ作り、呼ばれるたびに複製して返す。
+  // ボードはトピックの色を決めるたびにテーマを探し、そのたびに全テーマを複製・整形していた
+  // （2026-11-25 応答時間検査: ボードの長い処理の約4分の1）。
+  let _builtInThemeJsonCache = null;
+  function _builtInThemeJsonList() {
+    if (!_builtInThemeJsonCache) {
+      _builtInThemeJsonCache = _buildBuiltInThemes().map(theme => [theme.id, JSON.stringify(theme)]);
+    }
+    return _builtInThemeJsonCache;
+  }
+
   function getBuiltInThemes() {
+    return _builtInThemeJsonList().map(([, json]) => JSON.parse(json));
+  }
+
+  function _buildBuiltInThemes() {
     // All four starter themes use the current shipped defaults.
     return clone(BUILT_IN_THEMES).map(theme => {
       Object.assign(theme.ui.cssVars, {
@@ -2092,6 +2072,9 @@
     const resolved = resolveThemeId(id);
     const legacy = getCustomThemes().find(theme => theme.id === resolved);
     if (legacy) return clone(legacy);
+    // 組み込みなら該当する1つだけを複製する（全テーマの複製はしない）
+    const builtIn = _builtInThemeJsonList().find(([themeId]) => themeId === resolved);
+    if (builtIn) return JSON.parse(builtIn[1]);
     const themes = getAllThemes();
     return clone(themes.find(t => t.id === resolved) || themes[0] || BUILT_IN_THEMES[0]);
   }
@@ -3365,6 +3348,10 @@
     const whiteTextDefaults = clone(previous);
     whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
     legacyDefaults.push(whiteTextDefaults);
+    const unshadedTabsDefaults = clone(whiteTextDefaults);
+    unshadedTabsDefaults['panel-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    unshadedTabsDefaults['inner-tab'].selected.bg = THEME_UI_VALUE_NONE;
+    legacyDefaults.push(unshadedTabsDefaults);
     // v1/v2 could stamp the original sequential defaults without upgrading them.
     // Treat that exact snapshot like the unversioned original; a current save
     // (including an intentional auto-color choice) is still returned above.
@@ -3686,6 +3673,36 @@
   let pending = 0;
   let requestSequence = 0;
 
+  // 「OSアクセント」は var(--theme-native-os-accent, AccentColor) で保存される。この値は本体の画面だけが
+  // OSから読むため、別画面では AccentColor（ブラウザ既定の明るい青）へ落ちていた（2026-11-24 利用者報告:
+  // ビューワーのメインメニューボタンが明るい青）。本体の中の画面は本体の色を、単独の画面はサーバーが
+  // 返すOSの色を使う。
+  function sameOriginParentRoot() {
+    try {
+      if (global.parent && global.parent !== global && global.parent.document?.documentElement) {
+        return global.parent.document.documentElement;
+      }
+    } catch { /* 別オリジンの親は読まない */ }
+    return null;
+  }
+  let nativeOsAccent = '';
+  function applyNativeOsAccent(color) {
+    const value = String(color || '').trim();
+    if (/^#[0-9a-f]{6}$/i.test(value)) nativeOsAccent = value.toLowerCase();
+    if (nativeOsAccent) document.documentElement.style.setProperty('--theme-native-os-accent', nativeOsAccent);
+  }
+  // 本体の中に埋め込まれた画面は、本体の表示中の色を正とする（保存済みの写しや古い記録で上書きしない）。
+  function followParentTheme() {
+    const parentRoot = sameOriginParentRoot();
+    if (!parentRoot) { applyNativeOsAccent(''); return false; }
+    try {
+      const native = getComputedStyle(parentRoot).getPropertyValue('--theme-native-os-accent').trim();
+      if (native) document.documentElement.style.setProperty('--theme-native-os-accent', native);
+      if (typeof global.inheritParentTheme === 'function') global.inheritParentTheme();
+    } catch { /* 親の画面が閉じかけている */ }
+    return true;
+  }
+
   function restoreOverrides() {
     const root = document.documentElement;
     let saved = {};
@@ -3695,9 +3712,13 @@
     } catch { /* A damaged local preference must not prevent the tool opening. */ }
     for (const [key, value] of Object.entries(saved)) {
       if (!/^--[a-z0-9-]+$/i.test(key) || typeof value !== 'string') continue;
-      root.style.setProperty(key, value);
+      // A standalone origin may not have the main window's native OS/palette
+      // dependencies. Its last saved rendered color is the portable fallback.
+      const rendered = saved['_shared-ui-colors']?.[key];
+      root.style.setProperty(key, /var\(/i.test(value) && typeof rendered === 'string' ? rendered : value);
       editedKeys.add(key);
     }
+    followParentTheme();
     syncSurface();
   }
   function syncSurface() {
@@ -3732,6 +3753,7 @@
     if (!pending) pending = requestAnimationFrame(refresh);
   }
   function applyShared(value) {
+    applyNativeOsAccent(value?.osAccent);
     if (value?.available !== true || !value.theme?.ui?.cssVars) return false;
     const manager = global.MeldexThemeManager;
     if (!manager) return false;
@@ -3746,6 +3768,7 @@
     for (const [key,color] of Object.entries(value.theme.ui.cssVars)) {
       if (/^--[a-z0-9-]+$/i.test(key) && typeof color === 'string') document.documentElement.style.setProperty(key,color);
     }
+    followParentTheme();
     syncSurface();
     return true;
   }

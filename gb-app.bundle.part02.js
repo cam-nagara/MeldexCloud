@@ -1,3 +1,117 @@
+    }
+  };
+  if (typeof _folderForEachSurface === 'function') _folderForEachSurface(renameFolderSurfacePath);
+  else renameFolderSurfacePath();
+  if (typeof bd !== 'undefined' && bd) {
+    if (bd.path) bd.path = _mapRenamedPath(bd.path, oldPath, newPath);
+    if (bd._loadedBoardPath) bd._loadedBoardPath = _mapRenamedPath(bd._loadedBoardPath, oldPath, newPath);
+  }
+}
+
+function renameAppPathReferences(oldPath, newPath, opts) {
+  if (!oldPath || !newPath || (oldPath === newPath && !Object.prototype.hasOwnProperty.call(opts || {}, 'label'))) return;
+  if (oldPath !== newPath) _appRememberPathChange(oldPath, newPath);
+  if (oldPath !== newPath && typeof rebindAutoVersionPathPrefix === 'function') {
+    rebindAutoVersionPathPrefix(oldPath, newPath);
+  }
+  // 改名/移動後も、開いている各編集面のsingle-flight・競合保留・参加者を
+  // 同じ安定文書IDへ束縛したままにする。フォルダ移動では配下aliasも一括更新。
+  window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
+  const options = opts || {};
+  if (typeof rebindPendingDbViewConfigBackendSave === 'function') {
+    rebindPendingDbViewConfigBackendSave(oldPath, newPath, {
+      isFolder: options.type === 'folder' || options.type === 'database',
+    }).catch(error => console.warn('[Meldex] シート表示設定の保存先を更新できませんでした', error));
+  }
+  const exactLabel = Object.prototype.hasOwnProperty.call(options, 'label') ? options.label : null;
+  const preResolvedId = options.fileId || _pathToFileId(newPath) || _pathToFileId(oldPath) || '';
+  const previousDbPath = state.currentDbPath || '';
+  if (_fileIdCache[oldPath]) {
+    const oldFid = _fileIdCache[oldPath];
+    delete _fileIdCache[oldPath];
+    _fileIdCache[newPath] = oldFid;
+    _pathCache[oldFid] = newPath;
+  }
+  if (options.fileId) {
+    _fileIdCache[newPath] = options.fileId;
+    _pathCache[options.fileId] = newPath;
+  }
+  const oldPrefix = oldPath + '/';
+  const newPrefix = newPath + '/';
+  Object.keys(_fileIdCache).forEach(cachedPath => {
+    if (cachedPath === oldPath || !cachedPath.startsWith(oldPrefix)) return;
+    const remapped = newPrefix + cachedPath.substring(oldPrefix.length);
+    const fid = _fileIdCache[cachedPath];
+    delete _fileIdCache[cachedPath];
+    _fileIdCache[remapped] = fid;
+    if (fid) _pathCache[fid] = remapped;
+  });
+  const fileId = preResolvedId || _pathToFileId(newPath) || '';
+  _rewriteStoredFileIdMapForRename(oldPath, newPath, fileId);
+  _rewriteStoredPathSettingForRename('outliner-work-folder', 'outliner-work-folder-id', oldPath, newPath, fileId);
+  if (typeof getWorkFolders === 'function' && typeof _saveWorkFolders === 'function') {
+    _saveWorkFolders(getWorkFolders().map(record => ({ ...record, path: _mapRenamedPath(record.path, oldPath, newPath) })));
+  }
+  _rewriteStoredPathSettingForRename('main-calendar-path', 'main-calendar-id', oldPath, newPath, fileId);
+  _rewritePublishStorageForRename(oldPath, newPath);
+  // 新規作成位置をパスで保存した手動順も、改名・フォルダ移動へ追従させる。
+  try {
+    const manual = JSON.parse(localStorage.getItem('outliner-manual-order') || '{}');
+    let changed = false;
+    Object.keys(manual).forEach(key => {
+      if (!Array.isArray(manual[key])) return;
+      const mappedKey = _mapRenamedPath(key, oldPath, newPath);
+      const mappedOrder = manual[key].map(path => _mapRenamedPath(path, oldPath, newPath));
+      if (mappedKey !== key || mappedOrder.some((path, index) => path !== manual[key][index])) {
+        delete manual[key];
+        manual[mappedKey] = mappedOrder;
+        changed = true;
+      }
+    });
+    if (changed) localStorage.setItem('outliner-manual-order', JSON.stringify(manual));
+  } catch {}
+  let recentChanged = false;
+  let layoutChanged = false;
+  let legacyTabsChanged = false;
+
+  try {
+    for (const recentKey of [RECENT_KEY, 'meldex-rail-last-files']) {
+      const recent = _readStorageArray(recentKey);
+      recent.forEach(entry => {
+        if (_updatePathRefs(entry, APP_PATH_REF_KEYS, oldPath, newPath)) recentChanged = true;
+        if (entry.path === newPath && exactLabel != null) {
+          entry.label = exactLabel;
+          recentChanged = true;
+        }
+        if (entry.path === newPath && fileId) {
+          entry.file_id = fileId;
+          recentChanged = true;
+        }
+      });
+      if (recentChanged) {
+        localStorage.setItem(recentKey, JSON.stringify(recent));
+        if (typeof updateRecentItems === 'function') updateRecentItems();
+      }
+    }
+  } catch {}
+
+  try {
+    const lastView = JSON.parse(localStorage.getItem('lastView') || 'null');
+    if (lastView && _updatePathRefs(lastView, APP_PATH_REF_KEYS, oldPath, newPath)) {
+      if (lastView.path === newPath && exactLabel != null) lastView.label = exactLabel;
+      if (lastView.path === newPath && fileId) lastView.file_id = fileId;
+      localStorage.setItem('lastView', JSON.stringify(lastView));
+    }
+  } catch {}
+
+  _tabs.forEach(tab => {
+    const wasExact = tab.path === oldPath;
+    const mapped = _mapRenamedPath(tab.path, oldPath, newPath);
+    if (mapped !== tab.path) {
+      tab.path = mapped;
+      legacyTabsChanged = true;
+    }
+    if (wasExact && exactLabel != null && tab.label !== exactLabel) {
       tab.label = exactLabel;
       legacyTabsChanged = true;
     }
@@ -311,13 +425,29 @@ function purgeAppPathReferences(paths) {
     clearedCurrentView = true;
   }
 
-  if (typeof _folderPath !== 'undefined' && _matchesDeletedPaths(_folderPath, deletedPaths)) {
+  // フォルダの表示は面（メイン／サブパネル）ごとに状態を持つ。削除されたフォルダを開いている面は、すべて空にする。
+  const clearDeletedFolderSurface = () => {
+    if (typeof _folderPath === 'undefined' || !_matchesDeletedPaths(_folderPath, deletedPaths)) return;
+    const independentSurface = typeof _folderIsIndependentSurface === 'function' && _folderIsIndependentSurface();
+    globalThis.MeldexFolderLarge?.deactivate?.();
     _folderPath = '';
     if (typeof _folderItems !== 'undefined') _folderItems = [];
     if (typeof _folderSelected !== 'undefined') _folderSelected = null;
     if (typeof _folderSelectedItems !== 'undefined') _folderSelectedItems = [];
-    if (state.view === 'folder') clearedCurrentView = true;
-  }
+    if (independentSurface) {
+      // サブパネル等の面は、その場で空の表示にする（メインは下の共通の後始末が画面を切り替える）
+      const surfaceGrid = typeof _folderGridEl === 'function' ? _folderGridEl() : null;
+      if (surfaceGrid) {
+        surfaceGrid.innerHTML = '';
+        const gone = document.createElement('div');
+        gone.className = 'fv-empty-state';
+        gone.textContent = 'このフォルダは削除されました';
+        surfaceGrid.appendChild(gone);
+      }
+    } else if (state.view === 'folder') clearedCurrentView = true;
+  };
+  if (typeof _folderForEachSurface === 'function') _folderForEachSurface(clearDeletedFolderSurface);
+  else clearDeletedFolderSurface();
 
   const htmlIframe = document.getElementById('html-iframe');
   if (htmlIframe) {
@@ -768,133 +898,3 @@ function _openInNewTab(label, path, type) {
         return;
       } else if (e.clientX < rect.right) {
         tabEl.classList.add('drag-over-right');
-        return;
-      }
-    }
-    // 全タブの右側
-    if (tabEls.length > 0) tabEls[tabEls.length - 1].classList.add('drag-over-right');
-  });
-  bar.addEventListener('dragleave', (e) => {
-    if (!bar.contains(e.relatedTarget)) _clearTabDragIndicators();
-  });
-  bar.addEventListener('drop', (e) => {
-    e.preventDefault();
-    _clearTabDragIndicators();
-    const draggedTabIndex = e.dataTransfer.getData('application/x-tab-idx');
-    if (draggedTabIndex) {
-      if (e.target.closest?.('.tab-item')) return;
-      const fromIdx = parseInt(draggedTabIndex);
-      if (isNaN(fromIdx) || fromIdx < 0 || fromIdx >= _tabs.length || fromIdx === _tabs.length - 1) return;
-      const moved = _tabs.splice(fromIdx, 1)[0];
-      _tabs.push(moved);
-      renderTabs();
-      return;
-    }
-    // Meldexノードのドロップ
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
-    if (!cfData) return;
-    try {
-      const { name, path, type } = JSON.parse(cfData);
-      const openType = _normalizeOpenTypeForNav(type);
-      // 挿入位置を決定
-      const tabEls = [...bar.querySelectorAll('.tab-item')];
-      let insertIdx = _tabs.length;
-      for (let i = 0; i < tabEls.length; i++) {
-        const rect = tabEls[i].getBoundingClientRect();
-        if (e.clientX < rect.left + rect.width / 2) { insertIdx = i; break; }
-      }
-      const id = 'tab-' + (++_tabIdCounter);
-      const newTab = { id, label: name || '(無題)', type: openType, path: path || '', icon: _tabIcon(openType) };
-      _tabs.splice(insertIdx, 0, newTab);
-      _activeTabId = id;
-      renderTabs();
-      _addingTab = true;
-      try {
-        navOpen({ type: openType, label: name, path });
-      } finally {
-        _addingTab = false;
-      }
-    } catch {}
-  });
-})();
-
-// タブ右クリックメニュー（＋長押しでも同メニュー）
-function _handleTabBarContextmenu(e) {
-  const tabEl = e.target.closest('.tab-item');
-  if (!tabEl) return;
-  e.preventDefault();
-  const idx = parseInt(tabEl.dataset.tabIdx);
-  const tab = _tabs[idx];
-  if (!tab) return;
-
-  document.querySelectorAll('.tab-context-menu').forEach(el => el.remove());
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu tab-context-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'タブ操作');
-  if (!tabEl.hasAttribute('tabindex')) tabEl.tabIndex = -1;
-  let menuClosed = false;
-  let closeOnPointer = null;
-  let closeOnKey = null;
-  function closeMenu(restoreFocus = false) {
-    if (menuClosed) return;
-    menuClosed = true;
-    document.removeEventListener('pointerdown', closeOnPointer, true);
-    document.removeEventListener('keydown', closeOnKey, true);
-    menu.remove();
-    if (restoreFocus && typeof tabEl.focus === 'function') {
-      try { tabEl.focus({ preventScroll: true }); } catch { tabEl.focus(); }
-    }
-  }
-  { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  function addMI(label, fn, disabled = false, e2eId = '') {
-    const mi = document.createElement('button');
-    mi.type = 'button';
-    mi.className = 'gb-context-menu-item';
-    mi.setAttribute('role', 'menuitem');
-    mi.textContent = label;
-    mi.disabled = !!disabled;
-    if (disabled) mi.setAttribute('aria-disabled', 'true');
-    if (e2eId) mi.dataset.e2eId = e2eId;
-    mi.addEventListener('click', () => { closeMenu(false); fn(); });
-    menu.appendChild(mi);
-  }
-  function closeTabsOnSide(side) {
-    const targetIndex = _tabs.findIndex(item => item.id === tab.id);
-    if (targetIndex < 0) return;
-    const shouldClose = (_, index) => side === 'left' ? index < targetIndex : index > targetIndex;
-    const activeWillClose = _tabs.some((item, index) => item.id === _activeTabId && shouldClose(item, index));
-    const remaining = _tabs.filter((item, index) => !shouldClose(item, index));
-    if (remaining.length === _tabs.length) return;
-    _tabs.splice(0, _tabs.length, ...remaining);
-    activateTab(activeWillClose ? tab.id : (_activeTabId || tab.id));
-  }
-  addMI('新しいウィンドウで開く', () => {
-    const openType = _normalizeOpenTypeForNav(tab.type);
-    const url = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(tab.path || '') + '&label=' + encodeURIComponent(tab.label || '');
-    Promise.resolve(_open_app_window_js(url)).then((ok) => {
-      if (ok) closeTab(tab.id);
-      else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
-    });
-  }, false, 'tab-menu-new-window');
-
-/* === gb-app.part02.js === */
-  addMI('タブを閉じる', () => closeTab(tab.id), false, 'tab-menu-close');
-  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0, 'tab-menu-close-left');
-  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1, 'tab-menu-close-right');
-  addMI('他のタブをすべて閉じる', () => {
-    _tabs.splice(0, _tabs.length, tab);
-    activateTab(tab.id);
-  }, false, 'tab-menu-close-others');
-  document.body.appendChild(menu);
-  clampPopupToViewport(menu);
-  const focusableItems = () => [...menu.querySelectorAll('.gb-context-menu-item')];
-  closeOnPointer = function closeTabContextMenuOnPointer(ev) {
-    if (!menu.contains(ev.target)) closeMenu(false);
-  };
-  closeOnKey = function closeTabContextMenuOnKey(ev) {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeMenu(true);
-      return;
-    }

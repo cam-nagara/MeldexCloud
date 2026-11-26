@@ -79,9 +79,16 @@
           const before = _calAttCaptureSourceSettingsHistory();
           const nextHidden = _calAttReadHiddenSourceFolders();
           const sourcePath = String(input.dataset.calAttendanceSource || '');
+          const wasChecked = !nextHidden.has(sourcePath);
           if (input.checked) nextHidden.delete(sourcePath);
           else nextHidden.add(sourcePath);
-          _calAttWriteHiddenSourceFolders(nextHidden);
+          try {
+            _calAttWriteHiddenSourceFolders(nextHidden);
+          } catch {
+            input.checked = wasChecked;
+            this._showStatus?.('出退勤状況の表示設定を保存できませんでした。設定は変更していません。もう一度操作してください', true);
+            return;
+          }
           _calAttPushSourceSettingsHistory(before, input.checked ? '表示する' : '表示しない');
           this._renderAttendanceStatus();
         });

@@ -836,6 +836,7 @@ const _shortcutHandlers = {
   'global.save': (e) => {
     if (state.view === 'board' && window.MeldexBoardStandalone?.saveCurrentBoard) window.MeldexBoardStandalone.saveCurrentBoard();
     else if (state.view === 'board' && typeof bdSave === 'function') bdSave();
+    else if (state.view === 'csv' && typeof saveCsvForInteraction === 'function') saveCsvForInteraction();
     else if (state.view === 'csv' && typeof saveCsv === 'function') saveCsv();
     else if (state.view === 'form-app') {
       const paneId = typeof getScriptNoteTargetPaneId === 'function' ? getScriptNoteTargetPaneId() : GBLayout.activePane;
@@ -860,11 +861,22 @@ const _shortcutHandlers = {
     if (searchInput) { searchInput.focus(); searchInput.select(); }
   },
   'chat.focusInput': () => {
-    const input = document.getElementById('chat-input');
-    if (!input) return false;
-    input.focus();
-    const length = typeof input.value === 'string' ? input.value.length : 0;
-    if (typeof input.setSelectionRange === 'function') input.setSelectionRange(length, length);
+    const editor = document.getElementById('chat-rich-input');
+    if (!editor?.getClientRects().length) {
+      if (window.GBChatSidebar?.open) window.GBChatSidebar.open();
+      else if (typeof openRightPanelTab === 'function') openRightPanelTab('chat');
+      if (typeof switchChatMode === 'function' && (typeof _chatMode === 'undefined' || _chatMode !== 'llm')) switchChatMode('llm');
+    }
+    const focus = () => {
+      if (window.GBChatFormatting?.focusInput?.({ atEnd: true })) return true;
+      const input = document.getElementById('chat-input');
+      if (!input || input.getAttribute('aria-hidden') === 'true') return false;
+      input.focus();
+      const length = typeof input.value === 'string' ? input.value.length : 0;
+      if (typeof input.setSelectionRange === 'function') input.setSelectionRange(length, length);
+      return document.activeElement === input;
+    };
+    if (!focus()) requestAnimationFrame(focus);
   },
   'chat.send': () => {
     if (typeof chatSend !== 'function') return false;

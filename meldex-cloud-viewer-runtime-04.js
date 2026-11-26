@@ -39,7 +39,13 @@
   document.getElementById('btn-shift-back').onclick = () => { Scene.pause(); Scene.shiftBackward(); };
   document.getElementById('btn-shift-fwd').onclick = () => { Scene.pause(); Scene.shiftForward(); };
   document.getElementById('btn-play').onclick = Scene.togglePlay;
-  document.getElementById('sel-mode').onchange = function() { Scene.setMode(this.value); };
+  // 表示モード等の選択欄は、選んで閉じたらフォーカスを外して画面へ戻す。フォーカスが残ると、
+  // 続く左右の矢印キーが選択欄の値を変え、ページ送りのつもりで表示モードが切り替わっていた。
+  function releaseViewSelect(select) {
+    if (select && document.activeElement === select) select.blur();
+  }
+  window.MeldexViewerControls = Object.assign(window.MeldexViewerControls || {}, { releaseViewSelect });
+  document.getElementById('sel-mode').onchange = function() { Scene.setMode(this.value); releaseViewSelect(this); };
   document.getElementById('speed').oninput = function() { Scene.setSpeed(this.value); };
   document.getElementById('btn-bg').onclick = Scene.toggleBg;
   document.getElementById('btn-fullscreen').onclick = Scene.toggleFullscreen;
@@ -63,7 +69,7 @@
   if (annotationButton) {
     // iframe内では二度と出さないので取り除く（アノテートの可否が後から変わっても復活させない）。
     if (window.MeldexViewerSceneUtils?.isEmbeddedMeldexViewer?.()) annotationButton.remove();
-    else if (annotationsAvailable()) annotationButton.onclick = () => window.MeldexViewerAnnotations?.toggle?.();
+    else if (annotationsAvailable()) annotationButton.onclick = () => window.MeldexViewerAnnotationEntry.toggle();
     else annotationButton.hidden = true;
   }
   document.getElementById('btn-prev-folder').onclick = Scene.prevFolder;
@@ -102,17 +108,19 @@
   }
   window.MeldexShortcutRegistry?.registerLocal(VIEWER_SHORTCUTS);
 
+  const leftward = () => Scene.getMode?.() === 'manga';
   // [実行内容, 既定動作を抑止するか]
   const VIEWER_ACTIONS = {
     'viewer.playPause':     [() => Scene.togglePlay(), true],
     'viewer.prevFolder':    [() => Scene.prevFolder(), true],
     'viewer.nextFolder':    [() => Scene.nextFolder(), true],
-    'viewer.shiftForward':  [() => Scene.shiftForward(), true],
-    'viewer.shiftBackward': [() => Scene.shiftBackward(), true],
-    // マンガモードでも常に右=次、左=前。再生中は手動送りに合わせてスライドショーの
+    'viewer.shiftForward':  [() => (leftward() ? Scene.shiftBackward : Scene.shiftForward)(), true],
+    'viewer.shiftBackward': [() => (leftward() ? Scene.shiftForward : Scene.shiftBackward)(), true],
+    // 見開き_左へ（右から左へめくる）では、矢印キーの左右を入れ替える（左＝次、右＝前。2026-11-26 利用者判断）。
+    // 単ページ・見開き_右へ は 右＝次、左＝前。再生中は手動送りに合わせてスライドショーの
     // 次送りタイマーを起点からやり直す（元コードの `if (playing) scheduleNext()` を維持）。
-    'viewer.next':          [() => { Scene.nextGroup(); Scene.rescheduleSlideshow(); }, false],
-    'viewer.prev':          [() => { Scene.prevGroup(); Scene.rescheduleSlideshow(); }, false],
+    'viewer.next':          [() => { (leftward() ? Scene.prevGroup : Scene.nextGroup)(); Scene.rescheduleSlideshow(); }, false],
+    'viewer.prev':          [() => { (leftward() ? Scene.nextGroup : Scene.prevGroup)(); Scene.rescheduleSlideshow(); }, false],
     'viewer.toggleHud':     [() => Scene.toggleHud(), false],
     'viewer.fullscreen':    [() => Scene.toggleFullscreen(), false],
     'viewer.reversePlay':   [() => Scene.toggleReversePlay(), false],
@@ -128,19 +136,24 @@
     'viewer.fitNone':       [() => Scene.setFitMode('none'), false],
   };
   if (annotationsAvailable()) {
-    VIEWER_ACTIONS['viewer.annotation'] = [() => window.MeldexViewerAnnotations?.toggleFromShortcut?.(), false];
+    VIEWER_ACTIONS['viewer.annotation'] = [() => window.MeldexViewerAnnotationEntry.toggle(true), false];
   }
 
   // 文字入力・選択欄、右サイドバー・メニュー・ダイアログ内のキーはそれぞれの部品に任せる。
-  // 下端ツールバーのボタンにフォーカスが残っていても（再生ボタンを押した直後など）矢印キー等の
+  // ツールバーのボタンにフォーカスが残っていても（再生ボタンを押した直後など）矢印キー等の
   // ビューワー操作は効かせ、Space/Enter だけはボタン自身の押下に任せる。シークバーでは
   // 矢印キー等をスライダー操作に任せる（値の変更がそのまま前後移動になる）。
+  const VIEW_SELECTS = '#sel-mode, #viewer-pages-mode, #viewer-pages-first';
   const RANGE_NATIVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
   function shouldLeaveKeyToFocusedControl(e) {
     const target = e.target;
     if (!target || typeof target.closest !== 'function') return false;
     if (target.isContentEditable) return true;
     if (target.closest('.sa-secondary-panel, .gb-context-menu, [role="menu"], [role="dialog"], .sa-version-overlay')) return true;
+    const nativeMedia = target.closest('video[controls], audio[controls]');
+    if (nativeMedia?.closest('.layer.show')) return true;
+    // 表示の選択欄にフォーカスが残っていても、左右の矢印キーはページ送りにする（選択欄の値を変えない）。
+    if (target.closest('#sel-mode, #viewer-pages-mode, #viewer-pages-first') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey) return false;
     if (target.closest('textarea, select')) return true;
     const input = target.closest('input');
     if (input) return String(input.type || '').toLowerCase() !== 'range' || RANGE_NATIVE_KEYS.has(e.key);
@@ -162,7 +175,9 @@
     const id = window.MeldexShortcutRegistry?.matchEvent(e, ['viewer']) || '';
     const entry = VIEWER_ACTIONS[id];
     if (entry) {
-      if (entry[1]) e.preventDefault();
+      // 選択欄の既定動作（値の切替）はページ送りの時に止める
+      if (entry[1] || e.target?.closest?.(VIEW_SELECTS)) e.preventDefault();
+      if (e.target?.closest?.(VIEW_SELECTS)) e.target.closest(VIEW_SELECTS).blur();
       entry[0]();
       return;
     }
@@ -189,8 +204,14 @@
     Scene.zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 'out' : 'in');
   }, {passive: false});
 
+  // タッチ後にブラウザーが生成する互換dblclickを、マウスの操作と混同しない。
+  let lastContentPointerType = '';
+  document.getElementById('display').addEventListener('pointerdown', e => {
+    lastContentPointerType = e.pointerType;
+  }, true);
   // 画像のダブルクリックは、フィット方式を維持したままズームとパンをリセットする。
   document.getElementById('display').addEventListener('dblclick', e => {
+    if (lastContentPointerType === 'touch' || e.sourceCapabilities?.firesTouchEvents) return;
     if (e.target.closest('.viewer-text-layer, .nav-area, .sa-toolbar, .sa-note, button, input, select')) return;
     e.preventDefault();
     Scene.resetZoom();
@@ -288,20 +309,26 @@
     }
   })();
 
-  // マウスの戻る/進むボタン（XButton1/XButton2）で前後へ移動
+  // マウスの戻る/進むボタン（XButton1/XButton2）は画像送りに使わない。
+  // 埋め込み時は親画面へ渡し、このビューワーを開いているタブの履歴を戻る/進むにする。
+  // 単独で開いた時は何もしない（ページ全体の遷移だけ止める）。
   ['mousedown', 'mouseup', 'auxclick'].forEach(eventName => {
     document.addEventListener(eventName, e => {
       if (e.button !== 3 && e.button !== 4) return;
       e.preventDefault();
       e.stopPropagation();
-      if (eventName !== 'mousedown') return;
-      Scene.pause();
-      if (e.button === 3) Scene.prevGroup();
-      else Scene.nextGroup();
+      if (eventName !== 'mouseup') return;
+      try {
+        if (window.parent && window.parent !== window
+            && typeof window.parent.meldexPointerNavigateFromFrame === 'function') {
+          window.parent.meldexPointerNavigateFromFrame(window, e.button === 3 ? -1 : 1);
+        }
+      } catch {}
     }, {capture: true});
   });
 
-  // ツールバー自動表示/非表示: マウスが#display下端に近づいたら表示、離れたら短い遅延後に非表示。
+  // ツールバー自動表示/非表示: マウスが#display上端に近づいたら表示、離れたら短い遅延後に非表示
+  // （2026-11-24 下端から上端へ移動。設定「ツールバーを自動で隠す」がオフなら常に表示）。
   // ツールバー内にフォーカス/ホバーがある間は隠さない。pointer:coarse環境（タッチ）では常時表示
   // （embed=1専用だった旧hover制御・再生中3秒非表示の旧ロジックはこの方式に統一。
   // ビューワー残課題修正計画 2026-08-04「6. ツールバーの自動表示/非表示」）。
@@ -329,26 +356,34 @@
       clearTimeout(hideTimer);
       controls.classList.add('controls-active');
       syncParentAnnotationButton(true);
-      if (isCoarsePointer) hideTimer = setTimeout(hideNow, 2600);
+    }
+    // 全アプリ共通の設定（gb-toolbar-autohide.js）。オフなら隠さない。
+    const autoHideEnabled = () => !window.MeldexToolbarAutoHide || window.MeldexToolbarAutoHide.isEnabled();
+    function menuOpen() {
+      return !!controls.querySelector('[aria-expanded="true"]')
+        || !!document.querySelector('.gb-toolbar-overflow-popup, .gb-context-menu:not([hidden])');
     }
     function hideNow() {
-      if (toolbarFocused || controls.matches(':hover')) return;
+      if (!autoHideEnabled() || isCoarsePointer || toolbarFocused || controls.matches(':hover')) return;
+      if (menuOpen()) { scheduleHide(); return; }
       controls.classList.remove('controls-active');
       syncParentAnnotationButton(false);
     }
     function scheduleHide() {
       clearTimeout(hideTimer);
-      hideTimer = setTimeout(hideNow, isCoarsePointer ? 2600 : HIDE_DELAY_MS);
+      hideTimer = setTimeout(hideNow, HIDE_DELAY_MS);
     }
 
     window.showViewerToolbar = show;
     if (isCoarsePointer) { show(); return; }
+    if (!autoHideEnabled()) show();
+    window.addEventListener('meldex:toolbar-autohide-change', () => { if (autoHideEnabled()) scheduleHide(); else show(); });
 
     document.addEventListener('mousemove', (e) => {
       const rect = displayEl.getBoundingClientRect();
-      const nearBottom = (rect.bottom - e.clientY) <= PROXIMITY_PX
-        && e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top;
-      if (nearBottom) show(); else scheduleHide();
+      const nearTop = (e.clientY - rect.top) <= PROXIMITY_PX
+        && e.clientX >= rect.left && e.clientX <= rect.right && e.clientY <= rect.bottom;
+      if (nearTop) show(); else scheduleHide();
     });
     controls.addEventListener('mouseenter', show);
     controls.addEventListener('mouseleave', scheduleHide);
@@ -409,6 +444,7 @@
   function save(patch) {
     const ok = Scene.savePageSettings(patch);
     status.textContent = ok ? '' : '表示設定を保存できませんでした。もう一度操作してください';
+    return ok;
   }
   function layout() {
     pane.hidden = !visible;
@@ -419,8 +455,8 @@
     // viewer-resize observes the actual display size once, after layout.
   }
   function setVisible(value) {
+    if (!save({ visible: value })) return false;
     visible = value;
-    save({ visible });
     layout();
     if (visible) sync(true);
     else toggle.focus({ preventScroll: true });
@@ -577,20 +613,25 @@
   toggle.onclick = () => setVisible(!visible);
   toggle.addEventListener('mousedown', e => e.preventDefault());
   document.getElementById('viewer-pages-close').onclick = () => setVisible(false);
-  mode.onchange = () => { Scene.setMode(mode.value); sync(true); };
-  first.onchange = () => { Scene.setFirstSide(first.value); sync(true); };
+  // 選んで閉じたら選択欄からフォーカスを外し、続く矢印キーをページ送りにする（表示モードを変えない）。
+  mode.onchange = () => { Scene.setMode(mode.value); sync(true); window.MeldexViewerControls?.releaseViewSelect?.(mode); };
+  first.onchange = () => { Scene.setFirstSide(first.value); sync(true); window.MeldexViewerControls?.releaseViewSelect?.(first); };
   scroll.addEventListener('scroll', schedule, { passive: true });
   pane.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); setVisible(false); } });
   function resize(value, persist) {
-    width = Math.max(160, Math.min(480, value)); layout();
-    if (persist) save({ width });
+    const next = Math.max(160, Math.min(480, value));
+    if (persist && !save({ width: next })) return false;
+    width = next; layout();
   }
   grip.onpointerdown = e => {
     if (narrow()) return;
     grip.setPointerCapture(e.pointerId);
     const start = e.clientX, initial = width;
     grip.onpointermove = event => resize(initial + event.clientX - start, false);
-    grip.onpointerup = grip.onpointercancel = () => { grip.onpointermove = null; save({ width }); };
+    grip.onpointerup = grip.onpointercancel = () => {
+      grip.onpointermove = null;
+      if (!save({ width })) { width = initial; layout(); }
+    };
   };
   grip.onkeydown = e => {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -743,7 +784,8 @@
 .gb-palette-slider-row .gb-slider-val::-webkit-inner-spin-button,
 .gb-palette-slider-row .gb-slider-val::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .gb-palette-picker-row {
-  width: 100%; display: flex; align-items: center; gap: 8px;
+  /* 48+28+28+24×3=176px と5か所の間隔を、色見本8列の内幅213px以内へ収める（8pxでは216pxで右端のOS色が切れた）。 */
+  width: 100%; display: flex; align-items: center; gap: 6px;
   padding-top: 6px; margin-top: 2px; border-top: 1px solid var(--border);
 }
 .gb-palette-picker-row input[type="color"] {
@@ -788,17 +830,29 @@
     max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
     overflow-y: auto;
   }
+  /* 公式変種（共通ルール「色選択」）: テーマの色は1行8色の並びに意味があるため、電話幅でも8列を保つ。
+     44pxの8列が入らない幅では、8列に収まる大きさ（390px幅で約40px）まで縮める。
+     7列の幅に8色を入れると、各行の8色目だけが次の行へ落ちていた（2026-11-24）。 */
   .gb-palette {
-    width: min(calc(100vw - 32px), calc(44px * 7 + 3px * 6 + 16px));
+    width: min(calc(100vw - 32px), calc(44px * 8 + 3px * 7 + 16px));
   }
+  .gb-palette-matrix { width: 100%; }
   .gb-palette-grid,
-  .gb-palette-matrix,
   .gb-palette-row-swatches {
-    width: min(calc(100vw - 48px), calc(44px * 7 + 3px * 6));
+    width: 100%;
+    display: grid;
+    gap: 2px;
+    grid-template-columns: repeat(8, minmax(0, 44px));
   }
   .gb-swatch {
     width: 44px;
     height: 44px;
+  }
+  .gb-palette-grid > .gb-swatch,
+  .gb-palette-row-swatches > .gb-swatch {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
   }
   .gb-palette-standard-toggle,
   .gb-palette-reset-btn,
@@ -919,7 +973,24 @@ function _saveCustomColors(colors, options) {
   const before = (typeof captureLocalStorageSettings === 'function')
     ? captureLocalStorageSettings([GB_CUSTOM_COLORS_KEY])
     : null;
-  try { localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors)); } catch {}
+  const previousColors = before ? null : getCustomColors();
+  try {
+    localStorage.setItem(GB_CUSTOM_COLORS_KEY, JSON.stringify(colors));
+  } catch (_) {
+    // 保存できなかった時は黙って捨てず、原因を知らせて履歴・同期も進めない。
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存できませんでした（端末内の保存先に書けません）', true);
+    return false;
+  }
+  if (!before && options?.skipHistory !== true && typeof window !== 'undefined' && window.MeldexViewerHistory?.push) {
+    // 本体の設定履歴を持たない単独版ビューワーでは、評価・メモと同じ閲覧の履歴で取り消す。
+    const nextColors = getCustomColors();
+    const apply = list => {
+      _saveCustomColors(list, { skipHistory: true });
+      document.querySelectorAll('.gb-palette').forEach(palette => palette.remove());
+    };
+    window.MeldexViewerHistory.push(options?.label || '設定: カスタムカラー変更',
+      () => apply(previousColors), () => apply(nextColors));
+  }
   if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
     pushLocalStorageSettingsHistory(
       options?.label || '設定: カスタムカラー変更',
@@ -935,6 +1006,7 @@ function _saveCustomColors(colors, options) {
   if (options?.skipServerSync !== true && typeof _queuePersonalColorsSync === 'function') {
     _queuePersonalColorsSync();
   }
+  return true;
 }
 function saveCustomColor(color) {
   const next = _normalizeCustomColor(color);
@@ -1416,7 +1488,11 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
-    anchor.focus({ preventScroll: true });
+    // 狭い画面で起点のボタンがツールバーの「▼」にしまわれている時は、その「▼」へ戻す
+    // （見えないボタンへは戻せず、フォーカスが画面全体へ外れていた）。
+    const hidden = typeof anchor.getClientRects === 'function' && anchor.getClientRects().length === 0;
+    const overflow = hidden ? anchor.closest?.('.gb-toolbar-overflow-host')?.querySelector?.('.gb-toolbar-overflow-button') : null;
+    (overflow || anchor).focus({ preventScroll: true });
   }
 }
 
@@ -1466,6 +1542,8 @@ function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
     if (ev.key !== 'Escape') return;
     if (document.querySelector('.gb-palette-context-menu, .gb-ctx-menu')) return;
     ev.preventDefault();
+    // 色選択を閉じるEscapeを、開いている画面（閲覧のアノテート等）の「閉じる」へ渡さない。
+    ev.stopPropagation();
     closeColorPalette({ restoreFocus: true });
   };
   requestAnimationFrame(() => {
@@ -1716,6 +1794,33 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const customGrid = document.createElement('div'); customGrid.className = 'gb-palette-grid';
   palette.appendChild(customGrid);
 
+  // 共有先への保存が失敗している間は、操作した場所（色選択の中）に案内と再試行を出す。
+  // 右上の案内だけでは、電話幅で色選択に覆われて見えなかった。
+  const syncNotice = document.createElement('div');
+  syncNotice.className = 'gb-palette-sync-notice';
+  syncNotice.dataset.e2eId = 'color-palette-sync-error';
+  syncNotice.hidden = true;
+  palette.appendChild(syncNotice);
+  const renderSyncNotice = (failed) => {
+    if (!failed || !window.GBUI?.createInlineError) { syncNotice.replaceChildren(); syncNotice.hidden = true; return; }
+    if (syncNotice.firstChild) { syncNotice.hidden = false; return; }
+    syncNotice.replaceChildren(window.GBUI.createInlineError({
+      message: 'カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します。',
+      onRetry: async () => {
+        if (typeof _retryPersonalColorsSyncNow === 'function' && !(await _retryPersonalColorsSyncNow())) {
+          throw new Error('カスタムカラーを保存できませんでした。時間をおいて、もう一度お試しください。');
+        }
+      },
+    }));
+    syncNotice.hidden = false;
+  };
+  const onSyncState = (event) => {
+    if (!palette.isConnected) { window.removeEventListener('meldex-personal-colors-sync-state', onSyncState); return; }
+    renderSyncNotice(!!event?.detail?.failed);
+  };
+  window.addEventListener('meldex-personal-colors-sync-state', onSyncState);
+  renderSyncNotice(typeof _personalColorsFailureShown !== 'undefined' && _personalColorsFailureShown);
+
   let dragIdx = -1;
 
   function renderCustomGrid() {
@@ -1782,6 +1887,9 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
           renderCustomGrid(); updateSwatchHighlights();
+          // 削除した色の位置（無ければ追加ボタン）へフォーカスを残し、色選択の外へ外さない。
+          const swatches = customGrid.querySelectorAll('.gb-swatch');
+          (swatches[Math.min(i, swatches.length - 1)] || saveBtn)?.focus?.({ preventScroll: true });
         });
         menu.appendChild(del);
         document.body.appendChild(menu);
@@ -1880,11 +1988,14 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   picker.type = 'color'; picker.value = selectedHex; picker.title = 'カラーピッカー';
   picker.dataset.e2eId = 'color-palette-picker';
   picker.setAttribute('aria-label', 'カラーピッカー');
-  const onPickerChange = () => {
+  const onPickerChange = (event) => {
+    // 入力中の input と確定の change が同じ色を2回適用し、取り消しの区切りを増やさない。
+    if (event?.type === 'change' && !selectedIsTransparent && selectedHex === picker.value) return;
     if (selectedIsTransparent) selectedAlpha = 1;
     selectedHex = picker.value;
     hsb = _hexToHsb(picker.value);
-    selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1;
+    // 選んだカスタムカラーの調整中は選択を保ち、＋で上書きできるようにする（下の saveBtn 参照）。
+    selectedIsTransparent = false; selectedPresetIdx = -1;
     selectedOsAccentTone = '';
     updateSliders(); updateSwatchHighlights();
     applyLive();
@@ -1935,7 +2046,6 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
       selectedHex = pickedHex;
       hsb = _hexToHsb(pickedHex);
       selectedIsTransparent = false;
-      selectedCustomIdx = -1;
       selectedPresetIdx = -1;
       selectedOsAccentTone = '';
       updateSliders(); updatePicker(); updateSwatchHighlights();
@@ -2022,7 +2132,7 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
   const hSlider = makeSlider('色相', 0, 360, hsb.h, v => { hsb.h = v; onSliderChange(); });
   const sSlider = makeSlider('彩度', 0, 100, hsb.s, v => { hsb.s = v; onSliderChange(); });
   const bSlider = makeSlider('明度', 0, 100, hsb.b, v => { hsb.b = v; onSliderChange(); });
-  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
+  const aSlider = makeSlider('不透明度', 0, 100, Math.round(selectedAlpha * 100), v => { selectedAlpha = v / 100; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); });
   aSlider.row.dataset.e2eId = 'color-palette-opacity';
   sliderSection.append(hSlider.row, sSlider.row, bSlider.row, aSlider.row);
   palette.appendChild(sliderSection);
@@ -2041,7 +2151,8 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
     bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
   }
 
-  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
+  // 選んだカスタムカラーを調整している間は選択を保つ。＋ボタンはその色を上書きする（以前は調整した瞬間に選択が外れ、上書きできなかった）。
+  function onSliderChange() { if (selectedIsTransparent) selectedAlpha = 1; selectedHex = ''; selectedIsTransparent = false; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
@@ -2224,6 +2335,12 @@ function _ensurePersonalColorsInit() {
     try { migrated = localStorage.getItem(GB_PERSONAL_COLORS_MIGRATED_KEY) === '1'; } catch {}
 
     if (migrated) {
+      // 前回の共有先への保存が失敗したままの色は、共有先の古い一覧で上書きせず送り直す
+      // （以前は再読込で、追加・削除・並べ替えが黙って元に戻っていた）。
+      if (_personalColorsHasUnsynced()) {
+        queueMicrotask(() => _queuePersonalColorsSync());
+        return;
+      }
       _adoptPersonalColorsRecord(record, { applyToLocal: true });
       return;
     }
@@ -2261,6 +2378,67 @@ function _ensurePersonalColorsInit() {
 // 一度だけ再試行する（計画書「公開インターフェースと保存形式 > カスタムカラー」の
 // 規約通り）。再試行成功後のローカルへの書き戻しは mergeWithLocal で行い、
 // 再試行の実行中に積まれた別の編集（ローカルの直近値）を上書きで消さない。
+// 共有先への保存の失敗は、この画面の色を残したまま知らせて自動で再試行する。
+// 再試行が尽きても未送信の印は残り、次の色の変更か再読込で送り直す。
+const GB_PERSONAL_COLORS_UNSYNCED_KEY = '_gb-colors-server-unsynced';
+const GB_PERSONAL_COLORS_RETRY_DELAYS_MS = [2000, 10000, 35000];
+let _personalColorsRetryTimer = 0;
+let _personalColorsRetryAttempt = 0;
+let _personalColorsFailureShown = false;
+
+function _personalColorsHasUnsynced() {
+  try { return localStorage.getItem(GB_PERSONAL_COLORS_UNSYNCED_KEY) === '1'; } catch { return false; }
+}
+
+function _personalColorsMarkUnsynced(unsynced) {
+  try {
+    if (unsynced) localStorage.setItem(GB_PERSONAL_COLORS_UNSYNCED_KEY, '1');
+    else localStorage.removeItem(GB_PERSONAL_COLORS_UNSYNCED_KEY);
+  } catch {}
+}
+
+function _personalColorsReportSyncFailure() {
+  if (!_personalColorsFailureShown && typeof showStatus === 'function') {
+    showStatus('カスタムカラーを保存できませんでした。この画面の色は残したまま、自動で再試行します', true);
+  }
+  _personalColorsFailureShown = true;
+  _personalColorsDispatchSyncState(true);
+  if (_personalColorsRetryTimer || _personalColorsRetryAttempt >= GB_PERSONAL_COLORS_RETRY_DELAYS_MS.length) return;
+  const delay = GB_PERSONAL_COLORS_RETRY_DELAYS_MS[_personalColorsRetryAttempt++];
+  _personalColorsRetryTimer = setTimeout(() => {
+    _personalColorsRetryTimer = 0;
+    _queuePersonalColorsSync();
+  }, delay);
+}
+
+function _personalColorsReportSyncSuccess(sentColors) {
+  // 送信中に別の変更が積まれた場合は、その変更の同期が終わるまで未送信の印を残す。
+  const current = _personalColorsNormalizeList(getCustomColors());
+  const sent = Array.isArray(sentColors) ? sentColors : current;
+  if (current.length === sent.length && current.every((c, i) => c === sent[i])) _personalColorsMarkUnsynced(false);
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  _personalColorsRetryAttempt = 0;
+  if (_personalColorsFailureShown) {
+    _personalColorsFailureShown = false;
+    _personalColorsDispatchSyncState(false);
+    if (typeof showStatus === 'function') showStatus('カスタムカラーを保存しました');
+  }
+}
+
+function _personalColorsDispatchSyncState(failed) {
+  try { window.dispatchEvent(new CustomEvent('meldex-personal-colors-sync-state', { detail: { failed: !!failed } })); } catch {}
+}
+
+// 色選択の「再試行」: 自動再試行を待たずに今すぐ送る。共有先へ届けば true。
+async function _retryPersonalColorsSyncNow() {
+  if (_personalColorsRetryTimer) { clearTimeout(_personalColorsRetryTimer); _personalColorsRetryTimer = 0; }
+  // 失敗直後の再接続の抑止を解き、利用者の明示操作として再確認する。
+  if (_personalColorsApiAvailable === false && !_personalColorsApiPermanentlyUnavailable) _personalColorsInitFailedAt = 0;
+  _queuePersonalColorsSync();
+  await _personalColorsSyncChain;
+  return !_personalColorsFailureShown;
+}
+
 function _queuePersonalColorsSync() {
   if (_personalColorsApiPermanentlyUnavailable) return;
   if (typeof apiFetch !== 'function') return;
@@ -2270,14 +2448,22 @@ function _queuePersonalColorsSync() {
     .then(() => _ensurePersonalColorsInit())
     .then(async () => {
       _personalColorsSyncPending = false;
-      if (!_personalColorsApiUsable()) return;
+      if (_personalColorsApiPermanentlyUnavailable) return;
+      // 未送信の印は送信前に付け、共有先が確定した時だけ外す。途中で閉じても再読込で送り直す。
+      _personalColorsMarkUnsynced(true);
+      if (!_personalColorsApiUsable()) {
+        _personalColorsReportSyncFailure();
+        return;
+      }
       const payload = _personalColorsNormalizeList(getCustomColors());
       try {
         const record = await _putPersonalColorsRecord(payload, _personalColorsRevision);
         _adoptPersonalColorsRecord(record, { applyToLocal: false });
+        _personalColorsReportSyncSuccess(payload);
       } catch (e) {
         if (e?.status !== 409) {
           console.warn('[gb-color-palette] personal colors sync failed:', e);
+          _personalColorsReportSyncFailure();
           return;
         }
         try {
@@ -2285,8 +2471,10 @@ function _queuePersonalColorsSync() {
           const merged = _personalColorsNormalizeList([...(latest?.colors || []), ...getCustomColors()]);
           const retryRecord = await _putPersonalColorsRecord(merged, latest?.revision == null ? null : latest.revision);
           _adoptPersonalColorsRecord(retryRecord, { applyToLocal: true, mergeWithLocal: true });
+          _personalColorsReportSyncSuccess(merged);
         } catch (retryErr) {
           console.warn('[gb-color-palette] personal colors sync retry failed:', retryErr);
+          _personalColorsReportSyncFailure();
         }
       }
     })
@@ -2408,6 +2596,8 @@ function _handleImportCustomColorsFile(file) {
 // 削除相当の確認として3択（キャンセル/追加/置き換え）で提示し、既定フォーカスは
 // 非破壊の「追加」に置く。
 function _showPersonalColorsImportModeDialog(onChoose) {
+  // 確認は色選択の外に出す。開いたままだと電話幅で色選択がダイアログを覆い、押せなかった。
+  if (typeof closeColorPalette === 'function') closeColorPalette();
   const body = document.createElement('div');
   body.className = 'modal-body';
   body.textContent = '読み込んだカスタムカラーを、現在のセットへ追加しますか、それとも置き換えますか。';
@@ -2581,9 +2771,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     };
   }
 
-  // 呼び出しボタン（下端ツールバーのアノテート）の真上へ置く。本体はツールバーが上端に
-  // あるためボタンの左横へ出すが、ビューワーのボタンは下端にあるので、そのまま横へ出すと
-  // 下端ツールバーへ重なる。入らない時だけボタンの下へ逃がす。
+  // 呼び出しボタン（上端ツールバーのアノテート）の真下へ置く（2026-11-24 ツールバーを下端から
+  // 上端へ移動）。ツールバーへ重ならないよう、下に入らない時だけボタンの上へ逃がす。
   function positionNextToButton(toolbar, anchor) {
     toolbar.classList.add('visible');
     const toolbarRect = toolbar.getBoundingClientRect();
@@ -2592,8 +2781,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const area = placementArea();
     const anchorRect = anchor ? anchor.getBoundingClientRect() : null;
     const baseX = anchorRect ? anchorRect.right - width : area.width - width - 8;
-    let y = (anchorRect ? anchorRect.top : area.height) - height - 8;
-    if (y < 4) y = anchorRect ? anchorRect.bottom + 8 : 4;
+    let y = anchorRect ? anchorRect.bottom + 8 : 4;
+    if (anchorRect && y + height > area.height - 4) y = anchorRect.top - height - 8;
     const position = clampPosition(baseX, y, width, height);
     toolbar.style.left = position.x + 'px';
     toolbar.style.top = position.y + 'px';
@@ -2808,6 +2997,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     window.addEventListener('resize', reclamp);
     // 右サイドバーの開閉・幅変更でも表示領域が変わる（viewer-resize.js が知らせる）。
     window.addEventListener('viewer-layout-resize', reclamp);
+    // ツールバー自身の幅も、項目のあふれ判定や描画の後で変わる。保存位置を小さい幅で収めた後に
+    // 幅が伸びると、電話幅では右側（色ボタン等）が画面外へ出ていた。
+    if (typeof ResizeObserver === 'function') new ResizeObserver(reclamp).observe(toolbar);
 
     return { element: toolbar, setVisible, syncFromState };
   }
@@ -3307,7 +3499,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   async function _loadScene(sceneEntry, token) {
     try {
-      if (/^blob:/i.test(String(sceneEntry.path || ''))) {
+      if (window.MeldexViewerCloudFileOpen?.annotationCapability?.()?.available === false
+          || /^blob:/i.test(String(sceneEntry.path || ''))) {
         window.MeldexViewerAnnotationLegacy?.setItemsForPath?.(sceneEntry.path, []);
         return;
       }
@@ -3382,6 +3575,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
   // 表示中のすべてのシーンのアノテートを消す（本体の annClear() 相当）。
   async function clearAll(options = {}) {
+    const run = report => clearCurrentScenes(report);
+    return window.__viewerAnnotationWithHistoryBatch
+      ? window.__viewerAnnotationWithHistoryBatch(run) : run(window.__viewerAnnotationReportSave);
+  }
+  async function clearCurrentScenes(reportSave) {
     const strokes = [];
     _scenes.forEach(scene => {
       scene.strokesG.querySelectorAll('path, polygon, rect, ellipse').forEach(el => {
@@ -3390,21 +3588,20 @@ async function _applyImportedCustomColors(rawColors, mode) {
     });
     const noteCount = _scenes.reduce((sum, scene) => sum + (scene.notes?.length || 0), 0);
     if (!strokes.length && !noteCount) return false;
-    if (!options.confirmed && !window.confirm('表示中のアノテートをすべて削除します。よろしいですか？')) return false;
     for (const el of strokes) {
       try {
         const before = el._viewerAnnotationHistoryRow ? { ...el._viewerAnnotationHistoryRow } : null;
         const result = el.dataset.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId)) : null;
         el.remove();
-        window.__viewerAnnotationReportSave?.(true, 'delete', null, result, { before, after: null });
+        reportSave?.(true, 'delete', null, result, { before, after: null });
       } catch (error) {
         viewerAnnotationSaveFailed(error, 'アノテートを削除できませんでした');
-        window.__viewerAnnotationReportSave?.(false, 'delete', error);
+        reportSave?.(false, 'delete', error);
         return false;
       }
     }
     for (const scene of _scenes) {
-      if (await window.MeldexViewerAnnotationNotes?.deleteAll?.(scene) === false) return false;
+      if (await window.MeldexViewerAnnotationNotes?.deleteAll?.(scene, reportSave) === false) return false;
     }
     // 旧座標系のアノテート（viewer-annotation-legacy.js）は消しゴムと同じく対象外。
     // 破壊的な座標変換を避けるため表示専用で扱っている。
@@ -3609,6 +3806,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !window.MeldexContextMenuUI?.isOpen()) cancel(); }, true);
   window.MeldexViewerHighlights = {
     ensureNative, loadNativeExisting, renderCards,
+    getRegion: () => {
+      captureText();
+      if (!selection || !selection.scene.wrap.isConnected || !engine()?.getScenes().includes(selection.scene)) return null;
+      const { scene, path, data } = selection;
+      return { path: path.replace(/#page=\d+$/, ''), page: scene.isPdf ? scene.pageIndex + 1 : 1,
+        box: [data.x / scene.mediaWidth, data.y / scene.mediaHeight, data.width / scene.mediaWidth, data.height / scene.mediaHeight] };
+    },
     menuItems: () => {
       captureText(); // Keep media coordinates before the menu takes focus.
       return [{ label: 'ハイライト', ariaLabel: 'ハイライト', icon: 'highlighter', items: colors().map((color, index) => ({ label: 'テーマカラー ' + (index + 1), ariaLabel: 'テーマカラー ' + (index + 1), icon: 'square', color, action: () => apply(color) })) }];
@@ -3661,6 +3865,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
   function _user() { return SceneEngine().viewerAnnotationUser(); }
 
   function _clampMin(value, min) { return Math.max(min, Number(value) || 0); }
+  function _copyData(data) { return JSON.parse(JSON.stringify(data || {})); }
+
+  function _syncRetryButton(scene, entry) {
+    // SVG内のCSS寸法も画像と一緒に縮むため、操作部品だけは画面上の大きさを保つ。
+    const length = px => SceneEngine().localLengthForScreenPx(scene.svg, px);
+    entry.retryButton.style.minWidth = Math.ceil(length(44)) + 'px';
+    entry.retryButton.style.minHeight = Math.ceil(length(44)) + 'px';
+    entry.retryButton.style.fontSize = length(12) + 'px';
+  }
 
   function _setSaveState(entry, state) {
     entry.note.dataset.saveState = state;
@@ -3748,17 +3961,24 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!entry.annId) return;
     const intent = ++entry.saveIntent;
     _setSaveState(entry, 'saving');
-    const before = entry.historyRow ? { ...entry.historyRow, data: { ...(entry.historyRow.data || {}) } } : null;
-    const after = { ...(before || {}), id: entry.annId, target_path: entry.targetPath, type: 'comment', shape: 'sticky', color: entry.color, data: { ...entry.data } };
+    const before = entry.historyRow ? { ...entry.historyRow, data: _copyData(entry.historyRow.data) } : null;
+    const after = { ...(before || {}), id: entry.annId, target_path: entry.targetPath, type: 'comment', shape: 'sticky', color: entry.color, data: _copyData(entry.data) };
     try {
-      const result = await window.apiPut('/annotations/' + encodeURIComponent(entry.annId), { data: { ...entry.data } });
+      const result = await window.apiPut('/annotations/' + encodeURIComponent(entry.annId), { data: _copyData(entry.data) });
       if (intent !== entry.saveIntent) return;
       after.modified = result?.modified || after.modified || '';
       entry.historyRow = after;
       window.__viewerAnnotationReportSave?.(true, 'update', null, result, { before, after });
       _setSaveState(entry, 'saved');
+      if (entry.hadSaveFailure) {
+        entry.hadSaveFailure = false;
+        const message = 'この付箋を保存しました';
+        window.showStatus?.(message);
+        window.MeldexViewerScene?.flashStatus?.(message, 1500);
+      }
     } catch (error) {
       if (intent !== entry.saveIntent) return;
+      entry.hadSaveFailure = true;
       _saveFailed(error);
       window.__viewerAnnotationReportSave?.(false, 'update', error);
       _setSaveState(entry, 'unsaved');
@@ -3767,6 +3987,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _scheduleSave(entry) {
     clearTimeout(entry.saveTimer);
+    _setSaveState(entry, 'saving');
     entry.saveTimer = setTimeout(() => _persist(entry), 250);
   }
 
@@ -3783,7 +4004,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _installTailDrag(scene, entry) {
     entry.note.addEventListener('pointerdown', (e) => {
-      if (!e.altKey || e.button !== 0 || e.target.closest('textarea')) return;
+      if (!e.altKey || e.button !== 0 || e.target.closest('textarea,button')) return;
       e.preventDefault(); e.stopPropagation();
       const start = SceneEngine().clientToLocal(scene.svg, e.clientX, e.clientY);
       const draft = { startX: start.x, startY: start.y, endX: start.x, endY: start.y };
@@ -3829,7 +4050,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function _installDrag(scene, entry) {
     entry.note.addEventListener('pointerdown', (e) => {
-      if (e.altKey || e.target.closest('textarea') || e.button !== 0) return;
+      if (e.target.closest('textarea,button')) {
+        // 本文入力・サイズ変更・再試行を下の描画面へ伝えると、別の付箋／線が作られる。
+        e.stopPropagation();
+        return;
+      }
+      if (e.altKey || e.button !== 0) return;
       if (SceneEngine().ann().tool === 'eraser') {
         e.preventDefault(); e.stopPropagation();
         _deleteEntry(scene, entry);
@@ -3869,9 +4095,17 @@ async function _applyImportedCustomColors(rawColors, mode) {
       _persist(entry);
     });
     const resizeObserver = new ResizeObserver(() => {
-      const width = _clampMin(entry.textarea.offsetWidth + 16, 60);
-      const height = _clampMin(entry.textarea.offsetHeight + 16, 40);
-      if (width === entry.data.width && height === entry.data.height) return;
+      _syncRetryButton(scene, entry);
+      if (!entry.textarea.offsetWidth || !entry.textarea.offsetHeight) return;
+      const style = getComputedStyle(entry.note);
+      const size = key => parseFloat(style[key]) || 0;
+      // textareaは付箋の内容領域いっぱい。枠線も足さないと、再配置のたびに2px縮む。
+      const width = _clampMin(entry.textarea.offsetWidth + size('paddingLeft') + size('paddingRight')
+        + size('borderLeftWidth') + size('borderRightWidth'), 60);
+      const height = _clampMin(entry.textarea.offsetHeight + size('paddingTop') + size('paddingBottom')
+        + size('borderTopWidth') + size('borderBottomWidth'), 40);
+      // offsetWidth/Heightは整数へ丸める。旧座標の表示用変換の端数を編集と誤認しない。
+      if (Math.abs(width - entry.data.width) < 1 && Math.abs(height - entry.data.height) < 1) return;
       entry.data.width = width;
       entry.data.height = height;
       entry.fo.setAttribute('width', width);
@@ -3879,12 +4113,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
       _scheduleSave(entry);
     });
     resizeObserver.observe(entry.textarea);
+    resizeObserver.observe(scene.svg);
     entry.resizeObserver = resizeObserver;
   }
 
-  async function _deleteEntry(scene, entry) {
+  async function _deleteEntry(scene, entry, reportSave = window.__viewerAnnotationReportSave) {
     try {
-      const before = entry.historyRow ? { ...entry.historyRow, data: { ...(entry.historyRow.data || {}) } } : null;
+      const before = entry.historyRow ? { ...entry.historyRow, data: _copyData(entry.historyRow.data) } : null;
       const result = entry.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(entry.annId)) : null;
       entry.resizeObserver?.disconnect();
       entry.fo.remove();
@@ -3892,22 +4127,22 @@ async function _applyImportedCustomColors(rawColors, mode) {
       entry.handleStart.remove();
       entry.handleEnd.remove();
       scene.notes = (scene.notes || []).filter(n => n !== entry);
-      window.__viewerAnnotationReportSave?.(true, 'delete', null, result, { before, after: null });
+      reportSave?.(true, 'delete', null, result, { before, after: null });
     } catch (error) {
       _saveFailed(error, '付箋を削除できませんでした');
-      window.__viewerAnnotationReportSave?.(false, 'delete', error);
+      reportSave?.(false, 'delete', error);
     }
   }
 
-  function render(scene, item, data) {
+  function render(scene, item, data, historyData = data) {
     const dom = _buildNoteDom(scene, item.id, data, item.color);
     const entry = {
-      annId: item.id, data: { ...data }, color: item.color,
+      annId: item.id, data: _copyData(data), color: item.color,
       targetPath: scene.path,
-      historyRow: { ...item, target_path: item.target_path || scene.path, data: { ...data } },
+      historyRow: { ...item, target_path: item.target_path || scene.path, data: _copyData(historyData) },
       fo: dom.fo, note: dom.note, textarea: dom.textarea, retryButton: dom.retryButton,
       tailShape: dom.tailShape, handleStart: dom.handleStart, handleEnd: dom.handleEnd,
-      saveTimer: 0, saveIntent: 0,
+      saveTimer: 0, saveIntent: 0, hadSaveFailure: false,
     };
     scene.notesG.appendChild(entry.fo);
     entry.note.style.pointerEvents = SceneEngine().ann().active ? 'auto' : 'none';
@@ -3918,6 +4153,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     _setSaveState(entry, 'saved');
     scene.notes = scene.notes || [];
     scene.notes.push(entry);
+    _syncRetryButton(scene, entry);
     return entry;
   }
 
@@ -3979,9 +4215,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   // 全削除（フロートパネルのゴミ箱）から呼ぶ。1件でも削除できなければ false を返す。
-  async function deleteAll(scene) {
+  async function deleteAll(scene, reportSave = window.__viewerAnnotationReportSave) {
     for (const entry of [...(scene?.notes || [])]) {
-      await _deleteEntry(scene, entry);
+      await _deleteEntry(scene, entry, reportSave);
       if ((scene.notes || []).includes(entry)) return false;
     }
     return true;
@@ -3989,7 +4225,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function hasUnsaved() {
     return (SceneEngine().getScenes() || []).some(scene =>
-      (scene.notes || []).some(entry => entry.note?.dataset?.saveState === 'unsaved')
+      (scene.notes || []).some(entry =>
+        ['saving', 'unsaved'].includes(entry.note?.dataset?.saveState)
+        || entry.textarea?.value !== (entry.data?.text || ''))
     );
   }
 
@@ -4148,7 +4386,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (scene.isPdf && scene.pageIndex != null) newData.pageIndex = scene.pageIndex;
     const tail = _convertLegacyTail(scene, data);
     if (tail) newData.tail = tail;
-    return NotesEngine()?.render?.(scene, { id: item.id, color: item.color }, newData) || null;
+    return NotesEngine()?.render?.(scene, item, newData, data) || null;
   }
 
   // rebuild()は互換のため残置（viewer-annotation-scene.jsのrebuild()から無条件で呼ばれる）。
@@ -4251,7 +4489,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
         if (!window.parent.MeldexRuntimeAdapter?.isBrowserDataMode?.()) window.parent.MeldexDiagnostics.recordSheetIncident(kind, entry);
       } else if (!window.MeldexStandaloneNative && !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
         window.apiFetch('/diagnostics/sheet-incident', { method: 'POST', body: JSON.stringify(entry),
-          headers: { 'Content-Type': 'application/json' }, silentError: true }).catch(() => {});
+          headers: { 'Content-Type': 'application/json' }, silentError: true,
+          requireRemoteCommit: true }).catch(() => {});
       }
     } catch {}
   }
@@ -4363,23 +4602,68 @@ async function _applyImportedCustomColors(rawColors, mode) {
   // 「今開いている画像のアノテートを読み込み終えた」タイミングを間接的に把握できる）。
   const localHistory = [], localRedo = [];
   let localHistoryBusy = false;
+  async function applyLocalAnnotationRows(targetRows, previousRows, completed) {
+    const target = targetRows || [], previous = previousRows || [];
+    const targetIds = new Set(target.map(row => String(row.id)));
+    const previousById = new Map(previous.map(row => [String(row.id), row]));
+    try {
+      for (const row of target) {
+        const key = 'restore:' + row.id;
+        if (completed.has(key)) continue;
+        const old = previousById.get(String(row.id));
+        await window.apiPost('/annotations/restore', { ...row,
+          ...(old ? { expected_modified: old.modified || old.created } : { expected_absent: true }) });
+        completed.add(key);
+      }
+      for (const row of previous) {
+        const key = 'delete:' + row.id;
+        if (targetIds.has(String(row.id)) || completed.has(key)) continue;
+        await window.apiDelete('/annotations/' + encodeURIComponent(row.id)
+          + '?expected_modified=' + encodeURIComponent(row.modified || row.created || ''));
+        completed.add(key);
+      }
+    } finally {
+      await SceneEngine().rebuild();
+      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+    }
+  }
+  function localAnnotationBatch(history) {
+    const before = history.beforeRows || [], after = history.afterRows || [];
+    const undoCompleted = new Set(), redoCompleted = new Set();
+    const replay = async (target, previous, completed) => {
+      await applyLocalAnnotationRows(target, previous, completed);
+      undoCompleted.clear(); redoCompleted.clear();
+    };
+    return { undo: () => replay(before, after, undoCompleted), redo: () => replay(after, before, redoCompleted) };
+  }
   async function replayLocalHistory(redo) {
     if (localHistoryBusy || window.parent !== window) return false;
     const from = redo ? localRedo : localHistory, to = redo ? localHistory : localRedo;
     const entry = from.at(-1);
     if (!entry) return false;
     const desired = redo ? entry.after : entry.before, previous = redo ? entry.before : entry.after;
+    if (entry.undo && window.MeldexEmbeddedMetadata?.hasPendingMemos?.()) {
+      Scene()?.flashStatus?.('メモの保存が終わってから履歴を操作してください', 5000);
+      return false;
+    }
     localHistoryBusy = true;
     try {
-      if (desired) await window.apiPost('/annotations/restore', { ...desired,
+      if (entry.undo) await (redo ? entry.redo : entry.undo)();
+      else if (desired) await window.apiPost('/annotations/restore', { ...desired,
         ...(previous ? { expected_modified: previous.modified || previous.created } : { expected_absent: true }) });
       else await window.apiDelete('/annotations/' + encodeURIComponent(previous.id)
         + '?expected_modified=' + encodeURIComponent(previous.modified || previous.created || ''));
       from.pop(); to.push(entry);
-      await SceneEngine().rebuild();
-      window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+      if (!entry.undo) {
+        await SceneEngine().rebuild();
+        window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
+      }
       return true;
-    } catch (error) { SceneEngine().viewerAnnotationSaveFailed(error, 'アノテートの履歴を適用できませんでした'); return false; }
+    } catch (error) {
+      if (entry.undo) Scene()?.flashStatus?.('履歴を適用できませんでした: ' + (error?.message || error), 5000);
+      else SceneEngine().viewerAnnotationSaveFailed(error, 'アノテートの履歴を適用できませんでした');
+      return false;
+    }
     finally { localHistoryBusy = false; }
   }
   document.addEventListener('keydown', event => {
@@ -4390,9 +4674,19 @@ async function _applyImportedCustomColors(rawColors, mode) {
     event.preventDefault(); event.stopImmediatePropagation();
     void replayLocalHistory(key === 'y' || event.shiftKey);
   }, true);
+  // 単独版では共通の本体履歴がない。評価・メモも注釈と同じ順序で戻す。
+  window.MeldexViewerHistory = Object.freeze({
+    push(label, undo, redo) {
+      if (window.parent !== window || localHistoryBusy || typeof undo !== 'function' || typeof redo !== 'function') return false;
+      localHistory.push({ label, undo, redo }); localRedo.length = 0;
+      return true;
+    },
+  });
   window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error, result, history) {
     if (ok && history && window.parent === window && !localHistoryBusy) {
-      localHistory.push(structuredClone(history)); localRedo.length = 0;
+      const batch = Array.isArray(history.beforeRows) || Array.isArray(history.afterRows);
+      localHistory.push(batch ? localAnnotationBatch(structuredClone(history)) : structuredClone(history));
+      localRedo.length = 0;
     }
     if (ok) window.dispatchEvent(new CustomEvent('meldex-viewer-annotations-changed'));
     _postToParent({
@@ -4400,7 +4694,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       ok: !!ok,
       action: action || '',
       highlightRequestId: result?.highlightRequestId || '',
-      targetPath: history?.after?.target_path || history?.before?.target_path || _currentTargetPath(),
+      targetPath: history?.after?.target_path || history?.before?.target_path
+        || history?.afterRows?.[0]?.target_path || history?.beforeRows?.[0]?.target_path || _currentTargetPath(),
       pageIndex: _currentPageIndex(),
       annotationRevision: ok ? String(result?.annotationRevision || '') : '',
       invalidatedTargets: ok && Array.isArray(result?.invalidatedTargets) ? result.invalidatedTargets : [],
@@ -4408,6 +4703,22 @@ async function _applyImportedCustomColors(rawColors, mode) {
       error: error ? String(error?.message || error) : '',
       errorCode: ok ? '' : _classifyErrorCode(error),
     });
+  };
+  // この操作が渡す保存結果だけを束ねる。他の操作の非同期保存を取り込まない。
+  window.__viewerAnnotationWithHistoryBatch = async function withHistoryBatch(run) {
+    const entries = [];
+    const publish = window.__viewerAnnotationReportSave;
+    const report = (ok, action, error, result, history) => {
+      if (ok && history && (history.before?.id || history.after?.id)) entries.push(structuredClone(history));
+      publish(ok, action, error, result, null);
+    };
+    try { return await run(report); }
+    finally {
+      if (entries.length) publish(true, 'delete', null, {}, {
+        beforeRows: entries.map(entry => entry.before).filter(Boolean),
+        afterRows: entries.map(entry => entry.after).filter(Boolean),
+      });
+    }
   };
 
   document.addEventListener('pointerdown', () => { if (_usesParentToolbar()) _postToParent({ type: 'viewer-ann-pointer-target', targetPath: _currentTargetPath() }); }, true);
@@ -4455,7 +4766,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     _syncToolbar();
   }
 
-  // 下端ツールバーのアノテートボタンの押下状態を合わせる。
+  // 上端ツールバーのアノテートボタンの押下状態を合わせる。
   function _syncToolbarButton(active) {
     const button = document.getElementById('btn-annotation');
     if (!button) return;
@@ -4639,23 +4950,26 @@ async function _applyImportedCustomColors(rawColors, mode) {
     appId: 'viewer-metadata',
     getCloseState() {
       const drawing = isDrawing();
+      const pendingNotes = !!window.MeldexViewerAnnotationNotes?.hasUnsaved?.();
+      const pending = drawing || pendingNotes;
       return {
         appId: 'viewer-metadata',
-        state: drawing ? 'editing' : 'clean',
-        pendingLocal: drawing,
+        state: pending ? 'editing' : 'clean',
+        pendingLocal: pending,
         saving: drawing,
         failed: false,
         unnamed: false,
-        hasSnapshot: !drawing,
+        hasSnapshot: !pending,
         hasFinalDestination: true,
-        shouldWarn: drawing,
-        message: drawing ? '描画中のアノテートを確定しています' : '',
+        shouldWarn: pending,
+        message: pendingNotes ? '未保存の付箋があります。本文の編集を終えるか、再試行してください'
+          : drawing ? '描画中のアノテートを確定しています' : '',
       };
     },
     async prepareClose() {
       const flushed = SceneEngine()?.flushDrawing?.();
       if (flushed) await new Promise(resolve => setTimeout(resolve, 0));
-      return !isDrawing();
+      return !isDrawing() && !window.MeldexViewerAnnotationNotes?.hasUnsaved?.();
     },
     flushLocal() {
       return window.MeldexStandaloneOfflineOutbox?.readQueue?.().then(() => true, () => false) ?? true;
@@ -4685,6 +4999,42 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
 ;
 
+/* === gb-annotation-snapshot-text.js === */
+;
+/* Annotation snapshots are described as readable text in main and standalone views. */
+(function (global) {
+  'use strict';
+
+function format(snapshot) {
+  if (!snapshot) return '';
+  if (Array.isArray(snapshot)) snapshot = { targets: { annotations: snapshot } };
+  const lines = [];
+  for (const rows of Object.values(snapshot.targets || {})) for (const row of rows) {
+    let data = row.data || {};
+    try { if (typeof data === 'string') data = JSON.parse(data); } catch { data = {}; }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+    const kind = data.highlight || row.type === 'highlight' ? 'ハイライト'
+      : row.shape === 'sticky' || data.noteType === 'sticky' ? '付箋'
+      : ({comment:'コメント',note:'付箋',sticky:'付箋',screenshot:'スクリーンショット',stroke:'線',pen:'ペン',
+          marker:'マーカー',rect:'矩形','rect-line':'矩形の線','ellipse-line':'楕円の線','ellipse-fill':'楕円塗り',
+          polyline:'折れ線',lasso:'投げ縄'})[row.type] || '描画';
+    const text = String(row.body || data.text || '').replace(/\r\n?/g,'\n');
+    const area = ['x','y','width','height'].filter(key => data[key] != null).map(key => Number(data[key]).toFixed(1)).join(', ');
+    const points = Array.isArray(data.points) ? data.points.filter(Array.isArray).map(point => point.map(value => Number(value).toFixed(1)).join(',')).join(' / ') : '';
+    lines.push(`${kind} [${String(row.id).slice(0,8)}] ${text} ／色 ${row.color || '指定なし'} ／濃さ ${row.opacity ?? 1}`
+      + (data.pageIndex != null ? ` ／${data.pageIndex+1}ページ` : '') + (area ? ` ／範囲 ${area}` : '')
+      + (points ? ` ／線の位置 ${points}` : '') + (data.boxes ? ' ／文字の範囲 '+JSON.stringify(data.boxes) : '')
+      + (data.textAnchor ? ' ／文字の位置 '+data.textAnchor.start+'〜'+data.textAnchor.end : ''));
+  }
+  return '\n\nアノテート ('+lines.length+'件)\n'+(lines.join('\n') || 'なし')+'\n';
+}
+
+
+  global.MeldexAnnotationSnapshotText = Object.freeze({ format });
+})(window);
+
+;
+
 /* === standalone-version-history.js === */
 ;
 /* Standalone Quick Memo / Viewer version list, compare and restore UI. */
@@ -4692,6 +5042,43 @@ async function _applyImportedCustomColors(rawColors, mode) {
   'use strict';
 
   const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8765' : '';
+  let confirmationPending = false;
+
+  async function confirmRestore(message) {
+    if (confirmationPending) return false;
+    if (typeof window.GBUI?.createModal !== 'function') throw new Error('復元の確認画面を開けませんでした');
+    confirmationPending = true;
+    try {
+      return await new Promise(resolve => {
+        const body = document.createElement('p');
+        body.textContent = String(message || '');
+        const cancel = document.createElement('button');
+        cancel.id = '_gb-cancel';
+        cancel.type = 'button';
+        cancel.className = 'gb-btn';
+        cancel.textContent = 'キャンセル';
+        const ok = document.createElement('button');
+        ok.id = '_gb-ok';
+        ok.type = 'button';
+        ok.className = 'gb-btn gb-btn-primary';
+        ok.textContent = '復元';
+        const opener = document.activeElement;
+        let accepted = false;
+        const modal = window.GBUI.createModal({
+          id: 'standalone-version-restore-confirm', title: '復元の確認', body,
+          footer: [cancel, ok], variant: 'standard', extraClass: 'gb-confirm',
+          initialFocus: () => cancel, returnFocus: () => opener,
+          closeOnEsc: true, closeOnOverlay: true, onClose: () => resolve(accepted),
+        });
+        modal.modal.setAttribute('role', 'alertdialog');
+        cancel.addEventListener('click', () => modal.close('cancel'));
+        ok.addEventListener('click', () => { accepted = true; modal.close('confirm'); });
+        modal.open();
+        const parent = opener?.closest?.('.sa-version-overlay');
+        if (parent) modal.overlay.style.zIndex = String(Number(getComputedStyle(parent).zIndex || 0) + 1);
+      });
+    } finally { confirmationPending = false; }
+  }
 
   async function getJson(path) {
     if (typeof window.apiFetch === 'function') return window.apiFetch(path);
@@ -4726,18 +5113,24 @@ async function _applyImportedCustomColors(rawColors, mode) {
       .sa-version-meta{min-width:0}.sa-version-label{font-weight:600;overflow-wrap:anywhere}.sa-version-date{font-size:12px;color:var(--fg2,#aaa);margin-top:3px}.sa-version-actions{display:flex;gap:6px;align-items:center}
       .sa-version-empty,.sa-version-error{padding:20px;color:var(--fg2,#aaa)}.sa-version-error{color:var(--danger,#ff8b8b)}
       .sa-version-compare{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 12px 14px}.sa-version-pane{min-width:0}.sa-version-pane h3{font-size:13px;margin:0 0 6px}.sa-version-pane pre{margin:0;max-height:45vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg,#171717);padding:10px;border-radius:8px}
-      @media(max-width:640px){.sa-version-row{grid-template-columns:1fr}.sa-version-compare{grid-template-columns:1fr}.sa-version-action{min-height:44px}}
+      @media(max-width:640px){.sa-version-row{grid-template-columns:1fr}.sa-version-compare{grid-template-columns:1fr}}
+      @media(max-width:640px),(pointer:coarse){.sa-version-action,.sa-version-close,[data-dialog-id="standalone-version-restore-confirm"] :is(.gb-modal-close,.gb-btn){min-height:var(--ui-h-touch,44px);min-width:var(--ui-h-touch,44px)}}
     `;
     document.head.appendChild(style);
   }
 
   function closeOverlay(overlay) {
+    const opener = overlay?._versionOpener;
     overlay?.remove();
+    const target = opener?.isConnected ? opener
+      : document.getElementById('btn-viewer-main-menu') || document.getElementById('quickMemoVersionBtn');
+    target?.focus?.({ preventScroll: true });
   }
 
   function makeOverlay(title) {
     installStyles();
     const overlay = document.createElement('div');
+    overlay._versionOpener = document.activeElement;
     overlay.className = 'sa-version-overlay';
     overlay.dataset.e2eId = 'standalone-version-history';
     overlay.setAttribute('role', 'presentation');
@@ -4771,12 +5164,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return { overlay, dialog, body };
   }
 
-  function showError(body, error) {
+  function showError(body, error, keepActions = false) {
     const message = document.createElement('div');
     message.className = 'sa-version-error';
     message.setAttribute('role', 'alert');
     message.textContent = String(error?.message || error || 'バージョンを読み込めませんでした');
-    body.replaceChildren(message);
+    if (keepActions) {
+      body.querySelector('.sa-version-error')?.remove();
+      body.appendChild(message);
+    } else body.replaceChildren(message);
   }
 
   function showComparison(dialog, savedLabel, savedText, currentText) {
@@ -4829,7 +5225,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
         button.className = 'sa-version-action';
         button.textContent = text;
         button.dataset.e2eId = `standalone-version-${text === '比較' ? 'compare' : 'restore'}`;
-        button.addEventListener('click', () => handler(version, view));
+        button.addEventListener('click', () => {
+          view.body.querySelector('.sa-version-error')?.remove();
+          handler(version, view);
+        });
         actions.appendChild(button);
       });
       row.append(meta, actions);
@@ -4850,15 +5249,15 @@ async function _applyImportedCustomColors(rawColors, mode) {
             showComparison(
               view.dialog,
               version.label || version.name,
-              JSON.stringify(data.savedAnnotations || [], null, 2),
-              JSON.stringify(data.currentAnnotations || [], null, 2),
+              window.MeldexAnnotationSnapshotText.format(data.savedAnnotations || []),
+              window.MeldexAnnotationSnapshotText.format(data.currentAnnotations || []),
             );
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
         restore: async version => {
           try {
             const current = await getJson('/annotations/versions/read?target=' + encodeURIComponent(target) + '&version=' + encodeURIComponent(version.name));
-            if (!window.confirm('このアノテート復元ポイントへ戻しますか？\n現在のアノテートは復元直前の復元ポイントとして残ります。')) return;
+            if (!await confirmRestore('このアノテート復元ポイントへ戻しますか？\n現在のアノテートは復元直前の復元ポイントとして残ります。')) return;
             await postJson('/annotations/versions/restore', {
               target,
               version: version.name,
@@ -4866,7 +5265,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
             });
             await window.MeldexViewerAnnotations?.load?.();
             closeOverlay(view.overlay);
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
       });
     } catch (error) { showError(view.body, error); }
@@ -4886,12 +5285,12 @@ async function _applyImportedCustomColors(rawColors, mode) {
             const data = await getJson('/version/read?path=' + encodeURIComponent(target.path) + '&version=' + encodeURIComponent(version.name));
             const current = typeof data.currentContent === 'string' ? data.currentContent : '';
             showComparison(view.dialog, version.label || version.name, data.content, current);
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
         restore: async version => {
           try {
             const data = await getJson('/version/read?path=' + encodeURIComponent(target.path) + '&version=' + encodeURIComponent(version.name));
-            if (!window.confirm('この復元ポイントへ戻しますか？\n現在の内容は復元直前の復元ポイントとして残ります。')) return;
+            if (!await confirmRestore('この復元ポイントへ戻しますか？\n現在の内容は復元直前の復元ポイントとして残ります。')) return;
             await postJson('/version/restore', {
               path: target.path,
               version: version.name,
@@ -4899,7 +5298,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
             });
             await api?.reloadCurrentVersion?.();
             closeOverlay(view.overlay);
-          } catch (error) { showError(view.body, error); }
+          } catch (error) { showError(view.body, error, true); }
         },
       });
     } catch (error) { showError(view.body, error); }
@@ -4959,19 +5358,61 @@ async function _applyImportedCustomColors(rawColors, mode) {
   const sep = () => ({ type: 'separator' });
   const annotationsAvailable = () => document.documentElement.dataset.viewerAnnotationCapability !== 'disabled';
   // アノテートのバージョン管理は単独ウィンドウのビューワーだけで開く（本体のパネル内では
-  // 本体のアノテートパネルにバージョン管理がある）。以前は下端ツールバーのボタンだった。
+  // 本体のアノテートパネルにバージョン管理がある）。以前はツールバーのボタンだった。
   const annotationVersionsAvailable = () => window.parent === window
-    && typeof window.MeldexStandaloneVersionHistory?.openViewerAnnotations === 'function';
+    && annotationsAvailable() && (window.MeldexStandaloneNative
+      || typeof window.MeldexStandaloneVersionHistory?.openViewerAnnotations === 'function');
 
   function openAnnotationVersions() {
     Promise.resolve()
+      .then(() => window.MeldexViewerAnnotationEntry.ensureReady())
       .then(() => window.MeldexStandaloneVersionHistory.openViewerAnnotations())
-      .catch(error => window.alert(String(error?.message || error)));
+      .catch(error => Scene()?.flashStatus?.('アノテートのバージョンを開けませんでした: ' + String(error?.message || error), 5000));
   }
 
-  function items() {
-    const scene = Scene();
+  function publicImageUrl(raw) {
+    try {
+      const url = new URL(String(raw || ''), location.href), host = url.hostname.toLowerCase().replace(/\.+$/, '');
+      if (!['http:', 'https:'].includes(url.protocol) || url.origin === location.origin || url.username || url.password) return '';
+      if (!host.includes('.') || /\.(?:localhost|local|lan|home|internal|localdomain)$/.test(host)
+        || host.includes(':') || /^(?:0|10|127)\./.test(host) || /^169\.254\./.test(host)
+        || /^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
+        || /^192\.168\./.test(host) || /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)
+        || /^198\.(?:18|19)\./.test(host) || /^(?:22[4-9]|2[3-5]\d)\./.test(host)) return '';
+      return url.href;
+    } catch { return ''; }
+  }
+
+  function searchItems(target) {
+    const text = String(window.MeldexViewerTextLayer?.getSelection?.()?.text || window.getSelection?.()?.toString?.() || '').trim();
+    const image = target?.closest?.('img') || (!target && document.querySelector?.('.layer.show img'));
+    // 端末内の画像をアップロードせず、ローカルAPIのURL・ファイルの場所も外へ渡さない。
+    const imageUrl = image && (publicImageUrl(image._viewerItem?.path || image._viewerItem?.url)
+      || publicImageUrl(image.currentSrc || image.src));
+    const open = url => {
+      try {
+        const opened = window.open(url, '_blank', 'noopener');
+        if (opened) {
+          opened.opener = null;
+          Scene()?.flashStatus?.('検索ページを開きました', 1500);
+          return;
+        }
+      } catch { /* 開く操作が拒否された時も閲覧と選択を保持する。 */ }
+      Scene()?.flashStatus?.('検索ページを開けませんでした。ブラウザーの設定を確認して、もう一度お試しください', 5000);
+    };
     return [
+      ...(text ? [{ label: 'Googleで検索', icon: 'search', action: () => open('https://www.google.com/search?q=' + encodeURIComponent(text)) }] : []),
+      ...(image ? [{ label: 'Googleで画像検索', icon: 'scanSearch', action: () => open(imageUrl
+        ? 'https://www.google.com/searchbyimage?image_url=' + encodeURIComponent(imageUrl)
+        : 'https://images.google.com/') }] : []),
+    ];
+  }
+
+  function items(target) {
+    const scene = Scene();
+    const playbackActive = scene.isPlaybackActive?.() ?? scene.isPlaying();
+    return [
+      ...searchItems(target),
       ...(window.MeldexViewerScreenshotSource?.menuItems?.() || []),
       ...(window.MeldexViewerOcr?.menuItems?.() || []),
       { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
@@ -4982,7 +5423,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       { label: scene.isSheetContext() ? '前の画像行' : '前のフォルダ', icon: 'folderInput', shortcutId: 'viewer.prevFolder', action: () => scene.prevFolder() },
       { label: scene.isSheetContext() ? '次の画像行' : '次のフォルダ', icon: 'folderOutput', shortcutId: 'viewer.nextFolder', action: () => scene.nextFolder() },
       sep(),
-      { label: scene.isPlaying() ? '一時停止' : '再生', icon: scene.isPlaying() ? 'pause' : 'play', shortcutId: 'viewer.playPause', action: () => scene.togglePlay() },
+      { label: playbackActive ? '一時停止' : '再生', icon: playbackActive ? 'pause' : 'play', shortcutId: 'viewer.playPause', action: () => scene.togglePlay() },
       sep(),
       { label: 'ズームイン', icon: 'zoomIn', shortcutId: 'viewer.zoomIn', action: () => scene.zoomIn() },
       { label: 'ズームアウト', icon: 'zoomOut', shortcutId: 'viewer.zoomOut', action: () => scene.zoomOut() },
@@ -4996,9 +5437,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
       { label: '全画面', icon: 'maximize', shortcutId: 'viewer.fullscreen', action: () => scene.toggleFullscreen() },
       sep(),
       { label: '表示モード', icon: 'layout', items: [
-        { label: `${scene.getMode() === 'single' ? '● ' : ''}単体`, icon: 'rectangleHorizontal', action: () => scene.setMode('single') },
-        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き`, icon: 'bookOpen', action: () => scene.setMode('spread') },
-        { label: `${scene.getMode() === 'manga' ? '● ' : ''}マンガ（右→左）`, icon: 'bookOpenText', action: () => scene.setMode('manga') },
+        { label: `${scene.getMode() === 'single' ? '● ' : ''}単ページ`, icon: 'rectangleHorizontal', action: () => scene.setMode('single') },
+        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き_右へ`, icon: 'bookOpen', action: () => scene.setMode('spread') },
+        { label: `${scene.getMode() === 'manga' ? '● ' : ''}見開き_左へ`, icon: 'bookOpenText', action: () => scene.setMode('manga') },
       ] },
       { label: '回転・反転', icon: 'rotateCw', items: [
         { label: '左右反転', icon: 'flipHorizontal', shortcutId: 'viewer.flipH', action: () => scene.toggleFlipH() },
@@ -5018,7 +5459,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       ...(annotationsAvailable() ? [
         sep(),
         ...(window.MeldexViewerHighlights?.menuItems() || []),
-        { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
+        { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => window.MeldexViewerAnnotationEntry.toggle() },
         ...(annotationVersionsAvailable() ? [
           { label: 'アノテートのバージョン管理...', icon: 'history', action: openAnnotationVersions },
         ] : []),
@@ -5030,13 +5471,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
     ];
   }
 
-  async function openMenuAt(clientX, clientY) {
+  async function openMenuAt(clientX, clientY, target) {
     if (window.MeldexStandaloneNative && !window.MeldexViewerAnnotations && window.MeldexViewerTextLayer?.getSelection()) {
       try {
         await window.MeldexViewerHighlights.ensureNative();
       } catch(error) { window.showStatus?.('ハイライトを読み込めませんでした: '+error.message,true); return; }
     }
-    window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items() });
+    window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items(target) });
   }
 
   // ツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19）。右クリックと同じメニューを
@@ -5091,10 +5532,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
       return;
     }
     event.preventDefault();
-    openMenuAt(event.clientX, event.clientY);
+    openMenuAt(event.clientX, event.clientY, event.target);
   });
   if (typeof addLongPressHandler === 'function') {
-    addLongPressHandler(display, event => openMenuAt(event.clientX, event.clientY), { moveThreshold: 10 });
+    addLongPressHandler(display, event => openMenuAt(event.clientX, event.clientY, event.target), { moveThreshold: 10 });
   }
 })();
 

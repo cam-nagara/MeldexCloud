@@ -254,6 +254,7 @@ function _bdApplyV9BuiltinStyleMigration(cardBuiltins, lineBuiltins) {
   _bdNormalizeRemovedCardShapesInBoard();
 
   if (bd.activeCardStyle) bd.activeCardStyle = mapCard(bd.activeCardStyle);
+  if (bd.newCardStyleRef) bd.newCardStyleRef = mapCard(bd.newCardStyleRef);
   if (bd.activeLineStyle) bd.activeLineStyle = mapLine(bd.activeLineStyle);
   if (Array.isArray(bd.nodes)) {
     bd.nodes.forEach(node => {
@@ -583,8 +584,19 @@ function bdNormalizeDisplayFilters(filters) {
   return { ...BD_DEFAULT_DISPLAY_FILTERS, ...(filters || {}) };
 }
 
+let _bdUiStateReadDepth = 0;
+// 同期の表示更新内では正規化を共有し、次の操作へ状態を持ち越さない。
+function bdWithNormalizedBoardUiState(refresh) {
+  if (_bdUiStateReadDepth > 0) return refresh();
+  bdEnsureBoardUiState();
+  _bdUiStateReadDepth++;
+  try { return refresh(); }
+  finally { _bdUiStateReadDepth--; }
+}
+
 function bdEnsureBoardUiState() {
   if (typeof bd === 'undefined') return;
+  if (_bdUiStateReadDepth > 0) return;
   bdApplyStylePresetMigration();
   // 書式欄や管理メニューが保持する参照を切らずに正規化する。
   const retainStyles = (previous, normalized) => {
@@ -773,6 +785,11 @@ function bdSetNodeCardStyleRef(node, styleId, options = {}) {
   return true;
 }
 
+function bdChooseCardStyleForNewTopics(styleId) {
+  bd.activeCardStyle = String(styleId || '');
+  bd.newCardStyleRef = bd.activeCardStyle;
+}
+
 function bdCreateNodeWithStyle(text, x, y, opts) {
   bdEnsureBoardUiState();
   const nextOpts = { ...(opts || {}) };
@@ -786,6 +803,10 @@ function bdCreateNodeWithStyle(text, x, y, opts) {
     nextOpts.cardStyle = bd.activeCardStyle;
   }
   const style = bdGetCardStyleById(nextOpts.cardStyle);
+  // 明示して選んだ作成用書式は、既存の個別指定と同じ優先順位にする。
+  // 旧データや階層別指定の明示的な作成、子の継承規則は従来どおり扱う。
+  if (isPlainRootCard && !hasExplicitAutoStyle && style?.id && style.id === bd.newCardStyleRef
+      && style.id === bd.activeCardStyle) nextOpts._userCardStyle = true;
   const width = nextOpts.w || style?.width || (nextOpts.img ? 240 : 160);
   // デフォルト高さ = 一行ぶん (padding 8+8 + fontSize * line-height 1.5)。
   // 画像カードは画像の natural size に合わせるため h=0 を維持。明示値 (nextOpts.h) があればそれ優先。

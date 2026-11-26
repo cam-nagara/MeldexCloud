@@ -523,7 +523,9 @@ async function _ptAiWriteCellValue(dbPath, ctx, entityName, propName, value) {
       candidate_id: result?.candidate_id, entry_id: result?.entry_id, candidate_index: result?.candidate_index ?? raw.length,
     };
     entityData[propName] = [...raw, added];
-    if (typeof _dbUndoValue === 'function') _dbUndoValue(label, added, '', value, undefined, undefined, { dbPath, ctx });
+    // 空のセルへ作った値は、取り消しで空文字の値を残さず候補ごと消す（通常のセル入力と同じ。2026-11-24 検査で検出）。
+    if (typeof _dbUndoCreatedValue === 'function') _dbUndoCreatedValue(label, entityPath, propName, value, result || added, { dbPath, ctx });
+    else if (typeof _dbUndoValue === 'function') _dbUndoValue(label, added, '', value, undefined, undefined, { dbPath, ctx });
   }
   if (typeof _buttonActionRefreshTargetCell === 'function') {
     _buttonActionRefreshTargetCell(dbPath, entityPath, entityName, propName, ctx);

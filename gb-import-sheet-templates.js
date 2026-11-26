@@ -295,9 +295,11 @@
     const key = normalizeImporter(host.dataset.importSheetTemplate);
     if (!key) return;
     host.dataset.importSheetTemplateMounted = '1';
+    const compact = key === 'x-bookmarks' || key === 'x-account-posts';
     host.innerHTML = `
-      <div class="gb-section-title">インポート先のシートテンプレート</div>
-      <div class="gb-section-desc">${DEFINITIONS[key].description} 既存の列や値は上書きしません。</div>
+      ${compact
+        ? `<div class="gb-label">シートのひな形 ${global.fieldHelp?.(DEFINITIONS[key].description + ' 既存の列や値は上書きしません。') || ''}</div>`
+        : `<div class="gb-section-title">インポート先のシートテンプレート</div><div class="gb-section-desc">${DEFINITIONS[key].description} 既存の列や値は上書きしません。</div>`}
       <div class="gb-field-row" style="justify-content:flex-start;align-items:center;flex-wrap:wrap;margin-top:8px;">
         <select class="gb-select" data-import-sheet-template-select data-e2e-id="import-sheet-template-select-${key}" aria-label="${DEFINITIONS[key].label}のシートテンプレート"></select>
         <button type="button" class="gb-btn gb-btn-sm" data-import-sheet-template-apply data-e2e-id="import-sheet-template-apply-${key}">現在の保存先にも適用</button>

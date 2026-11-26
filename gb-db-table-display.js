@@ -24,7 +24,7 @@ function _dbCellDisplayConfig(dbPath, ctx = null) {
   const linesSource = (view && Object.prototype.hasOwnProperty.call(view, 'cellWrapLines'))
     ? view.cellWrapLines
     : cfg.cellWrapLines;
-  const overflow = overflowSource === 'clip' ? 'clip' : 'wrap';
+  const overflow = overflowSource === 'clip' || overflowSource !== 'wrap' && ctx?.productionCellTextOverflowDefault === 'clip' ? 'clip' : 'wrap';
   const lines = _dbClampInt(linesSource, 1, 20, 10);
   return { overflow, lines };
 }

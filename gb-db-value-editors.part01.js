@@ -72,11 +72,14 @@ function _valueEditorReload(dbPath, ctx) {
   return selectDatabase(dbPath, reloadCtx || undefined, { silent: true });
 }
 
-function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
-  const valueCtx = _valueEditorContext(entityPath, span, dbPath);
+function _startNumberValueEdit(span, val, entityPath, propName, dbPath, options = {}) {
+  const valueCtx = options.ctx || _valueEditorContext(entityPath, span, dbPath);
   const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
   if (lockMsg) { showStatus(lockMsg); return; }
   if (span.querySelector('input')) return;
+  const historyOptions = { dbPath, ctx: valueCtx,
+    historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+    onHistoryChanged: options.onHistoryChanged };
   const old = typeof _cellUiValueToString === 'function' ? _cellUiValueToString(val.value) : String(val.value || '');
   const editedTd = span.closest('td');
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
@@ -99,7 +102,7 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(restore);
     setTimeout(restore, 80);
   };
-  const input = document.createElement('input');
+  let input = document.createElement('input');
   input.type = 'number';
   input.className = 'value-input cell-number-input';
   input.value = old;
@@ -109,6 +112,7 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
   input.focus();
   input.select();
   let done = false;
+  let failedDraft = null;
   const restore = () => { span.textContent = old; restoreEditedCellSelection(); };
   const finish = () => {
     if (done) return;
@@ -130,20 +134,39 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
         await _apiPutValue(saveRef, { new_value: nv });
         window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
           candidateIndex: saveRef.candidate_index, value: nv });
+        if (failedDraft) window.MeldexSheetCellRecovery?.clear(failedDraft);
+        failedDraft = null;
         if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
         else if (saveRef.file) val.file = saveRef.file;
-        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv);
+        if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, undefined, undefined, historyOptions);
         if (ownsEditor()) {
           if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
           restoreEditedCellSelection(true);
         }
       } catch (e) {
-        window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+        failedDraft = window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: saveRef.candidate_index, before: old, value: nv });
         if (editedTd) window.MeldexSheetCellRecovery?.render(editedTd, entityPath, propName, valueCtx);
         if (val.value === nv) val.value = old;
         showStatus('保存に失敗: ' + (e?.message || e), true);
-        if (ownsEditor()) restore();
+        if (ownsEditor() && !editedTd) {
+          // Topic/Form columns have no table cell in which to render Sheet recovery.
+          // Keep the attempted value beside its retry action without taking focus.
+          const attempted = input.value;
+          input = input.cloneNode(false);
+          input.value = attempted;
+          bindInput();
+          done = false;
+          span.textContent = '';
+          span.appendChild(input);
+          const error = GBUI.createInlineError({
+            message: propName + 'を保存できません。入力した値は保持しています。' + (e?.message || e),
+            onRetry: finish,
+          });
+          error.addEventListener('click', event => event.stopPropagation());
+          error.addEventListener('pointerdown', event => event.stopPropagation());
+          span.appendChild(error);
+        } else if (ownsEditor()) restore();
       }
     };
     if (typeof _cellUiScheduleAfterPaint === 'function') {
@@ -154,12 +177,18 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
       setTimeout(save, 0);
     }
   };
-  if (typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(input, finish);
-  else input.addEventListener('blur', finish);
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); finish(); }
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); done = true; restore(); }
-  });
+  const bindInput = () => {
+    const boundInput = input;
+    const commit = () => { if (input === boundInput) finish(); };
+    if (typeof attachInlineBlurCommit === 'function') attachInlineBlurCommit(boundInput, commit);
+    else boundInput.addEventListener('blur', commit);
+    boundInput.addEventListener('keydown', (e) => {
+      if (input !== boundInput) return;
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); finish(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.(); done = true; restore(); }
+    });
+  };
+  bindInput();
 }
 
 // 型に応じたセル描画

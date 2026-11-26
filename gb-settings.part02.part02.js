@@ -171,7 +171,7 @@ function renderSettingsThemePaletteEditor(options = {}) {
     ${actionsHtml}
   </div>`;
   return `<div id="${editorId}" class="cs-theme-palette-editor">
-    ${rowsHtml}
+    ${options.leftFooter ? `<div class="settings-theme-palette-left">${rowsHtml}${options.leftFooter}</div>` : rowsHtml}
     ${slidersHtml}
   </div>`;
 }
@@ -417,8 +417,8 @@ function syncThemeColorSetSwatches(root, colors) {
     ? MeldexThemeManager.getOsAccentColor()
     : 'var(--theme-os-accent, AccentColor)';
   (root || document).querySelectorAll('[data-theme-os-accent-swatch]').forEach(btn => {
-    btn.style.background = osAccentColor || 'transparent';
-    btn.title = osAccentColor ? `OSアクセント: ${osAccentColor}` : 'OSアクセント: 取得待ち';
+    btn.style.background = osAccentColor || 'AccentColor';
+    btn.title = osAccentColor ? `OSアクセント: ${osAccentColor}` : 'OSアクセント';
   });
   (root || document).querySelectorAll('[data-theme-color-slot]').forEach(btn => {
     const index = parseInt(btn.dataset.themeColorSlot, 10);

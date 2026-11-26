@@ -96,6 +96,7 @@ async function savePropertyLayout(dbPath, layout, options = {}) {
   try {
     const saved = await saveDbViewConfigImmediate(dbPath, cfg, {
       ctx: options.ctx,
+      skipHistory: options.skipHistory === true,
       historyLabel: options.historyLabel || 'シート表示: 列レイアウト',
       historyDetail: options.historyDetail || '',
     });
@@ -156,7 +157,8 @@ async function updatePropertyLayoutForRename(dbPath, oldName, newName) {
 async function updatePropertyLayoutForDelete(dbPath, propName) {
   if (!dbPath || !propName) return;
   const current = await getPropertyLayoutForEdit(dbPath);
-  await savePropertyLayout(dbPath, removePropertyLayoutReferences(current, propName));
+  // 列削除に含まれる後始末なので、配置だけの取り消しを削除の上へ積まない。
+  await savePropertyLayout(dbPath, removePropertyLayoutReferences(current, propName), { skipHistory: true });
 }
 
 function isPropertyLayoutEditMode(dbPath) {

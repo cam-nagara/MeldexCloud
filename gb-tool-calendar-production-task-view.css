@@ -200,6 +200,13 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   flex: 0 0 auto;
 }
 
+/* 横スクロール内の文字付き操作を縮めて、隣のボタンへはみ出させない。 */
+.gb-production-list-switch > .gb-production-task-button { flex: 0 0 auto; }
+.gb-production-structure-detail { margin: 0; color: var(--fg2); font-size: var(--ui-font-13, 13px); line-height: 1.5; }
+@media (max-width: 720px) {
+  .gb-production-structure-detail { font-size: var(--ui-font-14, 14px); }
+}
+
 .gb-production-list-switch-add-btn {
   min-width: var(--ui-h-sm, 28px);
   padding: var(--ui-space-2, 4px) var(--ui-space-4, 8px);
@@ -593,17 +600,20 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 
 .gb-production-sidebar-entrances {
   flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 6px;
   border-bottom: 1px solid var(--cal-grid-line, var(--border));
 }
 
 .gb-production-sidebar-entrances .gb-production-sidebar-button {
-  min-width: 0;
+  flex: 1 1 max-content;
+  min-width: max-content;
   justify-content: center;
   padding-inline: 6px;
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 .gb-production-sidebar-tabs {
@@ -668,6 +678,20 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   min-height: 0;
   height: 100%;
   color: var(--cal-fg, var(--fg));
+}
+
+.gb-production-settings-read-failure {
+  display: grid;
+  place-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--ui-space-6, 12px);
+}
+.gb-production-settings-read-failure > .gb-inline-error {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 640px;
 }
 
 .gb-production-settings-state,
@@ -1227,6 +1251,11 @@ body[data-cloud-mobile-editing-ui="1"] :is(
     height: min(92vh, 860px);
     max-height: 92vh;
   }
+  .gb-production-settings-write-state,
+  .gb-production-settings-sheet-state { font-size: var(--ui-font-14, 14px); }
+  .gb-production-settings-template,
+  .gb-production-settings-child { font-size: var(--ui-font-15, 15px); }
+  .gb-production-sheet-embed .relation-link { font-size: max(var(--ui-font-14, 14px), 1em); }
   .gb-production-settings-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(132px, 34%) minmax(0, 1fr);

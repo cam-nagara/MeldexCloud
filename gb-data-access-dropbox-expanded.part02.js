@@ -894,13 +894,33 @@
     const baseStart = _parseCalendarDate(event.start);
     if (!rec || !rec.type || !baseStart) return [event];
     const rangeStart = _parseCalendarDate(startDate) || baseStart;
-    const rangeEnd = _parseCalendarDate(endDate) || new Date(rangeStart.getTime() + 90 * 86400000);
+    const rangeEnd = _parseCalendarRangeEndDate(endDate) || new Date(rangeStart.getTime() + 90 * 86400000);
     const baseEnd = _parseCalendarDate(event.end) || new Date(baseStart.getTime() + 3600000);
     const duration = Math.max(0, baseEnd.getTime() - baseStart.getTime());
     const interval = Math.max(1, Number(rec.interval || 1) || 1);
     const countLimit = Math.max(0, Number(rec.count || 0) || 0);
     const recurrenceEnd = rec.endDate ? (_parseCalendarRangeEndDate(rec.endDate) || rangeEnd) : new Date(rangeStart.getTime() + 365 * 86400000);
     const results = [];
+    const occurrenceKey = date => {
+      const pad = n => String(n).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+    const overrides = new Map();
+    const allowed = new Set(['title', 'start', 'end', 'all_day', 'color', 'color_override', 'description', 'location', 'url', 'alert_minutes']);
+    if (rec.overrides && typeof rec.overrides === 'object' && !Array.isArray(rec.overrides)) {
+      for (const [original, patch] of Object.entries(rec.overrides)) {
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) continue;
+        const originalAt = _parseCalendarDate(original);
+        if (!originalAt) continue;
+        const changedStart = patch.start ? _parseCalendarDate(patch.start) : originalAt;
+        const changedEnd = patch.end ? (event.all_day ? _parseCalendarRangeEndDate(patch.end) : _parseCalendarDate(patch.end)) : (changedStart && new Date(changedStart.getTime() + duration));
+        if (!changedStart || !changedEnd || changedEnd <= changedStart) continue;
+        const changed = { ...event };
+        Object.entries(patch).forEach(([key, value]) => { if (allowed.has(key)) changed[key] = value; });
+        overrides.set(occurrenceKey(originalAt), { ...changed, start: changedStart.toISOString(), end: changedEnd.toISOString(),
+          original_start: originalAt.toISOString(), _recurrence_instance: true });
+      }
+    }
     let current = new Date(baseStart.getTime());
     let generated = 0;
     for (let guard = 0; guard < 2000 && current <= rangeEnd && current <= recurrenceEnd; guard += 1) {
@@ -911,8 +931,9 @@
       if (weeklyOk) {
         generated += 1;
         if (!countLimit || generated <= countLimit) {
-          if (current >= rangeStart && current <= rangeEnd) {
-            const occurrence = { ...event, start: current.toISOString(), end: new Date(current.getTime() + duration).toISOString(), _recurrence_instance: true };
+          if (!overrides.has(occurrenceKey(current)) && current <= rangeEnd && new Date(current.getTime() + duration) >= rangeStart) {
+            const occurrence = { ...event, start: current.toISOString(), end: new Date(current.getTime() + duration).toISOString(),
+              original_start: current.toISOString(), _recurrence_instance: true };
             results.push(occurrence);
           }
         }
@@ -926,7 +947,11 @@
       else if (rec.type === 'yearly') current = _addCalendarYears(current, interval);
       else break;
     }
-    return results.length ? results : [event];
+    for (const changed of overrides.values()) {
+      if (_parseCalendarDate(changed.start) <= rangeEnd && _parseCalendarDate(changed.end) >= rangeStart) results.push(changed);
+    }
+    if (overrides.size) results.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+    return results;
   }
 
   async function _calendarAlerts(provider, url) {
@@ -2067,7 +2092,8 @@
       return { settings: { daily_budget_usd: 0, monthly_budget_usd: 0 }, totals: { day: { cost_usd: 0 }, month: { cost_usd: 0 } }, cloud: true };
     }
     if (pathname === '/chat/budget' && method === 'PUT') {
-      try { localStorage.setItem('meldex-cloud-chat-budget', JSON.stringify(body || {})); } catch {}
+      try { localStorage.setItem('meldex-cloud-chat-budget', JSON.stringify(body || {})); }
+      catch { throw new Error('このブラウザーにAI予算を保存できません。保存領域を確認して再試行してください。'); }
       return { ok: true, cloud: true };
     }
     if (pathname === '/chat/usage/reset' && method === 'POST') {

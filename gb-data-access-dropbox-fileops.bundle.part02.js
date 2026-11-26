@@ -1,3 +1,24 @@
+      return { ...state, outliner_operations: _pruneCloudCopyOperations(operations) };
+    });
+  }
+
+  async function _rearmCloudCopyOperation(provider, operationId, operation, payload, publisherToken) {
+    const identity = await _cloudCopyIdentity(provider, operationId, operation, payload);
+    let selected = null;
+    await _updateCloudCopyJournal(provider, operation, state => {
+      const operations = _normalizeOutlinerOperations(state.outliner_operations);
+      const index = operations.findIndex(row => row.operation_id === operationId);
+      const previous = index < 0 ? null : operations[index];
+      _assertCloudCopyRecord(previous, operationId, operation, identity);
+      if (!previous) throw new Error('再開対象のCloudファイル操作履歴がありません');
+      if (previous.state !== 'failed') {
+        selected = previous;
+        return state;
+      }
+      const intent = { ...previous.intent };
+      delete intent.provider_id;
+      delete intent.provider_rev;
+      delete intent.sha256;
       delete intent.aftercare_in_progress;
       delete intent.aftercare_effects;
       intent.operation_state = 'awaiting_proof';
@@ -877,24 +898,3 @@ async function _writeAnnotationRecord(provider, record, options = {}) {
     if (!current || _annotationRow(current.payload || {}).modified !== options.expectedModified) {
       const error = new Error('他の画面で更新されたためアノテートを変更できません');
       error.status = 409; throw error;
-    }
-    saveOptions = { expectedRevision: current.revision };
-  }
-  await adapter.save(kind, docId, record, saveOptions);
-  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
-  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
-}
-
-// 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
-// 読んだ版を条件に復元するので、取り消し後の他画面の更新を上書きしない。
-async function _restoreAnnotationRecord(provider, body) {
-  const id = _safeId(body.id, 'annotation id');
-  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
-  const adapter = await _managementAdapterForProvider(provider, kind, body.target_path || '');
-  const matches = await _findAnnotationRecordsById(provider, id);
-  const match = matches[0];
-  const current = match?.stored || null;
-  const existing = current?.payload || null;
-  const reject = () => { const error = new Error('他の画面で更新されたためアノテートを復元できません'); error.status = 409; throw error; };
-  if (match && match.scope.adapter.describe().boundary !== adapter.describe().boundary) reject();
-  if (body.expected_absent && existing && !_annotationDeleted(existing)) reject();

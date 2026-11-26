@@ -20,6 +20,8 @@
   let _richVerticalColumn = null;
   let _richInputComposing = false;
   const _composerFallbackHistory = { undo: [], redo: [] };
+  const _richRenderedScopes = new WeakMap();
+  let _composerTypingGroup = null;
   const INPUT_NAVIGATION_KEYS = new Set(['Home', 'End', 'PageUp', 'PageDown']);
 
   function _chatInput() {
@@ -120,6 +122,41 @@
     };
   }
 
+  function _computedInputSelectionValues(editor) {
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || range.collapsed || !editor.contains(range.commonAncestorContainer)) return _computedValues(editor);
+    const cache = new Map();
+    const read = el => {
+      if (!cache.has(el)) cache.set(el, _computedValues(el));
+      return cache.get(el);
+    };
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    const samples = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!node.textContent || !range.intersectsNode(node)
+          || range.startContainer === node && range.startOffset === node.length
+          || range.endContainer === node && range.endOffset === 0) continue;
+      const values = { ...read(node.parentElement) };
+      // Backgrounds and text decorations paint descendants without being
+      // inherited as computed properties on every nested inline element.
+      for (let parent = node.parentElement; parent && editor.contains(parent); parent = parent.parentElement) {
+        const inherited = read(parent);
+        if (!values.bgColor) values.bgColor = inherited.bgColor;
+        values.underline ||= inherited.underline;
+        values.strike ||= inherited.strike;
+      }
+      samples.push(values);
+    }
+    if (!samples.length) return _computedValues(editor);
+    const values = { ...samples[0] };
+    for (const key of Object.keys(values)) {
+      if (samples.some(sample => sample[key] !== values[key])) values[key] = typeof values[key] === 'boolean' ? false : '';
+    }
+    return values;
+  }
+
   function _clampRange(text, start, end) {
     const len = String(text || '').length;
     const a = Math.max(0, Math.min(len, Number(start) || 0));
@@ -166,6 +203,7 @@
 
   function _safeColor(value) {
     const raw = String(value || '').trim();
+    if (raw.toLowerCase() === 'transparent') return 'rgba(0,0,0,0)';
     if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
     if (/^rgba?\(\s*[\d.]+%?\s*,\s*[\d.]+%?\s*,\s*[\d.]+%?(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(raw)) return raw;
     return '';
@@ -229,8 +267,12 @@
       buffer = '';
     };
     const wrap = (tag, startToken, endToken, offset) => {
-      const end = source.indexOf(endToken, i + offset);
+      let end = source.indexOf(endToken, i + offset);
       if (end <= i) return false;
+      // In ***text*** the first closing star finishes the inner emphasis;
+      // the remaining pair closes the surrounding strong span.
+      if (startToken === '**' && source[i + offset] === '*'
+          && end > i + offset && source[end + endToken.length] === '*') end += 1;
       flush();
       const el = document.createElement(tag);
       _appendRichInline(el, source.slice(i + offset, end));
@@ -417,8 +459,25 @@
     const input = _chatInput();
     const editor = _chatRichInput();
     if (!input || !editor || _updatingFromRich) return;
-    _updatingFromPlain = true;
     const source = String(input.value || '').replace(/\r\n?/g, '\n');
+    const state = _chatStateRef();
+    const scope = window.GBChatDrafts?.storageKey?.()
+      || JSON.stringify([state?.sourceFolder || '', state?.workspaceId || '', state?.sessionId || '']);
+    const sameScope = _richRenderedScopes.get(editor) === scope;
+    if (sameScope && _richInputToMarkdown(editor) === source) {
+      _setRichInputContentState(editor, source);
+      if (Number.isFinite(selectionStart)) {
+        _setRichSelectionFromSourceRange(editor, source, selectionStart, Number.isFinite(selectionEnd) ? selectionEnd : selectionStart);
+      }
+      return;
+    }
+    if (!sameScope) {
+      _composerFallbackHistory.undo.length = 0;
+      _composerFallbackHistory.redo.length = 0;
+      _composerTypingGroup = null;
+    }
+    _richRenderedScopes.set(editor, scope);
+    _updatingFromPlain = true;
     _setRichInputContentState(editor, source);
     editor.innerHTML = '';
     if (!source) {
@@ -489,19 +548,6 @@
     _updatingFromRich = false;
   }
 
-  function _richInputHtml(source) {
-    const host = document.createElement('div');
-    String(source || '').replace(/\r\n?/g, '\n').split('\n').forEach(line => {
-      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
-      const block = document.createElement(heading ? 'h' + heading[1].length : 'div');
-      block.className = 'chat-rich-input-line';
-      _appendRichInline(block, heading ? heading[2] : line);
-      if (!block.childNodes.length) block.appendChild(document.createElement('br'));
-      host.appendChild(block);
-    });
-    return host.innerHTML;
-  }
-
   function _restoreComposerSnapshot(snapshot) {
     const input = _chatInput();
     const editor = _chatRichInput();
@@ -518,6 +564,33 @@
     return true;
   }
 
+  // Browser editing history can disappear when a pane is parked. Keep the
+  // same bounded source history for native typing and programmatic edits.
+  function _rememberComposerEdit(inputType, groupTyping = false, snapshot = null) {
+    const editor = _chatRichInput();
+    const text = String(_chatInput()?.value || '').replace(/\r\n?/g, '\n');
+    const range = editor ? _richSelectionSourceRange(editor, true, text) : null;
+    const start = snapshot?.start ?? range?.start ?? text.length, end = snapshot?.end ?? range?.end ?? text.length;
+    const now = performance.now();
+    const group = _composerTypingGroup;
+    const merge = groupTyping && group && group.type === inputType
+      && now - group.time < 750 && start === end && group.end === start;
+    if (!merge) {
+      _composerFallbackHistory.undo.push({ text: snapshot?.text ?? text, start, end });
+      // Bound both count and retained text, including unusually large drafts.
+      let size = 0;
+      for (let i = _composerFallbackHistory.undo.length - 1; i >= 0; i--) {
+        size += _composerFallbackHistory.undo[i].text.length;
+        if (i > 0 && (size > 2 * 1024 * 1024 || _composerFallbackHistory.undo.length - i >= 100)) {
+          _composerFallbackHistory.undo.splice(0, i);
+          break;
+        }
+      }
+    }
+    _composerFallbackHistory.redo.length = 0;
+    _composerTypingGroup = groupTyping ? { type: inputType, time: now, end: start } : null;
+  }
+
   function _handleComposerFallbackUndo(event) {
     if (_richInputComposing || event?.isComposing || event?.keyCode === 229) return false;
     const modifier = !!(event?.ctrlKey || event?.metaKey);
@@ -528,7 +601,9 @@
     const from = redo ? _composerFallbackHistory.redo : _composerFallbackHistory.undo;
     const to = redo ? _composerFallbackHistory.undo : _composerFallbackHistory.redo;
     const snapshot = from.pop();
-    if (!snapshot) return false;
+    _composerTypingGroup = null;
+    // Do not fall through to stale browser history from another conversation.
+    if (!snapshot) { event.preventDefault(); event.stopPropagation(); return true; }
     const input = _chatInput();
     const editor = _chatRichInput();
     const source = String(input?.value || '').replace(/\r\n?/g, '\n');
@@ -542,39 +617,17 @@
 
   function _applyRichInputSourceEdit(source, nextSource, beforeStart, beforeEnd, nextStart, nextEnd) {
     const input = _chatInput();
-    const editor = _chatRichInput();
     if (!input) return false;
     const before = String(source || '').replace(/\r\n?/g, '\n');
     const next = String(nextSource || '').replace(/\r\n?/g, '\n');
     const oldRange = _clampRange(before, beforeStart, beforeEnd);
     const newRange = _clampRange(next, nextStart, nextEnd);
 
-    // Replace the visible editor as one browser edit. This keeps paste, D&D,
-    // context-menu edits, and rendered markdown formatting in the same native
-    // undo transaction while the hidden textarea remains only a mirror.
-    if (editor && typeof document.execCommand === 'function' && !_richInputComposing) {
-      editor.focus();
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(editor);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      let edited = false;
-      try { edited = document.execCommand('insertHTML', false, _richInputHtml(next)); } catch (_) {}
-      if (edited) {
-        _syncPlainFromRich();
-        if (String(input.value || '').replace(/\r\n?/g, '\n') === next) {
-          _setRichSelectionFromSourceRange(editor, next, newRange.start, newRange.end);
-          _composerFallbackHistory.undo.length = 0;
-          _composerFallbackHistory.redo.length = 0;
-          return true;
-        }
-      }
-    }
+    _rememberComposerEdit('source-edit', false, { text: before, start: oldRange.start, end: oldRange.end });
 
-    _composerFallbackHistory.undo.push({ text: before, start: oldRange.start, end: oldRange.end });
-    if (_composerFallbackHistory.undo.length > 100) _composerFallbackHistory.undo.shift();
-    _composerFallbackHistory.redo.length = 0;
+    // The composer history above owns both typing and source edits. Installing
+    // the snapshot once avoids execCommand's intermediate input notifications
+    // and a second render when Chromium normalizes the inserted markup.
     return _restoreComposerSnapshot({ text: next, start: newRange.start, end: newRange.end });
   }
 
@@ -652,26 +705,31 @@
     if (prop === 'strike') return value ? wrap('~~', '~~') : null;
     if (prop === 'underline') return value ? wrap('[u]', '[/u]') : null;
 
+    const attr = _inlineStyleDeclaration(prop, value);
+    return attr ? wrap(`[style ${attr}]`, '[/style]') : null;
+  }
+
+  function _inlineStyleDeclaration(prop, value) {
     let attr = '';
     if (prop === 'textColor') {
       const color = _safeColor(value);
-      if (!color) return null;
+      if (!color) return '';
       attr = `color="${color}"`;
     } else if (prop === 'bgColor') {
       const color = _safeColor(value);
-      if (!color) return null;
+      if (!color) return '';
       attr = `bg="${color}"`;
     } else if (prop === 'fontSize') {
-      if (value == null || String(value).trim() === '') return null;
+      if (value == null || String(value).trim() === '') return '';
       const size = Math.max(8, Math.min(96, Number(value) || 0));
-      if (!size) return null;
+      if (!size) return '';
       attr = `size="${size}"`;
     } else if (prop === 'fontFamily') {
       const font = _safeFontFamily(value);
-      if (!font) return null;
+      if (!font) return '';
       attr = `font="${font}"`;
     }
-    return attr ? wrap(`[style ${attr}]`, '[/style]') : null;
+    return attr;
   }
 
   function _inlineRemovalToken(prop) {
@@ -705,51 +763,127 @@
       .trim();
   }
 
+  function _removePartialInputFormat(text, range, prop) {
+    const tags = { fontWeight: ['STRONG', 'B'], fontStyle: ['EM', 'I'], underline: ['U'], strike: ['DEL', 'S'] };
+    const styles = { textColor: 'color', bgColor: 'backgroundColor', fontSize: 'fontSize', fontFamily: 'fontFamily' };
+    // Clone balanced ancestors for each visible interval. Splitting raw tokens
+    // through a nested format would either lose it or leave unmatched markup.
+    const clip = (node, start, end, remove, cursor) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const offset = cursor.value;
+        cursor.value += node.textContent.length;
+        const value = node.textContent.slice(Math.max(0, start - offset), Math.max(0, end - offset));
+        return value ? document.createTextNode(value) : null;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return null;
+      const copy = node.cloneNode(false);
+      for (const child of node.childNodes) {
+        const part = clip(child, start, end, remove, cursor);
+        if (part) copy.appendChild(part);
+      }
+      if (!copy.childNodes.length) return null;
+      if (remove && tags[prop]?.includes(copy.tagName)) {
+        const fragment = document.createDocumentFragment();
+        while (copy.firstChild) fragment.appendChild(copy.firstChild);
+        return fragment;
+      }
+      if (remove && styles[prop]) copy.style[styles[prop]] = '';
+      return copy;
+    };
+    let offset = 0;
+    const lines = text.split('\n').map(line => {
+      const lineOffset = offset;
+      offset += line.length + 1;
+      if (range.end <= lineOffset || range.start >= lineOffset + line.length) return line;
+      const visible = _mapVisibleChars(line);
+      const start = visible.filter(index => index < range.start - lineOffset).length;
+      const end = visible.filter(index => index < range.end - lineOffset).length;
+      if (start >= end) return line;
+      const heading = line.match(/^(\s{0,3}#{1,6}\s+)(.*)$/);
+      const root = document.createElement('div');
+      _appendRichInline(root, heading ? heading[2] : line);
+      const length = root.textContent.length;
+      const part = (a, b, remove) => _serializeRichInline(clip(root, a, b, remove, { value: 0 }));
+      return (heading ? heading[1] : '') + part(0, start, false) + part(start, end, true) + part(end, length, false);
+    });
+    const next = lines.join('\n');
+    if (next === text) return null;
+    const beforeMap = _mapVisibleChars(text), afterMap = _mapVisibleChars(next);
+    const a = beforeMap.filter(index => index < range.start).length;
+    const b = beforeMap.filter(index => index < range.end).length;
+    return { text: next, start: afterMap[a] ?? next.length,
+      end: b > a ? (afterMap[b - 1] ?? (next.length - 1)) + 1 : (afterMap[a] ?? next.length) };
+  }
+
   function _removeInlineFormatFromRange(source, start, end, prop) {
     const text = String(source || '');
     const range = _clampRange(text, start, end);
-    const selected = text.slice(range.start, range.end);
-    if (!selected) return null;
-    const token = _inlineRemovalToken(prop);
-    if (token) {
-      const openStart = range.start - token.open.length;
-      const closeEnd = range.end + token.close.length;
-      if (openStart >= 0
-        && text.slice(openStart, range.start) === token.open
-        && text.slice(range.end, closeEnd) === token.close
-        && !(token.open === '*' && (text.slice(range.start - 2, range.start) === '**' || text.slice(range.end, range.end + 2) === '**'))
-      ) {
-        return {
-          text: text.slice(0, openStart) + selected + text.slice(closeEnd),
-          start: openStart,
-          end: openStart + selected.length,
-        };
+    const visible = _mapVisibleChars(text);
+    const visibleSet = new Set(visible);
+    const lowerBound = value => {
+      let lo = 0, hi = visible.length;
+      while (lo < hi) {
+        const middle = (lo + hi) >> 1;
+        if (visible[middle] < value) lo = middle + 1;
+        else hi = middle;
       }
-      return null;
-    }
-    const attr = _inlineStyleAttrForProp(prop);
-    if (!attr) return null;
-    const before = text.slice(0, range.start);
-    const openMatch = before.match(/\[style\s+([^\]]{1,240})\]$/i);
-    const closeToken = '[/style]';
-    if (!openMatch || text.slice(range.end, range.end + closeToken.length).toLowerCase() !== closeToken) return null;
-    const openToken = openMatch[0];
-    const prefix = text.slice(0, range.start - openToken.length);
-    const suffix = text.slice(range.end + closeToken.length);
-    const nextAttrs = _removeInlineStyleAttr(openMatch[1], attr);
-    if (!nextAttrs) {
-      return {
-        text: prefix + selected + suffix,
-        start: prefix.length,
-        end: prefix.length + selected.length,
-      };
-    }
-    const nextOpen = `[style ${nextAttrs}]`;
-    return {
-      text: prefix + nextOpen + selected + closeToken + suffix,
-      start: prefix.length + nextOpen.length,
-      end: prefix.length + nextOpen.length + selected.length,
+      return lo;
     };
+    const token = _inlineRemovalToken(prop);
+    const attr = _inlineStyleAttrForProp(prop);
+    if (!token && !attr) return null;
+    const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = token
+      ? new RegExp(escape(token.open) + '([^\\n]*?)' + escape(token.close), 'g')
+      : /\[style\s+([^\]\n]{1,240})\]([^\n]*?)\[\/style\]/gi;
+    const edits = [];
+    for (const match of text.matchAll(pattern)) {
+      const openLength = token ? token.open.length : match[0].indexOf(']') + 1;
+      const closeLength = token ? token.close.length : 8;
+      const contentStart = match.index + openLength;
+      const contentEnd = match.index + match[0].length - closeLength;
+      const first = lowerBound(contentStart), after = lowerBound(contentEnd);
+      const selectedFirst = Math.max(first, lowerBound(range.start));
+      const selectedAfter = Math.min(after, lowerBound(range.end));
+      if (selectedFirst >= selectedAfter) continue;
+      const prefix = selectedFirst > first, suffix = selectedAfter < after;
+      // Literal markup, including unmatched tokens, is user text.
+      if (Array.from({length:openLength}, (_, i) => match.index + i).some(i => visibleSet.has(i))
+          || Array.from({length:closeLength}, (_, i) => contentEnd + i).some(i => visibleSet.has(i))) continue;
+      if (prefix || suffix) return _removePartialInputFormat(text, range, prop);
+      let opening = '';
+      if (!token) {
+        if (!new RegExp('\\b' + attr + '\\s*=', 'i').test(match[1])) continue;
+        const attrs = _removeInlineStyleAttr(match[1], attr);
+        if (attrs) opening = '[style ' + attrs + ']';
+      }
+      const closing = opening ? text.slice(contentEnd, contentEnd + closeLength) : '';
+      edits.push({ start: match.index, end: contentStart, value: opening });
+      edits.push({ start: contentEnd, end: contentEnd + closeLength, value: closing });
+    }
+    if (!edits.length) return null;
+    return _applyInlineSourceEdits(text, edits, range);
+  }
+
+  function _applyInlineSourceEdits(text, edits, range) {
+    edits.sort((a, b) => a.start - b.start);
+    const translate = point => {
+      let delta = 0;
+      for (const edit of edits) {
+        if (point >= edit.end) delta += edit.value.length - (edit.end - edit.start);
+        else if (point > edit.start) return edit.start + delta + Math.min(edit.value.length, point - edit.start);
+        else break;
+      }
+      return point + delta;
+    };
+    const pieces = [];
+    let cursor = 0;
+    for (const edit of edits) {
+      pieces.push(text.slice(cursor, edit.start), edit.value);
+      cursor = edit.end;
+    }
+    pieces.push(text.slice(cursor));
+    return { text: pieces.join(''), start: translate(range.start), end: translate(range.end) };
   }
 
   function _replaceRange(source, start, end, replacement, innerStart, innerEnd) {
@@ -763,6 +897,42 @@
     };
   }
 
+  function _updateWrappedInlineStyle(source, range, prop, value) {
+    const attr = _inlineStyleAttrForProp(prop);
+    const declaration = _inlineStyleDeclaration(prop, value);
+    if (!attr || !declaration) return null;
+    const visible = _mapVisibleChars(source);
+    const bound = value => {
+      let lo = 0, hi = visible.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (visible[mid] < value) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    };
+    const spans = [], edits = [];
+    const pattern = /^\[style\s+([^\]\n]{1,240})\]([^\n]*)\[\/style\]$/gim;
+    for (const match of source.matchAll(pattern)) {
+      if (/\[style\s/i.test(match[2])) continue;
+      const contentStart = match.index + match[0].indexOf(']') + 1;
+      const contentEnd = match.index + match[0].length - 8;
+      const first = bound(contentStart), after = bound(contentEnd);
+      if (first === after || visible[first] < range.start || visible[after - 1] >= range.end) continue;
+      const remaining = _removeInlineStyleAttr(match[1], attr);
+      edits.push({start:match.index,end:contentStart,value:'[style ' + (remaining ? remaining + ' ' : '') + declaration + ']'});
+      spans.push({start:contentStart,end:contentEnd});
+    }
+    if (!spans.length) return null;
+    let index = 0;
+    for (const point of visible) {
+      if (point < range.start || point >= range.end || source[point] === '\n') continue;
+      while (index < spans.length && point >= spans[index].end) index++;
+      if (!spans[index] || point < spans[index].start) return null;
+    }
+    return _applyInlineSourceEdits(source, edits, range);
+  }
+
   function _applyInlineFormatToRange(source, start, end, prop, value) {
     const range = _clampRange(source, start, end);
     const selected = String(source || '').slice(range.start, range.end);
@@ -770,6 +940,20 @@
     if (_isInlineFormatRemoval(prop, value)) {
       return _removeInlineFormatFromRange(source, range.start, range.end, prop);
     }
+    if (_inlineRemovalToken(prop)) {
+      const lines = _lineRange(source, range.start, range.end);
+      const hasUnselectedText = _mapVisibleChars(source).some(index => index >= lines.start && index < lines.end
+        && source[index] !== '\n' && (index < range.start || index >= range.end));
+      if (!hasUnselectedText) {
+        // Applying a toggle to a mixed selection must not nest its own tokens.
+        const cleared = _removeInlineFormatFromRange(source, range.start, range.end, prop);
+        if (cleared && cleared.text !== source) {
+          return _applyInlineFormatToRange(cleared.text, cleared.start, cleared.end, prop, value);
+        }
+      }
+    }
+    const updatedStyle = _updateWrappedInlineStyle(source, range, prop, value);
+    if (updatedStyle) return updatedStyle;
     if (!selected.includes('\n')) {
       const descriptor = _styleDescriptor(prop, value, selected);
       if (!descriptor) return null;
@@ -926,7 +1110,8 @@
       : _messageContentString(target.index);
     const popup = openFormatPopup(anchor, {
       fields: FORMAT_FIELDS,
-      values: _computedValues(valueElement),
+      values: target.kind === 'input' && valueElement?.id === RICH_INPUT_ID
+        ? _computedInputSelectionValues(valueElement) : _computedValues(valueElement),
       className: POPUP_CLASS,
       closeOnOutside: true,
       closeButton: false,

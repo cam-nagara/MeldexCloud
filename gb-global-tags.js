@@ -135,6 +135,7 @@
     const groupsById = options.groupsById || {};
     const displayName = String(options.label ?? tag?.name ?? '');
     const chip = document.createElement('span');
+    chip.dataset.uiComponent = 'tag-chip';
     chip.className = 'gb-tag-chip'
       + (options.compact ? ' gb-tag-chip--compact' : '')
       + (options.summary ? ' gb-tag-chip--summary' : '')
@@ -147,7 +148,10 @@
     const label = document.createElement(typeof options.onActivate === 'function' ? 'button' : 'span');
     if (label.tagName === 'BUTTON') label.type = 'button';
     label.className = 'gb-tag-chip__label';
-    label.textContent = displayName;
+    const text = document.createElement('span');
+    text.className = 'gb-tag-chip__text';
+    text.textContent = displayName;
+    label.appendChild(text);
     label.title = options.labelTitle || options.title || displayName;
     if (options.ariaLabel) label.setAttribute('aria-label', options.ariaLabel);
     setDataset(label, options.labelDataset);
@@ -607,8 +611,10 @@
       path: normalizeTargetPath(path),
       name,
     }, sourceFolder), { silentError: true });
-    notifyTargetTagsChanged(path, sourceFolder);
-    return result;
+    invalidateTagsCatalogCache(sourceFolder);
+    const merged = window.MeldexAdminTagDictionary?.mergeTargetTags
+      ? await window.MeldexAdminTagDictionary.mergeTargetTags(path, result) : result;
+    return publishTargetTagsMutation(path, merged, sourceFolder);
   }
 
   async function removeTargetTag(path, tag) {
@@ -626,8 +632,9 @@
     const tagKey = tag?.id || tag?.name || tag || '';
     const sourceFolder = sourceFolderForTarget(path);
     const result = await apiFetch(targetTagsUrl(path, sourceFolder) + '&tag=' + encodeURIComponent(tagKey), { method: 'DELETE', silentError: true });
-    notifyTargetTagsChanged(path, sourceFolder);
-    return result;
+    const merged = window.MeldexAdminTagDictionary?.mergeTargetTags
+      ? await window.MeldexAdminTagDictionary.mergeTargetTags(path, result) : result;
+    return publishTargetTagsMutation(path, merged, sourceFolder);
   }
 
   async function updateTargetTags(path, changes, options) {
@@ -865,11 +872,18 @@
     }
   }
 
+  function targetTagErrorReason(error) {
+    if (error?.userMessage) return error.userMessage;
+    const translated = window.MeldexErrorMessages?.translate?.(error);
+    if (translated?.matched) return translated.message + ' ' + translated.action;
+    return error?.message || String(error);
+  }
+
   function renderTargetEditorError(host, label, error, retry) {
     if (!host) return;
     host.replaceChildren();
     const text = document.createElement('span');
-    text.textContent = label + ': ' + (error?.userMessage || error?.message || error);
+    text.textContent = label + ': ' + targetTagErrorReason(error);
     host.appendChild(text);
     if (typeof retry !== 'function') return;
     const button = document.createElement('button');
@@ -959,7 +973,7 @@
       } catch (err) {
         const reason = err && err.name === 'LongRunningJobError'
           ? '処理に時間がかかっています。しばらくしてから再度お試しください。'
-          : (err.userMessage || err.message || err);
+          : targetTagErrorReason(err);
         ui.osSyncStatus.textContent = 'OSタグを再同期できませんでした: ' + reason;
       } finally {
         ui.osSync.disabled = !!ui.mutationBlocked;
@@ -1012,7 +1026,7 @@
           await removeTargetTag(path, tag);
           await refresh();
         } catch (err) {
-          if (typeof onError === 'function') onError('タグを外せませんでした: ' + (err.userMessage || err.message || err));
+          if (typeof onError === 'function') onError('タグを外せませんでした: ' + targetTagErrorReason(err));
         }
       },
     });

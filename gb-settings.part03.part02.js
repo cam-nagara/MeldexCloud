@@ -182,7 +182,7 @@ async function chooseAvatarIcon(anchorEl) {
     includeNoto: true,
     onSelect: async (spec) => {
       const normalized = GBIconAssets.normalizeSpec(spec);
-      const dataUrl = GBIconAssets.toAvatarDataUrl(normalized, {
+      const dataUrl = await (GBIconAssets.toAvatarDataUrlAsync || GBIconAssets.toAvatarDataUrl)(normalized, {
         bg: typeof _getAvatarBgColor === 'function' ? _getAvatarBgColor() : '#000000',
         fg: '#d4d4d4',
       });
@@ -196,7 +196,7 @@ async function refreshAvatarIconColor(color) {
   const spec = localStorage.getItem('meldex-avatar-spec');
   if (!spec || typeof GBIconAssets === 'undefined') return;
   const bg = typeof _normalizeAvatarBgColor === 'function' ? _normalizeAvatarBgColor(color) : (color || '#000000');
-  const dataUrl = GBIconAssets.toAvatarDataUrl(spec, { bg, fg: '#d4d4d4' });
+  const dataUrl = await (GBIconAssets.toAvatarDataUrlAsync || GBIconAssets.toAvatarDataUrl)(spec, { bg, fg: '#d4d4d4' });
   await _saveAvatarDataUrl(dataUrl, spec);
 }
 
@@ -319,6 +319,7 @@ const _SETTINGS_PANEL_INIT_DATA_KEYS = {
   'LLM': 'settingsInitLlm',
   'LLMコスト': 'settingsInitChatCost',
   '利用料金': 'settingsInitMonthlyUsageCosts',
+  'アイコン素材集': 'settingsInitIconPacks',
   'フィードバック': 'settingsInitFeedbackForm',
   'ユーザー': 'settingsInitUsers',
   'ワークスペース': 'settingsInitWorkspaces',
@@ -387,6 +388,10 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     }
     if (canonical === 'LLMコスト') {
       if (typeof renderChatCostSettings === 'function') renderChatCostSettings(modal);
+      return;
+    }
+    if (canonical === 'アイコン素材集') {
+      window.MeldexIconPacks?.renderSettings?.(modal.querySelector('#settings-icon-packs-container'));
       return;
     }
     if (canonical === '利用料金') {
@@ -611,6 +616,7 @@ function _showSettingsNavigationTarget(modal, target) {
   _syncSettingsModalOverlayForPanel(modal, target.tabId);
   _scheduleSettingsPanelInitialization(target, modal, { immediate: true });
   if (target.pageId === 'web-clipper') window.MeldexImportScheduleSettings?.mount('webclip-inbox-schedule-container');
+  if (target.pageId === 'x-connection') window.MeldexXSettings?.refresh();
   const headerText = modal.querySelector('#settings-header-text');
   if (headerText) headerText.textContent = typeof _settingsNavigationDisplayName === 'function'
     ? _settingsNavigationDisplayName(target.tabId, { pageId: target.pageId })
@@ -1031,6 +1037,16 @@ function _preflightSettingsSave() {
   return { ok: true };
 }
 
+// テーマタブの操作だけで保存した時は、フォルダツリーの読み直しを省く（見た目は変数で即時反映済み）。
+function _settingsOnlyThemeControlsDirty(overlay) {
+  const dirty = overlay?.__settingsDirtyControlIds;
+  if (!(dirty instanceof Set)) return false;
+  return [...dirty].every(id => {
+    const el = document.getElementById(id) || overlay.querySelector(`[data-e2e-id="${CSS.escape(id)}"]`);
+    return !!el?.closest?.('[data-settings-view="theme"]');
+  });
+}
+
 function _settingsDomainIsDirty(overlay, prefixes) {
   const dirty = overlay?.__settingsDirtyControlIds;
   if (!(dirty instanceof Set)) return true;
@@ -1054,6 +1070,8 @@ async function submitSettings() {
   let llmKeysChanged = false;
   let pendingVersionConfig = null;
   let themeDirty = false;
+  let themeDraftBeforeSave = null;
+  let themeOnlySave = false;
   try {
   const settingsOverlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
   const settingsControl = id => _settingsDomainIsDirty(settingsOverlay, id) ? document.getElementById(id) : null;
@@ -1068,6 +1086,7 @@ async function submitSettings() {
     ? settingsOverlay.__settingsDirtyControlIds.size > 0
     : true;
   themeDirty = typeof _settingsThemeIsDirty === 'function' && _settingsThemeIsDirty();
+  themeOnlySave = themeDirty && !sourceFoldersDirty && _settingsOnlyThemeControlsDirty(settingsOverlay);
   if (!hasDirtyControls && !themeDirty && !sourceFoldersDirty) {
     showStatus('変更された設定はありません');
     return { ok: true, changedDomains: [] };
@@ -1126,6 +1145,7 @@ async function submitSettings() {
   if (fontFamilyInput && typeof settingsThemeApplyCommonFont === 'function') settingsThemeApplyCommonFont(fontFamilyInput.value || '');
 
   // テーマ編集があれば、設定ダイアログの保存ボタンでも選択中テーマへ反映する。
+  if (themeDirty && typeof snapshotThemeVars === 'function') themeDraftBeforeSave = snapshotThemeVars();
   if (themeDirty && typeof settingsThemeSaveFromSettingsDialog === 'function') {
     const themeSaveOk = await settingsThemeSaveFromSettingsDialog({ skipRefresh: true, deferPersistence: true });
     if (themeSaveOk === false) throw _settingsSaveFailure('theme');

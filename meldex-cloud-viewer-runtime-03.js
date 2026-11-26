@@ -53,11 +53,13 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
 /* === gb-icon-assets.js === */
 ;
-/* gb-icon-assets.js - Lucide / Noto Emoji shared picker and renderer */
+/* gb-icon-assets.js - Lucide / Material Symbols / Noto Emoji shared picker and renderer */
 (function(global) {
   'use strict';
 
   const HEX_SEQ_RE = /^[0-9a-f]{1,6}(?:[-_][0-9a-f]{1,6})*$/i;
+  const MATERIAL_NAME_RE = /^[a-z0-9][a-z0-9_]{0,79}$/;
+  const PACK_SPEC_RE = /^pack:([0-9a-f]{12})\/([a-z0-9][a-z0-9_-]{0,63})$/;
 
   function _esc(value) {
     return MeldexEscape.html(value);
@@ -255,6 +257,14 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       const name = raw.slice(raw.indexOf(':') + 1).trim();
       return name ? 'lucide:' + name : '';
     }
+    if (lower.startsWith('material:')) {
+      const name = raw.slice(raw.indexOf(':') + 1).trim().toLowerCase();
+      return MATERIAL_NAME_RE.test(name) ? 'material:' + name : '';
+    }
+    if (lower.startsWith('pack:')) {
+      const value = 'pack:' + raw.slice(5).trim().toLowerCase();
+      return PACK_SPEC_RE.test(value) ? value : '';
+    }
     if (lower.startsWith('noto:') || lower.startsWith('emoji:') || lower.startsWith('twemoji:')) {
       const code = _normalizeCode(raw.slice(raw.indexOf(':') + 1));
       return code ? 'noto:' + code : '';
@@ -276,6 +286,16 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       return { type: 'lucide', spec: 'lucide:' + name, name, label: _toKebab(name), search: name + ' ' + _toKebab(name) };
     }
     if (spec.toLowerCase().startsWith('noto:')) return _findNoto(spec.slice(5));
+    if (spec.startsWith('pack:')) {
+      const match = PACK_SPEC_RE.exec(spec);
+      const info = global.MeldexIconPacks?.describe?.(spec) || { state: 'missing' };
+      return { type: 'pack', spec, packId: match[1], iconId: match[2], label: info.icon?.name || match[2],
+        search: (info.icon?.name || '') + ' ' + match[2] };
+    }
+    if (spec.startsWith('material:')) {
+      const name = spec.slice(9);
+      return { type: 'material', spec, name, label: name.replace(/_/g, ' '), search: name + ' ' + name.replace(/_/g, ' ') };
+    }
     if (hasLucideName(spec)) return parseSpec('lucide:' + spec);
     return { type: 'text', spec, label: spec, search: spec };
   }
@@ -302,6 +322,26 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       if (typeof global.lucide === 'function' && hasLucideName(parsed.name)) {
         return global.lucide(parsed.name, px);
       }
+    }
+    if (parsed.type === 'pack') {
+      // 利用者が登録した素材集。読み込み前・見つからない時は仮の絵を置き、素材集の状態が変わると描き直される。
+      const info = global.MeldexIconPacks?.describe?.(parsed.spec) || { state: 'missing' };
+      const base = `class="gb-icon-render gb-icon-pack${className}" data-icon="${_escAttr(parsed.spec)}" data-pack-state="${info.state}"`
+        + (options.className ? ` data-extra-class="${_escAttr(options.className)}"` : '');
+      if (info.state === 'ready') {
+        const url = global.MeldexIconPacks.iconDataUrl(info.icon);
+        if (info.icon.tint) {
+          return `<span ${base} role="img" aria-label="${_escAttr(info.icon.name)}" style="--gb-icon-size:${px}px;--gb-icon-pack-mask:url(&quot;${_escAttr(url)}&quot;);" data-tint="1"></span>`;
+        }
+        return `<span ${base} role="img" aria-label="${_escAttr(info.icon.name)}" style="--gb-icon-size:${px}px;"><img src="${_escAttr(url)}" alt="" width="${px}" height="${px}" decoding="async" draggable="false"></span>`;
+      }
+      const glyph = info.state === 'pending' ? '' : (typeof global.lucide === 'function' ? global.lucide('image-off', Math.round(px * 0.8)) : '?');
+      const label = info.state === 'pending' ? '読み込み中' : 'アイコンの素材集が見つかりません';
+      return `<span ${base} role="img" aria-label="${label}" style="--gb-icon-size:${px}px;">${glyph}</span>`;
+    }
+    if (parsed.type === 'material') {
+      // 合字で描くため、名前→文字コードの対応表なしで描ける（一覧の読み込みは選択画面を開いた時だけ）。
+      return `<span class="gb-icon-render gb-material-symbol${className}" data-icon="${_escAttr(parsed.spec)}" role="img" aria-label="${_escAttr(parsed.label)}" translate="no" style="--gb-icon-size:${px}px;">${_esc(parsed.name)}</span>`;
     }
     if (parsed.type === 'noto') {
       const label = parsed.label || parsed.code;
@@ -349,6 +389,53 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     });
   }
 
+  // Material Symbols の名前・分類・検索語は大きいので、選択画面を開いた時に一度だけ読む。
+  let _materialIndexPromise = null;
+  function _materialIndexUrl() {
+    const script = document.querySelector('script[src*="gb-icon-assets.js"]');
+    const base = script ? script.src.replace(/gb-icon-assets\.js(?:\?.*)?$/, '') : '';
+    return base + 'vendor/material-symbols-index.js';
+  }
+  function loadMaterialIndex() {
+    if (global.MATERIAL_SYMBOLS_INDEX) return Promise.resolve(global.MATERIAL_SYMBOLS_INDEX);
+    if (_materialIndexPromise) return _materialIndexPromise;
+    _materialIndexPromise = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = _materialIndexUrl();
+      el.async = true;
+      el.dataset.meldexAsset = 'material-symbols-index';
+      el.onload = () => global.MATERIAL_SYMBOLS_INDEX ? resolve(global.MATERIAL_SYMBOLS_INDEX)
+        : reject(new Error('Material Symbols の一覧を読み込めませんでした'));
+      el.onerror = () => { el.remove(); reject(new Error('Material Symbols の一覧を読み込めませんでした')); };
+      document.head.appendChild(el);
+    }).catch((error) => { _materialIndexPromise = null; throw error; });
+    return _materialIndexPromise;
+  }
+
+  let _materialItems = null;
+  let _materialItemsSource = null;
+  function listMaterialSymbols() {
+    const index = global.MATERIAL_SYMBOLS_INDEX;
+    if (!index || !Array.isArray(index.icons)) return [];
+    if (_materialItems && _materialItemsSource === index) return _materialItems;
+    const categories = Array.isArray(index.categories) ? index.categories : [];
+    _materialItemsSource = index;
+    _materialItems = index.icons.map(([name, cats, tags]) => {
+      const catLabels = (cats || []).map(i => categories[i]).filter(Boolean);
+      const spaced = String(name).replace(/_/g, ' ');
+      return {
+        type: 'material',
+        spec: 'material:' + name,
+        name,
+        label: spaced,
+        categories: catLabels.map(([key]) => key),
+        search: [name, spaced, tags || '', catLabels.map(([key, ja]) => key + ' ' + ja).join(' '),
+          _japaneseKeywords(String(name).replace(/_/g, '-'), tags || '')].filter(Boolean).join(' '),
+      };
+    });
+    return _materialItems;
+  }
+
   function listNotoEmoji() {
     return _notoEntries();
   }
@@ -372,6 +459,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const includeNoto = options.includeNoto !== false;
     const items = [];
     if (includeLucide) items.push(...listLucideIcons());
+    if (options.includeMaterial) items.push(...listMaterialSymbols());
+    if (options.includePacks) items.push(...(global.MeldexIconPacks?.pickerItems?.() || []));
     if (includeNoto) items.push(...listNotoEmoji());
     const seen = new Set();
     for (const item of options.imageItems || []) {
@@ -385,7 +474,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     return items;
   }
 
-  function _normalizeSourceDefs(options, includeLucide, includeNoto) {
+  function _normalizeSourceDefs(options, includeLucide, includeNoto, includeMaterial, includePacks) {
     const custom = Array.isArray(options.sources) ? options.sources : [];
     if (custom.length) {
       return custom.map((source) => {
@@ -408,7 +497,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       defs.push({ id: 'all', label: 'すべて' });
     }
     if (includeLucide) defs.push({ id: 'lucide', label: 'Lucide', type: 'lucide' });
+    if (includeMaterial) defs.push({ id: 'material', label: 'Material', type: 'material', description: 'Google Material Symbols（丸型・塗りつぶし）' });
     if (includeNoto) defs.push({ id: 'noto', label: 'Noto Emoji', type: 'noto' });
+    if (includePacks) defs.push({ id: 'packs', label: '素材集', type: 'pack', description: '設定の「アイコン素材集」で登録したアイコン' });
     if (options.onUploadImage) defs.push({ id: 'image', label: '登録画像', type: 'image' });
     return defs;
   }
@@ -431,10 +522,21 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     }
     const includeLucide = options.includeLucide !== false;
     const includeNoto = options.includeNoto !== false;
+    // Material Symbols は線画アイコンの仲間なので、Lucide を出す選択画面に既定で並べる。
+    const includeMaterial = options.includeMaterial ?? includeLucide;
+    // 利用者の素材集も同じ所に並べる（使う設定の素材集が1つも無ければタブを出さない）。
+    const includePacks = (options.includePacks ?? includeLucide)
+      && (global.MeldexIconPacks?.pickerItems?.() || []).length > 0;
+    options = { ...options, includeMaterial, includePacks };
+    // 絵文字の種類を押してから大きなフォントを初めて解決しないよう、選択画面を開いた時に準備する。
+    if (includeNoto) {
+      try { document.fonts?.load?.('22px "Meldex Noto Emoji"', '😀')?.catch?.(() => {}); } catch (_) {}
+    }
     let allItems = null;
+    const cellNodes = new WeakMap();
     const presets = _makePresetItems(options.presets);
     const current = normalizeSpec(options.current || '');
-    const sourceDefs = _normalizeSourceDefs(options, includeLucide, includeNoto);
+    const sourceDefs = _normalizeSourceDefs(options, includeLucide, includeNoto, includeMaterial, includePacks);
     const defaultSource = includeLucide && includeNoto ? 'all' : includeNoto ? 'noto' : 'lucide';
     let activeSource = options.defaultSource || defaultSource;
     if (!sourceDefs.some((source) => source.id === activeSource)) {
@@ -571,6 +673,56 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     search.setAttribute('aria-label', options.searchLabel || 'アイコンを検索');
     picker.appendChild(search);
 
+    let materialCategory = '';
+    let materialCategorySelect = null;
+    if (sourceDefs.some(def => def.id === 'material')) {
+      materialCategorySelect = document.createElement('select');
+      materialCategorySelect.className = 'gb-input gb-icon-picker-category';
+      materialCategorySelect.dataset.e2eId = 'icon-picker-material-category';
+      materialCategorySelect.setAttribute('aria-label', 'Material Symbols の分類');
+      materialCategorySelect.hidden = activeSource !== 'material';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'すべての分類';
+      materialCategorySelect.appendChild(allOption);
+      materialCategorySelect.addEventListener('change', () => {
+        materialCategory = materialCategorySelect.value;
+        resetAndRenderGrid();
+      });
+      picker.appendChild(materialCategorySelect);
+    }
+    let packFilter = '';
+    let packSelect = null;
+    if (sourceDefs.some(def => def.id === 'packs')) {
+      packSelect = document.createElement('select');
+      packSelect.className = 'gb-input gb-icon-picker-category';
+      packSelect.dataset.e2eId = 'icon-picker-pack-filter';
+      packSelect.setAttribute('aria-label', '素材集');
+      packSelect.hidden = activeSource !== 'packs';
+      const allPacks = document.createElement('option');
+      allPacks.value = '';
+      allPacks.textContent = 'すべての素材集';
+      packSelect.appendChild(allPacks);
+      for (const pack of global.MeldexIconPacks.list().filter(p => p.enabled)) {
+        const option = document.createElement('option');
+        option.value = pack.id;
+        option.textContent = pack.name;
+        packSelect.appendChild(option);
+      }
+      packSelect.addEventListener('change', () => { packFilter = packSelect.value; resetAndRenderGrid(); });
+      picker.appendChild(packSelect);
+    }
+    function fillMaterialCategories() {
+      const cats = global.MATERIAL_SYMBOLS_INDEX?.categories;
+      if (!materialCategorySelect || !Array.isArray(cats) || materialCategorySelect.options.length > 1) return;
+      for (const [key, label] of cats) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = label;
+        materialCategorySelect.appendChild(option);
+      }
+    }
+
     let imageRegistration = null;
     if (typeof options.onUploadImage === 'function') {
       const form = document.createElement('div'); form.className = 'gb-icon-image-register';
@@ -614,9 +766,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     footer.className = 'gb-icon-picker-footer';
     const credit = document.createElement('div');
     credit.className = 'gb-icon-picker-credit';
-    credit.textContent = includeLucide && includeNoto
-      ? 'Lucide (ISC) / Noto Emoji (OFL 1.1)'
-      : includeNoto ? 'Noto Emoji (OFL 1.1)' : 'Lucide (ISC)';
+    credit.textContent = [includeLucide ? 'Lucide (ISC)' : '', includeMaterial ? 'Material Symbols (Apache-2.0)' : '',
+      includeNoto ? 'Noto Emoji (OFL 1.1)' : ''].filter(Boolean).join(' / ');
     const actions = document.createElement('div');
     actions.className = 'gb-icon-picker-actions';
     if (options.allowReset) {
@@ -653,33 +804,46 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       return _sourceDefMatches(sourceDef, item);
     }
 
-    function renderGrid() {
+    function renderGrid(appendPage = false) {
       if (!picker.isConnected) return;
       if (imageRegistration) imageRegistration.hidden = activeSource !== 'image';
+      if (materialCategorySelect) materialCategorySelect.hidden = activeSource !== 'material';
+      if (packSelect) packSelect.hidden = activeSource !== 'packs';
       const qRaw = search.value.trim();
       const q = _normalizeSearch(qRaw);
       const exactEmoji = qRaw && qRaw.length <= 8 ? qRaw : '';
       const filtered = getAllItems().filter((item) => {
         if (!sourceMatches(item)) return false;
+        if (materialCategory && activeSource === 'material' && !(item.categories || []).includes(materialCategory)) return false;
+        if (packFilter && activeSource === 'packs' && item.packId !== packFilter) return false;
         if (!q) return true;
         if (exactEmoji && item.emoji === exactEmoji) return true;
         return _normalizeSearch(item.search || item.label || item.spec).includes(q);
       });
-      grid.textContent = '';
+      const previousMore = appendPage === true ? grid.querySelector('.gb-icon-picker-more') : null;
+      const keepFocus = previousMore && document.activeElement === previousMore;
+      const start = previousMore ? grid.querySelectorAll('.gb-icon-picker-cell').length : 0;
+      if (!previousMore) grid.textContent = '';
       const fragment = document.createDocumentFragment();
-      filtered.slice(0, visibleLimit).forEach((item) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'gb-icon-picker-cell';
-        // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
-        btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
-        btn.title = _itemTooltip(item);
-        btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
-        btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
-        if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
-        btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
-        btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
-        btn.addEventListener('click', () => selectItem(item));
+      let firstAdded = null;
+      filtered.slice(start, visibleLimit).forEach((item) => {
+        let btn = cellNodes.get(item);
+        if (!btn) {
+          btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'gb-icon-picker-cell';
+          // 安定ID: アイコンごとに別の値（同じ画面に同じIDの部品が並ばないように）。
+          btn.dataset.e2eId = 'icon-picker-cell:' + item.spec;
+          btn.title = _itemTooltip(item);
+          btn.setAttribute('aria-label', (item.label || item.spec) + 'を選択');
+          btn.setAttribute('aria-pressed', sameSpec(item.spec, current) ? 'true' : 'false');
+          if (sameSpec(item.spec, current)) btn.classList.add('is-selected');
+          btn.innerHTML = render(item.spec, options.itemSize || 22, { contextPath: options.imageContextPath });
+          btn.querySelectorAll('[aria-label]').forEach(icon => { icon.removeAttribute('aria-label'); icon.setAttribute('aria-hidden', 'true'); });
+          btn.addEventListener('click', () => selectItem(item));
+          cellNodes.set(item, btn);
+        }
+        if (!firstAdded) firstAdded = btn;
         fragment.appendChild(btn);
       });
       if (!filtered.length) {
@@ -689,19 +853,26 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
         fragment.appendChild(empty);
       }
       if (filtered.length > visibleLimit) {
-        const more = document.createElement('button');
+        const more = previousMore || document.createElement('button');
         more.type = 'button';
         more.className = 'gb-icon-picker-more';
         more.dataset.e2eId = 'icon-picker-more';
         more.textContent = 'さらに表示（残り' + (filtered.length - visibleLimit) + '件）';
         more.setAttribute('aria-label', more.textContent);
-        more.addEventListener('click', () => {
-          visibleLimit += pageSize;
-          renderGrid();
-        });
-        fragment.appendChild(more);
+        if (!previousMore) {
+          more.addEventListener('click', () => {
+            visibleLimit += pageSize;
+            renderGrid(true);
+          });
+          fragment.appendChild(more);
+        }
+      } else if (previousMore) {
+        previousMore.remove();
       }
-      grid.appendChild(fragment);
+      if (previousMore?.isConnected) grid.insertBefore(fragment, previousMore);
+      else grid.appendChild(fragment);
+      // 最後のページで「さらに表示」が消えても、キーボードの行き先を失わない。
+      if (keepFocus && !previousMore.isConnected) firstAdded?.focus();
     }
 
     function resetAndRenderGrid() {
@@ -731,17 +902,37 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     else if (typeof global.clampPopupToViewport === 'function') global.clampPopupToViewport(picker);
     search.focus();
     scheduleInitialRender();
+    if (includeMaterial) {
+      loadMaterialIndex().then(() => {
+        if (!picker.isConnected) return;
+        fillMaterialCategories();
+        allItems = null;
+        renderGrid();
+      }).catch((error) => {
+        if (picker.isConnected && activeSource === 'material') grid.textContent = error.message;
+      });
+    }
     if (global.MeldexCloudAssets) {
       global.MeldexCloudAssets.load('icons').then(() => {
         allItems = null;
         renderGrid();
       }).catch(error => {
         if (picker.isConnected) {
-          grid.textContent = error.message;
+          // 一覧（grid）は直後の描画・検索・種類の切替で作り直されるため、失敗の案内は一覧の外の
+          // 共通の領域内エラーへ出す（一覧の中に置くと、直後の描画で消えて再試行できなかった）。
+          picker.querySelector('.gb-icon-picker-load-error')?.remove();
+          const failure = document.createElement('div');
+          failure.className = 'gb-inline-error gb-icon-picker-load-error';
+          failure.setAttribute('role', 'alert');
+          const message = document.createElement('span');
+          message.textContent = error?.message || 'アイコン素材を読み込めませんでした';
           const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'gb-btn';
           retry.textContent = '再試行';
           retry.onclick = () => { removePicker(); openPicker(options); };
-          grid.appendChild(retry);
+          failure.append(message, retry);
+          grid.parentNode?.insertBefore(failure, grid);
         }
       });
     }
@@ -796,7 +987,66 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
 
+  // Material Symbols は合字フォントなので、<img> 用の画像が要る所（画像セル・ユーザーアイコン）では
+  // 読み込み済みのフォントをキャンバスへ描いて PNG にする。
+  const MATERIAL_FONT = '"Meldex Material Symbols Rounded"';
+  function _materialFontReady(name, px) {
+    try { return !!document.fonts?.check?.(`${px}px ${MATERIAL_FONT}`, name); } catch { return false; }
+  }
+  function _drawMaterialPng(name, options) {
+    const size = Math.max(16, Math.min(512, Number(options.size) || 128));
+    const glyph = Math.round(size * (options.scale || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    if (options.bg) {
+      ctx.fillStyle = options.bg;
+      ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = options.color || '#9aa0a6';
+    ctx.font = `${glyph}px ${MATERIAL_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const metrics = ctx.measureText(name);
+    const asc = metrics.actualBoundingBoxAscent || glyph * 0.9;
+    const desc = metrics.actualBoundingBoxDescent || 0;
+    ctx.fillText(name, size / 2, (size + asc - desc) / 2);
+    return canvas.toDataURL('image/png');
+  }
+  // フォントが読み込み済みなら即座に返す。未読込なら '' を返す（非同期版を使う）。
+  function materialImageDataUrlSync(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') {
+      // 塗らない素材（色付きのSVG・PNG）はそのまま使える。塗る素材は非同期版で色を付ける。
+      const info = global.MeldexIconPacks?.describe?.(spec);
+      return info?.state === 'ready' && !info.icon.tint ? global.MeldexIconPacks.iconDataUrl(info.icon) : '';
+    }
+    if (parsed.type !== 'material') return '';
+    return _materialFontReady(parsed.name, 24) ? _drawMaterialPng(parsed.name, options) : '';
+  }
+  async function materialImageDataUrl(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') return (await global.MeldexIconPacks?.imageDataUrl?.(spec, options)) || '';
+    if (parsed.type !== 'material') return '';
+    try { await document.fonts?.load?.(`24px ${MATERIAL_FONT}`, parsed.name); } catch (_) {}
+    return _drawMaterialPng(parsed.name, options);
+  }
+  async function toAvatarDataUrlAsync(spec, options = {}) {
+    const parsed = parseSpec(spec);
+    if (parsed.type === 'pack') {
+      return (await global.MeldexIconPacks?.imageDataUrl?.(spec, { size: 128, scale: 0.55, bg: _avatarColor(options.bg, '#000000'),
+        color: _avatarColor(options.fg || options.color, '#d4d4d4') })) || toAvatarDataUrl(spec, options);
+    }
+    if (parsed.type !== 'material') return toAvatarDataUrl(spec, options);
+    return materialImageDataUrl(spec, { size: 128, scale: 0.5, bg: _avatarColor(options.bg, '#000000'),
+      color: _avatarColor(options.fg || options.color, '#d4d4d4') });
+  }
+
   global.GBIconAssets = {
+    materialImageDataUrl,
+    materialImageDataUrlSync,
+    toAvatarDataUrlAsync,
     normalizeSpec,
     parseSpec,
     sameSpec,
@@ -804,11 +1054,773 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     renderInto,
     listLucideIcons,
     listNotoEmoji,
+    listMaterialSymbols,
+    loadMaterialIndex,
     codeToEmoji,
     hasLucideName,
     openPicker,
     toAvatarDataUrl,
   };
+})(window);
+
+;
+
+/* === gb-icon-packs.js === */
+;
+/* gb-icon-packs.js - 利用者が登録するアイコン素材集（SVG / PNG）
+ *
+ * - 登録: フォルダ（SVG/PNG）またはZIPから。SVGは安全な要素・属性だけ残して作り直し、PNGは縮小して描き直す。
+ * - 保存: 個人設定の保存先（Dropboxの個人管理領域。デスクトップ版・Cloud版共通）へ、目録1つ
+ *   （icon-packs）と素材集ごとの文書（icon-pack-<id>）で置く。利用者のファイルの隣には置かない。
+ *   端末内（IndexedDB）にも写しを持ち、起動直後の描画は写しから行う（通信を待たない）。
+ *   Dropboxへ接続していない環境では端末内だけで動き、接続後に送る。
+ * - 描画: アイコンの値は `pack:<素材集ID>/<アイコンID>`。素材集が無い時は代わりの絵を出す。
+ */
+(function (global) {
+  'use strict';
+
+  if (global.MeldexIconPacks) return;
+
+  const INDEX_DOC = 'icon-packs';
+  const PACK_DOC_PREFIX = 'icon-pack-';
+  const DB_NAME = 'meldex-icon-packs';
+  const DB_STORE = 'kv';
+  const STATE_KEY = 'state';
+  const LIMITS = Object.freeze({
+    maxPacks: 20,
+    maxIconsPerPack: 500,
+    maxSvgInputBytes: 100 * 1024,
+    maxSvgOutputBytes: 48 * 1024,
+    maxPngInputBytes: 512 * 1024,
+    maxPngSide: 128,
+    maxPackBytes: 900 * 1024,
+    maxZipBytes: 20 * 1024 * 1024,
+    maxNameLength: 60,
+  });
+  const PACK_ID_RE = /^[0-9a-f]{12}$/;
+  const ICON_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+  const SPEC_RE = /^pack:([0-9a-f]{12})\/([a-z0-9][a-z0-9_-]{0,63})$/;
+
+  // ---- SVG の無害化 ---------------------------------------------------------
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const XLINK_NS = 'http://www.w3.org/1999/xlink';
+  const ALLOWED_ELEMENTS = new Set(['svg', 'g', 'path', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'rect',
+    'defs', 'use', 'symbol', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask', 'title']);
+  const ALLOWED_ATTRIBUTES = new Set(['viewbox', 'width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r',
+    'rx', 'ry', 'd', 'points', 'fill', 'fill-rule', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-linecap',
+    'stroke-linejoin', 'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-opacity', 'opacity',
+    'transform', 'clip-path', 'clip-rule', 'mask', 'id', 'offset', 'stop-color', 'stop-opacity', 'gradientunits',
+    'gradienttransform', 'spreadmethod', 'fx', 'fy', 'preserveaspectratio', 'href', 'xlink:href', 'color',
+    'vector-effect', 'shape-rendering', 'clippathunits', 'maskunits', 'maskcontentunits', 'display', 'visibility',
+    'xmlns', 'xmlns:xlink', 'version', 'style']);
+  const ALLOWED_STYLE_PROPS = new Set(['fill', 'fill-rule', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-linecap',
+    'stroke-linejoin', 'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-opacity', 'opacity',
+    'stop-color', 'stop-opacity', 'color', 'display', 'visibility', 'clip-rule', 'vector-effect']);
+  const MONO_COLORS = new Set(['', 'none', 'currentcolor', 'transparent', 'black', '#000', '#000000', '#000f', '#000000ff',
+    'rgb(0,0,0)', 'rgba(0,0,0,1)', 'inherit']);
+
+  function _safeValue(value) {
+    const text = String(value || '');
+    if (/[<>]/.test(text) || /javascript:|data:|expression\s*\(|@import|\\/i.test(text)) return null;
+    // url(...) は文書内の参照（#id）だけ許す。外部の参照は落とす。
+    const urls = text.match(/url\s*\(([^)]*)\)/gi) || [];
+    if (urls.some(u => !/^url\s*\(\s*['"]?#[A-Za-z0-9_.:-]+['"]?\s*\)$/i.test(u))) return null;
+    return text;
+  }
+
+  function _sanitizeStyle(value) {
+    const kept = [];
+    for (const part of String(value || '').split(';')) {
+      const idx = part.indexOf(':');
+      if (idx < 0) continue;
+      const prop = part.slice(0, idx).trim().toLowerCase();
+      const val = _safeValue(part.slice(idx + 1).trim());
+      if (ALLOWED_STYLE_PROPS.has(prop) && val != null && val !== '') kept.push(prop + ':' + val);
+    }
+    return kept.join(';');
+  }
+
+  /** SVG文字列を無害化して返す。使えない時は Error を投げる。戻り値 { svg, tint }。 */
+  function sanitizeSvg(text) {
+    const source = String(text || '');
+    if (!source.trim()) throw new Error('空のSVGです');
+    if (new Blob([source]).size > LIMITS.maxSvgInputBytes) throw new Error('SVGが大きすぎます（100KBまで）');
+    if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('外部定義を含むSVGは登録できません');
+    const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
+    const root = doc.documentElement;
+    if (!root || root.nodeName.toLowerCase() !== 'svg' || doc.getElementsByTagName('parsererror').length) {
+      throw new Error('SVGとして読めません');
+    }
+    const colors = new Set();
+    const ids = new Set();
+    const out = document.implementation.createDocument(SVG_NS, 'svg', null);
+    const copy = (node, target) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3) {
+          // 文字はタイトルの中だけ残す（描画に使う文字要素は許していない）。
+          if (target.nodeName.toLowerCase() === 'title') target.appendChild(out.createTextNode(child.nodeValue.slice(0, 200)));
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        const name = String(child.localName || '').toLowerCase();
+        if (!ALLOWED_ELEMENTS.has(name) || child.namespaceURI !== SVG_NS) continue;
+        const el = out.createElementNS(SVG_NS, child.localName);
+        copyAttributes(child, el);
+        copy(child, el);
+        target.appendChild(el);
+      }
+    };
+    const copyAttributes = (from, to) => {
+      for (const attr of Array.from(from.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on') || !ALLOWED_ATTRIBUTES.has(name) || name === 'xmlns' || name === 'xmlns:xlink') continue;
+        let value = attr.value;
+        if (name === 'href' || name === 'xlink:href') {
+          // <use> などの参照は文書内（#id）だけ。
+          if (!/^#[A-Za-z0-9_.:-]+$/.test(value.trim())) continue;
+          to.setAttribute('href', value.trim());
+          continue;
+        }
+        if (name === 'style') {
+          value = _sanitizeStyle(value);
+          if (!value) continue;
+          for (const m of value.matchAll(/(?:^|;)(fill|stroke|stop-color|color):([^;]*)/g)) colors.add(m[2].trim().toLowerCase().replace(/\s+/g, ''));
+        } else {
+          value = _safeValue(value);
+          if (value == null) continue;
+          if (['fill', 'stroke', 'stop-color', 'color'].includes(name)) colors.add(value.trim().toLowerCase().replace(/\s+/g, ''));
+        }
+        if (name === 'id') ids.add(value);
+        to.setAttribute(attr.name, value);
+      }
+    };
+    const svg = out.documentElement;
+    copyAttributes(root, svg);
+    copy(root, svg);
+    // 大きさは表示側で決める。縦横の比は viewBox に残す。
+    if (!svg.getAttribute('viewBox')) {
+      const w = parseFloat(root.getAttribute('width')) || 24;
+      const h = parseFloat(root.getAttribute('height')) || 24;
+      svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    }
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    if (!svg.querySelector('path,circle,ellipse,line,polyline,polygon,rect,use')) throw new Error('描く図形がありません');
+    const result = new XMLSerializer().serializeToString(svg);
+    if (new Blob([result]).size > LIMITS.maxSvgOutputBytes) throw new Error('SVGが大きすぎます');
+    // 黒・現在の色だけで描くアイコンは、テーマの文字色で塗る（黒いままだと暗いテーマで見えない）。
+    const tint = [...colors].every(color => MONO_COLORS.has(color));
+    return { svg: result, tint };
+  }
+
+  // ---- PNG の描き直し -------------------------------------------------------
+  async function sanitizePng(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length < 8) throw new Error('PNGとして読めません');
+    if (bytes.length > LIMITS.maxPngInputBytes) throw new Error('PNGが大きすぎます（512KBまで）');
+    const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    if (!sig.every((b, i) => bytes[i] === b)) throw new Error('PNGとして読めません');
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const bitmap = await createImageBitmap(blob).catch(() => { throw new Error('PNGとして読めません'); });
+    const scale = Math.min(1, LIMITS.maxPngSide / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    // 描き直すことで、埋め込まれた付随情報（撮影情報・文字列など）を落とす。
+    return canvas.toDataURL('image/png');
+  }
+
+  // ---- 状態 -----------------------------------------------------------------
+  // packs: { [id]: { id, name, enabled, updatedAt, icons: [{ id, name, kind, data, tint }], revision, synced, dirty } }
+  let state = { order: [], packs: {}, indexRevision: null, removed: [] };
+  let iconMap = new Map();
+  let loaded = false;
+  let remoteAvailable = null;
+  let syncing = null;
+  const listeners = new Set();
+
+  function _rebuildMap() {
+    iconMap = new Map();
+    for (const id of state.order) {
+      const pack = state.packs[id];
+      if (!pack) continue;
+      for (const icon of pack.icons || []) iconMap.set(id + '/' + icon.id, { pack, icon });
+    }
+  }
+
+  function _emit() {
+    _rebuildMap();
+    for (const fn of listeners) { try { fn(); } catch (_) {} }
+    _refreshRenderedIcons();
+    try { global.dispatchEvent(new CustomEvent('meldex-icon-packs-change')); } catch (_) {}
+  }
+
+  // 読み込み前・素材集が無い時に置いた仮の絵を、今の状態で描き直す（同じ絵なら触らない）。
+  function _refreshRenderedIcons() {
+    if (typeof document === 'undefined' || !global.GBIconAssets?.render) return;
+    document.querySelectorAll('.gb-icon-pack[data-icon]').forEach((el) => {
+      const spec = el.dataset.icon;
+      const size = parseFloat(el.style.getPropertyValue('--gb-icon-size')) || 20;
+      if (el.dataset.packState === describe(spec).state) return;
+      const holder = document.createElement('span');
+      holder.innerHTML = global.GBIconAssets.render(spec, size, { className: el.dataset.extraClass || '' });
+      const next = holder.firstElementChild;
+      if (next) el.replaceWith(next);
+    });
+  }
+
+  // ---- 端末内の写し（IndexedDB） --------------------------------------------
+  let _dbPromise = null;
+  function _db() {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve) => {
+      try {
+        if (!global.indexedDB) { resolve(null); return; }
+        const req = global.indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch (_) { resolve(null); }
+    });
+    return _dbPromise;
+  }
+  async function _loadLocal() {
+    const db = await _db();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      try {
+        const req = db.transaction(DB_STORE, 'readonly').objectStore(DB_STORE).get(STATE_KEY);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch (_) { resolve(null); }
+    });
+  }
+  async function _saveLocal() {
+    const db = await _db();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put(JSON.parse(JSON.stringify(state)), STATE_KEY);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (_) { resolve(false); }
+    });
+  }
+
+  function _normalizeState(raw) {
+    const next = { order: [], packs: {}, indexRevision: null, removed: [] };
+    if (!raw || typeof raw !== 'object') return next;
+    next.indexRevision = raw.indexRevision || null;
+    next.removed = Array.isArray(raw.removed) ? raw.removed.filter(r => PACK_ID_RE.test(r?.id || '')) : [];
+    for (const id of Array.isArray(raw.order) ? raw.order : []) {
+      const pack = raw.packs?.[id];
+      if (!PACK_ID_RE.test(id) || !pack || next.packs[id]) continue;
+      next.packs[id] = _normalizePack(pack, id);
+      next.order.push(id);
+    }
+    return next;
+  }
+  function _normalizePack(pack, id) {
+    return {
+      id,
+      name: String(pack.name || '素材集').slice(0, LIMITS.maxNameLength),
+      enabled: pack.enabled !== false,
+      updatedAt: String(pack.updatedAt || ''),
+      icons: (Array.isArray(pack.icons) ? pack.icons : []).filter(icon => ICON_ID_RE.test(icon?.id || '')
+        && (icon.kind === 'svg' || icon.kind === 'png') && typeof icon.data === 'string')
+        .slice(0, LIMITS.maxIconsPerPack)
+        .map(icon => ({ id: icon.id, name: String(icon.name || icon.id).slice(0, 120), kind: icon.kind, data: icon.data, tint: !!icon.tint })),
+      revision: pack.revision || null,
+      synced: !!pack.synced,
+      dirty: !!pack.dirty,
+      // 中身（アイコン）を送る必要があるか。使う／使わない・名前の変更は目録だけ送る。
+      contentDirty: !!pack.contentDirty || (!!pack.dirty && !pack.synced),
+    };
+  }
+
+  // ---- 個人設定の保存先 -----------------------------------------------------
+  function _hasRemote() { return typeof global.apiFetch === 'function'; }
+  async function _prefGet(name) {
+    if (!_hasRemote()) return null;
+    return global.apiFetch('/personal-preferences/' + name, { silentError: true, skipBrowseCache: true });
+  }
+  async function _prefPut(name, payload, expectedRevision) {
+    return global.apiFetch('/personal-preferences/' + name, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, silentError: true,
+      body: JSON.stringify({ payload, expectedRevision: expectedRevision || null }),
+    });
+  }
+  function _isConflict(error) {
+    return Number(error?.status || error?.response?.status || 0) === 409 || /409|競合/.test(String(error?.message || ''));
+  }
+
+  function _packPayload(pack) {
+    return { version: 1, id: pack.id, name: pack.name, updatedAt: pack.updatedAt,
+      icons: pack.icons.map(({ id, name, kind, data, tint }) => ({ id, name, kind, data, tint })) };
+  }
+  function _indexPayload() {
+    return { version: 1, updatedAt: new Date().toISOString(),
+      packs: state.order.map(id => state.packs[id]).filter(Boolean).map(p => ({
+        id: p.id, name: p.name, enabled: p.enabled, iconCount: p.icons.length, updatedAt: p.updatedAt })) };
+  }
+
+  async function _pushPack(pack) {
+    let expected = pack.revision;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await _prefPut(PACK_DOC_PREFIX + pack.id, _packPayload(pack), expected);
+        if (!result?.available) return false;
+        pack.revision = result.revision || null;
+        pack.dirty = false;
+        pack.contentDirty = false;
+        pack.synced = true;
+        return true;
+      } catch (error) {
+        if (!_isConflict(error) || attempt) throw error;
+        expected = (await _prefGet(PACK_DOC_PREFIX + pack.id))?.revision || null;
+      }
+    }
+    return false;
+  }
+
+  async function _tombstone(entry) {
+    let expected = entry.revision || null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await _prefPut(PACK_DOC_PREFIX + entry.id, { version: 1, id: entry.id, removed: true, updatedAt: new Date().toISOString() }, expected);
+        return;
+      } catch (error) {
+        if (!_isConflict(error) || attempt) throw error;
+        expected = (await _prefGet(PACK_DOC_PREFIX + entry.id))?.revision || null;
+      }
+    }
+  }
+
+  /** 個人設定の保存先と突き合わせる。他の端末の追加・変更・削除を取り込み、この端末の変更を送る。 */
+  function sync() {
+    if (syncing) return syncing;
+    syncing = (async () => {
+      try {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const remote = await _prefGet(INDEX_DOC).catch(() => null);
+          if (!remote || remote.available !== true) { remoteAvailable = false; return { available: false }; }
+          remoteAvailable = true;
+          const remoteEntries = remote.exists && Array.isArray(remote.payload?.packs) ? remote.payload.packs : [];
+          const removedIds = new Set(state.removed.map(r => r.id));
+          const remoteById = new Map(remoteEntries.filter(e => PACK_ID_RE.test(e?.id || '') && !removedIds.has(e.id)).map(e => [e.id, e]));
+          let changedIndex = state.removed.length > 0;
+          // 他の端末で消えた素材集（この端末で送信済みのもの）は消す。未送信のものは残して送る。
+          for (const id of [...state.order]) {
+            const pack = state.packs[id];
+            if (!remoteById.has(id)) {
+              if (pack.synced && !pack.dirty) { delete state.packs[id]; state.order = state.order.filter(x => x !== id); }
+              else changedIndex = true;
+            }
+          }
+          // 他の端末で増えた・変わった素材集を取り込む。
+          for (const [id, entry] of remoteById) {
+            const local = state.packs[id];
+            if (local?.dirty) {
+              if (local.enabled !== (entry.enabled !== false) || local.name !== entry.name) changedIndex = true;
+              continue;
+            }
+            if (local && local.updatedAt === String(entry.updatedAt || '')) {
+              local.enabled = entry.enabled !== false;
+              local.name = String(entry.name || local.name).slice(0, LIMITS.maxNameLength);
+              continue;
+            }
+            const doc = await _prefGet(PACK_DOC_PREFIX + id).catch(() => null);
+            if (!doc?.exists || !doc.payload || doc.payload.removed) continue;
+            const pack = _normalizePack({ ...doc.payload, enabled: entry.enabled, name: entry.name || doc.payload.name }, id);
+            pack.revision = doc.revision || null;
+            pack.synced = true;
+            state.packs[id] = pack;
+            if (!state.order.includes(id)) state.order.push(id);
+          }
+          // この端末の変更を送る（素材集の中身→目録の順。目録だけ先に届いて中身が無い状態を作らない）。
+          for (const id of state.order) {
+            const pack = state.packs[id];
+            if (pack?.dirty && (pack.contentDirty || !pack.synced)) { await _pushPack(pack); changedIndex = true; }
+            else if (pack?.dirty) { pack.dirty = false; pack.synced = true; changedIndex = true; }
+          }
+          if (changedIndex) {
+            try {
+              const result = await _prefPut(INDEX_DOC, _indexPayload(), remote.revision || null);
+              state.indexRevision = result?.revision || null;
+            } catch (error) {
+              if (_isConflict(error)) continue;
+              throw error;
+            }
+            for (const entry of state.removed.splice(0)) await _tombstone(entry).catch(() => {});
+          } else {
+            state.indexRevision = remote.revision || null;
+          }
+          await _saveLocal();
+          _emit();
+          return { available: true };
+        }
+        return { available: true, conflict: true };
+      } finally {
+        syncing = null;
+      }
+    })();
+    return syncing;
+  }
+
+  function _scheduleSync() {
+    const run = () => sync().catch((error) => {
+      global.console?.warn?.('[Meldex] アイコン素材集を同期できませんでした', error);
+    });
+    if (typeof global.requestIdleCallback === 'function') global.requestIdleCallback(run, { timeout: 8000 });
+    else setTimeout(run, 3000);
+  }
+
+  // ---- 取り込み -------------------------------------------------------------
+  function _newPackId() {
+    const bytes = new Uint8Array(6);
+    (global.crypto || {}).getRandomValues?.(bytes);
+    if (!bytes.some(Boolean)) for (let i = 0; i < 6; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  }
+  function _iconSlug(name, used) {
+    const base = String(name || '').replace(/\.[^.]+$/, '').normalize('NFKC').toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '').slice(0, 56) || 'icon';
+    let slug = /^[a-z0-9]/.test(base) ? base : 'i-' + base;
+    let n = 2;
+    while (used.has(slug)) slug = (base.slice(0, 52) + '-' + n++);
+    used.add(slug);
+    return slug;
+  }
+  function _hash(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(16) + ':' + text.length;
+  }
+
+  /** files: [{ name, bytes: Uint8Array }]。戻り値 { pack, added, skipped: [{ name, reason }] } */
+  async function importEntries(files, options = {}) {
+    if (state.order.length >= LIMITS.maxPacks) throw new Error(`素材集は${LIMITS.maxPacks}個まで登録できます`);
+    const used = new Set();
+    const seen = new Set();
+    const icons = [];
+    const skipped = [];
+    let bytesTotal = 0;
+    const sorted = [...files].sort((a, b) => String(a.name).localeCompare(String(b.name), 'ja'));
+    for (const file of sorted) {
+      const name = String(file.name || '').split(/[\\/]/).pop();
+      const lower = name.toLowerCase();
+      if (!lower.endsWith('.svg') && !lower.endsWith('.png')) continue;
+      if (icons.length >= LIMITS.maxIconsPerPack) { skipped.push({ name, reason: `1つの素材集は${LIMITS.maxIconsPerPack}個まで` }); continue; }
+      try {
+        let icon;
+        if (lower.endsWith('.svg')) {
+          const text = new TextDecoder('utf-8', { fatal: false }).decode(file.bytes);
+          const { svg, tint } = sanitizeSvg(text);
+          icon = { kind: 'svg', data: svg, tint };
+        } else {
+          icon = { kind: 'png', data: await sanitizePng(file.bytes), tint: false };
+        }
+        const key = _hash(icon.data);
+        if (seen.has(key)) { skipped.push({ name, reason: '同じ絵が登録済み' }); continue; }
+        if (bytesTotal + icon.data.length > LIMITS.maxPackBytes) { skipped.push({ name, reason: '素材集の容量の上限（約900KB）' }); continue; }
+        seen.add(key);
+        bytesTotal += icon.data.length;
+        const display = name.replace(/\.[^.]+$/, '');
+        icons.push({ id: _iconSlug(display, used), name: display, ...icon });
+      } catch (error) {
+        skipped.push({ name, reason: error.message || '読めません' });
+      }
+    }
+    if (!icons.length) {
+      const error = new Error('登録できるSVG・PNGがありませんでした');
+      error.skipped = skipped;
+      throw error;
+    }
+    const id = _newPackId();
+    const pack = _normalizePack({ name: String(options.name || '素材集').trim() || '素材集', enabled: true,
+      updatedAt: new Date().toISOString(), icons, dirty: true, contentDirty: true }, id);
+    state.packs[id] = pack;
+    state.order.push(id);
+    await _saveLocal();
+    _emit();
+    _scheduleSyncNow();
+    return { pack: summary(pack), added: icons.length, skipped };
+  }
+
+  async function importFileList(fileList, options = {}) {
+    const files = [];
+    for (const file of Array.from(fileList || [])) {
+      const lower = String(file.name || '').toLowerCase();
+      if (!lower.endsWith('.svg') && !lower.endsWith('.png')) continue;
+      if (file.size > Math.max(LIMITS.maxSvgInputBytes, LIMITS.maxPngInputBytes)) {
+        files.push({ name: file.name, bytes: new Uint8Array(LIMITS.maxPngInputBytes + 1) });
+        continue;
+      }
+      files.push({ name: file.webkitRelativePath || file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    }
+    const first = Array.from(fileList || [])[0];
+    const folder = String(first?.webkitRelativePath || '').split('/')[0];
+    return importEntries(files, { name: options.name || folder || '素材集' });
+  }
+
+  async function importZip(file, options = {}) {
+    const engine = global.MeldexArchiveZipEngine;
+    if (!engine) throw new Error('この画面ではZIPを読めません');
+    if (file.size > LIMITS.maxZipBytes) throw new Error('ZIPが大きすぎます（20MBまで）');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const { members } = await engine.parseZip(bytes);
+    const files = [];
+    for (const member of members.values()) {
+      if (member.isDir || engine.isSymlinkExternalAttr?.(member.externalAttr)) continue;
+      const lower = member.name.toLowerCase();
+      if ((!lower.endsWith('.svg') && !lower.endsWith('.png')) || /(^|\/)(__macosx|\.)/i.test(member.name)) continue;
+      if (member.uncompressedSize > Math.max(LIMITS.maxSvgInputBytes, LIMITS.maxPngInputBytes)) {
+        files.push({ name: member.name, bytes: new Uint8Array(LIMITS.maxPngInputBytes + 1) });
+        continue;
+      }
+      files.push({ name: member.name, bytes: await engine.extractMember(bytes, member) });
+    }
+    return importEntries(files, { name: options.name || String(file.name || '素材集').replace(/\.zip$/i, '') });
+  }
+
+  function _scheduleSyncNow() {
+    sync().catch((error) => global.showStatus?.('アイコン素材集を同期できませんでした: ' + (error?.message || error), true));
+  }
+
+  async function _mutate(id, fn) {
+    const pack = state.packs[id];
+    if (!pack) throw new Error('素材集が見つかりません');
+    fn(pack);
+    pack.dirty = true;
+    await _saveLocal();
+    _emit();
+    _scheduleSyncNow();
+    return summary(pack);
+  }
+  function setEnabled(id, enabled) {
+    return _mutate(id, (pack) => { pack.enabled = !!enabled; });
+  }
+  function rename(id, name) {
+    const clean = String(name || '').trim().slice(0, LIMITS.maxNameLength);
+    if (!clean) return Promise.reject(new Error('名前を入力してください'));
+    return _mutate(id, (pack) => { pack.name = clean; });
+  }
+  async function remove(id) {
+    const pack = state.packs[id];
+    if (!pack) return false;
+    delete state.packs[id];
+    state.order = state.order.filter(x => x !== id);
+    if (pack.synced) state.removed.push({ id, revision: pack.revision || null });
+    await _saveLocal();
+    _emit();
+    _scheduleSyncNow();
+    return true;
+  }
+
+  // ---- 参照 -----------------------------------------------------------------
+  function summary(pack) {
+    return { id: pack.id, name: pack.name, enabled: pack.enabled, iconCount: pack.icons.length,
+      synced: pack.synced && !pack.dirty, preview: pack.icons.slice(0, 12).map(icon => 'pack:' + pack.id + '/' + icon.id) };
+  }
+  function list() { return state.order.map(id => state.packs[id]).filter(Boolean).map(summary); }
+
+  /** 値の状態: ready（描ける）/ pending（写しの読み込み前）/ disabled（使わない設定）/ missing（見つからない）。 */
+  function describe(spec) {
+    const match = SPEC_RE.exec(String(spec || ''));
+    if (!match) return { state: 'missing' };
+    const found = iconMap.get(match[1] + '/' + match[2]);
+    if (found) return { state: 'ready', pack: found.pack, icon: found.icon, packEnabled: found.pack.enabled };
+    return { state: loaded ? 'missing' : 'pending', packId: match[1], iconId: match[2] };
+  }
+
+  function iconDataUrl(icon) {
+    if (icon.kind === 'png') return icon.data;
+    return 'data:image/svg+xml,' + encodeURIComponent(icon.data).replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
+  }
+
+  /** 選択画面用: 使う設定の素材集のアイコン。 */
+  function pickerItems() {
+    const items = [];
+    for (const id of state.order) {
+      const pack = state.packs[id];
+      if (!pack?.enabled) continue;
+      for (const icon of pack.icons) {
+        items.push({ type: 'pack', spec: 'pack:' + id + '/' + icon.id, packId: id, label: icon.name,
+          search: [icon.name, icon.id, pack.name, '素材集'].join(' ') });
+      }
+    }
+    return items;
+  }
+
+  /** 画像が要る所向け。塗る指定のSVGは色を付けたPNGにする。 */
+  async function imageDataUrl(spec, options = {}) {
+    const info = describe(spec);
+    if (info.state !== 'ready') return '';
+    const url = iconDataUrl(info.icon);
+    if (!info.icon.tint && !options.bg) return url;
+    const size = Math.max(16, Math.min(512, Number(options.size) || 128));
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const glyph = Math.round(size * (options.scale || 1));
+    const offset = (size - glyph) / 2;
+    const layer = document.createElement('canvas');
+    layer.width = size; layer.height = size;
+    const lctx = layer.getContext('2d');
+    lctx.drawImage(img, offset, offset, glyph, glyph);
+    if (info.icon.tint) {
+      lctx.globalCompositeOperation = 'source-in';
+      lctx.fillStyle = options.color || '#9aa0a6';
+      lctx.fillRect(0, 0, size, size);
+    }
+    if (!options.bg) return layer.toDataURL('image/png');
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = options.bg;
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); ctx.fill();
+    ctx.drawImage(layer, 0, 0);
+    return canvas.toDataURL('image/png');
+  }
+
+  // ---- 設定画面 -------------------------------------------------------------
+  function _el(tag, attrs = {}, text) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'className') el.className = v;
+      else if (k === 'dataset') Object.assign(el.dataset, v);
+      else el.setAttribute(k, v);
+    }
+    if (text != null) el.textContent = text;
+    return el;
+  }
+
+  function _confirm(message) {
+    if (typeof global.cfConfirm === 'function') return global.cfConfirm(message);
+    if (typeof global.showConfirmDialog === 'function') {
+      return new Promise(resolve => global.showConfirmDialog(message, () => resolve(true), () => resolve(false)));
+    }
+    return Promise.resolve(false);
+  }
+
+  function renderSettings(container) {
+    if (!container) return;
+    container.textContent = '';
+    container.classList.add('gb-icon-packs-settings');
+    const section = _el('section', { className: 'gb-section gb-section--boxed', dataset: { e2eId: 'icon-packs-settings' } });
+    const title = _el('div', { className: 'gb-section-title' });
+    title.innerHTML = (typeof global.lucide === 'function' ? global.lucide('shapes', 14) : '') + ' アイコン素材集';
+    if (typeof global.fieldHelp === 'function') {
+      title.insertAdjacentHTML('beforeend', ' ' + global.fieldHelp('フォルダやZIPに入ったSVG・PNGのアイコンを登録すると、アイコンを選ぶ画面の「素材集」タブから選べます。SVGは安全のため、スクリプト・外部の参照・操作で動く指定を取り除いて登録します。Dropboxに接続していれば個人設定として保存され、他の端末でも使えます。', { e2eId: 'icon-packs-help' }));
+    }
+    section.appendChild(title);
+
+    const actions = _el('div', { className: 'gb-icon-packs-actions' });
+    const folderBtn = _el('button', { type: 'button', className: 'gb-btn gb-btn-sm', dataset: { e2eId: 'icon-packs-add-folder' } }, 'フォルダから登録');
+    const zipBtn = _el('button', { type: 'button', className: 'gb-btn gb-btn-sm', dataset: { e2eId: 'icon-packs-add-zip' } }, 'ZIPから登録');
+    const folderInput = _el('input', { type: 'file', hidden: '', multiple: '', accept: '.svg,.png,image/svg+xml,image/png', dataset: { e2eId: 'icon-packs-folder-input' } });
+    folderInput.webkitdirectory = true;
+    const zipInput = _el('input', { type: 'file', hidden: '', accept: '.zip,application/zip', dataset: { e2eId: 'icon-packs-zip-input' } });
+    const status = _el('div', { className: 'gb-icon-packs-status', role: 'status', dataset: { e2eId: 'icon-packs-status' } });
+    folderBtn.addEventListener('click', () => folderInput.click());
+    zipBtn.addEventListener('click', () => zipInput.click());
+    const runImport = async (job) => {
+      folderBtn.disabled = true; zipBtn.disabled = true;
+      status.textContent = '登録中…';
+      try {
+        const result = await job();
+        status.textContent = `「${result.pack.name}」に${result.added}個のアイコンを登録しました`
+          + (result.skipped.length ? `（登録しなかったもの${result.skipped.length}件: ${result.skipped.slice(0, 3).map(s => s.name + '＝' + s.reason).join('、')}${result.skipped.length > 3 ? ' ほか' : ''}）` : '');
+      } catch (error) {
+        status.textContent = (error.message || '登録できませんでした')
+          + (error.skipped?.length ? `（${error.skipped.slice(0, 3).map(s => s.name + '＝' + s.reason).join('、')}）` : '');
+      } finally {
+        folderBtn.disabled = false; zipBtn.disabled = false;
+        folderInput.value = ''; zipInput.value = '';
+      }
+    };
+    folderInput.addEventListener('change', () => { if (folderInput.files?.length) runImport(() => importFileList(folderInput.files)); });
+    zipInput.addEventListener('change', () => { const f = zipInput.files?.[0]; if (f) runImport(() => importZip(f)); });
+    actions.append(folderBtn, zipBtn, folderInput, zipInput);
+    section.append(actions, status);
+
+    const listEl = _el('div', { className: 'gb-icon-packs-list', role: 'list', dataset: { e2eId: 'icon-packs-list' } });
+    const where = _el('div', { className: 'gb-icon-packs-where', dataset: { e2eId: 'icon-packs-where' } });
+    section.append(listEl, where);
+    container.appendChild(section);
+
+    const draw = () => {
+      if (!listEl.isConnected) { listeners.delete(draw); return; }
+      listEl.textContent = '';
+      where.textContent = remoteAvailable === true ? '個人設定（Dropbox）に保存し、他の端末と同期します'
+        : remoteAvailable === false ? 'この端末にだけ保存しています（Dropboxに接続すると同期します）' : '';
+      const packs = list();
+      if (!packs.length) {
+        listEl.appendChild(_el('div', { className: 'gb-section-desc' }, 'まだ登録されていません'));
+        return;
+      }
+      for (const pack of packs) {
+        const row = _el('div', { className: 'gb-icon-packs-row', role: 'listitem', dataset: { e2eId: 'icon-packs-row:' + pack.id, packId: pack.id } });
+        const preview = _el('div', { className: 'gb-icon-packs-preview', 'aria-hidden': 'true' });
+        preview.innerHTML = pack.preview.map(spec => global.GBIconAssets?.render?.(spec, 18) || '').join('');
+        const name = _el('input', { type: 'text', className: 'gb-input gb-icon-packs-name', maxlength: String(LIMITS.maxNameLength),
+          'aria-label': '素材集の名前', dataset: { e2eId: 'icon-packs-name:' + pack.id } });
+        name.value = pack.name;
+        name.addEventListener('change', () => rename(pack.id, name.value).catch(error => { status.textContent = error.message; name.value = pack.name; }));
+        const count = _el('span', { className: 'gb-icon-packs-count' }, pack.iconCount + '個');
+        const toggleLabel = _el('label', { className: 'gb-icon-packs-toggle' });
+        const toggle = _el('input', { type: 'checkbox', dataset: { e2eId: 'icon-packs-enabled:' + pack.id } });
+        toggle.checked = pack.enabled;
+        toggle.addEventListener('change', () => setEnabled(pack.id, toggle.checked));
+        toggleLabel.append(toggle, document.createTextNode('使う'));
+        const removeBtn = _el('button', { type: 'button', className: 'gb-btn gb-btn-xs gb-btn-quiet', 'aria-label': `素材集「${pack.name}」を削除`,
+          dataset: { e2eId: 'icon-packs-remove:' + pack.id } }, '削除');
+        removeBtn.addEventListener('click', async () => {
+          const ok = await _confirm(`素材集「${pack.name}」を削除しますか？\nこの素材集のアイコンを使っている所は、代わりの絵で表示されます。他の端末からも削除されます。`);
+          if (ok) await remove(pack.id);
+        });
+        row.append(preview, name, count, toggleLabel, removeBtn);
+        listEl.appendChild(row);
+      }
+    };
+    listeners.add(draw);
+    draw();
+    if (remoteAvailable == null) sync().catch(() => {}).finally(draw);
+  }
+
+  const ready = _loadLocal().then((raw) => {
+    state = _normalizeState(raw);
+  }).catch(() => {}).then(() => {
+    loaded = true;
+    _emit();
+    _scheduleSync();
+  });
+
+  global.MeldexIconPacks = Object.freeze({
+    LIMITS,
+    ready,
+    sanitizeSvg,
+    sanitizePng,
+    importEntries,
+    importFileList,
+    importZip,
+    setEnabled,
+    rename,
+    remove,
+    sync,
+    list,
+    describe,
+    iconDataUrl,
+    imageDataUrl,
+    pickerItems,
+    renderSettings,
+    onChange: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+    isLoaded: () => loaded,
+    remoteAvailable: () => remoteAvailable,
+  });
 })(window);
 
 ;
@@ -2363,7 +3375,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
   // フォルダ表示レイアウト
   regId('folder-layout-select', { label: 'フォルダ表示', desc: 'フォルダビューの表示形式（リスト/グリッド等）を選びます' });
-  regId('folder-layout-menu-btn', { label: '表示形式', desc: 'グリッド、ウォーターフォール、横並び、リストから表示方法を選びます' });
+  regId('folder-layout-menu-btn', { label: '表示形式', desc: 'グリッド、ウォーターフォール、横並び、リスト、リスト・小から表示方法を選びます' });
   regId('folder-display-btn', { label: '表示設定', desc: 'フォルダパネルのサムネイルサイズや表示項目を変更します' });
 
   // チャットモデル選択
@@ -2763,9 +3775,15 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   function setSyncEnabled(enabled) {
-    try { localStorage.setItem(SYNC_ENABLED_KEY, enabled ? '1' : '0'); } catch {}
+    try { localStorage.setItem(SYNC_ENABLED_KEY, enabled ? '1' : '0'); }
+    catch {
+      global.showStatus?.('キー設定の連動を保存できませんでした。もう一度操作してください', true);
+      _refreshOpenSettings();
+      return false;
+    }
     if (enabled) syncNow();
     _refreshOpenSettings();
+    return true;
   }
 
   // 設定変更後に、開いている全部のショートカット一覧（設定ダイアログ／オプションパネル）を描き直す
@@ -2783,7 +3801,12 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const before = (typeof global.captureLocalStorageSettings === 'function')
       ? global.captureLocalStorageSettings([STORAGE_KEY])
       : null;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); } catch { /* 保存できない環境では変更を持ち越さない */ }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); }
+    catch {
+      // ローカルで拒否された変更を履歴・共有設定へ成功として登録しない。
+      global.showStatus?.('ショートカットキーを保存できませんでした。もう一度操作してください', true);
+      return false;
+    }
     if (typeof global.updateNoteShortcutStatusbar === 'function') global.updateNoteShortcutStatusbar();
     if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
     if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
@@ -2806,8 +3829,17 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
         options?.detail || '',
         refreshAfterHistory
       );
+    } else if (options?.skipHistory !== true && global.MeldexViewerHistory?.push) {
+      const savedCustom = structuredClone(custom || {});
+      const restore = value => {
+        if (!saveCustom(value, { skipHistory: true })) throw new Error('ショートカットキーを保存できませんでした');
+        _refreshOpenSettings();
+      };
+      global.MeldexViewerHistory.push(options?.label || '設定: ショートカット変更',
+        () => restore(previousCustom), () => restore(savedCustom));
     }
     if (options?.skipSync !== true) _recordLocalChanges(previousCustom, custom || {});
+    return true;
   }
 
   function effective() {
@@ -3776,6 +4808,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   // iframe として動くため、起動時に全部読むと画像を開くたびに重くなる。
   // タブを最初に開いた時だけ読み込む。
   const FILE_INFO_SCRIPTS = [
+    'gb-error-message-translator.js',
+    'gb-log-export.js',
     'gb-file-info-panel.js',
     'gb-file-metadata.js',
     'gb-auto-tag-settings.js',
@@ -3835,6 +4869,56 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   const fileInfoRenderSeq = new WeakMap();
+  const FOLDER_OPEN_SCRIPTS = ['standalone-parity-adapter.js'];
+  let folderOpenAdapterPromise = null;
+
+  function loadFolderOpenAdapter() {
+    if (root.MeldexStandaloneParity?.openTarget) return Promise.resolve(root.MeldexStandaloneParity);
+    if (folderOpenAdapterPromise) return folderOpenAdapterPromise;
+    folderOpenAdapterPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = FOLDER_OPEN_SCRIPTS[0];
+      const failed = () => {
+        script.remove();
+        reject(new Error('フォルダを開く準備ができませんでした。もう一度操作してください'));
+      };
+      script.addEventListener('error', failed, { once: true });
+      script.addEventListener('load', () => {
+        if (root.MeldexStandaloneParity?.openTarget) resolve(root.MeldexStandaloneParity);
+        else failed();
+      }, { once: true });
+      document.head.appendChild(script);
+    }).catch(error => {
+      folderOpenAdapterPromise = null;
+      throw error;
+    });
+    return folderOpenAdapterPromise;
+  }
+
+  async function openFileInfoFolder(path, isCurrent = () => true, reportFailure = () => {}) {
+    if (!path || isCurrent() === false) return false;
+    try {
+      const adapter = await loadFolderOpenAdapter();
+      if (isCurrent() === false) return false;
+      const opened = await adapter.openTarget({ path, linkType: 'folder' }, 'main');
+      if (opened === false && isCurrent() !== false) {
+        const native = new URLSearchParams(root.location?.search || '').get('native') === '1';
+        reportFailure(native
+          ? 'Meldex本体を開けませんでした。インストール・起動状態を確認し、もう一度お試しください。'
+          : '新しいウィンドウを開けませんでした。ポップアップを許可して、もう一度お試しください。');
+      }
+      if (opened !== false && isCurrent() !== false) root.showStatus?.('フォルダをMeldex本体へ渡しました');
+      return opened !== false;
+    } catch (error) {
+      if (isCurrent() !== false) {
+        const message = error?.userMessage || (String(error?.message || '').startsWith('フォルダを')
+          ? error.message : 'フォルダを開く準備を読み込めませんでした。もう一度お試しください。');
+        reportFailure(message);
+        root.showStatus?.(message, true);
+      }
+      return false;
+    }
+  }
 
   // 「プロパティ」タブ: 本体のフォルダパネル→プロパティタブと同じ内容。
   // 表示中のファイルが続けて変わった時に、古い呼び出しの結果で上書きしないよう順番を確かめる。
@@ -3844,8 +4928,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     fileInfoRenderSeq.set(host, seq);
     if (!root.MeldexFileInfoPanel?.renderInto) {
       host.innerHTML = '<div class="gb-empty-placeholder">読み込み中...</div>';
-      await ensureFileInfoDeps();
     }
+    // 初回通知が重なるとFileInfoだけ先に使える。後続のタグ等も同じ読込を待つ。
+    await ensureFileInfoDeps();
     if (fileInfoRenderSeq.get(host) !== seq) return;
     if (!root.MeldexFileInfoPanel?.renderInto) {
       host.innerHTML = '<div class="gb-empty-placeholder">ファイル情報を読み込めませんでした</div>';
@@ -3853,7 +4938,13 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     }
     const showTags = await standaloneTagsAvailable();
     if (fileInfoRenderSeq.get(host) !== seq) return;
-    await root.MeldexFileInfoPanel.renderInto(host, String(getPath?.() || '').trim(), { showTags });
+    const isCurrent = () => fileInfoRenderSeq.get(host) === seq;
+    let folderFailureMessage = '';
+    await root.MeldexFileInfoPanel.renderInto(host, String(getPath?.() || '').trim(), {
+      showTags, isCurrent,
+      onOpenFolder: path => openFileInfoFolder(path, isCurrent, message => { folderFailureMessage = message; }),
+      getOpenFolderFailureMessage: () => folderFailureMessage,
+    });
   }
 
   // 「ショートカットキー」タブ: 設定と同じ一覧・変更機能
@@ -3868,6 +4959,17 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
   function setupViewer(embedded) {
     const controls = document.getElementById('controls');
+    // 共通プロパティ・タグ等はshowStatusを使う。ビューワーには本体の
+    // #sb-msgがないため、失敗がコンソールだけで終わらないようHUDへ届ける。
+    if (!root.showStatus?._viewerHudStatus) {
+      const previousStatus = root.showStatus;
+      const viewerStatus = (message, isError, options) => {
+        previousStatus?.(message, isError, options);
+        root.MeldexViewerScene?.flashStatus?.(String(message || ''), isError ? 5000 : 1500);
+      };
+      viewerStatus._viewerHudStatus = true;
+      root.showStatus = viewerStatus;
+    }
     // #controls は共通ツールバー（.gb-toolbar-viewer）。中に置くボタンも共通の .tb-icon-btn を使い、
     // デスクトップ32px帯・タッチ44px操作領域のトークンをそのまま適用する。
     const shell = setupShell('viewer', controls, 'tb-icon-btn');
@@ -3899,7 +5001,12 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (infoSource) {
       new MutationObserver(() => {
         const host = tabs.panels.get('info');
-        if (host && !host.hidden && (!root.MeldexStandaloneNative || shell.panel.classList.contains('is-open'))) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
+        if (!host || host.hidden || (root.MeldexStandaloneNative && !shell.panel.classList.contains('is-open'))) return;
+        const path = root.MeldexViewerScene?.currentPath?.() || '';
+        // HUDは倍率や回転でも変わる。同じファイルなら編集欄・選択・保存中の
+        // 表示を保ち、タグやプロパティの全件取得を繰り返さない。
+        if (host.querySelector('[data-file-info-path]')?.getAttribute('data-file-info-path') === path) return;
+        renderFileInfoTab(host, () => path);
       }).observe(infoSource, { childList: true, subtree: true, characterData: true });
     }
     return true;
@@ -3933,6 +5040,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       speedSource.value = speed.value;
       speedSource.dispatchEvent(new Event('input', { bubbles: true }));
       speedSource.dispatchEvent(new Event('change', { bubbles: true }));
+      speed.value = speedSource.value;
     });
     slideshow.appendChild(row('切替秒数', speed));
     const slideshowActions = document.createElement('div');
@@ -4506,7 +5614,10 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
         notify('ファイルへの保存を完了できなかったため、閉じません', true);
         return false;
       }
-      return getCloseState().canClose;
+      const closeState = getCloseState();
+      // 進めない時は理由を出す（黙って何もしないと、押したメニューが効かないように見える）。
+      if (!closeState.canClose) notify(closeState.message || '保存が終わっていないため、切り替えられません', true);
+      return closeState.canClose;
     })().finally(() => { running = null; });
     return running;
   }
@@ -4584,15 +5695,18 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   const pending = new Set();
   let lastError = '';
 
-  function track(result) {
+  function track(result, options = {}) {
     if (!result || typeof result.then !== 'function') return result;
+    // 新しいファイルの作成は、断られても未保存の内容が残らない（作られないだけ）。終わるまでは待つが、
+    // 結果で保存の失敗の印を付けも消しもしない（印が残ると次の「新しいシートを作成」「開く」が黙って止まっていた）。
+    const affectsError = options.affectsError !== false;
     const promise = Promise.resolve(result)
       .then(value => {
-        lastError = '';
+        if (affectsError) lastError = '';
         return value;
       })
       .catch(error => {
-        lastError = String(error?.message || error || '保存に失敗しました');
+        if (affectsError) lastError = String(error?.message || error || '保存に失敗しました');
         throw error;
       })
       .finally(() => pending.delete(promise));
@@ -4604,6 +5718,11 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const original = root[name];
     if (typeof original !== 'function' || original._meldexSaveQueue) return;
     const wrapped = function (...args) {
+      // 起動要求には未保存の本文がない。失敗を保存失敗として残すと、
+      // prepareClose が同じ「本体で開く」の再試行を止めてしまう。
+      const path = String(args[0] || '').split('?')[0].replace(/^\/api(?=\/)/, '');
+      if (name === 'apiPost' && path === '/standalone/open-target') return original.apply(this, args);
+      if (name === 'apiPost' && path === '/outliner/add') return track(original.apply(this, args), { affectsError: false });
       return track(original.apply(this, args));
     };
     wrapped._meldexSaveQueue = true;
@@ -5320,7 +6439,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     } finally {
       if (_canvasRenderTasks.get(canvas) === task) _canvasRenderTasks.delete(canvas);
     }
-    if (canvas.isConnected) await window.MeldexViewerTextLayer?.pdf(canvas, doc, pageNum, zoom,
+    if (canvas.isConnected) await window.MeldexViewerTextLayer?.refitPdf(canvas, doc, pageNum, zoom,
       window.MeldexViewerScene?.getPdfPath?.() || '');
     return canvas;
   }
@@ -5446,6 +6565,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   function ocr(media, result, path) {
+    const ocrKey = JSON.stringify([path, result]);
+    if (layers.get(media)?.ocrKey === ocrKey) return layers.get(media);
     // The existing annotation scene uses the displayed image's intrinsic size,
     // which may be a smaller preview. Keep cached source boxes unchanged.
     if (media.tagName === 'IMG' && media.naturalWidth && media.naturalHeight) {
@@ -5454,6 +6575,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
         lines: result.lines.map(line => ({ ...line, box: [line.box[0] * sx, line.box[1] * sy, line.box[2] * sx, line.box[3] * sy] })) };
     }
     const entry = mount(media, { ...result, path });
+    entry.ocrKey = ocrKey;
     for (const line of result.lines) {
       const span = document.createElement('span');
       const glyphs = document.createElement('span'); glyphs.textContent = line.text;
@@ -5482,6 +6604,15 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     entry.observer = new ResizeObserver(fit); entry.observer.observe(media); fit();
     updateIndicator();
     return entry;
+  }
+
+  function refitPdf(media, doc, pageNumber, zoom, path = '') {
+    const entry = layers.get(media);
+    // Derived OCR is already expressed in source-page percentages, and its
+    // ResizeObserver fits the glyphs. Rebuilding native text here discards the
+    // accepted OCR/corrections and the user's selection on resize or zoom.
+    if (entry?.ocrKey && entry.path === path && entry.page === pageNumber) return Promise.resolve(entry);
+    return pdf(media,doc,pageNumber,zoom,path);
   }
 
   function visibleEntries() {
@@ -5604,7 +6735,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (window.parent !== window) window.parent.postMessage({ type: 'meldex-viewer-text-selection', selection: detail }, location.origin);
   });
   document.getElementById('btn-text-layer')?.addEventListener('click', toggleBoxes);
-  window.MeldexViewerTextLayer = { pdf, ocr, getSelection, selectQuery, search, orderedContent, toggleBoxes, updateIndicator, dispose, disposeIn };
+  window.MeldexViewerTextLayer = { pdf, refitPdf, ocr, getSelection, selectQuery, search, orderedContent, toggleBoxes, updateIndicator, dispose, disposeIn };
 })();
 
 ;
@@ -6875,6 +8006,342 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
 ;
 
+/* === meldex-local-model-ui.js === */
+;
+/* Shared opt-in model fetch/remove confirmation for local viewer engines. */
+(function () {
+  'use strict';
+  function confirm(message, title = 'モデルの確認', actionLabel = '決定') {
+    return new Promise(resolve => {
+      const body = document.createElement('p'); body.textContent = message; body.style.whiteSpace = 'pre-line';
+      const cancel = document.createElement('button'); cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
+      const ok = document.createElement('button'); ok.className = 'gb-btn gb-btn-primary'; ok.textContent = actionLabel;
+      let accepted = false;
+      const modal = window.GBUI.createModal({ title, body: [body], footer: [cancel, ok], initialFocus: () => cancel,
+        closeOnEsc: true, closeOnOverlay: true, onClose: () => resolve(accepted) });
+      cancel.addEventListener('click', () => modal.close('cancel'));
+      ok.addEventListener('click', () => { accepted = true; modal.close('confirm'); });
+      modal.open();
+    });
+  }
+  window.MeldexLocalModelUI = {
+    confirm,
+    confirmInstall: ({ description, bytes, title = 'モデルの取得' }) => confirm(`${description}\nモデルを取得しますか？\n${bytes.toLocaleString('ja-JP')} バイト（${(bytes / 1048576).toFixed(1)} MiB）\n途中から再開できます。文書・画像は送信しません。`, title, 'ダウンロード'),
+  };
+})();
+
+;
+
+/* === viewer-visual-controls.js === */
+;
+/* Local PDF figures: existing modal/progress/model UI, no external provider. */
+(function () {
+  'use strict';
+  const scene = () => window.MeldexViewerScene;
+  const local = () => !window.MeldexRuntimeAdapter?.isDropboxMode?.() && !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+    && !window.MeldexViewerCloudFileOpen?.isCloudViewer?.() && document.documentElement.dataset.standaloneCloud !== 'viewer'
+    && !new URLSearchParams(location.search).has('localFiles');
+  const normalized = path => String(path || '').replaceAll('\\', '/').toLocaleLowerCase();
+  const sameSource = (s, row) => s?.isPdf?.() && [row.path, row.source_path].filter(Boolean).some(p => normalized(p) === normalized(s.getPdfPath()));
+  function progress() {
+    try { return window.parent.MeldexOperationProgress || window.MeldexOperationProgress; }
+    catch (_) { return window.MeldexOperationProgress; }
+  }
+  async function request(path, body) {
+    const response = await fetch('/api/viewer-visual' + path, body === undefined ? {} : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const value = await response.json();
+    if (!response.ok) throw new Error(typeof value.detail === 'string' ? value.detail : '画像検索を利用できません');
+    return value;
+  }
+  function run(body, label, onComplete, quiet = false) {
+    return progress().runRemoteJob({ endpoint: '/api/viewer-visual', body, label, quiet,
+      kind: body.action === 'install' ? 'download' : 'viewer-ocr', ownerFrame: window.frameElement, ownerDocument: document,
+      onComplete });
+  }
+  function button(text, action, name) {
+    const node = document.createElement('button'); node.type = 'button'; node.className = 'gb-btn'; node.textContent = text;
+    if (name) node.dataset.visualAction = name;
+    node.addEventListener('click', action); return node;
+  }
+  function select(label, choices) {
+    const wrapper = document.createElement('label'); wrapper.textContent = label + ' ';
+    const input = document.createElement('select'); input.className = 'gb-select'; input.setAttribute('aria-label', label);
+    input.style.maxWidth = '100%';
+    for (const [value, text] of choices) { const option = document.createElement('option'); option.value = value; option.textContent = text; input.append(option); }
+    wrapper.append(input); return { wrapper, input };
+  }
+  function checkbox(text) {
+    const wrapper = document.createElement('label'); wrapper.style.cssText = 'display:flex;align-items:center;gap:var(--ui-space-2);white-space:normal';
+    const input = document.createElement('input'); input.type = 'checkbox'; input.setAttribute('aria-label', text); input.checked = false;
+    wrapper.append(input, document.createTextNode(text)); return { wrapper, input };
+  }
+  async function thumbnail(image, row, urls) {
+    try {
+      const response = await fetch('/api/viewer-visual/thumbnail?key=' + encodeURIComponent(row.thumbnail_key));
+      if (!response.ok) throw new Error('画像を読み込めませんでした');
+      const blob = await response.blob();
+      if (!image.isConnected) return;
+      const url = URL.createObjectURL(blob); urls.push(url); image.src = url;
+    } catch (_) { image.alt = '読み込みに失敗しました'; }
+  }
+
+  async function reveal(row) {
+    const s = scene();
+    if (!s || !sameSource(s, row)) return false;
+    const page = Number(row.page);
+    if (!Number.isInteger(page) || page < 1 || page > (s.getPdfDocument()?.numPages || 0)) throw new Error('指定したページがありません');
+    const box = row.box;
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite) || box.some(n => n < 0) || !box[2] || !box[3]) throw new Error('画像領域の位置を確認してください');
+    if (s.getIndex() !== page - 1) await s.goToIndex(page - 1);
+    const deadline = performance.now() + 15000;
+    let canvas;
+    do {
+      canvas = [...document.querySelectorAll('.layer.show canvas.page-canvas')].find(c => c._viewerPageNum === page);
+      if (canvas) break;
+      if (performance.now() > deadline) throw new Error('対象ページを読み込めませんでした');
+      await new Promise(requestAnimationFrame);
+    } while (true);
+    await canvas._viewerTextReady;
+    const pdfPage = await s.getPdfDocument().getPage(page), viewport = pdfPage.getViewport({ scale: 1 });
+    if (box[0] + box[2] > viewport.width + 1 || box[1] + box[3] > viewport.height + 1) throw new Error('画像領域がページをはみ出しています');
+    document.querySelectorAll('[data-visual-highlight]').forEach(node => node.remove());
+    const wrap = canvas.parentElement;
+    if (getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+    const highlight = document.createElement('div'); highlight.dataset.visualHighlight = '';
+    highlight.setAttribute('aria-label', '検索した画像領域');
+    highlight.style.cssText = 'position:absolute;pointer-events:none;outline:3px solid var(--accent);background:color-mix(in srgb,var(--accent) 15%,transparent);z-index:6';
+    Object.assign(highlight.style, { left: box[0] / viewport.width * 100 + '%', top: box[1] / viewport.height * 100 + '%',
+      width: box[2] / viewport.width * 100 + '%', height: box[3] / viewport.height * 100 + '%' });
+    wrap.append(highlight); highlight.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return true;
+  }
+
+  async function openResult(row) {
+    if (!row?.page || !row?.box) return false;
+    if (row.type === 'image' || !/\.pdf$/i.test(row.source_path || row.path)) {
+      const s = scene(), item = s?.getItems?.()[s.getIndex()];
+      if (s && [row.path, row.source_path].some(p => p && normalized(p) === normalized(item?.path))) return true;
+      if (scene() && parent !== window) return parent.MeldexPdfVisual.openResult(row);
+      if (typeof window.openMedia === 'function') { await window.openMedia(row.name, row.path, 'image'); return true; }
+      if (s && window.MeldexStandaloneNative) { await s.reopenWithUrl('/viewer.html?file=' + encodeURIComponent(row.path)); return true; }
+      throw new Error('画像を開けませんでした');
+    }
+    if (sameSource(scene(), row)) return reveal(row);
+    if (scene() && window.MeldexStandaloneNative) {
+      await scene().reopenWithUrl('/viewer.html?pdf=' + encodeURIComponent(row.path));
+      return reveal(row);
+    }
+    if (scene() && parent !== window) {
+      try { return parent.MeldexPdfVisual.openResult(row); } catch (_) { return false; }
+    }
+    const frame = document.getElementById('html-iframe');
+    try {
+      if (sameSource(frame?.contentWindow?.MeldexViewerScene, row)) return frame.contentWindow.MeldexPdfVisual.reveal(row);
+    } catch (_) {}
+    const params = new URLSearchParams({ pdf: row.source_path || row.path, visualPage: String(row.page), visualBox: JSON.stringify(row.box) });
+    if (typeof window.openViewer === 'function') { await window.openViewer('/viewer?' + params.toString()); return true; }
+    throw new Error('ビューワーを開けませんでした');
+  }
+
+  async function open(options = {}) {
+    if (!local()) return;
+    const capability = await request('');
+    const isFolder = !!options.folder, path = options.folder || options.path;
+    if (!path) throw new Error('先にPDFまたはフォルダを開いてください');
+    let closed = false, urls = [], resultGeneration = 0;
+    const heading = document.createElement('p'); heading.textContent = String(path); heading.style.overflowWrap = 'anywhere';
+    const notice = document.createElement('p'); notice.className = 'gb-section-desc';
+    notice.textContent = '認識はこのPC内で行います。原本は変更しません。画像の説明はAIの推定で、OCR原文と区別します。';
+    const error = document.createElement('p'); error.className = 'gb-section-desc'; error.setAttribute('role', 'alert');
+    const controls = document.createElement('div'); controls.style.cssText = 'display:flex;flex-direction:column;gap:var(--ui-space-3)';
+    const models = capability.models.filter(m => m.kind === 'embedding');
+    const model = select('画像検索モデル', models.map(m => [m.id, m.title])); model.input.value = capability.defaultModel || 'clip';
+    const device = select('処理装置', [['cpu', 'CPU'], ['gpu', 'GPU（明示選択）']]);
+    const captions = checkbox('索引作成と一緒に画像の説明を生成する（既定はオフ）');
+    const group = checkbox('書籍ごとにまとめる');
+    const mode = select('検索方法', [['all', '説明・原文と画像の内容'], ['text', '説明・タグ・OCR原文'], ['meaning', '画像の内容（意味検索）']]);
+    const query = document.createElement('input'); query.className = 'gb-input'; query.setAttribute('aria-label', '画像を探す言葉'); query.placeholder = '螺旋階段、逆光、俯瞰構図…';
+    const pages = document.createElement('input'); pages.className = 'gb-input'; pages.setAttribute('aria-label', '索引を作成するページ'); pages.placeholder = '例：1-3, 8';
+    const entries = document.createElement('div'); entries.dataset.visualResults = '';
+    const safe = action => async () => { error.textContent = ''; try { await action(); } catch (e) { if (!closed) error.textContent = e.message; } };
+    const currentPage = () => options.page || (scene()?.getIndex() || 0) + 1;
+    const body = action => ({ action, model: model.input.value, device: device.input.value, path, page: currentPage() });
+    let modal;
+
+    async function edit(row) {
+      const old = row.caption || { description: '', tags: [] };
+      let current = row, saved = false;
+      const description = document.createElement('textarea'); description.className = 'gb-input'; description.rows = 6; description.value = old.description || ''; description.setAttribute('aria-label', '画像の説明'); description.style.width = '100%';
+      const tags = document.createElement('input'); tags.className = 'gb-input'; tags.value = (old.tags || []).join('、'); tags.setAttribute('aria-label', '画像のタグ'); tags.style.width = '100%';
+      const fields = [['objects','物体'],['people','人物'],['pose','姿勢'],['action','動作'],['expression','表情'],['place','場所'],['composition','構図'],['light','光'],['diagram','図の内容'],['uncertainty','推定・不明な点']];
+      const extras = fields.map(([key,label]) => {
+        const wrapper = document.createElement('label'); wrapper.textContent = label;
+        const input = document.createElement('textarea'); input.className = 'gb-input'; input.rows = 2; input.style.width = '100%'; input.setAttribute('aria-label', label);
+        input.value = Array.isArray(old[key]) ? old[key].join('、') : old[key] || ''; wrapper.append(input); return {key,input,wrapper};
+      });
+      const split = value => value.split(/[、,\n]/).map(v => v.trim()).filter(Boolean);
+      const collect = () => ({...old, description: description.value, tags: split(tags.value),
+        ...Object.fromEntries(extras.map(({key,input}) => [key, ['objects','people'].includes(key) ? split(input.value) : input.value]))});
+      const initial = JSON.stringify(collect());
+      const original = document.createElement('p'); original.className = 'gb-section-desc'; original.style.whiteSpace = 'pre-wrap'; original.textContent = 'OCR原文：\n' + (row.ocr || '文字情報はありません');
+      const detail = document.createElement('p'); detail.className = 'gb-section-desc'; detail.textContent = 'AIの推定です。固有名詞・構図・表情などは原本で確認してください。' + (old.uncertainty || '');
+      const failure = document.createElement('p'); failure.setAttribute('role', 'alert');
+      const dirty = () => JSON.stringify(collect()) !== initial;
+      const cancel = button('キャンセル', () => editor.close('cancel'));
+      const save = button('保存', async () => {
+        save.disabled = true; failure.textContent = '';
+        const caption = collect(), snapshot = JSON.stringify(caption);
+        const generation = ++resultGeneration;
+        try {
+          const result = await run({ ...body('edit'), key: current.key, expectedRevision: current.revision, caption }, '画像の説明を保存', value => {
+            current = value;
+            if (JSON.stringify(collect()) === snapshot) { saved = true; editor.close('saved'); }
+            if (!closed) void refresh(generation);
+          });
+          if (!result) { save.disabled = false; failure.textContent = '保存できませんでした。入力は残っています。進行状況を確認して再試行してください。'; }
+        } catch (e) { save.disabled = false; failure.textContent = '保存できませんでした。' + e.message + '。入力は残っています。再試行してください。'; }
+      }, 'caption-save');
+      const editor = window.GBUI.createModal({ title: '画像の説明（AIの推定）', body: [detail, description, tags, ...extras.map(f => f.wrapper), original, failure], footer: [cancel, save],
+        extraClass: 'meldex-visual-manager',
+        initialFocus: () => description, closeOnEsc: true, closeOnOverlay: false,
+        onBeforeClose: () => saved || !dirty() || window.MeldexLocalModelUI.confirm('未保存の説明の変更を破棄しますか？', '変更の破棄') });
+      editor.open();
+    }
+
+    function render(result) {
+      if (closed) return;
+      entries.replaceChildren(); urls.forEach(url => URL.revokeObjectURL(url)); urls = [];
+      for (const row of result?.results || []) {
+        const card = document.createElement('section'); card.className = 'gb-section'; card.style.cssText = 'margin-bottom:var(--ui-space-3);overflow-wrap:anywhere';
+        card.dataset.visualResult = row.visual_id;
+        card.dataset.visualRevision = row.revision;
+        const title = document.createElement('h3'); title.textContent = `${row.name} · ${row.page}ページ${row.kind === 'page' ? '（全体）' : '（領域）'}`;
+        const image = document.createElement('img'); image.alt = '画像領域のサムネイル'; image.style.cssText = 'max-width:100%;max-height:160px;object-fit:contain';
+        card.append(title, image); void thumbnail(image, row, urls);
+        const summary = document.createElement('p'); summary.style.whiteSpace = 'pre-wrap'; summary.textContent = row.caption
+          ? '画像の説明（AIの推定）' + (row.reviewed ? '・確認済み' : '・未確認') + '：\n' + row.caption.description + '\nタグ：' + (row.caption.tags || []).join('、')
+          : '画像の説明は未生成です。'; card.append(summary);
+        if (row.caption) {
+          const details = document.createElement('details'), heading = document.createElement('summary'); heading.textContent = '物体・人物・構図・推定の詳細'; details.append(heading);
+          for (const [key,label] of [['objects','物体'],['people','人物'],['pose','姿勢'],['action','動作'],['expression','表情'],['place','場所'],['composition','構図'],['light','光'],['diagram','図の内容'],['uncertainty','推定・不明']]) {
+            const text = row.caption[key]; if (!text || !text.length) continue;
+            const value = document.createElement('p'); value.textContent = label + '：' + (Array.isArray(text) ? text.join('、') : text); details.append(value);
+          }
+          card.append(details);
+        }
+        if (row.score != null) { const score = document.createElement('p'); score.className = 'gb-section-desc'; score.textContent = '類似度：' + Number(row.score).toFixed(3); card.append(score); }
+        if (row.region_total) { const count = document.createElement('p'); count.textContent = '一致する領域：' + row.region_total + '件'; card.append(count); }
+        const original = document.createElement('p'); original.className = 'gb-section-desc'; original.textContent = 'OCR原文：' + (row.ocr || '文字情報はありません'); card.append(original);
+        const actions = document.createElement('div'); actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:var(--ui-space-2)';
+        actions.append(button('この領域を開く', safe(async () => { modal.close('open-result'); await openResult(row); }), 'reveal'));
+        if (capability.canIndex) {
+          actions.append(button('説明を生成', safe(async () => {
+            if (row.reviewed && !await window.MeldexLocalModelUI.confirm('確認・編集した説明を再生成しますか？取り消して元に戻せます。', '説明の再生成')) return;
+            const generation = ++resultGeneration;
+            await run({ ...body('caption'), key: row.key, expectedRevision: row.revision }, '画像の説明を生成', () => { if (!closed) void refresh(generation); });
+          }), 'caption-generate'));
+          actions.append(button('説明を確認・編集', safe(() => edit(row)), 'caption-edit'));
+          for (const [action, label] of [['review', '確認済みにする'], ['undo', '説明を元に戻す'], ['redo', '説明をやり直す']]) {
+            const actionButton = button(label, safe(() => {
+              const generation = ++resultGeneration;
+              return run({ ...body(action), key: row.key, expectedRevision: row.revision }, label, () => { if (!closed) void refresh(generation); });
+            }), 'caption-' + action);
+            actionButton.disabled = action === 'review' ? !row.caption : action === 'undo' ? !row.canUndo : !row.canRedo;
+            actions.append(actionButton);
+          }
+        }
+        card.append(actions); entries.append(card);
+        for (const child of (row.regions || []).slice(1, 5)) actions.append(button(child.page + 'ページの領域を開く', safe(async () => { modal.close('open-result'); await openResult(child); })));
+      }
+      if (!entries.childElementCount) { const empty = document.createElement('p'); empty.className = 'gb-section-desc'; empty.textContent = '索引・検索結果はありません。モデルと索引を確認してください。'; entries.append(empty); }
+    }
+    async function refresh(expected) {
+      if (closed || isFolder || (expected !== undefined && expected !== resultGeneration)) return;
+      const generation = ++resultGeneration;
+      const accept = result => { if (generation === resultGeneration) render(result); };
+      const result = await run({ ...body('read'), scope: 'page' }, '', accept, true);
+      if (result) accept(result);
+    }
+    async function search() {
+      if (!query.value.trim()) return;
+      const generation = ++resultGeneration;
+      await run({ ...body('search'), query: query.value, mode: mode.input.value, folder: path,
+        groupBooks: group.input.checked }, 'PDFの画像を検索', result => { if (generation === resultGeneration) render(result); });
+    }
+    async function index(scope, force = false, chosenPages = null) {
+      const generation = ++resultGeneration;
+      await run({ ...body('index'), scope, force, pages: chosenPages, captions: captions.input.checked,
+        ...(scope === 'region' ? { region: options.region.box, regionSpace: 'fraction' } : {}) }, 'PDFの画像索引を作成', result => {
+        if (!closed && generation === resultGeneration) { error.textContent = `${result.processed}ページを作成、${result.skipped}ページを再利用しました。`; void refresh(generation); }
+      });
+    }
+    const indexing = document.createElement('div'); indexing.style.cssText = 'display:flex;flex-wrap:wrap;gap:var(--ui-space-2)';
+    if (capability.canIndex) {
+      if (isFolder) indexing.append(button('このフォルダの索引を作成／再開', safe(() => index('folder')), 'index-folder'));
+      else {
+        indexing.append(button('このページの索引を作成', safe(() => index('page')), 'index-page'));
+        indexing.append(button('文書全体の索引を作成／再開', safe(() => index('document')), 'index-document'));
+        const regionButton = button('選択範囲の索引を追加', safe(() => index('region')), 'index-region'); regionButton.disabled = !options.region || !options.isPdf; indexing.append(regionButton);
+        indexing.append(button('文書全体の索引を作り直す', safe(() => index('document', true)), 'index-force'));
+        controls.append(pages);
+        indexing.append(button('指定ページの索引を作成／再開', safe(() => {
+          const chosen = new Set();
+          for (const part of pages.value.split(',')) {
+            const match = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/), first = Number(match?.[1]), last = Number(match?.[2] || match?.[1]);
+            if (!match || first < 1 || last < first || last > (scene()?.getPdfDocument()?.numPages || 1)) throw new Error('ページ指定を確認してください');
+            for (let n = first; n <= last; n++) { chosen.add(n); if (chosen.size > 10000) throw new Error('ページが多すぎます'); }
+          }
+          return index('pages', false, [...chosen]);
+        }), 'index-pages'));
+      }
+    }
+    const manage = document.createElement('div'); manage.style.cssText = 'display:flex;flex-wrap:wrap;gap:var(--ui-space-2)';
+    const managedModel = select('取得・削除するモデル', capability.models.map(m => [m.id, m.title]));
+    const modelStatus = document.createElement('p'); modelStatus.className = 'gb-section-desc'; modelStatus.dataset.modelStatus = '';
+    const updateModelStatus = async () => {
+      const latest = await request('');
+      const item = latest.models.find(m => m.id === managedModel.input.value);
+      modelStatus.textContent = `${item.title}：${item.installed ? '取得済み' : '未取得です。利用するには「モデルを取得…」からダウンロードしてください。'}\n${item.bytes.toLocaleString('ja-JP')} バイト（${(item.bytes / 1048576).toFixed(1)} MiB）／ライセンス：${item.license}`;
+    };
+    managedModel.input.addEventListener('change', () => void safe(updateModelStatus)());
+    model.input.addEventListener('change', () => { managedModel.input.value = model.input.value; void safe(updateModelStatus)(); });
+    captions.input.addEventListener('change', () => { if (captions.input.checked) { managedModel.input.value = 'qwen3vl'; void safe(updateModelStatus)(); } });
+    if (capability.canManageModels) {
+      manage.append(managedModel.wrapper, modelStatus, button('モデルを取得…', safe(async () => {
+        const latest = await request(''), item = latest.models.find(m => m.id === managedModel.input.value);
+        if (!await window.MeldexLocalModelUI.confirmInstall({ description: item.title + '\nライセンス：' + item.license + '（商用利用可。表示等の再配布条件を確認してください）。追加ソフトは承認後に別途導入します。', bytes: item.bytes })) return;
+        await run({ action: 'install', model: item.id }, '画像認識モデルの取得', () => { if (!closed) void safe(updateModelStatus)(); });
+      }), 'model-install'), button('モデルを削除…', safe(async () => {
+        if (!await window.MeldexLocalModelUI.confirm('Meldexで取得したモデルを削除しますか？索引・編集した説明・原本は残ります。', 'モデルの削除')) return;
+        await run({ action: 'remove', model: managedModel.input.value }, '画像認識モデルの削除', () => { if (!closed) void safe(updateModelStatus)(); });
+      }), 'model-remove'));
+    }
+    managedModel.input.value = model.input.value;
+    await updateModelStatus();
+    controls.append(model.wrapper, device.wrapper, captions.wrapper, indexing, query, mode.wrapper, group.wrapper,
+      button('検索', safe(search), 'search'), button('このページの索引・説明を表示', safe(refresh), 'read'), manage);
+    query.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void safe(search)(); } });
+    const close = button('閉じる', () => modal.close('close'));
+    modal = window.GBUI.createModal({ title: 'PDFの画像検索・説明', body: [heading, notice, controls, error, entries], footer: [close],
+      extraClass: 'meldex-visual-manager',
+      initialFocus: () => query, closeOnEsc: true, closeOnOverlay: true, onClose: () => { closed = true; urls.forEach(url => URL.revokeObjectURL(url)); } });
+    modal.open(); await safe(refresh)();
+  }
+  window.MeldexPdfVisual = { open, openFolder: folder => open({ folder }), openResult, reveal, thumbnail };
+  function initialReveal() {
+    const params = new URLSearchParams(location.search), page = Number(params.get('visualPage'));
+    if (!page || !params.has('visualBox')) return;
+    let box; try { box = JSON.parse(params.get('visualBox')); } catch (_) { return; }
+    scene()?.ready?.then(() => reveal({ path: scene().getPdfPath(), page, box })).catch(error => scene()?.flashStatus(error.message));
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialReveal, { once: true });
+  else initialReveal();
+})();
+
+;
+
 /* === viewer-ocr-controls.js === */
 ;
 /* Local OCR menu and shared progress tray integration. */
@@ -6882,6 +8349,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   'use strict';
   let capability = null;
   let engine = 'windows';
+  let device = 'cpu';
   let sceneGeneration = 0;
   const scene = () => window.MeldexViewerScene;
   const text = () => window.MeldexViewerTextLayer;
@@ -6891,20 +8359,69 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     && !window.MeldexRuntimeAdapter?.isDropboxMode?.()
     && !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
 
-  function dialog(message, mode = 'message') {
+  // Native startup deliberately defers the annotation service. OCR range
+  // selection is read-only and must work before that optional service loads.
+  let nativeRegion = null;
+  let regionDrag = null;
+  let regionOverlay = null;
+  function clearNativeRegion() {
+    regionOverlay?.remove(); regionOverlay = null; nativeRegion = null; regionDrag = null;
+  }
+  function selectedNativeRegion() {
+    if (!nativeRegion || !nativeRegion.media.isConnected) return null;
+    const target = currentTargets().find(t => t.media === nativeRegion.media);
+    if (!target || target.item.path !== nativeRegion.path) return null;
+    return { path: nativeRegion.path, page: nativeRegion.page, box: nativeRegion.box };
+  }
+  document.addEventListener('pointerdown', event => {
+    if (!capability?.canRecognize || !local() || window.MeldexViewerAnnotationScene || !event.shiftKey || event.button !== 0) return;
+    const target = currentTargets().find(t => t.media === event.target);
+    if (!target) return;
+    event.preventDefault(); event.stopImmediatePropagation(); clearNativeRegion();
+    window.getSelection()?.removeAllRanges();
+    regionDrag = { target, x: event.clientX, y: event.clientY, pointer: event.pointerId };
+    target.media.setPointerCapture?.(event.pointerId);
+  }, true);
+  document.addEventListener('pointermove', event => {
+    if (!regionDrag || event.pointerId !== regionDrag.pointer) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    const { target, x, y } = regionDrag;
+    const rect = target.media.getBoundingClientRect();
+    if (!rect.width || !rect.height) { clearNativeRegion(); return; }
+    const left = Math.max(rect.left, Math.min(x,event.clientX)), top = Math.max(rect.top, Math.min(y,event.clientY));
+    const right = Math.min(rect.right, Math.max(x,event.clientX)), bottom = Math.min(rect.bottom, Math.max(y,event.clientY));
+    if (!regionOverlay) {
+      regionOverlay = document.createElement('div');
+      regionOverlay.style.cssText = 'position:fixed;pointer-events:none;border:1px solid var(--accent);background:color-mix(in srgb,var(--accent) 20%,transparent);z-index:90';
+      regionOverlay.setAttribute('aria-hidden','true'); document.body.append(regionOverlay);
+    }
+    Object.assign(regionOverlay.style,{left:left+'px',top:top+'px',width:(right-left)+'px',height:(bottom-top)+'px'});
+    nativeRegion = { media:target.media, path:target.item.path, page:scene().isPdf()?target.item.pageNum:1,
+      box:[(left-rect.left)/rect.width,(top-rect.top)/rect.height,(right-left)/rect.width,(bottom-top)/rect.height] };
+  }, true);
+  document.addEventListener('pointerup', event => {
+    if (!regionDrag || event.pointerId !== regionDrag.pointer) return;
+    event.preventDefault(); event.stopImmediatePropagation(); regionDrag = null;
+  }, true);
+  document.addEventListener('pointercancel', clearNativeRegion, true);
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') clearNativeRegion(); }, true);
+
+  function dialog(message, mode = 'message', options = {}) {
     // Shared modal component, including keyboard/focus and narrow-screen rules.
     return new Promise(resolve => {
       const paragraph = document.createElement('p'); paragraph.textContent = message; paragraph.style.whiteSpace = 'pre-line';
-      const input = document.createElement('input'); input.className = 'gb-input'; input.setAttribute('aria-label', '検索する文字');
+      const isInput = mode === 'search' || mode === 'input';
+      const input = document.createElement('input'); input.className = 'gb-input'; input.setAttribute('aria-label', options.title || '検索する文字');
+      input.value = options.value || '';
       const ok = document.createElement('button'); ok.className = 'gb-btn gb-btn-primary'; ok.textContent = mode === 'search' ? '検索' : '決定';
       const cancel = document.createElement('button'); cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
-      let result = mode === 'search' ? null : false;
-      const modal = window.GBUI.createModal({ title: mode === 'search' ? '文書内を検索' : 'OCR',
-        body: mode === 'search' ? [paragraph, input] : [paragraph],
+      let result = isInput ? null : false;
+      const modal = window.GBUI.createModal({ title: options.title || (mode === 'search' ? '文書内を検索' : 'OCR'),
+        body: isInput ? [paragraph, input] : [paragraph],
         footer: mode === 'message' ? [ok] : [cancel, ok],
-        initialFocus: () => mode === 'search' ? input : cancel,
+        initialFocus: () => isInput ? input : cancel,
         onClose: () => resolve(result), closeOnEsc: true, closeOnOverlay: true });
-      ok.addEventListener('click', () => { result = mode === 'search' ? input.value : true; modal.close('submit'); });
+      ok.addEventListener('click', () => { result = isInput ? input.value : true; modal.close('submit'); });
       cancel.addEventListener('click', () => modal.close('cancel'));
       input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); ok.click(); } });
       modal.open();
@@ -6923,13 +8440,17 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     try { return window.parent.MeldexOperationProgress || window.MeldexOperationProgress; }
     catch (_) { return window.MeldexOperationProgress; }
   }
-  function job(body, label, { quiet = false } = {}) {
+  async function job(body, label, { quiet = false } = {}) {
+    if (body.action === 'ocr' && ['manga', 'book'].includes(body.engine)) {
+      capability = await request('');
+      if (!capability[body.engine]?.installed) return install(true);
+    }
     return progress().runRemoteJob({ endpoint: '/api/viewer-ocr', body, label, quiet,
       kind: body.action === 'install' ? 'download' : 'viewer-ocr',
       ownerFrame: window.frameElement, ownerDocument: document,
       onComplete: result => {
-        if (body.action === 'ocr') apply(result, body.path, true);
-        if (body.action === 'install' || body.action === 'remove') capability = { ...capability, manga: result };
+        if (['ocr', 'edit', 'undo', 'redo'].includes(body.action)) apply(result, body.path, true);
+        if (body.action === 'install' || body.action === 'remove') capability = { ...capability, [body.engine === 'book' ? body.engine : 'manga']: result };
       },
     });
   }
@@ -6948,18 +8469,19 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       if (target.item.path !== path) continue;
       const page = scene().isPdf() ? target.item.pageNum : 1;
       const recognized = result?.pages.find(item => item.page === page);
-      if (recognized && (replace || !target.media.parentElement.querySelector('.viewer-text-layer')?.textContent.trim())) {
+      if (recognized && (replace || recognized.preferred || !target.media.parentElement.querySelector('.viewer-text-layer')?.textContent.trim())) {
         text().ocr(target.media, recognized, path);
       }
     }
     text()?.updateIndicator();
   }
   async function onSceneChanged() {
+    clearNativeRegion();
     const generation = ++sceneGeneration;
     if (!capability || !local()) return;
     for (const target of currentTargets()) {
       const path = target.item.path;
-      if (target.media.parentElement.querySelector('.viewer-text-layer')?.textContent.trim()) continue;
+      await target.media._viewerNativeTextReady;
       const result = await job({ action: 'read', path, page: scene().isPdf() ? target.item.pageNum : 1, engine }, '', { quiet: true });
       if (generation !== sceneGeneration) return;
       apply(result, path);
@@ -6969,19 +8491,111 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const target = currentTargets()[0];
     if (!target) return;
     return job({ action: 'ocr', path: target.item.path, page: scene().isPdf() ? target.item.pageNum : 1,
-      scope, force, engine }, 'OCR');
+      scope, force, engine, device }, 'OCR');
   }
-  async function install() {
+  async function runPages() {
+    const target = currentTargets()[0];
+    if (!target) return;
+    const value = await dialog('例：1-3, 8, 12。再開時は保存済みのページを再利用します。', 'input', { title: '認識するページ' });
+    if (value == null) return;
+    const pages = new Set();
+    for (const part of value.split(',')) {
+      const match = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+      const first = Number(match?.[1]), last = Number(match?.[2] || match?.[1]);
+      if (!match || first < 1 || last < first || last > (scene().getPdfDocument()?.numPages || 0)) throw new Error('ページ指定を確認してください');
+      for (let page = first; page <= last; page++) { pages.add(page); if (pages.size > 10000) throw new Error('一度に指定できるのは10,000ページまでです'); }
+    }
+    return job({ action: 'ocr', path: target.item.path, scope: 'pages', pages: [...pages], engine, device }, '指定ページのOCR');
+  }
+  function runRegion(region, rotation) {
+    if (!region) throw new Error('Shiftを押して範囲をドラッグするか、文字を選択してください');
+    return job({ action: 'ocr', path: region.path, page: region.page, scope: 'region', region: region.box,
+      regionSpace: 'fraction', rotation, engine, device, force: true }, '選択範囲のOCR');
+  }
+  async function currentResult() {
+    const target = currentTargets()[0];
+    if (!target) return null;
+    const body = { path: target.item.path, page: scene().isPdf() ? target.item.pageNum : 1, engine };
+    const result = await job({ ...body, action: 'read' }, '', { quiet: true });
+    const page = result?.pages?.[0];
+    if (!page) throw new Error('先に文字を認識してください');
+    return { body, page };
+  }
+  async function correctHistory(action) {
+    const current = await currentResult();
+    if (current) return job({ ...current.body, action, expectedRevision: current.page.revision }, action === 'undo' ? 'OCR修正を元に戻す' : 'OCR修正をやり直す');
+  }
+  async function editText() {
+    const current = await currentResult();
+    if (!current) return;
+    const { body, page } = current;
+    const original = document.createElement('p');
+    original.className = 'gb-section-desc';
+    const doc = scene().getPdfDocument();
+    original.textContent = doc ? '埋め込み文字（元のPDF）：' + (await (await doc.getPage(page.page)).getTextContent()).items.map(item => item.str || '').join('') : '元画像は変更しません。修正は管理領域に保存します。';
+    const list = document.createElement('div');
+    const previous = document.createElement('button'); previous.className = 'gb-btn'; previous.textContent = '前の100行';
+    const next = document.createElement('button'); next.className = 'gb-btn'; next.textContent = '次の100行';
+    const save = document.createElement('button'); save.className = 'gb-btn gb-btn-primary'; save.textContent = '保存';
+    const cancel = document.createElement('button'); cancel.className = 'gb-btn'; cancel.textContent = 'キャンセル';
+    const edits = new Map();
+    let offset = 0;
+    const render = () => {
+      list.replaceChildren();
+      previous.disabled = offset === 0; next.disabled = offset + 100 >= page.lines.length;
+      page.lines.slice(offset, offset + 100).forEach((line, position) => {
+        const index = offset + position;
+        const label = document.createElement('label');
+        label.style.display = 'block';
+        label.textContent = `${index + 1}行目 ${line.warnings?.join('／') || ''}`;
+        const input = document.createElement('input'); input.className = 'gb-input'; input.value = edits.get(index) ?? line.text;
+        input.style.width = '100%';
+        input.addEventListener('input', () => edits.set(index, input.value));
+        label.append(input); list.append(label);
+      });
+    };
+    previous.addEventListener('click', () => { offset -= 100; render(); });
+    next.addEventListener('click', () => { offset += 100; render(); });
+    const modal = window.GBUI.createModal({ title: 'OCRの比較・文字修正', body: [original, list],
+      footer: [previous, next, cancel, save], initialFocus: () => cancel, closeOnEsc: true, closeOnOverlay: false });
+    cancel.addEventListener('click', () => modal.close('cancel'));
+    save.addEventListener('click', async () => {
+      const patches = [...edits].filter(([index, value]) => value !== page.lines[index].text).map(([line, value]) => ({ line, text: value }));
+      if (!patches.length) { modal.close('unchanged'); return; }
+      save.disabled = true;
+      try {
+        const saved = await job({ ...body, action: 'edit', patches, expectedRevision: page.revision }, 'OCRの文字修正');
+        if (saved) modal.close('saved');
+        else save.disabled = false;
+      } catch (error) { save.disabled = false; await dialog(error.message); }
+    });
+    render(); modal.open();
+  }
+  async function exportPdf() {
+    const target = currentTargets()[0];
+    if (!target) return;
+    const destination = await dialog('新しいPDFの保存先を入力してください。既存のファイルは上書きしません。', 'input',
+      { title: '検索可能なPDFを別名保存', value: target.item.path.replace(/\.pdf$/i, '-OCR.pdf') });
+    if (!destination) return;
+    const result = await job({ action: 'export', path: target.item.path, destination, engine }, '検索可能なPDFを別名保存');
+    if (!result) return;
+    await dialog(`保存しました：${result.path}${result.omittedVisibleLines ? '\n元の可視文字と重なる認識結果は重複を避けて除外しました。' : ''}`);
+  }
+  async function install(missing = false) {
     const status = await request('');
-    const bytes = status.manga.bytes;
+    const modelEngine = engine === 'book' ? engine : 'manga';
+    const bytes = status[modelEngine].bytes;
+    const description = modelEngine === 'book'
+      ? '書籍向け NDLOCR-Lite 2.0.0（CC BY 4.0／DINOv3追加条件、出典表示・利用条件の確認が必要）。モデルの文字一覧にない©・®・™は、端末に既にある書体と原画像の字形が十分に一致した場合だけ補助認識します。認識結果は原本と比較してください。'
+      : '縦書き・フキダシ用 Comic Text Detector（GPL-3.0）／Manga OCR（Apache-2.0）';
     // The exact pinned byte count is shown before the first download request.
-    const confirmed = await dialog(`縦書き・フキダシ用モデルを取得しますか？\n${bytes.toLocaleString('ja-JP')} バイト（${(bytes / 1048576).toFixed(1)} MiB）\nComic Text Detector（GPL-3.0）／Manga OCR。途中から再開できます。`, 'confirm');
+    const confirmed = await window.MeldexLocalModelUI.confirmInstall({ description: (missing ? 'このOCRモデルは未取得です。先にダウンロードしてください。\n' : '') + description, bytes, title: 'OCR' });
     if (!confirmed) return;
-    await job({ action: 'install', engine: 'manga' }, 'OCRモデルの取得');
+    await job({ action: 'install', engine: modelEngine }, 'OCRモデルの取得');
   }
   async function remove() {
     if (!await dialog('取得したOCRモデルを削除しますか？認識済みテキストは残ります。', 'confirm')) return;
-    await job({ action: 'remove', engine: 'manga' }, 'OCRモデルの削除');
+    await job({ action: 'remove', engine: engine === 'book' ? engine : 'manga' }, 'OCRモデルの削除');
   }
   async function search() {
     const query = await dialog('検索する文字を入力してください', 'search');
@@ -6994,8 +8608,12 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       if (capability && path) {
         const cached = await job({ action: 'read', path, scope: doc ? 'document' : 'page', engine }, '', { quiet: true });
         for (const page of cached?.pages || []) {
+          if (page.preferred) {
+            const index = matches.findIndex(match => match.page === page.page);
+            if (index >= 0) matches.splice(index, 1);
+          }
           const value = page.lines.map(line => line.text).join('');
-          if (value.normalize('NFKC').includes(query.normalize('NFKC')) && !matches.some(match => match.page === page.page)) matches.push({ page: page.page, text: value });
+          if (value.normalize('NFKC').toLocaleLowerCase().includes(query.normalize('NFKC').toLocaleLowerCase()) && !matches.some(match => match.page === page.page)) matches.push({ page: page.page, text: value });
         }
       }
       operation?.succeed();
@@ -7003,7 +8621,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       matches.sort((a, b) => a.page - b.page);
       const current = (scene()?.getIndex() || 0) + 1;
       const match = matches.find(item => item.page > current) || matches[0];
-      await scene().goToIndex(match.page - 1);
+      if (match.page !== current) await scene().goToIndex(match.page - 1);
       await Promise.all(currentTargets().map(target => target.media._viewerTextReady));
       await onSceneChanged();
       text().selectQuery(query);
@@ -7013,19 +8631,38 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   function menuItems() {
     const items = [{ label: '文書内を検索…', icon: 'search', action: safe(search) },
       { label: '認識範囲を表示', icon: 'scan', action: () => text().toggleBoxes() }];
+    const visualTarget = currentTargets()[0];
+    if (capability && local() && visualTarget) {
+      const selected = window.MeldexViewerHighlights?.getRegion?.() || selectedNativeRegion();
+      items.push({ label: 'PDFの画像検索・説明…', icon: 'image', action: safe(() => window.MeldexPdfVisual.open({
+        path: visualTarget.item.path, page: scene().isPdf() ? visualTarget.item.pageNum : 1, region: selected, isPdf: scene().isPdf(),
+      })) });
+    }
     if (!capability?.canRecognize || !local()) return items;
     const hasTarget = currentTargets().length > 0;
+    const selectedRegion = window.MeldexViewerHighlights?.getRegion?.() || selectedNativeRegion();
     items.push({ label: 'OCR', icon: 'scanText', items: [
       ...(hasTarget ? [{ label: scene().isPdf() ? 'このページ' : 'この画像', action: safe(() => run('page')) }] : []),
       ...(hasTarget && scene().isPdf() ? [{ label: '文書全体', action: safe(() => run('document')) }] : []),
+      ...(hasTarget && scene().isPdf() ? [{ label: 'ページを指定して認識／再開…', action: safe(runPages) }] : []),
+      ...(hasTarget ? [{ label: '選択範囲を再認識', action: safe(() => runRegion(selectedRegion, 0)) },
+        { label: '選択範囲を左に90度回して再認識', action: safe(() => runRegion(selectedRegion, 90)) },
+        { label: '選択範囲を右に90度回して再認識', action: safe(() => runRegion(selectedRegion, 270)) }] : []),
       ...(hasTarget ? [{ label: '再認識', action: safe(() => run('page', true)) }] : []),
       ...(hasTarget && scene().isPdf() ? [{ label: '全体を再認識', action: safe(() => run('document', true)) }] : []),
+      ...(hasTarget ? [{ label: '認識結果の比較・文字修正…', action: safe(editText) },
+        { label: 'OCR修正を元に戻す', action: safe(() => correctHistory('undo')) },
+        { label: 'OCR修正をやり直す', action: safe(() => correctHistory('redo')) }] : []),
+      ...(hasTarget && scene().isPdf() && capability.canExport ? [{ label: '検索可能なPDFを別名保存…', action: safe(exportPdf) }] : []),
       { type: 'separator' },
       ...(capability.windows ? [{ label: `${engine === 'windows' ? '● ' : ''}横書き（Windows）`, action: () => { engine = 'windows'; onSceneChanged(); } }] : []),
       { label: `${engine === 'manga' ? '● ' : ''}縦書き・フキダシ`, action: () => { engine = 'manga'; onSceneChanged(); } },
+      ...(capability.book ? [{ label: `${engine === 'book' ? '● ' : ''}書籍（NDLOCR-Lite v2）`, action: () => { engine = 'book'; onSceneChanged(); } },
+        { label: `${device === 'cpu' ? '● ' : ''}書籍OCRをCPUで処理`, action: () => { device = 'cpu'; } },
+        { label: `${device === 'gpu' ? '● ' : ''}書籍OCRをGPUで処理`, action: () => { device = 'gpu'; } }] : []),
       { type: 'separator' },
       ...(capability.canManageModels ? [{ label: 'OCRモデルを取得…', action: safe(install) }] : []),
-      ...(capability.canManageModels && (capability.manga.installed || capability.manga.downloadedBytes) ? [{ label: 'OCRモデルを削除…', action: safe(remove) }] : []),
+      ...(capability.canManageModels && (capability[engine === 'book' ? engine : 'manga']?.installed || capability[engine === 'book' ? engine : 'manga']?.downloadedBytes) ? [{ label: 'OCRモデルを削除…', action: safe(remove) }] : []),
     ] });
     return items;
   }
@@ -7056,15 +8693,15 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
 /* === viewer-media-seek.js === */
 ;
-/* viewer-media-seek.js — 下端ツールバーのシークバーを、動画・音声の再生位置に使う。
+/* viewer-media-seek.js — 上端ツールバーのシークバーを、動画・音声の再生位置に使う。
 
    これまでシークバー（#seek-bar）はフォルダ内の画像の位置（0〜枚数-1）専用だった。
    動画を開いた時もそのまま表示されるため、ドラッグしても再生位置が動かず「操作できない」
    状態になっていた（単独ビューワーで動画を1本だけ開くと最大値0で、何も起きない）。
    動画・音声を表示している間だけシークバーと件数表示を再生位置・再生時間へ切り替える。
 
-   ネイティブの <video controls> のシークバーは画面下端に出るため、下端ツールバーと
-   重なって掴みにくい。こちらは常に下端ツールバー上にあり、どの表示倍率でも同じ位置になる。
+   ネイティブの <video controls> のシークバーは画面下端に出る。こちらは常に上端ツールバー上に
+   あり（2026-11-24 ツールバーを上端へ移動。以前は下端で重なって掴みにくかった）、どの表示倍率でも同じ位置になる。
 
    公開: window.MeldexViewerMediaSeek */
 (function () {
@@ -7211,7 +8848,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (!isVideoInActiveLayer(video)) return;
     const scene = Scene();
     if (scene?.isPlaying?.()) {
-      scene.nextGroup();
+      if (typeof scene.advanceSlideshow === 'function') scene.advanceSlideshow();
+      else scene.nextGroup();
       scene.rescheduleSlideshow?.();
     }
   }
@@ -7381,7 +9019,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (!isAudioInActiveLayer(audio)) return;
     const scene = Scene();
     if (scene?.isPlaying?.()) {
-      scene.nextGroup();
+      if (typeof scene.advanceSlideshow === 'function') scene.advanceSlideshow();
+      else scene.nextGroup();
       scene.rescheduleSlideshow?.();
     }
   }
@@ -7422,7 +9061,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     audio.addEventListener('pause', onAudioPause);
     audio.addEventListener('ended', onAudioEnded);
 
-    // 下端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
+    // 上端ツールバーのシークバーを再生位置に使う（viewer-media-seek.js）。
     window.MeldexViewerMediaSeek?.attach?.(audio);
 
     wrap.append(icon, filename, audio);
@@ -7547,6 +9186,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   const API = Utils.API;
 
   const params = new URLSearchParams(location.search);
+  let autoplay = params.get('autoplay') === '1';
   let folderPath = (params.get('folder') || '').replace(/\\/g, '/');
   let pdfPath = params.get('pdf') || '';
   let singleFile = params.get('file') || '';  // 単一ファイル表示
@@ -7633,18 +9273,35 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   const storedMode = localStorage.getItem('viewer-mode');
   let mode = ['single', 'spread', 'manga'].includes(storedMode) ? storedMode : 'single';
   let firstSide = 'left';
+  // 1枚ずらし（見開きの組を全体で1ページずらす）。開いている間だけの表示状態で、保存しない。
+  // 開くファイル・表示モード・開始ページを変えたら元へ戻す。
+  let pairShift = 0;
   const PageState = window.MeldexViewerPageState;
+  function leadOffset() { return (PageState.leadingBlank(mode, firstSide) ? 1 : 0) ^ pairShift; }
+  function pdfPairStart(index) {
+    if (mode === 'single') return index;
+    const offset = leadOffset();
+    return index < offset ? 0 : offset + Math.floor((index - offset) / 2) * 2;
+  }
   function preferenceIdentity() { return pdfPath || singleFile || folderPath || sheetContextId || 'local'; }
   function savePageSettings(patch) {
     const ok = PageState.write(preferenceIdentity(), patch);
     window.dispatchEvent(new CustomEvent('viewer-page-settings-save', { detail: { ok } }));
     if (!ok) flashStatus('表示設定を保存できませんでした。もう一度操作してください');
+    else reportDisplaySettingSaved();
     return ok;
+  }
+  function reportDisplaySettingSaved() {
+    // 別の保存失敗は消さず、この設定の再試行が成功した時だけ更新する。
+    if (document.getElementById('hud-status')?.textContent === '表示設定を保存できませんでした。もう一度操作してください') {
+      flashStatus('表示設定を保存しました', 1500);
+    }
   }
   // 設定を書けない時は表示だけ先に変えない。次の同じ操作で再試行できる。
   function saveDisplayPreference(key, value) {
     try {
       localStorage.setItem(key, value);
+      reportDisplaySettingSaved();
       return true;
     } catch (_) {
       flashStatus('表示設定を保存できませんでした。もう一度操作してください', 5000);
@@ -7652,6 +9309,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     }
   }
   function restorePageSettings() {
+    pairShift = 0;
     const saved = PageState.read(preferenceIdentity());
     mode = ['single', 'spread', 'manga'].includes(saved.mode) ? saved.mode : PageState.defaultMode(preferenceIdentity(), storedMode);
     firstSide = ['left', 'right'].includes(saved.firstSide) ? saved.firstSide : (mode === 'manga' ? 'left' : 'right');
@@ -7693,6 +9351,15 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     await prepareNativeInitialTarget();
     if (isPdf) await PdfRenderer.ensurePdfjs();
   })();
+
+  function pdfLoadErrorMessage(error) {
+    const status = Number(error?.status);
+    if (status === 401 || status === 403) return 'PDFを開く権限を確認して、もう一度お試しください。';
+    if (status === 404) return 'PDFが見つかりません。保存場所を確認してください。';
+    if (error?.name === 'InvalidPDFException') return 'PDFの内容を読み取れませんでした。ファイルを確認してください。';
+    if (error?.name === 'PasswordException') return 'このPDFはパスワードで保護されています。開けるPDFを選んでください。';
+    return 'PDFを読み込めませんでした。接続や保存先を確認して、再試行してください。';
+  }
 
   function showViewerLoading(message = '読み込み中...') {
     const token = ++viewerLoadingToken;
@@ -7876,7 +9543,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (!sheetContextId || message?.contextId !== sheetContextId) return false;
     if (message.boundary) {
       clearTimeout(sheetContextTimer);
-      showViewerStableState('empty', message.message || 'これ以上の画像はありません', requestSheetContext);
+      const messageText = message.message || 'これ以上の画像はありません';
+      if (items.length) flashStatus(messageText, 2500);
+      else showViewerStableState('empty', messageText, requestSheetContext);
       return true;
     }
     const nextItems = Array.isArray(message.images)
@@ -7941,6 +9610,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   async function refreshSingleFileFolderItems(parentFolder, fileName, filePath, loadToken) {
+    if (loadToken !== collectionLoadToken) return;
     let data = [];
     try {
       data = await Utils.fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(parentFolder) + '&include_videos=1&include_audio=1');
@@ -8018,8 +9688,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
         applyFit();
       } catch (e) {
         if (generation !== targetGeneration) return false;
-        showViewerStableState('error', 'PDFを読み込めませんでした: ' + (e?.message || e), () => retryTarget(generation));
-        document.getElementById('hud-info').textContent = 'PDF読み込み失敗: ' + e.message;
+        const message = pdfLoadErrorMessage(e);
+        showViewerStableState('error', message, () => retryTarget(generation));
+        document.getElementById('hud-info').textContent = message;
         return false;
       }
     } else if (isMulti) {
@@ -8070,13 +9741,15 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     }
     if (items.length > 0) {
       await showGroup(idx);
+      if (generation !== targetGeneration) return false;
       updateHud();
       if (deferredSingleFileFolderRefresh) {
         const runDeferredRefresh = deferredSingleFileFolderRefresh;
         deferredSingleFileFolderRefresh = null;
         setTimeout(runDeferredRefresh, 450);
       }
-      pause();
+      if (autoplay) play();
+      else pause();
     }
     return true;
   }
@@ -8110,6 +9783,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   // fitMode・表示モード(mode)は維持する。ページ遷移は行わない。
   async function reopenWithUrl(urlString) {
     const sp = new URL(String(urlString || ''), location.origin).searchParams;
+    autoplay = sp.get('autoplay') === '1';
     if (window.MeldexViewerAnnotationNotes?.hasUnsaved?.()) flashStatus('未保存のアノテートがあります');
     pause();
     showGroupToken++;
@@ -8209,11 +9883,11 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const a = items[startIdx];
     if (!a) return [startIdx];
     if (isPdf) {
-      if (startIdx === 0 && PageState.leadingBlank(mode, firstSide)) return [0];
+      if (startIdx === 0 && leadOffset() === 1) return [0];
       if (startIdx + 1 < items.length) return [startIdx, startIdx + 1];
       return [startIdx];
     }
-    if (startIdx === 0 && PageState.leadingBlank(mode, firstSide)) return [0];
+    if (startIdx === 0 && leadOffset() === 1) return [0];
     // 動画・音声は見開き/マンガモードでも常に単体表示
     if (a.type === 'video' || a.type === 'audio') return [startIdx];
     // 画像: 縦長2枚連続→見開き
@@ -8334,7 +10008,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (newIdx < 0) newIdx = items.length - 1;
     if (newIdx >= items.length) newIdx = 0;
     // PDF見開き: 1ページ目は単体、以降は 2-3 / 4-5 相当の組に調整
-    if (isPdf) newIdx = PageState.pdfStart(newIdx, mode, firstSide);
+    if (isPdf) newIdx = pdfPairStart(newIdx);
     if (mode === 'single') {
       if (!isPdf) loadImageMeta(items[newIdx]);
     } else {
@@ -8468,7 +10142,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       window.MeldexViewerAnnotations?.onSceneChanged?.();
       if (!window.MeldexViewerAnnotations) void window.MeldexViewerHighlights?.loadNativeExisting?.();
       if (isPdf) layer.querySelectorAll('canvas.page-canvas').forEach(canvas => {
-        canvas._viewerTextReady = window.MeldexViewerTextLayer?.pdf(canvas, pdfDoc, canvas._viewerPageNum, zoom, pdfPath)
+        canvas._viewerNativeTextReady = window.MeldexViewerTextLayer?.pdf(canvas, pdfDoc, canvas._viewerPageNum, zoom, pdfPath);
+        canvas._viewerTextReady = canvas._viewerNativeTextReady
           .then(() => window.MeldexViewerOcr?.onSceneChanged())
           .catch(error => console.warn('テキストを読み込めませんでした', error));
       });
@@ -8479,7 +10154,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
       window.MeldexStandaloneNative?.markReady();
     };
     if (media.length > 0) {
-      Promise.all([...media].map(el => {
+      await Promise.all([...media].map(el => {
         if (el.tagName === 'VIDEO') return window.MeldexViewerVideo.waitForVideoReady(el);
         if (el.tagName === 'AUDIO') return window.MeldexViewerAudio.waitForAudioReady(el);
         return waitForViewerImage(el);
@@ -8534,7 +10209,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (prev < 0) prev = items.length - 1;
     if (!isPdf) await Promise.all([items[prev], items[prev - 1]].filter(Boolean).map(loadImageMeta));
     if (mode !== 'single' && !isPdf && prev > 0 && items[prev] && items[prev-1] && Utils.isPortrait(items[prev]) && Utils.isPortrait(items[prev-1])) prev--;
-    if (isPdf) prev = PageState.pdfStart(prev, mode, firstSide);
+    if (isPdf) prev = pdfPairStart(prev);
     showGroup(prev);
   }
 
@@ -8555,6 +10230,10 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     button.innerHTML = viewerIcon('play');
     button.setAttribute('aria-label', '再生');
   }
+  function isPlaybackActive() {
+    const media = document.querySelector('.layer.show video, .layer.show audio');
+    return media ? !media.paused && !media.ended : playing;
+  }
   function togglePlay() {
     // 動画・音声表示中はスライドショーのタイマーではなくメディア自体の再生/一時停止を
     // 切り替える（ビューワー残課題修正計画 2026-08-04「4. 動画ファイル対応」。音声は
@@ -8571,17 +10250,27 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   function scheduleNext() {
     clearTimeout(timer);
     if (!playing) return;
-    timer = setTimeout(() => { reversePlay ? prevGroup() : nextGroup(); scheduleNext(); }, speed * 1000);
+    // 動画・音声は自身の終了イベントから送る。画像用タイマーでは途中で飛ばさない。
+    if (['video', 'audio'].includes(items[idx]?.type)) return;
+    timer = setTimeout(() => { advanceSlideshow(); scheduleNext(); }, speed * 1000);
+  }
+  function advanceSlideshow() {
+    return reversePlay ? prevGroup() : nextGroup();
   }
 
   // 1枚ずつシフト（見開き時に見開きの組み合わせを1枚ずらす）
+  // 見開きでは組み合わせを全体で1ページずらし、1ページ先（前）から表示する。
+  // 例: p01, p02-p03, p04-p05 で p02-p03 を表示中に「1枚進む」→ p01-p02, p03-p04, p05 の p03-p04。
+  // PDFは組の始まりを規則で決め直すため、ずれを持たないと元の組へ戻っていた。
   function shiftForward() {
     if (mode === 'single') { nextGroup(); return; }
-    showGroup(idx + 1);
+    pairShift ^= 1;
+    showGroup(Math.min(items.length - 1, idx + 1));
   }
   function shiftBackward() {
     if (mode === 'single') { prevGroup(); return; }
-    showGroup(idx - 1);
+    pairShift ^= 1;
+    showGroup(Math.max(0, idx - 1));
   }
 
   // 画像要素にフィットモード+ズームを適用（width/heightで直接サイズ指定）
@@ -8715,10 +10404,10 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     updateViewerPositionControls();
     const layer = document.getElementById('layer' + activeLayer);
     const canvases = layer ? Array.from(layer.querySelectorAll('canvas.page-canvas')) : [];
-    canvases.forEach(canvas => {
+    return Promise.all(canvases.map(canvas => {
       const pageNum = canvas._viewerPageNum;
       if (!pageNum || !pdfDoc) return;
-      PdfRenderer.refitCanvas(canvas, pdfDoc, pageNum, zoom)
+      return PdfRenderer.refitCanvas(canvas, pdfDoc, pageNum, zoom)
         .then(() => {
           cachePdfCanvas(pageNum + '_' + zoom.toFixed(4), canvas);
           // refitCanvas()はasync（canvas.style.width/heightの更新が非同期）のため、
@@ -8727,7 +10416,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
           applyPan();
         })
         .catch(() => {});
-    });
+    }));
   }
 
   // リサイズ後の非破壊PDF再フィット。fitMode==='none'では倍率を変えない。
@@ -8758,6 +10447,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     if (!flashStatusTimer) flashStatusRestore = el.textContent;
     clearTimeout(flashStatusTimer);
     el.textContent = msg;
+    document.getElementById('hud-info').hidden = !hudVisible;
     document.getElementById('hud').classList.remove('hidden');
     flashStatusTimer = setTimeout(() => {
       el.textContent = flashStatusRestore;
@@ -8776,9 +10466,10 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   }
 
   function updateHud() {
+    document.getElementById('hud-info').hidden = !hudVisible;
     const fitLabels = {original_contain:'原寸（収める）',contain:'全体',width:'幅',height:'高さ',none:'原寸'};
     const info = [isPdf ? 'PDF: ' + pdfPath.split('/').pop() : isSingle ? singleFile.split('/').pop() : '画像: ' + items.length + '枚'];
-    info.push('モード: ' + ({single:'単体',spread:'見開き',manga:'マンガ'}[mode] || mode));
+    info.push('モード: ' + ({single:'単ページ',spread:'見開き_右へ',manga:'見開き_左へ'}[mode] || mode));
     info.push('フィット: ' + (fitLabels[fitMode] || fitMode));
     if (!isPdf) info.push('再生速度: ' + speed.toFixed(1) + 's' + (reversePlay ? ' (逆順)' : ''));
     if (isPdf) info.push('ズーム: ' + Math.round(zoom * 100) + '%');
@@ -8808,9 +10499,13 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
   function setMode(nextMode) {
     if (!['single', 'spread', 'manga'].includes(nextMode)) return;
+    if (!savePageSettings({ mode: nextMode, firstSide })) {
+      document.getElementById('sel-mode').value = mode;
+      return false;
+    }
     mode = nextMode;
+    pairShift = 0;
     document.getElementById('sel-mode').value = mode;
-    savePageSettings({ mode, firstSide });
     notifyPageState();
     if (isPdf) applyFit();
     if (refreshCurrentGroupInPlace()) return;
@@ -8819,8 +10514,9 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
 
   function setFirstSide(value) {
     if (!['left', 'right'].includes(value)) return;
+    if (!savePageSettings({ mode, firstSide: value })) return false;
     firstSide = value;
-    savePageSettings({ mode, firstSide });
+    pairShift = 0;
     notifyPageState();
     if (!refreshCurrentGroupInPlace()) showGroup(idx);
   }
@@ -8855,6 +10551,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   // 2026-08-04「2. カーソル位置中心のホイールズーム」）。PDFはcanvasのbacking storeだけ更新、
   // 画像/動画はstyle.width/heightだけ再計算する。clientX/Yを渡すとカーソル位置を中心にズームする
   // （渡さない場合は#display中心を基準にする）。
+  // PDFでは再描画完了のPromiseを返す。位置の復元はこれを待ってからパンを適用する。
   function setZoomAt(clientX, clientY, requestedZoom) {
     if (items.length === 0) return;
     const oldZoom = zoom;
@@ -8867,7 +10564,8 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     const cX = point.x;
     const cY = point.y;
     const oldPanX = panX, oldPanY = panY;
-    if (isPdf) { pdfAutoFit = false; applyPdfZoomInPlace(targetZoom); }
+    let rendering;
+    if (isPdf) { pdfAutoFit = false; rendering = applyPdfZoomInPlace(targetZoom); }
     else { zoom = targetZoom; reapplyMediaFitStyle(); }
     const k = targetZoom / oldZoom; // ズーム前後の倍率比
     // newPan = c − k*(c − oldPan)
@@ -8877,6 +10575,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     applyPan();
     updateViewerPositionControls();
     updateHud();
+    return rendering;
   }
   // ボタン・キー・ホイールの段階ズーム。画面上の倍率で1.2倍ずつ変え、原寸（100%）をまたぐ時は
   // 一度100%で止める。
@@ -8916,6 +10615,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   function toggleHud() {
     if (!saveDisplayPreference('viewer-hud', !hudVisible)) return;
     hudVisible = !hudVisible;
+    document.getElementById('hud-info').hidden = !hudVisible;
     document.getElementById('hud').classList.toggle('hidden', !hudVisible);
     document.getElementById('btn-hud').classList.toggle('active', hudVisible);
   }
@@ -9427,7 +11127,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   window.MeldexViewerScene = {
     ready, icon: viewerIcon,
     // 再生・ナビゲーション
-    pause, play, togglePlay, toggleReversePlay, rescheduleSlideshow: scheduleNext,
+    pause, play, togglePlay, toggleReversePlay, advanceSlideshow, rescheduleSlideshow: scheduleNext,
     isReversePlay: () => reversePlay,
     prevGroup, nextGroup, shiftBackward, shiftForward, goToIndex, prevFolder, nextFolder,
     // 表示状態の参照
@@ -9441,10 +11141,10 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     ensureItemUrl,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
     getPdfDocument: () => pdfDoc, getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
-    getFitMode: () => fitMode, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,
+    getFitMode: () => fitMode, isPdfAutoFit: () => pdfAutoFit, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,
     getFlipH: () => flipH, getFlipV: () => flipV,
     getRotateDeg: () => rotateDeg, isBgBlur: () => bgBlur, isHudVisible: () => hudVisible,
-    getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing,
+    getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing, isPlaybackActive,
     isSheetContext: () => !!sheetContextId,
     // 表示状態の変更・その他
     setMode, setFitMode, cycleFit, zoomIn, zoomOut, zoomAt, setZoomAt, resetZoom,
@@ -9580,6 +11280,53 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     install();
   }
 })(window);
+
+;
+
+/* === viewer-annotation-entry.js === */
+;
+/* 注釈を初めて選んだ時も、単独版の遅延読込を完了してから同じ操作を実行する。 */
+(function () {
+  'use strict';
+  let pendingViewerAnnotationLoad = null;
+  let viewerAnnotationEntryFailed = false;
+
+  function ensureReady() {
+    const capability = window.MeldexViewerCloudFileOpen?.annotationCapability?.();
+    if (capability?.available === false) return Promise.reject(new Error(capability.reason));
+    if (window.MeldexViewerAnnotations) return Promise.resolve(window.MeldexViewerAnnotations);
+    if (!window.MeldexStandaloneNative) return Promise.reject(new Error('アノテートを読み込めませんでした'));
+    if (!pendingViewerAnnotationLoad) {
+      pendingViewerAnnotationLoad = window.MeldexStandaloneNative.loadFeature('annotations').then(async () => {
+        const controller = window.MeldexViewerAnnotations;
+        if (!controller) throw new Error('アノテートを読み込めませんでした');
+        await controller.load();
+        return controller;
+      }).finally(() => { pendingViewerAnnotationLoad = null; });
+    }
+    return pendingViewerAnnotationLoad;
+  }
+
+  function toggle(fromShortcut = false) {
+    const apply = controller => {
+      const result = fromShortcut ? controller.toggleFromShortcut() : controller.toggle();
+      if (viewerAnnotationEntryFailed) {
+        viewerAnnotationEntryFailed = false;
+        window.MeldexViewerScene?.flashStatus?.('アノテートを開きました', 1500);
+      }
+      return result;
+    };
+    // 通常の本体・読込済みの操作は同じイベント内で反映する。
+    if (window.MeldexViewerAnnotations) return apply(window.MeldexViewerAnnotations);
+    return ensureReady().then(apply).catch(error => {
+      viewerAnnotationEntryFailed = true;
+      window.MeldexViewerScene?.flashStatus?.('アノテートを開けませんでした: ' + error.message, 5000);
+      return false;
+    });
+  }
+
+  window.MeldexViewerAnnotationEntry = Object.freeze({ ensureReady, toggle });
+})();
 
 ;
 
@@ -9729,6 +11476,7 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
     button.dataset.e2eId = `${appId}-always-on-top`;
     button.id = `${appId}-always-on-top-button`;
     let enabled = !!status.enabled;
+    let lastRequestFailed = false;
     applyState(button, enabled);
 
     button.addEventListener('click', async () => {
@@ -9739,7 +11487,12 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
         enabled = !!result?.enabled;
         applyState(button, enabled);
         writeStored(appId, enabled);
+        if (lastRequestFailed) {
+          lastRequestFailed = false;
+          root.showStatus?.(enabled ? '最前面表示に切り替えました' : '最前面表示を解除しました', false);
+        }
       } catch (error) {
+        lastRequestFailed = true;
         if (typeof root.showStatus === 'function') {
           root.showStatus('最前面表示を切り替えられませんでした', true);
         }

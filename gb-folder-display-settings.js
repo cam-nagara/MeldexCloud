@@ -9,7 +9,7 @@
    - フィルタ・検索の条件はフォルダごとにしない（従来どおり端末内の全体の値）。 */
 (function (global) {
   'use strict';
-  const LAYOUTS = ['grid', 'waterfall', 'hflow', 'list'];
+  const LAYOUTS = ['grid', 'waterfall', 'hflow', 'list', 'list-small'];
   const BOOL_KEYS = ['showThumb', 'showName', 'showSize', 'showDate', 'showType', 'showDimensions', 'showRating', 'showTags'];
   const DISPLAY_KEYS = BOOL_KEYS.concat(['tagDisplayLimit']);
   const DISPLAY_DEFAULTS = { showName: true, showDate: true, showType: true, showSize: false,
@@ -111,6 +111,10 @@
     const value = effective(path);
     try { if (typeof _folderLayout !== 'undefined') _folderLayout = value.layout; } catch {}
     try { if (typeof _folderZoom !== 'undefined') _folderZoom = value.thumbnailPx / 120; } catch {}
+    // サブパネルなど独立した面をつないでいる間は、メインのフォルダパネルの表示形式の切替には触らない。
+    let independent = false;
+    try { independent = typeof _folderIsIndependentSurface === 'function' && _folderIsIndependentSurface(); } catch {}
+    if (independent) return value;
     const select = document.getElementById('folder-layout-select');
     if (select) select.value = value.layout;
     global.syncFolderLayoutControl?.();
@@ -127,6 +131,9 @@
     if (current.key !== key(path)) return null;
     return applyToPanel(path);
   }
+
+  // 面（メイン／サブパネル）のつなぎ替えで、現在のフォルダだけを合わせる（読み込み・画面への反映はしない）。
+  function bind(path) { current = { path: path || '', key: key(path) }; }
 
   function currentPath() { return current.path; }
 
@@ -214,7 +221,7 @@
   function forget(path) { if (path) cache.delete(key(path)); else cache.clear(); }
 
   global.MeldexFolderDisplaySettings = {
-    DISPLAY_KEYS, LAYOUTS, activate, load, update, flush, effective, hasSaved, displayConfig,
+    DISPLAY_KEYS, LAYOUTS, activate, bind, load, update, flush, effective, hasSaved, displayConfig,
     currentPath, globalDefaults, forget, sanitize,
   };
 

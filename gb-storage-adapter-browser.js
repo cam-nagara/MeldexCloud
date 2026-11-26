@@ -172,8 +172,9 @@
       if (level === 'error') console.warn('[BrowserSystemStorage]', detail.message, { kind, documentId, operation });
     }
 
-    async listDocuments(kind) {
+    async listDocuments(kind, options) {
       const contract = _systemContract();
+      const prefix = String(options?.documentIdPrefix || '');
       const segment = contract?.kindSubpathSegment
         ? contract.kindSubpathSegment(kind)
         : _systemSegment(kind, '管理データ種別');
@@ -191,6 +192,7 @@
       for (const entry of entries) {
         if (entry?.kind !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
         const documentId = String(entry.name).slice(0, -5);
+        if (prefix && !documentId.startsWith(prefix)) continue;
         try {
           if (contract?.sanitizeDocumentId) contract.sanitizeDocumentId(documentId);
           else _systemSegment(documentId, '管理データID');

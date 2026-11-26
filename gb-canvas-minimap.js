@@ -316,6 +316,12 @@ function _bdDrawPreviewMinimap() {
 
 // ノード/接続線の静的レイヤをオフスクリーンへ描画 (bd.nodes 変化時のみ呼ばれる)
 function _bdRenderMinimapCache(offscreen, W, H, bounds, scale, ox, oy, accentColor, bgFallback) {
+  const draw = () => _bdRenderMinimapCacheNow(offscreen, W, H, bounds, scale, ox, oy, accentColor, bgFallback);
+  if (typeof bdWithNormalizedBoardUiState === 'function') return bdWithNormalizedBoardUiState(draw);
+  return draw();
+}
+
+function _bdRenderMinimapCacheNow(offscreen, W, H, bounds, scale, ox, oy, accentColor, bgFallback) {
   const ctx = offscreen.getContext('2d');
   const renderContext = _bdMinimapRenderContext();
   ctx.setTransform(1, 0, 0, 1, 0, 0);

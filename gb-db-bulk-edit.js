@@ -330,6 +330,38 @@ function _dbUndoBulkPropEdit(dbPath, prop, beforeSnapshots, afterSnapshots, ctx)
   );
 }
 
+// ゴミ箱へ移したトピック（シートの行）を戻す。同じ名前・同じIDのトピックが既にある時は、ファイルと同じ
+// 共通のダイアログ（スキップ／置き換え／両方残す）でたずねる。{ restored:[{ref,value}], failed:[ref], skipped:[ref] } を返す。
+async function _dbRestoreTrashedEntries(refs) {
+  const list = (refs || []).filter(ref => ref?.trash_name);
+  const out = { restored: [], failed: [], skipped: [] };
+  const restoreMany = window.MeldexRestoreConflict?.restoreTrashRefs;
+  if (typeof restoreMany === 'function') {
+    const outcomes = await restoreMany(list);
+    list.forEach((ref, index) => {
+      const outcome = outcomes[index];
+      if (outcome?.ok && outcome.skipped) out.skipped.push(ref);
+      else if (outcome?.ok) out.restored.push({ ref, value: outcome.value || {} });
+      else out.failed.push(ref);
+    });
+    return out;
+  }
+  // 共通の復元の部品が無い画面（単独アプリなど）: 従来どおり1件ずつ。競合は失敗として残る。
+  for (const ref of list) {
+    try {
+      const value = await apiPost('/outliner/restore', {
+        trash_name: ref.trash_name,
+        ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
+      });
+      out.restored.push({ ref, value: value || {} });
+    } catch {
+      out.failed.push(ref);
+    }
+  }
+  return out;
+}
+if (typeof window !== 'undefined') window.MeldexSheetRowRestore = { restore: _dbRestoreTrashedEntries };
+
 function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
   if (typeof historyPush !== 'function' || !deletedItems.length) return;
   const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
@@ -356,26 +388,31 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
   historyPush(
     `一括削除: ${historyItems.length} 件`,
     async () => {
-      const failedRefs = [];
-      for (const ref of trashRefs) {
-        try {
-          await apiPost('/outliner/restore', {
-            trash_name: ref.trash_name,
-            ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
-          });
-        } catch {
-          failedRefs.push(ref);
-          continue;
+      const outcome = await _dbRestoreTrashedEntries(trashRefs);
+      for (const { ref, value } of outcome.restored) {
+        // 別名・新しいIDで戻した時（両方残す）は、やり直し（もう一度の削除）が戻した方を指すように覚え直す
+        const item = historyItems.find(candidate => candidate.path === ref.path && candidate.name === ref.name);
+        let restoredPath = ref.path;
+        if (item && value.renamed && value.restored_path) {
+          const fileName = String(value.restored_path).split('/').pop();
+          restoredPath = String(item.path || '').replace(/[^/]+$/, fileName);
+          item.path = restoredPath;
+          item.name = fileName.replace(/\.md$/i, '');
         }
+        if (item && value.entry_id) item.entry_id = value.entry_id;
         try {
           if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryRestored === 'function') {
-            await window.GbDbCalendarSync.onEntryRestored(dbPath, ref.path);
+            await window.GbDbCalendarSync.onEntryRestored(dbPath, restoredPath);
           }
         } catch {}
       }
-      trashRefs = failedRefs;
+      // 戻さなかった分（失敗・利用者がスキップ）はゴミ箱に残る。もう一度の取り消しで選び直せる。
+      trashRefs = outcome.failed.concat(outcome.skipped);
       await refresh(true);
-      if (failedRefs.length) throw new Error(`${failedRefs.length} 件のトピックを復元できませんでした`);
+      if (outcome.failed.length) throw new Error(`${outcome.failed.length} 件のトピックを復元できませんでした`);
+      if (outcome.skipped.length && typeof showStatus === 'function') {
+        showStatus(`${outcome.skipped.length} 件は戻さず、ゴミ箱に残しました`);
+      }
     },
     async () => {
       const redoEntries = historyItems.map(item => ({

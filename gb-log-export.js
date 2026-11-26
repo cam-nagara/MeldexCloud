@@ -790,8 +790,10 @@
   const SCHEDULE_INCIDENT_ROUTES = /^\/cal\/(?:events|tasks|calendars|shifts|time|schedule-templates|history)(?:\/|$)/;
   // フォルダツリー・フォルダパネルのファイル操作（作成・改名・移動・削除・復元・複製・貼り付け・リンク・アイコン）の
   // 失敗も同じ記録へ残す（2026-11-22 M-014 フォルダ網羅テスト: 改名の保存の失敗が記録0件だった）。
-  const FOLDER_INCIDENT_ROUTES = /^\/(?:outliner\/(?:add|rename|move|delete|delete-batch|restore|duplicate|save-as)|folder-links(?:\/[\w-]+)*|trash\/restore|file-icon|folder-display)(?:\/|$)/;
+  const FOLDER_INCIDENT_ROUTES = /^\/(?:outliner\/(?:add|rename|move|move-batch|delete|delete-batch|restore|duplicate|save-as)|upload-files?|folder-links(?:\/[\w-]+)*|trash\/restore|file-icon|folder-display|global-tags\/target)(?:\/|$)/;
   const CHAT_INCIDENT_ROUTES = /^\/(?:chat|cli-chat|chat_rules)(?:\/|$)/;
+  // 画面内で失敗を扱うアノテートと撮影も、重複通知とは別に本文を含めず記録する。
+  const ANNOTATION_INCIDENT_ROUTES = /^\/(?:annotations|annotation\/screenshot)(?:\/|$)/;
   const SHEET_INCIDENT_LOCAL_KEY = 'meldex:sheet-incidents';
   const _sheetIncidentRecent = new Map();
   function _incidentRoute(path) {
@@ -855,7 +857,7 @@
       _sheetIncidentRecent.set(fingerprint, now);
       if (_sheetIncidentRecent.size > 200) _sheetIncidentRecent.delete(_sheetIncidentRecent.keys().next().value);
       _push(operationLogs, { label: /^(chat|cli-chat)/.test(entry.op) ? 'チャットの問題' : 'シートの問題', detail: { kind: entry.kind, op: entry.op, endpoint: entry.endpoint, status: entry.status } });
-      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+      if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() || window.MeldexStandaloneNative) {
         try {
           const list = JSON.parse(localStorage.getItem(SHEET_INCIDENT_LOCAL_KEY) || '[]');
           list.push({ time: _now(), ...entry });
@@ -877,7 +879,8 @@
     if (!route || route.startsWith('/diagnostics') || route.startsWith('/debug-log')) return;
     const schedule = SCHEDULE_INCIDENT_ROUTES.test(route);
     const chat = CHAT_INCIDENT_ROUTES.test(route);
-    if (!schedule && !chat && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)) return;
+    if (!schedule && !chat && !SHEET_INCIDENT_ROUTES.test(route) && !FOLDER_INCIDENT_ROUTES.test(route)
+      && !ANNOTATION_INCIDENT_ROUTES.test(route)) return;
     const method = String(opts?.method || 'GET').toUpperCase();
     if (method === 'GET' && (opts?.silentError || error?.name === 'AbortError')) return;
     // 予定などの ID はパスに入るので、記録の操作名からは外す（/cal/events/<id> → schedule.cal.events.put）。

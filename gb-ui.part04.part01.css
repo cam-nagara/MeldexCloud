@@ -180,6 +180,7 @@ textarea:disabled {
 
 /* Global tag management tab */
 .gb-tag-chip {
+  --gb-tag-remove-width: 27px;
   display: inline-flex;
   position: relative;
   align-items: center;
@@ -214,6 +215,14 @@ textarea:disabled {
   color: inherit;
   font: inherit;
   line-height: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-tag-chip__text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -263,13 +272,13 @@ button.gb-tag-chip__label {
   cursor: pointer;
 }
 .gb-tag-chip--removable .gb-tag-chip__label {
-  padding-right: 31px;
+  padding-right: calc(var(--gb-tag-remove-width) + 4px);
 }
 .gb-tag-chip__remove {
   display: grid;
   position: absolute;
   inset: 0 0 0 auto;
-  width: 27px;
+  width: var(--gb-tag-remove-width);
   height: 100%;
   padding: 0;
   place-items: center;
@@ -294,6 +303,21 @@ button.gb-tag-chip__label {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
+/* 共通タグ自身でタッチ寸法を持ち、埋込先の汎用ボタン拡大に依存しない。 */
+@media (pointer: coarse), (max-width: 820px) {
+  .gb-global-tags-target-editor .gb-tag-chip {
+    --gb-tag-remove-width: var(--ui-h-touch, 44px);
+    box-sizing: border-box;
+    height: calc(var(--ui-h-touch, 44px) + 2px);
+  }
+  .gb-global-tags-target-editor .gb-tag-chip__label {
+    min-width: var(--ui-h-touch, 44px);
+  }
+  .gb-global-tags-target-editor .gb-tag-chip__remove {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 .gb-tag-chip--compact {
   height: 20px;
   font-size: 10px;
@@ -302,6 +326,9 @@ button.gb-tag-chip__label {
   max-width: 102px;
   padding-right: 6px;
   padding-left: 6px;
+}
+.gb-tag-chip--compact.gb-tag-chip--removable .gb-tag-chip__label {
+  padding-right: calc(var(--gb-tag-remove-width) + 4px);
 }
 .gb-tag-chip--summary {
   border-style: dashed;

@@ -11,7 +11,6 @@
   const SCHEMA_VERSION = 1;
   const DOCUMENT = 'board-templates';
   const STORAGE_KEY = 'meldex-board-templates-v1';
-  const MAX_TEMPLATES = 80;
   const NODE_OVERRIDE_KEYS = [
     'bgColor', 'bgOpacity', 'textColor', 'borderColor', 'borderOpacity', 'borderWidth', 'borderRadius',
     'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape',
@@ -107,7 +106,8 @@
 
   async function persistLibrary(library, templates) {
     if (library?.failed) throw new Error('テンプレート一覧を読み込めていないため保存できません。開き直してください');
-    const list = templates.slice(0, MAX_TEMPLATES);
+    // 自分のテンプレートは件数で切り捨てない（保存のたびに末尾が黙って消えていた）。
+    const list = templates.slice();
     if (library.remote) {
       const result = await global.apiFetch(`/personal-preferences/${DOCUMENT}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -121,7 +121,12 @@
           throw new Error('テンプレート一覧が別の画面で変更されています。開き直してください');
         }
         const text = JSON.stringify({ ...library.payload, schemaVersion: SCHEMA_VERSION, templates: list });
-        global.localStorage.setItem(STORAGE_KEY, text);
+        try {
+          global.localStorage.setItem(STORAGE_KEY, text);
+        } catch (_) {
+          // 容量不足などで書けない時は、前の一覧を残したまま失敗を知らせる（一部だけ保存しない）。
+          throw new Error('テンプレートを保存できませんでした。この端末の保存領域が不足している可能性があります');
+        }
         library.storageRevision = text;
       };
       if (global.navigator?.locks?.request) await global.navigator.locks.request(STORAGE_KEY, write); else write();
@@ -147,6 +152,7 @@
       depthStyles: clone(typeof global.bdEnsureDepthStyles === 'function' ? global.bdEnsureDepthStyles() : (board.depthStyles || [])),
       groupStyles: clone(groupStyles),
       activeCardStyle: board.activeCardStyle || '',
+      newCardStyleRef: board.newCardStyleRef || '',
       activeLineStyle: board.activeLineStyle || '',
       activeGroupStyle: doc?.activeGroupStyleId || '',
       bgColor: board._bgColor || fileStyleValue(board, '--bd-bg'),
@@ -253,6 +259,7 @@
     board.depthStyles = typeof global.bdNormalizeDepthStyles === 'function' ? global.bdNormalizeDepthStyles(depthStyles) : depthStyles;
     board.activeDepthStylePreset = style.depthPresetId || '';
     board.activeCardStyle = cardStyles.some(item => item.id === style.activeCardStyle) ? style.activeCardStyle : (cardStyles[0]?.id || '');
+    board.newCardStyleRef = style.newCardStyleRef === board.activeCardStyle ? style.newCardStyleRef : '';
     board.activeLineStyle = lineStyles.some(item => item.id === style.activeLineStyle) ? style.activeLineStyle : (lineStyles[0]?.id || '');
     // テンプレートの見た目を、全ボード共通の既定値や旧版の初期スタイル投入で上書きさせない。
     board._stylePresetSeedVersion = typeof global.BD_STYLE_PRESET_VERSION === 'number'
@@ -405,7 +412,7 @@
     const created = mode === 'style' ? [] : applyContent(working, prepared, mode);
     const mutableKeys = [
       'nodes', 'connections', 'groups', 'cardStyles', 'lineStyles', 'depthStyles',
-      'activeDepthStylePreset', 'activeCardStyle', 'activeLineStyle', '_stylePresetSeedVersion',
+      'activeDepthStylePreset', 'activeCardStyle', 'newCardStyleRef', 'activeLineStyle', '_stylePresetSeedVersion',
       '_globalStyleDefaultsApplied', '_bgColor', '_fileStyle', '_showShadow', 'gapSiblings',
       'gapLevels', 'topicViewDocument',
     ];

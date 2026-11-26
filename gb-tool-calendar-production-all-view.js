@@ -78,7 +78,7 @@
 
   function _savePrefs(instance) {
     try {
-      if (typeof localStorage === 'undefined' || !instance._pmRoot) return;
+      if (typeof localStorage === 'undefined' || !instance._pmRoot) return false;
       localStorage.setItem(_prefsKey(instance._pmRoot), JSON.stringify({
         filters: { status: instance._filters.status, assignee: instance._filters.assignee },
         sort: instance._sort,
@@ -86,7 +86,11 @@
         columnWidths: instance._columnWidths,
         hiddenColumns: instance._hiddenColumns,
       }));
-    } catch { /* localStorage 不可時は表示設定の保存だけを諦める（機能自体は動く） */ }
+      return true;
+    } catch {
+      _notify('一覧の表示設定をこの端末に記憶できませんでした。もう一度操作してください', true);
+      return false;
+    }
   }
 
   function _normalizedColumnOrder(value) {
@@ -326,11 +330,16 @@
         checkbox.checked = !instance._hiddenColumns.includes(column.key);
         checkbox.disabled = checkbox.checked && instance._hiddenColumns.length >= COLUMN_DEFS.length - 1;
         checkbox.addEventListener('change', () => {
+          const beforeHidden = instance._hiddenColumns.slice();
           const hidden = new Set(instance._hiddenColumns);
           if (checkbox.checked) hidden.delete(column.key); else hidden.add(column.key);
           if (hidden.size >= COLUMN_DEFS.length) return;
           instance._hiddenColumns = [...hidden];
-          _savePrefs(instance);
+          if (!_savePrefs(instance)) {
+            instance._hiddenColumns = beforeHidden;
+            checkbox.checked = !beforeHidden.includes(column.key);
+            return;
+          }
           _renderColumnLayout(instance);
           render();
         });

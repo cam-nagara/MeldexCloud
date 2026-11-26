@@ -73,19 +73,26 @@
     const rows = (Array.isArray(artifacts) ? artifacts : []).filter(row => row?.document_id && row?.revision);
     if (!rows.length) return { upserted: 0, unchanged: 0, changed: 0 };
     const db = await open();
-    const existing = new Map((await list()).map(row => [row.document_id, row]));
+    // 書き込む文書だけを同じ処理の中で読み比べる。以前は数件の保存のたびに端末内の
+    // 全件を読み込み、同期の回数×件数で遅くなっていた（2026-11-24）。
     const tx = db.transaction(ARTIFACTS, 'readwrite');
+    const store = tx.objectStore(ARTIFACTS);
     let changed = 0;
     let unchanged = 0;
+    const done = _complete(tx);
     rows.forEach(row => {
-      if (existing.get(row.document_id)?.revision === row.revision) {
-        unchanged += 1;
-        return;
-      }
-      changed += 1;
-      tx.objectStore(ARTIFACTS).put(row);
+      // 読み取りの完了時に同じ処理の中で直接書く（Promise を挟むと古い Safari で処理が閉じる）
+      const request = store.get(String(row.document_id));
+      request.onsuccess = () => {
+        if (request.result?.revision === row.revision) {
+          unchanged += 1;
+          return;
+        }
+        changed += 1;
+        store.put(row);
+      };
     });
-    await _complete(tx);
+    await done;
     return { upserted: changed, unchanged, changed };
   }
 

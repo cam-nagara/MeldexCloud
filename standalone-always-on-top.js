@@ -83,6 +83,7 @@
     button.dataset.e2eId = `${appId}-always-on-top`;
     button.id = `${appId}-always-on-top-button`;
     let enabled = !!status.enabled;
+    let lastRequestFailed = false;
     applyState(button, enabled);
 
     button.addEventListener('click', async () => {
@@ -93,7 +94,12 @@
         enabled = !!result?.enabled;
         applyState(button, enabled);
         writeStored(appId, enabled);
+        if (lastRequestFailed) {
+          lastRequestFailed = false;
+          root.showStatus?.(enabled ? '最前面表示に切り替えました' : '最前面表示を解除しました', false);
+        }
       } catch (error) {
+        lastRequestFailed = true;
         if (typeof root.showStatus === 'function') {
           root.showStatus('最前面表示を切り替えられませんでした', true);
         }

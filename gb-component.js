@@ -35,7 +35,11 @@ class ToolComponent {
   activate() {
     this._active = true;
     if (this.el) {
-      this.el.style.display = this._displayBeforeDeactivate == null ? '' : this._displayBeforeDeactivate;
+      // 非表示から戻す時だけ display を書き換える。生成時に付けた display:flex 等を
+      // 初回の表示や二重の activate() で消すと、本文の高さが内容なりに伸びて
+      // パネル内のスクロールが効かなくなる（右レールのテーマ等で実際に起きた）。
+      if (this._displayBeforeDeactivate != null) this.el.style.display = this._displayBeforeDeactivate;
+      else if (this.el.style.display === 'none') this.el.style.display = '';
       this._displayBeforeDeactivate = null;
     }
   }

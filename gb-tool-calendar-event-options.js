@@ -39,10 +39,11 @@
     } catch { return false; }
   };
   const _calDraftKey = (component, id) => `${component?._getUser?.() || ''}|${id}`;
-  function _calEventDraftClear(component, id) {
+  function _calEventDraftClear(component, id, capturedKey = '') {
     if (!id) return;
     const store = _calDraftStore();
-    if (store[_calDraftKey(component, id)]) { delete store[_calDraftKey(component, id)]; _calDraftWrite(store); }
+    const key = capturedKey || _calDraftKey(component, id);
+    if (store[key]) { delete store[key]; _calDraftWrite(store); }
   }
   function _calEventDraftStashOpenBodies() {
     const store = _calDraftStore();
@@ -54,7 +55,7 @@
         const el = owner.body.querySelector(selector);
         if (el) values[name] = el.value;
       });
-      store[_calDraftKey(owner.component, owner.eventId)] = { values, savedAt: new Date().toISOString() };
+      store[owner.draftKey || _calDraftKey(owner.component, owner.eventId)] = { values, savedAt: new Date().toISOString() };
     });
     return _calDraftWrite(store);
   }
@@ -67,7 +68,7 @@
     if (!ev?.id) return;
     const titleInput = body.querySelector('[data-cal-event-title]');
     if (!titleInput) return;
-    const owner = { component: this, eventId: ev.id, body, dirty: false };
+    const owner = { component: this, eventId: ev.id, body, dirty: false, draftKey: _calDraftKey(this, ev.id) };
     titleInput._calEventDraftOwner = owner;
     body._calEventDraftOwner = owner;
     DRAFT_FIELDS.forEach(([, selector]) => {
@@ -91,7 +92,7 @@
     discard.dataset.e2eId = 'calendar-event-draft-discard';
     discard.textContent = '入力を破棄';
     discard.addEventListener('click', () => {
-      _calEventDraftClear(this, ev.id);
+      _calEventDraftClear(this, ev.id, owner.draftKey);
       const current = (this._events || []).find(item => item.id === ev.id);
       if (current) this._showEventOptionsPanel(current);
     });
@@ -230,9 +231,9 @@
       this._createEventQuick(defaultStart, defaultEnd, defaultAllDay);
       return;
     }
-    const ev = this._events.find(e => e.id === editId);
+    const ev = this._events.find(e => e.id === editId && (!defaultStart || e.start === defaultStart));
     if (!ev) return;
-    if (typeof _calRecurringInteractionBlocked === 'function' && _calRecurringInteractionBlocked(this, ev)) return;
+    if (ev._recurrence_instance) return this._showRecurringOccurrenceEditor(ev);
     if (ev.calendar_source === 'production-task' && typeof this._openProductionTaskEvent === 'function') {
       this._openProductionTaskEvent(ev);
       return;
@@ -258,6 +259,128 @@
     }
     this._setSelectedEvents([editId], editId);
     this._showEventOptionsPanel(ev, defaultStart, defaultEnd, defaultAllDay);
+  };
+
+  CalendarComponent.prototype._showRecurringOccurrenceEditor = async function(ev) {
+    const userError = message => Object.assign(new Error(message), { userMessage: message, calendarOccurrenceLocal: true });
+    const contextKey = () => {
+      const runtime = window.MeldexRuntimeAdapter;
+      const ws = runtime?.getWorkspaceState?.() || {};
+      return JSON.stringify([this._getUser(), typeof state === 'undefined' ? '' : state.vaultPath || '',
+        runtime?.getMode?.() || '', window.MeldexWorkspaces?.getActiveId?.() || ws.workspaceId || ws.workspace_id || '',
+        ws.path || ws.folder || '', ws.access || ws.role || '', ws.accountId || ws.account_id || '',
+        ws.securityScopeId || ws.security_scope_id || '']);
+    };
+    const openedContext = contextKey();
+    const assertContext = () => {
+      if (this._destroyed || openedContext !== contextKey()) throw userError('保存先または利用者が切り替わりました。現在の画面から開き直してください');
+    };
+    let current;
+    try {
+      current = await apiFetch('/cal/history/event/' + encodeURIComponent(ev.id));
+      assertContext();
+      if (!current.current || !ev._calendar_revision || current.currentRevision !== ev._calendar_revision) {
+        throw userError('表示後に予定が変更されています。カレンダーを再読み込みしてから開き直してください');
+      }
+    } catch (error) {
+      this._showStatus(error?.calendarOccurrenceLocal ? error.userMessage : 'この回の現在の予定を読み込めませんでした。少し待ってから開き直してください', true);
+      return null;
+    }
+    const rule = typeof current.current.recurrence === 'string' ? JSON.parse(current.current.recurrence) : structuredClone(current.current.recurrence);
+    const originalAt = new Date(ev.original_start || ev.start);
+    const pad = n => String(n).padStart(2, '0');
+    const key = `${originalAt.getFullYear()}-${pad(originalAt.getMonth() + 1)}-${pad(originalAt.getDate())}T${pad(originalAt.getHours())}:${pad(originalAt.getMinutes())}`;
+    const body = document.createElement('div');
+    body.className = 'gb-scheduler-allocation-form gb-scheduler-occurrence-form';
+    const explanation = document.createElement('p');
+    explanation.className = 'gb-section-desc';
+    explanation.textContent = 'この回だけを変更します。ほかの回の日時や内容は変わりません。';
+    body.appendChild(explanation);
+    const inputs = {};
+    const add = (name, label, type, value, draftAttribute) => {
+      const field = document.createElement('label'); field.className = 'gb-scheduler-field';
+      const caption = document.createElement('span'); caption.textContent = label;
+      const input = document.createElement(type === 'textarea' ? 'textarea' : 'input');
+      if (type !== 'textarea') input.type = type;
+      input.className = 'gb-input'; input.value = value || ''; input.dataset.e2eId = 'calendar-occurrence-' + name;
+      input.setAttribute('aria-label', label); input.setAttribute(draftAttribute, '');
+      field.append(caption, input); body.appendChild(field); inputs[name] = input;
+    };
+    const day = !!ev.all_day;
+    add('title', '予定名', 'text', ev.title, 'data-cal-event-title');
+    add('start', '開始', day ? 'date' : 'datetime-local', day ? _calLocalDateInputValue(this, ev.start) : _calLocalInputValue(this, ev.start), 'data-cal-event-start');
+    add('end', '終了', day ? 'date' : 'datetime-local', day ? _calLocalDateInputValue(this, ev.end) : _calLocalInputValue(this, ev.end), 'data-cal-event-end');
+    add('location', '場所', 'text', ev.location, 'data-cal-event-location');
+    add('description', '説明', 'textarea', ev.description, 'data-cal-event-desc');
+    const initialValues = Object.fromEntries(Object.entries(inputs).map(([name, input]) => [name, input.value]));
+    const draftId = ev.id + '@' + key + '@' + openedContext;
+    this._bindEventOptionDraft(body, { id: draftId });
+    body.querySelector('[data-e2e-id="calendar-event-draft-discard"]')?.addEventListener('click', () => {
+      Object.entries(inputs).forEach(([name, input]) => { input.value = initialValues[name]; });
+      body._calEventDraftOwner.dirty = false;
+      body.querySelector('.cal-option-draft-notice')?.remove();
+    });
+    let saving = false, feedback = null, expectedRevision = current.currentRevision;
+    const modal = window.GBUI.createModal({ title: '繰り返し予定のこの回を変更', body,
+      variant: innerWidth <= 700 ? 'mobile-sheet' : 'standard', extraClass: 'gb-scheduler-modal',
+      onBeforeClose: () => { if (saving) return false; _calEventDraftStashOpenBodies(); return true; } });
+    modal.modal.dataset.e2eId = 'calendar-occurrence-dialog';
+    const makeButton = (text, name, primary = false) => {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+      button.className = 'gb-btn gb-btn-sm gb-scheduler-button' + (primary ? ' gb-btn-primary' : '');
+      button.dataset.e2eId = 'calendar-occurrence-' + name; return button;
+    };
+    const close = makeButton('閉じる', 'close');
+    close.addEventListener('click', () => modal.close('cancel'));
+    const save = makeButton('この回を保存', 'save', true);
+    const write = async nextRule => {
+      assertContext();
+      this._loadEventsSeq = (this._loadEventsSeq || 0) + 1;
+      const result = await apiPut('/cal/events/' + encodeURIComponent(ev.id), { recurrence: JSON.stringify(nextRule), expectedRevision });
+      assertContext();
+      if (!result.revision) throw userError('予定は保存しましたが、保存した版を確認できません。現在の予定を開き直してください');
+      expectedRevision = result.revision;
+      try { await this._loadEvents(); this._render(); }
+      catch { return { historyWarning: '予定は保存しましたが、表示を更新できませんでした。カレンダーを再読み込みしてください' }; }
+      return true;
+    };
+    const submit = async () => {
+      if (saving) return;
+      let reservation = null;
+      try {
+        assertContext();
+        const start = inputs.start.value, end = inputs.end.value;
+        if (!inputs.title.value.trim() || !start || !end || (day ? end < start : new Date(end) <= new Date(start))) {
+          throw userError('予定名と開始・終了を確認してください。終了は開始より後にしてください');
+        }
+        const after = structuredClone(rule);
+        after.overrides = { ...(rule.overrides || {}), [key]: {
+          title: inputs.title.value, start, end, location: inputs.location.value, description: inputs.description.value,
+        } };
+        saving = true; save.disabled = close.disabled = true;
+        reservation = this._reserveUndo('繰り返し予定の一回変更', { undo: () => write(rule), redo: () => write(after) });
+        const outcome = await write(after);
+        reservation.commit();
+        _calEventDraftClear(this, draftId, body._calEventDraftOwner.draftKey); body._calEventDraftOwner.dirty = false;
+        saving = false; modal.close('saved');
+        this._showStatus(outcome?.historyWarning || 'この回の予定を保存しました', !!outcome?.historyWarning);
+      } catch (error) {
+        reservation?.cancel();
+        const message = Number(error?.status) === 409 ? '別の環境で予定が更新されています。入力を残して閉じ、カレンダーを再読み込みして確認してください'
+          : error?.calendarOccurrenceLocal ? error.userMessage : 'この回の予定を保存できませんでした。入力は残っています。少し待って再試行してください';
+        if (!feedback) {
+          feedback = window.GBUI.createInlineError({ message, onRetry: submit });
+          feedback.dataset.e2eId = 'calendar-occurrence-error';
+          body.insertBefore(feedback, inputs.title.closest('label'));
+        }
+        else feedback.setMessage(message);
+        feedback.title = String(error?.message || '');
+        modal.body.scrollTop = 0;
+      } finally { saving = false; save.disabled = close.disabled = false; }
+    };
+    save.addEventListener('click', submit);
+    modal.footer.append(close, save); modal.modal.appendChild(modal.footer); modal.open();
+    return modal;
   };
 
   CalendarComponent.prototype._showEventOptionsPanel = function(ev, defaultStart, defaultEnd, defaultAllDay) {
@@ -431,6 +554,8 @@
     // 楽観的更新: 保存完了を待たずに先に画面へ反映し、保存と再取得は裏で行う
     // （保存に失敗した場合は編集対象イベントだけを元に戻し、サーバー状態を再取得する）
     const beforeEvent = evRef ? { ...evRef } : null;
+    // 編集前に始まった読取応答で、保存後の値やRedo用の写しを巻き戻さない。
+    this._loadEventsSeq = (this._loadEventsSeq || 0) + 1;
     this._events = (this._events || []).map(event => (event.id === editId ? { ...event, ...data } : event));
     this._renderCalendarList?.();
     this._render();

@@ -63,8 +63,8 @@
   function updateControls() {
     const raw = document.getElementById('x-account-posts-username')?.value || '';
     const hasValidUsername = !!normalizeUsername(raw);
-    const button = document.getElementById('x-account-posts-sync');
-    if (button) button.disabled = syncInFlight || !connected || !hasValidUsername;
+    const button = document.getElementById('x-account-posts-add');
+    if (button) button.disabled = syncInFlight || !hasValidUsername;
     const input = document.getElementById('x-account-posts-username');
     if (input) input.disabled = syncInFlight;
   }
@@ -108,25 +108,35 @@
     }
   }
 
+  function applyConnectionStatus(data) {
+    connected = data?.connected === true;
+    const replies = document.getElementById('x-account-posts-include-replies');
+    if (replies && data?.config) replies.checked = data.config.account_include_replies === true;
+    const status = document.getElementById('x-account-posts-status');
+    const connectionNotice = '「X接続」でXへ接続してください。';
+    if (!connected || status?.textContent === connectionNotice) setStatus(connected ? '' : connectionNotice, false);
+    updateControls();
+    // Connection refresh must not rebuild rows or discard an uncommitted schedule edit.
+    document.querySelectorAll('#x-account-posts-list [data-action="sync"]').forEach(button => {
+      button.disabled = syncInFlight || !connected;
+    });
+  }
+
   async function loadConnectionStatus() {
     if (typeof apiFetch !== 'function') {
-      connected = false;
-      setText('x-account-posts-connection', 'X接続状態を確認できません');
-      updateControls();
+      applyConnectionStatus({ connected: false });
+      setStatus('X接続状態を確認できません。設定を開き直してください。', true);
       return;
     }
     try {
-      const data = await apiFetch('/x-bookmarks/status', { silentError: true });
-      connected = data?.connected === true;
-      const username = data?.user?.username ? `@${data.user.username}` : '';
-      setText('x-account-posts-connection', connected ? `X接続済み ${username}` : '先に「Xブックマーク」でXへ接続してください');
+      applyConnectionStatus(await apiFetch('/x-bookmarks/status', { silentError: true }));
     } catch (error) {
-      connected = false;
-      setText('x-account-posts-connection', 'X接続状態を取得できませんでした');
+      applyConnectionStatus({ connected: false });
+      setStatus('X接続状態を取得できませんでした。設定を開き直してください。', true);
     }
-    updateControls();
-    renderAccountList();
   }
+
+  window.addEventListener('meldex:x-connection-changed', event => applyConnectionStatus(event.detail));
 
   function resultSummary(data) {
     let message = `@${data.username} のポストを保存しました。新規${data.created || 0}件、更新${data.updated || 0}件、取得${data.fetched || 0}件。`;
@@ -494,6 +504,8 @@
     if (!button) return;
     const index = accounts.findIndex((entry) => accountUsername(entry) === button.dataset.username);
     if (index < 0) return;
+    // This list owns these action names; do not also run the document's data-action dispatcher.
+    event.stopPropagation();
     const entry = accounts[index];
     const username = accountUsername(entry);
     button.disabled = true;
@@ -546,11 +558,8 @@
     }
     container.dataset.rendered = '1';
     container.innerHTML = `
-      <div class="gb-section-desc">保存するXアカウントを一覧で管理します。アカウントごとに取得・定期実行・並べ替えができます。 ${fieldHelp('取得できるのは最新3,200件までです。X APIの従量課金対象で、料金は変更されることがあります。X Developer Consoleで残高と料金を確認してください。', { e2eId: 'x-account-posts-cost-help' })}</div>
-      <div class="gb-section-desc">最大3,200件・X APIの従量課金対象です。</div>
-      <div id="x-account-posts-connection" class="gb-section-desc">X接続状態を確認中...</div>
       <label class="gb-field">
-        <span class="gb-label">Xアカウントを追加</span>
+        <span class="gb-label">Xアカウントを追加 ${fieldHelp('最新3,200件まで保存できます。X APIの従量課金対象です。開始前に費用目安を確認します。接続設定は「X接続」で共通管理します。', { e2eId: 'x-account-posts-cost-help' })}</span>
         <input id="x-account-posts-username" class="gb-input" type="text" autocomplete="off" placeholder="例: XDevelopers または https://x.com/XDevelopers" data-e2e-id="x-account-posts-username">
       </label>
       <div id="x-account-posts-save-preview" class="gb-section-desc">保存先: ユーザー名を入力すると表示されます</div>
@@ -559,8 +568,10 @@
         <button type="button" id="x-account-posts-add" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-add">${icon('plus', 14)} 一覧に追加</button>
       </div>
       <div id="x-account-posts-list" data-e2e-id="x-account-posts-list"></div>
-      <label class="gb-field"><span><input type="checkbox" id="x-account-posts-include-replies"> 手動取得で各ポストの返信を最大30件取得する（追加料金）</span></label>
-      <div class="gb-section-desc">元ポスト・リポスト／引用元・返信を、投稿者アイコン付きのノートとして保存します。返信の追加取得は定期実行には適用されません。</div>
+      <div class="gb-check-help-row">
+        <label class="gb-check" style="min-height:var(--ui-h-touch,44px);font-size:inherit;color:var(--fg);"><input type="checkbox" id="x-account-posts-include-replies"><span>返信も取得（追加料金）</span></label>
+        ${fieldHelp('手動取得で各ポスト・参照元ごとに返信を最大30件取得します。定期保存では返信を追加取得しません。原文・翻訳・画像は各トピックのノートに保存します。')}
+      </div>
       <div id="x-account-posts-status" class="gb-section-desc" role="status" aria-live="polite"></div>
       <button type="button" id="x-account-posts-open-originals" class="gb-btn gb-btn-sm" hidden>保存済みの原文を開く</button>
     `;
@@ -577,6 +588,8 @@
         catch (error) { setStatus('保存済み原文を開けませんでした: ' + (error?.message || error), true); }
       }
     });
+    container.querySelector('#x-account-posts-include-replies')?.addEventListener('change', () => window.MeldexXSettings?.save());
+    updateControls();
     showSavedOriginals();
     loadConnectionStatus();
     refreshAccounts().then(async () => {

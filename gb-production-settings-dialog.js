@@ -15,6 +15,24 @@
     if (typeof showStatus === 'function') showStatus(message, error);
   }
 
+  function showReadFailure(host, error, retry, e2eId) {
+    const translated = window.MeldexErrorMessages?.translate?.(error);
+    const reason = translated?.matched
+      ? [translated.message, translated.action].filter(Boolean).join(' ')
+      : '接続とアクセス権限を確認して再試行してください。';
+    const message = '制作設定を読み込めませんでした。 ' + reason;
+    const feedback = window.GBUI.createInlineError({ message, onRetry: retry });
+    feedback.dataset.e2eId = e2eId;
+    feedback.title = String(error?.message || '');
+    const button = feedback.querySelector('button');
+    if (button) button.dataset.e2eId = e2eId + '-retry';
+    host.classList.remove('is-error', 'gb-production-settings-state');
+    if (e2eId === 'production-settings-error') host.classList.add('gb-production-settings-read-failure');
+    host.removeAttribute('role');
+    host.replaceChildren(feedback);
+    status(message, true);
+  }
+
   function icon(name, size = 14) {
     const span = document.createElement('span');
     span.className = 'gb-production-settings-icon';
@@ -37,7 +55,7 @@
   function writeAvailabilityText() {
     const availability = window.MeldexProductionUiAvailability?.current?.();
     if (availability?.blocked) return { message: availability.reason || '閲覧専用です', blocked: true };
-    return { message: '編集できます。変更はシートの保存経路へ反映されます', blocked: false };
+    return { message: '編集できます。変更は自動で保存されます', blocked: false };
   }
 
   function relationIds(entity, propName) {
@@ -236,8 +254,7 @@
           sheetState.textContent = `${rowLabel(selectedTemplate)} / ${selectedChild.label} を表示中`;
         } catch (error) {
           if (closed || seq !== openSeq) return;
-          sheetState.textContent = `${error?.message || selectedChild.label + 'を読み込めませんでした'}。権限、ロック、接続を確認して再試行してください`;
-          sheetState.classList.add('is-error');
+          showReadFailure(sheetState, error, () => openSheet(), 'production-settings-sheet-error');
         } finally {
           if (!closed && seq === openSeq) body.setAttribute('aria-busy', 'false');
         }
@@ -296,9 +313,7 @@
     } catch (error) {
       if (!closed) {
         body.setAttribute('aria-busy', 'false');
-        loading.classList.add('is-error');
-        loading.textContent = error?.message || '制作設定を読み込めませんでした';
-        status(loading.textContent, true);
+        showReadFailure(loading, error, () => { modalApi.close('retry'); return open(options); }, 'production-settings-error');
       }
     }
     return modalApi;

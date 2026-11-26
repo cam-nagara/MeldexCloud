@@ -11,6 +11,7 @@ Meldex は以下のサードパーティ製ソフトウェア、フォント、�
 | Meldex 本体 | MIT License / Copyright (c) 2026 Meldex Contributors | アプリ本体 | https://github.com/cam-nagara/Meldex | アプリ本体 | 必須 | `LICENSE`, About, 配布ルート | 表記済み |
 | Lucide Icons | ISC License。Feather 由来アイコンは MIT notice も保持 | UIアイコン、`app/vendor/lucide-icons.js`, トレイPNG | https://github.com/lucide-icons/lucide | JS/PNG同梱 | 必須 | `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | Google Noto Sans JP | SIL Open Font License 1.1 | 既定UIフォント | https://github.com/notofonts/noto-cjk | WOFF2同梱 | 必須 | `app/fonts/OFL.txt`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
+| Google Material Symbols (Rounded) | Apache License 2.0 | ファイル・フォルダ・ビュー・列等のアイコン選択 | https://github.com/google/material-design-icons | WOFF2/データ同梱（塗りつぶし固定の静的フォントへ変換） | 必須 | `app/fonts/MaterialSymbols-LICENSE.txt`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | Google Noto Emoji | フォントは SIL Open Font License 1.1 / SVGソースは Apache License 2.0 | スタンプ、コールアウト、ユーザーアイコン等の絵文字選択 | https://github.com/googlefonts/noto-emoji | TTF/データ同梱 | 必須 | `app/fonts/NotoEmoji-LICENSE.txt`, `app/fonts/NotoColorEmoji-OFL.txt`, `app/fonts/NotoEmoji-SVG-APACHE-LICENSE.txt`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | Twemoji | グラフィック CC-BY 4.0 / コード MIT | 旧チャットスタンプ互換スプライト | https://github.com/twitter/twemoji | SVGスプライト同梱 | 必須 | `app/stamps/TWEMOJI-LICENSE.txt`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | html2canvas | MIT License | 画像書き出しフォールバック | https://github.com/niklasvh/html2canvas | JS同梱 | 必須 | `app/vendor/html2canvas.min.js` header, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
@@ -132,6 +133,15 @@ PERFORMANCE OF THIS SOFTWARE.
 - **同梱形態**: `app/fonts/NotoColorEmoji_WindowsCompatible.ttf`, `app/noto-emoji-data.js`
 - **ライセンス全文**: `app/fonts/NotoEmoji-LICENSE.txt`, `app/fonts/NotoColorEmoji-OFL.txt`, `app/fonts/NotoEmoji-SVG-APACHE-LICENSE.txt`
 - **確認事項**: `NotoColorEmoji_WindowsCompatible.ttf` は Google Noto Emoji 公式リポジトリの同名ファイルと SHA-256 が一致する未改変ファイルです。
+
+### Google Material Symbols (Rounded)
+
+- **ライセンス**: Apache License 2.0
+- **出典**: https://github.com/google/material-design-icons （commit 10ecc14790612ca8fd164e3f4ffe9c16fc50d5b7, 2026-10-23）
+- **用途**: アイコン選択（ファイル・フォルダ・ビュー・列・画像セル・ユーザーアイコン等）
+- **同梱形態**: `app/fonts/MaterialSymbolsRounded-Fill.woff2`（公式可変フォントを FILL=1 / wght=400 / GRAD=0 / opsz=24 に固定）, `app/vendor/material-symbols-index.js`（名前・分類・検索語。アイコン選択を開いた時だけ読み込む）
+- **ライセンス全文**: `app/fonts/MaterialSymbols-LICENSE.txt`
+- **再生成**: `python app/build_material_symbols_assets.py --font ... --codepoints ... --metadata ... --source ...`（ネットワーク接続なし。公式配布物を渡す）
 
 ## Python 必須/主要依存パッケージ
 

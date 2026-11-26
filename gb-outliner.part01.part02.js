@@ -90,9 +90,12 @@
     });
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
-      document.querySelectorAll('.tree-node-row.active').forEach(node => node.classList.remove('active'));
-      row.classList.add('active');
+      // 選択内の「…」は右クリックと同様に複数選択を保ち、一括メニューへ渡す。
+      if (!treeSelection.has(div)) {
+        treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
+        document.querySelectorAll('.tree-node-row.active').forEach(node => node.classList.remove('active'));
+        row.classList.add('active');
+      }
       const r = menuBtn.getBoundingClientRect();
       const z = parseFloat(document.documentElement.style.zoom) || 1;
       showTreeContextMenu(r.left / z, r.bottom / z, div, item, label);
@@ -206,6 +209,10 @@
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
             const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+            // 子が多いフォルダは全件を取らず、ページごとに取って、見えている範囲が末尾へ近づいたら続きを取る
+            const pagedChildren = await _outlinerLoadPagedFolderChildren(childrenDiv, item, div, rootPath, apiSort, sortCfg.order);
+            if (pagedChildren) warmItems = [];
+            else {
             const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true&form_hierarchy=true');
             const childList = Array.isArray(children) ? children : (Array.isArray(children?.items) ? children.items : []);
             let visibleChildren = childList.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
@@ -223,6 +230,7 @@
             else if (needsClientSort) visibleChildren = [...visibleChildren].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
             warmItems = visibleChildren;
+            }
           }
           delete childrenDiv.dataset.loadError;
           childrenDiv.dataset.loaded = 'true';
@@ -663,6 +671,11 @@
         destFolder = '';
       }
     }
+    // 移動先のフォルダの名前の変更が保存中なら、終わるのを待って新しい場所へ移動する（2026-11-24 利用者の報告）。
+    if (destFolder && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
+      try { destFolder = await _outlinerAwaitPendingRenameForTarget(destFolder); }
+      catch (error) { showStatus(String(error?.message || '移動先の名前の変更を確認できません'), true); return; }
+    }
     if (destFolder && isItemLocked(destFolder)) {
       showStatus('編集ロック中のフォルダには移動できません', true);
       return;
@@ -1012,6 +1025,236 @@ function _outlinerSheetTreeItems(item, pivotData) {
   return items;
 }
 
+/// ---- 子が多いフォルダの分割読み込み（2026-11-24） ----
+// 展開した時に全件を /browse で取らず、/browse-page でページごとに取る。読み込み済みの範囲は連続した1区間で、
+// 見えている範囲がその端へ近づいたら前後のページを継ぎ足す。スクロールバーなどで遠くへ飛んだ時は、
+// 間を順に読まず、飛んだ先のページを位置（at）で直接取って、読み込み済みの範囲を入れ替える（末尾へ飛んでも要求は1回）。
+// 読み込んでいない前後の行は高さだけ確保する。並びはサーバーの順（名前・更新日時・作成日時。手動の並びは使えない）。
+const OUTLINER_PAGED_CHILDREN_PAGE = 500;
+const OUTLINER_PAGED_CHILDREN_AHEAD_PX = 1500;
+// 見えている範囲が読み込み済みの範囲からこの行数より離れたら、継ぎ足しではなく飛んだ先を直接取る
+const OUTLINER_PAGED_CHILDREN_JUMP_ROWS = 1000;
+let _outlinerPagedChildrenThreshold = 2000;
+const _outlinerPagedFolders = new Set();
+let _outlinerPagedCheckQueued = false;
+let _outlinerPagedScrollBound = false;
+const _outlinerPagedStats = { requests: 0 };
+
+function _outlinerPagedWait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function _outlinerFetchChildrenPage(url, isCurrent) {
+  // 読み取り待ちの知らせの後は、最初は短い間隔で聞き直す（読み取りは 0.2〜0.3 秒で終わることが多い）
+  for (let tries = 0; ; tries += 1) {
+    _outlinerPagedStats.requests += 1;
+    const result = await apiFetch(url, { silentError: true });
+    if (!result || result.pending !== true) return result;
+    await _outlinerPagedWait(tries === 0 ? 100 : tries === 1 ? 200 : 300);
+    if (isCurrent && !isCurrent()) return null;
+  }
+}
+
+function _outlinerPreparePagedChildren(record, items) {
+  const list = (Array.isArray(items) ? items : [])
+    .filter(child => child && !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child.path)));
+  registerFileTypes(list);
+  _registerOutlinerConflictPaths(list);
+  if (typeof _registerFileIds === 'function') _registerFileIds(list);
+  list.forEach(child => { if (record.item.sourceId && !child.sourceId) child.sourceId = record.item.sourceId; });
+  return list;
+}
+
+async function _outlinerLoadPagedFolderChildren(childrenDiv, item, folderNode, rootPath, apiSort, order) {
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.() || !item?.path) return false;
+  if (globalThis.localStorage?.getItem?.('tree-layout') === 'grid') return false;
+  const base = '/browse-page?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + order
+    + (rootPath ? '&root=' + encodeURIComponent(rootPath) : '') + '&all_files=true';
+  const isCurrent = () => childrenDiv.isConnected;
+  let probe;
+  try { probe = await _outlinerFetchChildrenPage(base + '&limit=1&at=0', isCurrent); } catch { return false; }
+  if (!probe || !(Number(probe.total) > _outlinerPagedChildrenThreshold)) return false;
+  const first = await _outlinerFetchChildrenPage(base + '&limit=' + OUTLINER_PAGED_CHILDREN_PAGE + '&at=0', isCurrent);
+  if (!first) return false;
+  // start = 読み込み済みの範囲の先頭の位置（サーバーの並びでの番号）、fetched = サーバーから受け取った行数
+  // （削除待ちで外した行も数える。次のページの位置の計算に使う）、loaded = ツリーへ足した行数。
+  const record = {
+    childrenDiv, item, rootPath, base, total: Number(first.total) || 0, start: 0, fetched: 0, loaded: 0,
+    lastPath: '', loading: false, failedAt: 0, atEnd: false, signature: String(first.signature || ''),
+  };
+  const items = _outlinerPreparePagedChildren(record, first.items);
+  await _appendOrVirtualizeOutlinerChildren(childrenDiv, items, rootPath, { folderItem: item, folderNode, kind: 'folder' });
+  record.fetched = Array.isArray(first.items) ? first.items.length : 0;
+  record.loaded = items.length;
+  record.lastPath = items.length ? items[items.length - 1].path : '';
+  _outlinerPagedUpdateRecord(record, first);
+  childrenDiv._outlinerPagedRecord = record;
+  _outlinerPagedFolders.forEach(other => { if (other.childrenDiv === childrenDiv) _outlinerPagedFolders.delete(other); });
+  if (!record.atEnd) {
+    _outlinerPagedFolders.add(record);
+    _outlinerBindPagedScroll();
+    _outlinerQueuePagedCheck();
+  }
+  return true;
+}
+
+// 読み込み済みの範囲の後ろに残っている行数
+function _outlinerPagedTailRows(record) {
+  return Math.max(0, record.total - (record.start + record.fetched));
+}
+
+function _outlinerPagedUpdateRecord(record, result) {
+  if (result && Number.isFinite(Number(result.total))) record.total = Number(result.total);
+  record.atEnd = record.start === 0 && _outlinerPagedTailRows(record) === 0;
+  record.childrenDiv.dataset.pagedTotal = String(record.total);
+  record.childrenDiv.dataset.pagedLoaded = String(record.loaded);
+  record.childrenDiv.dataset.pagedStart = String(record.start);
+  _outlinerReservePagedRows(record);
+}
+
+// まだ読み込んでいない続きの分の高さを確保する（スクロールバーが、読み込み済みの分ではなく全体の長さを表す）
+function _outlinerReservePagedRows(record) {
+  window.GBOutlinerVirtualRender?.setPendingRows?.(record.childrenDiv, _outlinerPagedTailRows(record));
+}
+
+function _outlinerBindPagedScroll() {
+  if (_outlinerPagedScrollBound) return;
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  _outlinerPagedScrollBound = true;
+  scroller.addEventListener('scroll', _outlinerQueuePagedCheck, { passive: true });
+  window.addEventListener('resize', _outlinerQueuePagedCheck, { passive: true });
+}
+
+function _outlinerQueuePagedCheck() {
+  if (_outlinerPagedCheckQueued) return;
+  _outlinerPagedCheckQueued = true;
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    _outlinerPagedCheckQueued = false;
+    _outlinerCheckPagedFolders();
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  setTimeout(run, 60);
+}
+
+function _outlinerPagedLoadedBottom(record) {
+  const vr = window.GBOutlinerVirtualRender;
+  if (vr?.isVirtualContainer?.(record.childrenDiv)) {
+    const bottom = vr.bottomOfItem?.(record.childrenDiv, record.lastPath);
+    if (bottom != null) return bottom;
+  }
+  return record.childrenDiv.getBoundingClientRect().bottom;
+}
+
+// 見えている範囲に対して、次に取るもの。null = 取るものは無い。
+//   { kind: 'jump', at }      読み込み済みの範囲から遠い: 飛んだ先を直接取って、範囲を入れ替える
+//   { kind: 'append' }        末尾へ近い: 続きを継ぎ足す
+//   { kind: 'prepend' }       先頭へ近い（前に読み込んでいない行がある）: 前を継ぎ足す
+function _outlinerPagedNextStep(record) {
+  const vr = window.GBOutlinerVirtualRender;
+  const virtual = !!vr?.isVirtualContainer?.(record.childrenDiv);
+  const tail = _outlinerPagedTailRows(record);
+  const metrics = virtual ? vr.windowMetrics?.(record.childrenDiv) : null;
+  if (!metrics) {
+    // 仮想の一覧でない時（絞り込みで件数が少ない等）は、従来どおり末尾へ近づいたら続きを足すだけ
+    if (!tail) return null;
+    const scroller = document.getElementById('tree-scroll-container');
+    if (!scroller || virtual) return null;
+    return _outlinerPagedLoadedBottom(record) - scroller.getBoundingClientRect().bottom > OUTLINER_PAGED_CHILDREN_AHEAD_PX
+      ? null : { kind: 'append' };
+  }
+  const row = metrics.rowHeight || 22;
+  if (metrics.viewBottom < 0 || metrics.viewTop > metrics.height) return null; // 一覧が画面に掛かっていない
+  const viewTop = Math.max(0, metrics.viewTop), viewBottom = Math.min(metrics.height, metrics.viewBottom);
+  const jumpPx = OUTLINER_PAGED_CHILDREN_JUMP_ROWS * row;
+  const jumpTo = () => {
+    // 入れ替えた後は、読み込んでいない行はすべて同じ高さで並ぶ。見えている範囲の少し上から1ページ取る。
+    const index = Math.floor(viewTop / row) - Math.floor(OUTLINER_PAGED_CHILDREN_PAGE / 4);
+    return { kind: 'jump', at: Math.max(0, Math.min(Math.max(0, record.total - OUTLINER_PAGED_CHILDREN_PAGE), index)) };
+  };
+  if (tail && viewTop - metrics.loadedBottom > jumpPx) return jumpTo();
+  if (record.start > 0 && metrics.loadedTop - viewBottom > jumpPx) return jumpTo();
+  if (tail && metrics.loadedBottom - viewBottom <= OUTLINER_PAGED_CHILDREN_AHEAD_PX) return { kind: 'append' };
+  if (record.start > 0 && viewTop - metrics.loadedTop <= OUTLINER_PAGED_CHILDREN_AHEAD_PX) return { kind: 'prepend' };
+  return null;
+}
+
+function _outlinerCheckPagedFolders() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  _outlinerPagedFolders.forEach(record => {
+    if (!record.childrenDiv.isConnected || record.childrenDiv._outlinerPagedRecord !== record || record.atEnd) {
+      if (!record.childrenDiv.isConnected || record.atEnd) _outlinerPagedFolders.delete(record);
+      return;
+    }
+    if (record.loading || (record.failedAt && Date.now() - record.failedAt < 2000)) return;
+    if (record.childrenDiv.closest('.collapsed')) return;
+    const step = _outlinerPagedNextStep(record);
+    if (step) void _outlinerLoadChildrenStep(record, step);
+  });
+}
+
+async function _outlinerLoadChildrenStep(record, step) {
+  record.loading = true;
+  try {
+    const isCurrent = () => record.childrenDiv.isConnected && record.childrenDiv._outlinerPagedRecord === record;
+    const vr = window.GBOutlinerVirtualRender;
+    const page = OUTLINER_PAGED_CHILDREN_PAGE;
+    let at, limit;
+    if (step.kind === 'jump') { at = step.at; limit = page; }
+    else if (step.kind === 'prepend') { at = Math.max(0, record.start - page); limit = record.start - at; }
+    else { at = record.start + record.fetched; limit = page; }
+    const result = await _outlinerFetchChildrenPage(record.base + '&limit=' + limit + '&at=' + at, isCurrent);
+    if (!result || !isCurrent()) return;
+    const received = Array.isArray(result.items) ? result.items.length : 0;
+    const startAt = Number.isFinite(Number(result.start)) ? Number(result.start) : at;
+    const items = _outlinerPreparePagedChildren(record, result.items);
+    const virtual = !!vr?.isVirtualContainer?.(record.childrenDiv);
+    // 一覧が変わっていたら（他の操作で項目が増減した）、継ぎ足す位置がずれるので、受け取ったページで範囲を入れ替える
+    const signature = String(result.signature || '');
+    const changed = !!signature && !!record.signature && signature !== record.signature;
+    record.signature = signature || record.signature;
+    if (Number.isFinite(Number(result.total))) record.total = Number(result.total);
+    if (virtual && (step.kind === 'jump' || changed)) {
+      record.start = startAt;
+      record.fetched = received;
+      record.loaded = items.length;
+      vr.replaceWindow(record.childrenDiv, items, record.start, _outlinerPagedTailRows(record));
+    } else if (step.kind === 'prepend' && virtual) {
+      record.start = startAt;
+      record.fetched += received;
+      record.loaded += items.length;
+      vr.prependItems(record.childrenDiv, items, record.start);
+    } else if (step.kind !== 'jump' && step.kind !== 'prepend') {
+      if (virtual) vr.appendItems(record.childrenDiv, items);
+      else await _appendOutlinerChildrenChunked(record.childrenDiv, items, record.rootPath);
+      record.fetched += received;
+      record.loaded += items.length;
+    }
+    if (items.length && step.kind !== 'prepend') record.lastPath = items[items.length - 1].path;
+    _outlinerPagedUpdateRecord(record, result);
+    record.failedAt = 0;
+  } catch (error) {
+    record.failedAt = Date.now();
+    console.warn('[フォルダツリー] 続きの読み込みに失敗:', record.item.path, error);
+  } finally {
+    record.loading = false;
+    if (!record.atEnd) _outlinerQueuePagedCheck();
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.MeldexOutlinerPagedChildren = {
+    threshold: () => _outlinerPagedChildrenThreshold,
+    setThreshold(value) { _outlinerPagedChildrenThreshold = Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 2000; },
+    check: _outlinerCheckPagedFolders,
+    records: () => Array.from(_outlinerPagedFolders, record => ({ path: record.item.path, total: record.total, start: record.start,
+      loaded: record.loaded, atEnd: record.atEnd, loading: record.loading })),
+    requests: () => _outlinerPagedStats.requests,
+  };
+}
+
 const _outlinerWarmQueue = [];
 const _outlinerWarmKeys = new Set();
 let _outlinerWarmRunning = false;
@@ -1049,6 +1292,8 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
       while (_outlinerWarmQueue.length) {
         const next = _outlinerWarmQueue.shift();
         try {
+          // 子が多いフォルダは全件の読み取りを裏で始めない（開いた時にページごとに取る）
+          if (next.path.startsWith('/browse?') && await _outlinerWarmTargetIsLarge(next.path)) continue;
           if (next.node.isConnected && next.node.style.display !== 'none') await apiFetch(next.path, {
             background: true, silentError: true,
             ...(next.path.startsWith('/pivot?') ? { headers: { 'X-Meldex-Tree-Preload': 'true' } } : {}),
@@ -1058,6 +1303,17 @@ function _scheduleOutlinerChildWarmup(container, items, rootPath) {
       }
     } finally { _outlinerWarmRunning = false; }
   }, 0);
+}
+
+async function _outlinerWarmTargetIsLarge(browsePath) {
+  try {
+    const query = new URLSearchParams(browsePath.slice(browsePath.indexOf('?') + 1));
+    const probe = await apiFetch('/browse-page?path=' + encodeURIComponent(query.get('path') || '')
+      + (query.get('root') ? '&root=' + encodeURIComponent(query.get('root')) : '')
+      + '&sort=' + (query.get('sort') || 'name') + '&order=' + (query.get('order') || 'asc') + '&limit=1&at=0&all_files=true',
+    { background: true, silentError: true });
+    return probe?.pending === true || Number(probe?.total) > _outlinerPagedChildrenThreshold;
+  } catch (_) { return false; }
 }
 
 function _scheduleOutlinerSheetProjection(container, item, pivotData, rootPath, loadToken) {

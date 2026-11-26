@@ -233,9 +233,34 @@
   .bd-common-view-tab > .view-tab-label,
   .bd-common-view-menu > .view-tab-more,
   .bd-common-view-add > .view-tab-add { min-height: 44px; min-width: 44px; }
+  .bd-topic-view-controls .bd-common-view-tab:has(> .bd-topic-view-rename-input) {
+    height: auto;
+    min-height: var(--ui-h-touch, 44px);
+  }
+  .bd-topic-view-controls .bd-topic-view-rename-input {
+    box-sizing: border-box;
+    min-height: var(--ui-h-touch, 44px);
+  }
 }
 @media (max-width: 768px) {
   .bd-topic-view-controls .bd-common-view-tab:not(.active) { display: none; }
   .bd-topic-view-controls .bd-common-view-tab.active > .view-tab-label { display: none; }
   .bd-topic-view-controls .bd-common-view-tabs { flex: 0 0 auto; overflow: visible; }
+  /* 通常の44pxメニューボタン幅へ入力欄を中央寄せすると左へはみ出す。
+     入力中は重複するビュー選択欄の場所を使い、確定・取消後に自動で戻す。 */
+  .bd-topic-view-controls:has(.bd-topic-view-rename-input) > select { display: none; }
+  .bd-topic-view-controls:has(.bd-topic-view-rename-input) .bd-common-view-tabs { flex: 1 1 auto; }
+  .bd-topic-view-controls .bd-common-view-tab.active:has(> .bd-topic-view-rename-input) {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    min-height: var(--ui-h-touch, 44px);
+  }
+  .bd-topic-view-controls .bd-topic-view-rename-input {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    min-height: var(--ui-h-touch, 44px);
+  }
 }

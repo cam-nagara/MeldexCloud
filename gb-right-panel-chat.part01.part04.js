@@ -347,7 +347,7 @@ async function chatSend(options = {}) {
   if (!usingDeferredMessages) {
     const submitFingerprint = JSON.stringify({ text, attachments: _pendingAtts.map(att => att.path || att.name || '') });
     const now = Date.now();
-    if (submitFingerprint === _chatLastSubmitFingerprint && now - _chatLastSubmitAt < 300) {
+    if (!options.replay && submitFingerprint === _chatLastSubmitFingerprint && now - _chatLastSubmitAt < 300) {
       if (typeof showStatus === 'function') showStatus('同じメッセージの連続送信を抑止しました');
       return false;
     }

@@ -154,6 +154,8 @@
   // Xの取り込みはサーバーが利用者の直せる確認だけを attention で返す（閉じた内容は返さない）。
   function _importNotices(result) {
     const notices = [];
+    if (result.membership_complete === false) notices.push('フォルダ全件確認は未完了（Xから続きの確認情報なし・空欄の所属は不明）');
+    if (result.dry_run_count != null) notices.push('フォルダ修復: 書き込み前' + Number(result.dry_run_count) + '件 / 反映' + Number(result.folder_updates || 0) + '件（設定から取り消し可能）');
     const pending = Number(result.translation_pending_existing || 0) + Number(result.translation_pending_replies || 0);
     if (pending > 0) notices.push('翻訳待ち' + pending + '件（原文は保存済み）');
     const media = Number(result.media_failed || 0);
@@ -213,6 +215,28 @@
       out.retry = () => showSettingsModal({ panel: settingsPanel });
     }
     return out;
+  }
+
+  // 復元されたジョブも手動実行も、処理名・原因・対処を同じ形で示す。
+  function describeJobFailure(error, options) {
+    const opts = options || {};
+    const raw = String(error?.message || error || '').trim();
+    let reason;
+    if (/permission|access.*denied|権限|アクセス.*拒否/i.test(raw)) reason = '保存先を読み書きする権限がありません。保存先の権限を確認してください。';
+    else if (/no space|disk.*full|容量|空き領域/i.test(raw)) reason = '保存先の空き容量が足りません。空き容量を増やして再試行してください。';
+    else if (/locked|busy|lease|使用中|順番待ち/i.test(raw)) reason = 'ほかの処理が保存先を使用しています。少し待ってから再試行してください。';
+    else if (/not found|no such file|見つかりません|存在しません/i.test(raw)) reason = '対象のファイルや保存先が見つかりません。保存先を確認してください。';
+    else if (/network|timeout|timed out|fetch|接続|通信/i.test(raw)) reason = '接続先から応答を受け取れませんでした。接続を確認して再試行してください。';
+    else if (/[ぁ-んァ-ヶ一-龠]/.test(raw)) reason = raw;
+    else reason = raw ? '処理中に予期しない問題が起きました。詳しい記録を確認してください。'
+      : '原因を示す記録が残っていません。詳しい記録を確認して再試行してください。';
+    const details = [...(Array.isArray(opts.details) ? opts.details : [])];
+    details.push({stage: '原因と対処', message: reason + (raw && raw !== reason ? '\n記録: ' + raw : '')});
+    const label = String(opts.label || 'バックグラウンド処理');
+    const failure = /しています$/.test(label) ? label.replace(/しています$/, 'できませんでした') : label + 'を完了できませんでした';
+    return {error: `${failure}。${reason}`,
+      summary: '', details, detailCount: details.length, retry: opts.retry,
+      attentionKey: opts.attentionKey || '', retryLabel: opts.retryLabel || '再試行'};
   }
 
   // 通信/ジョブ処理は従来実装を保ち、表示だけを共通操作状態へ接続する。
@@ -283,7 +307,9 @@
     try {
       const result = await _runBackgroundJobImpl(startPath, body, wrapped);
       if (result?.ok === false) {
-        operation?.fail({ error: result.error || result.message || '処理に失敗しました' });
+        operation?.fail(describeJobFailure(result.error || result.message, {
+          label: operation?.getState()?.label || _operationLabel(startPath, opts), details: result.failure_samples,
+        }));
       } else {
         const outcome = describeImportResult(result);
         if (outcome.partial) operation?.partial(importAttentionValues(outcome, settingsPanel));
@@ -299,7 +325,10 @@
         operation?.cancelled({ summary: cleanupSummary || (partial?.unprocessed !== undefined
           ? `${error.message}。新規${partial.created || 0} / 更新${partial.updated || 0} / 未処理${partial.unprocessed}` : error.message) });
       }
-      else if (error?.jobError || error?.jobStatus?.status === 'error' || !operation?.getState()?.persistentJobId) operation?.fail({ error: error });
+      else if (error?.jobError || error?.jobStatus?.status === 'error' || !operation?.getState()?.persistentJobId) operation?.fail(describeJobFailure(error, {
+        label: operation?.getState()?.label || _operationLabel(startPath, opts),
+        details: error?.jobStatus?.result?.failure_samples || error?.errorDetail?.failure_samples,
+      }));
       else if (error?.name === 'LongRunningJobError' || [400, 401, 403, 404].includes(Number(error?.status)) || /HTTP 404/.test(error?.message || '')) operation?.unknown({ summary: '進捗を確認できないため、処理の結果は未確認です。取り込みの前回結果を確認してください。' });
       else operation?.update({ message: error?.name === 'LongRunningJobError' ? error.message : '進捗を確認できません。処理が終了したかは未確認です。' });
       throw error;
@@ -333,6 +362,7 @@
   }
 
   window.describeImportResult = describeImportResult;
+  window.describeJobFailure = describeJobFailure;
   window.importAttentionValues = importAttentionValues;
   window.runBackgroundJob = runBackgroundJob;
   window.formatJobProgress = formatJobProgress;

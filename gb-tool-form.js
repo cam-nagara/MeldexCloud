@@ -151,19 +151,21 @@ class FormAppComponent extends ToolComponent {
   _changed() {
     if (!this.store) return;
     if (this.titleElement) {
-      this.titleElement.textContent = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
-      this.titleElement.title = this.titleElement.textContent;
+      const title = this.state.label || this.store.doc.display_title || this.store.doc.title || 'フォーム';
+      if (this.titleElement.textContent !== title) this.titleElement.textContent = title;
+      if (this.titleElement.title !== title) this.titleElement.title = title;
     }
     try {
       if (this.store.dirty) localStorage.setItem(this._draftKey(), JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }));
       else this._removeOwnDraft();
     } catch (_) { /* beforeunload and flush still guard the in-memory draft. */ }
-    if (this.status) this.status.textContent = this.store.error
+    let statusText = this.store.error
       ? '保存できません: ' + (this.store.error.userMessage || this.store.error.message)
       : this.store.pending ? '保存しています…' : this.store.dirty ? '未保存の変更があります' : '保存済み';
-    if (this.retry) this.retry.hidden = !this.store.error;
-    if (this.exportDraft) this.exportDraft.disabled = !this.store.dirty;
-    if (this.status && this._sourceMoved) this.status.textContent += ' — 参照先シートが移動しました。入力を確認して再読込してください。';
+    if (this._sourceMoved) statusText += ' — 参照先シートが移動しました。入力を確認して再読込してください。';
+    if (this.status && this.status.textContent !== statusText) this.status.textContent = statusText;
+    if (this.retry && this.retry.hidden !== !this.store.error) this.retry.hidden = !this.store.error;
+    if (this.exportDraft && this.exportDraft.disabled !== !this.store.dirty) this.exportDraft.disabled = !this.store.dirty;
   }
   _update(mutator, options = {}) {
     if (this.definitionReadOnly || !this.store) return false;
@@ -272,7 +274,9 @@ class FormAppComponent extends ToolComponent {
   getLayout() { return this.store?.doc.layout; }
   getConfig(props, propTypes) {
     const doc = this.store.doc, layout = doc.layout;
-    const cfg = { ...doc.formConfig, ...(layout ? MeldexDbFormModel.forLayout(layout, doc.formConfig) : {}) };
+    // Editor controls mutate their working config before calling saveConfig.
+    // Nested labels/descriptions/rules must not mutate the Store's before snapshot.
+    const cfg = MeldexFormDocument.clone({ ...doc.formConfig, ...(layout ? MeldexDbFormModel.forLayout(layout, doc.formConfig) : {}) });
     return normalizeDbFormConfig({ ...cfg, layoutId: layout?.id || '', mode: this._mode || (this.definitionReadOnly ? 'entry' : doc.formConfig?.mode) || 'entry' },
       [...props, ...MeldexDbFormModel.layoutFields(layout)], propTypes);
   }
@@ -615,7 +619,7 @@ class FormAppComponent extends ToolComponent {
       await this.load(this.path, { discardDraft: true });
     }));
     // 参照先シートはフォームの中心となる操作なので、幅が狭くても「隠れている操作（▼）」へ移さない。
-    window.MeldexToolbarOverflow?.setup?.({ toolbar: bar, keep: ['.gb-form-source-sheet'] });
+    window.MeldexToolbarOverflow?.setup?.({ toolbar: bar, keep: ['.gb-form-source-sheet'], stableGeometry: true });
     const saveBar = document.createElement('div'); saveBar.className = 'gb-form-app-save'; this.el.appendChild(saveBar);
     this.status = document.createElement('span'); this.status.setAttribute('role', 'status'); saveBar.appendChild(this.status);
     this.retry = this._button('保存を再試行', () => this._saveDefinitionAndSheet()); saveBar.appendChild(this.retry);
@@ -681,13 +685,18 @@ class FormAppComponent extends ToolComponent {
     this._responseTimer = setTimeout(run, 1000);
   }
 
+  _ownsDetailPanel() {
+    return !this._embedded && this.paneId === GBLayout.activePane
+      && GBTabs.getActiveTab(this.paneId)?.id === this.tabId;
+  }
   _syncDetailPanel() {
     const path = this.path || this._tab()?.path || this.state.formPath;
-    if (this._embedded || this.paneId !== GBLayout.activePane) return;
+    if (!this._ownsDetailPanel()) return;
     // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
     if (!path) { window.GBOptionTargetContext?.clear?.('form-new'); return; }
     if (typeof _syncDetailPanel === 'function') {
       return Promise.resolve(_syncDetailPanel(this.state.label || 'フォーム', path, 'form-app')).then(result => {
+        if (result === false || !this._ownsDetailPanel()) return result;
         this._renderFieldInspector();
         if (this.paneId === GBLayout.activePane && typeof switchDetailTab === 'function' && typeof _resolveDetailTabForType === 'function') {
           // 利用者が別のタブ（プロパティ等）を選んでいる時は切り替えない。何も選ばれていない時か、表示されないタブの時だけ。
@@ -702,19 +711,19 @@ class FormAppComponent extends ToolComponent {
   }
   // オプションパネルの「項目」タブ: 選択中（入力中）の項目の設定と操作を出す。
   _renderFieldInspector() {
-    if (this._embedded || this.paneId !== GBLayout.activePane) return;
+    if (!this._ownsDetailPanel()) return;
     const root = document.getElementById('detail-tab-form-field');
     if (!root) return;
     root.replaceChildren();
     const title = document.createElement('h3'); title.textContent = '選択項目'; root.appendChild(title);
     const field = this._selectedField;
     const layout = this.getLayout?.();
-    const config = layout && globalThis.MeldexDbFormModel?.forLayout ? MeldexDbFormModel.forLayout(layout) : null;
+    const types = this.ctx?.dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(this.ctx.dbPath, this.ctx) || {} : {};
+    const config = this.store?.doc ? this.getConfig(this.ctx?.pivotData?.properties || [], types) : null;
     if (!field || !config?.fields?.includes(field)) {
       const hint = document.createElement('p'); hint.textContent = '項目を選ぶと設定と操作が出ます。'; root.appendChild(hint);
       return;
     }
-    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(this.ctx?.dbPath, this.ctx) || {} : {};
     const rule = MeldexDbFormModel.ruleFor?.(config, field, typeof getValidationRules === 'function' ? getValidationRules(this.ctx?.dbPath) : []) || {};
     const rows = [
       ['列', field],

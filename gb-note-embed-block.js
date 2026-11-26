@@ -272,6 +272,7 @@
   // back into live blocks and remove their adjacent human-readable fallback link.
   function hydrate(root, markdown, options) {
     if (!root) return [];
+    global.MeldexNoteFileEmbed?.hydrateWithin?.(root);
     _ensureRemovalObserver(root);
     const created = [];
     _serializer().parseMarkdown(markdown).forEach((item) => {
@@ -296,6 +297,7 @@
     });
   }
   function restoreUndo(root, snapshots) {
+    if (root) global.MeldexNoteFileEmbed?.hydrateWithin?.(root);
     if (!root || !Array.isArray(snapshots)) return;
     _ensureRemovalObserver(root);
     snapshots.forEach(snapshot => {
@@ -308,6 +310,7 @@
   }
   function disposeWithin(root) {
     if (!root?.querySelectorAll) return 0;
+    global.MeldexNoteFileEmbed?.disposeWithin?.(root);
     let count = 0;
     root.querySelectorAll('.meldex-note-embed').forEach((element) => {
       if (_disposeBlock(_runtimeIdForElement(element))) count++;
@@ -318,11 +321,17 @@
     return [
       { id: 'embed-sheet', label: 'シートビュー', icon: 'table2', keywords: ['sheet', 'シート', 'ビュー'], insertOnly: true },
       { id: 'embed-board', label: 'ボードビュー', icon: 'layoutDashboard', keywords: ['board', 'ボード', 'ビュー'], insertOnly: true },
+      { id: 'embed-file', label: 'ファイルの埋め込み', icon: 'filePlus', keywords: ['embed', 'file', '埋め込み', 'ファイル', 'ボード', 'シート', 'シナリオ', '画像', 'PDF'], insertOnly: true },
     ];
   }
-  function isInsertCommand(id) { return id === 'embed-sheet' || id === 'embed-board'; }
+  function isInsertCommand(id) { return id === 'embed-sheet' || id === 'embed-board' || id === 'embed-file'; }
   function insertFromCommand(id, context) {
     if (!isInsertCommand(id)) return false;
+    if (id === 'embed-file') {
+      if (!global.MeldexNoteFileEmbed) return false;
+      global.MeldexNoteFileEmbed.insertFromCommand(context);
+      return true;
+    }
     const type = id === 'embed-sheet' ? 'sheet' : 'board';
     _requestView(type, null, (ref) => {
       if (!ref) return;

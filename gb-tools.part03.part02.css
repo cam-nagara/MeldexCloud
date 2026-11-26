@@ -114,7 +114,8 @@
   paint-order: stroke fill;
   box-shadow: none;
   border-bottom: 0;
-  padding-left: var(--ui-space-3);
+  /* ファイルアイコンの右端から文字まで --ui-toolbar-file-icon-name-gap（2026-11-24。自分の枠1pxとアイコンの枠1pxを引く） */
+  padding-left: calc(var(--ui-toolbar-file-icon-name-gap, var(--ui-space-2)) - 2 * var(--ui-border-width, 1px));
   line-height: 30px;
   min-height: 30px;
   display: flex;

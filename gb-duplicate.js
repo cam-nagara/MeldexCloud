@@ -17,6 +17,7 @@ async function showDuplicateScanModal(folderPath) {
 // ==============================
 
 async function clipIndexFolder(folderPath) {
+  if (window.MeldexPdfVisual) return window.MeldexPdfVisual.openFolder(folderPath);
   showStatus('画像インデックスを作成中...');
   try {
     const res = await apiPost('/clip/index', { path: folderPath });

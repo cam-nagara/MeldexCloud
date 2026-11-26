@@ -91,7 +91,7 @@
 
 .meldex-entity-attachments-section.gb-attachment-dropzone-active {
   border-color: var(--accent, #3b82f6);
-  background: var(--accent-light, rgba(59, 130, 246, 0.08));
+  background: var(--accent-light, color-mix(in srgb, var(--ui-accent, var(--accent)) 8%, transparent));
 }
 
 .meldex-entity-attachments-header {

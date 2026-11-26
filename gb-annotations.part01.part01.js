@@ -351,7 +351,9 @@ const _VIEWER_ANN_ACTION_LABELS = { create: '作成', update: '更新', delete: 
 function _handleViewerAnnotationSaveResult(msg, options = {}) {
   if (msg?.ok) {
     const history = msg.history && typeof msg.history === 'object' ? msg.history : null;
-    if (options.recordHistory !== false && history && (history.before || history.after)) {
+    if (options.recordHistory !== false && history && (Array.isArray(history.beforeRows) || Array.isArray(history.afterRows))) {
+      _pushAnnotationBatchHistory('アノテート: 全削除', history.beforeRows, history.afterRows, 'ビューワー');
+    } else if (options.recordHistory !== false && history && (history.before || history.after)) {
       const actionLabel = _VIEWER_ANN_ACTION_LABELS[msg.action] || '更新';
       _pushAnnotationHistory(`アノテート: ${actionLabel}`, history.before || null, history.after || null, 'ビューワー');
     }
@@ -835,7 +837,7 @@ async function _restoreAnnotationHistoryRow(row, expectedRow) {
   const expected = _normalizeAnnotationHistoryRow(expectedRow);
   if (expected?.modified) payload.expected_modified = expected.modified;
   else payload.expected_absent = true;
-  await apiPost('/annotations/restore', payload);
+  await apiPost('/annotations/restore', payload, { silentError: true, diagnosticOp: 'annotation.history.restore' });
   _refreshAnnotationHistoryTarget(payload);
   return true;
 }
@@ -845,7 +847,7 @@ async function _deleteAnnotationHistoryRow(row, expectedRow) {
   if (!annId) return false;
   const expected = _normalizeAnnotationHistoryRow(expectedRow || (typeof row === 'object' ? row : null));
   const suffix = expected?.modified ? '?expected_modified=' + encodeURIComponent(expected.modified) : '';
-  await apiDelete('/annotations/' + encodeURIComponent(annId) + suffix);
+  await apiDelete('/annotations/' + encodeURIComponent(annId) + suffix, { silentError: true, diagnosticOp: 'annotation.history.delete' });
   _refreshAnnotationHistoryTarget(typeof row === 'object' ? row : null);
   return true;
 }
@@ -1379,7 +1381,7 @@ function _trayAnnotationPaletteBridge(action, extraState = {}) {
 function _isTrayAnnotationPaletteUiNode(node, shell) {
   if (!(node instanceof HTMLElement)) return true;
   if (node === shell || ['SCRIPT', 'STYLE', 'LINK'].includes(node.tagName)) return true;
-  return node.matches('.ann-tool-popup,.gb-context-menu,.gb-color-palette,.color-palette')
+  return node.matches('.ann-tool-popup,.gb-context-menu,.gb-palette-popup,.gb-color-palette,.color-palette')
     || !!node.querySelector('.gb-confirm,[data-e2e-id="cf-confirm-dialog"]');
 }
 
@@ -1392,11 +1394,11 @@ function _initTrayAnnotationPaletteHost() {
   toolbar.dataset.trayPaletteInitialized = '1';
   toolbar.dataset.e2eId = 'tray-annotation-palette-toolbar';
   document.body.dataset.annotationTrayPalette = '1';
-  document.documentElement.style.background = '#101318';
+  document.documentElement.style.background = 'var(--bg)';
   Object.assign(document.body.style, {
     margin: '0',
     overflow: 'hidden',
-    background: '#101318',
+    background: 'var(--bg)',
   });
   const shell = document.createElement('main');
   shell.className = 'tray-annotation-palette-shell';
@@ -1405,7 +1407,7 @@ function _initTrayAnnotationPaletteHost() {
     position: 'fixed',
     inset: '0',
     zIndex: '2147482999',
-    background: '#101318',
+    background: 'var(--bg)',
   });
   document.body.appendChild(shell);
   shell.appendChild(toolbar);
@@ -1524,10 +1526,11 @@ function _initTrayAnnotationPaletteHost() {
   document.addEventListener('click', event => {
     const option = event.target.closest('[data-ann-select-tool]');
     if (option) {
-      _trayAnnotationPaletteBridge(option.dataset.annSelectTool);
+      const tool = option.dataset.annSelectTool;
+      requestAnimationFrame(() => _trayAnnotationPaletteBridge(tool));
       return;
     }
-    if (event.target.closest('#ann-color-swatch,.gb-color-palette,.color-palette')) {
+    if (event.target.closest('#ann-color-swatch,.gb-palette-popup,.gb-color-palette,.color-palette')) {
       requestAnimationFrame(() => _trayAnnotationPaletteBridge('state'));
     }
   }, true);
@@ -1535,7 +1538,8 @@ function _initTrayAnnotationPaletteHost() {
     input.addEventListener('input', () => _trayAnnotationPaletteBridge('state'));
   });
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !document.querySelector('.gb-context-menu,.ann-tool-popup,.gb-color-palette,.color-palette')) {
+    if (event.defaultPrevented) return;
+    if (event.key === 'Escape' && !document.querySelector('.gb-context-menu,.ann-tool-popup,.gb-palette-popup,.gb-color-palette,.color-palette')) {
       event.preventDefault();
       _trayAnnotationPaletteBridge('close');
     }

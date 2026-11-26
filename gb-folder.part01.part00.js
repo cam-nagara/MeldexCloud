@@ -121,15 +121,274 @@ const _savedFolderThumbnailPx = parseInt(localStorage.getItem('folder-thumbnail-
 let _folderZoom = Number.isFinite(_savedFolderThumbnailPx)
   ? Math.max(48, Math.min(1000, _savedFolderThumbnailPx)) / 120
   : parseFloat(localStorage.getItem('folder-zoom') || '1');
-// ボードのリンクカード計画 Phase B-2（縮小スコープ）: フォルダの状態
-// （_folderPath/_folderItems/_folderSelected等）はシートのctxと違い、単一の
-// グローバル変数のまま（CSVの_csvRenderContainerOverrideと同じ方針）。サブパネル等の
-// 独立した描画先へ開く場合は _folderRenderContainerOverride を使い、共有の
-// #folder-grid（および #folder-item-count・#folder-layout-select・一括操作バー・
-// プレビューパネル・表示フィルタボタン等のメイン画面専用UI）は一切触らせず、専用DOMへ
-// 直接描画する。状態自体は単一のままのため、直前の対象が今回とは別フォルダの場合、
-// 直前の描画先（メイン or 以前のサブパネル）へ切り替え通知を出す。
+// フォルダの表示は「面」ごとに状態を持つ（2026-11-24）。面 = メインのフォルダパネル（#folder-grid）と、
+// サブパネル等の独立した描画先（openFolder の containerEl）。
+// _folderPath / _folderItems / _folderSelected などの変数は「今つないでいる面」の状態で、面を切り替える時に
+// 前の面の状態を退避し、次の面の状態を戻す（描画先のDOMには触らない）。これでメインとサブパネルが
+// 別々のフォルダ・選択・スクロール・大きなフォルダの表示を同時に持てる。
+// - 利用者が操作している面（_folderInteractionSurface）: クリック・右クリック・ドラッグ・ドロップ・フォーカスで切り替わる。
+//   キー操作・ツールバー・切り取り／貼り付け・削除は、この面の状態へ作用する。
+// - 一時的につなぐ（_folderEnterSurface / _folderOnSurface）: 操作中でない面の読み込みの続き・描画の続き・
+//   スクロールの追従などが、自分の面の状態で動くための入口。処理の区切りで操作中の面へ戻る。
+// _folderRenderContainerOverride は「今つないでいる面の描画先」（null = メイン）。#folder-item-count・
+// #folder-layout-select・一括操作バー・プレビューなどメイン専用のUIは、メインをつないでいる時だけ触る。
 let _folderRenderContainerOverride = null;
+const _folderSurfaceStates = new Map();   // 描画先の要素（メインは 'main'）→ 退避した状態
+const _folderSurfaceLoadSeq = new Map();  // 描画先の要素（メインは 'main'）→ 最後に始めた読み込みの番号
+let _folderInteractionSurface = null;     // 利用者が操作している面の描画先（null = メイン）
+let _folderSurfaceLeaveQueued = false;
+
+function _folderSurfaceKey(override) { return override || 'main'; }
+
+function _folderCurrentSurface() { return _folderRenderContainerOverride || null; }
+
+function _folderCaptureSurfaceState() {
+  return {
+    path: _folderPath, items: _folderItems, selected: _folderSelected, selectedItems: _folderSelectedItems,
+    visibleItems: _folderVisibleItems, browseIncomplete: _folderBrowseIncomplete,
+    unifiedSearchPaths: _folderUnifiedSearchPaths, layout: _folderLayout, zoom: _folderZoom, renderSeq: _folderRenderSeq,
+    waterfallOb: typeof _waterfallResizeOb !== 'undefined' ? _waterfallResizeOb : null,
+    waterfallRaf: typeof _waterfallLayoutRaf !== 'undefined' ? _waterfallLayoutRaf : 0,
+    waterfallWidth: typeof _waterfallObservedWidth !== 'undefined' ? _waterfallObservedWidth : 0,
+    large: globalThis.MeldexFolderLarge?.swapState ? globalThis.MeldexFolderLarge.swapState(null) : null,
+  };
+}
+
+function _folderApplySurfaceState(saved) {
+  const state = saved || {};
+  _folderPath = state.path || '';
+  _folderItems = Array.isArray(state.items) ? state.items : [];
+  _folderSelected = state.selected || null;
+  _folderSelectedItems = Array.isArray(state.selectedItems) ? state.selectedItems : [];
+  _folderVisibleItems = Array.isArray(state.visibleItems) ? state.visibleItems : [];
+  _folderBrowseIncomplete = state.browseIncomplete || null;
+  _folderUnifiedSearchPaths = state.unifiedSearchPaths || new Set();
+  // 新しい面の表示形式・大きさは、開く時にそのフォルダの保存値で決まる（それまでは直前の値のまま）
+  if (state.layout) _folderLayout = state.layout;
+  if (Number.isFinite(state.zoom)) _folderZoom = state.zoom;
+  _folderRenderSeq = state.renderSeq || 0;
+  if (typeof _waterfallResizeOb !== 'undefined') {
+    _waterfallResizeOb = state.waterfallOb || null;
+    _waterfallLayoutRaf = state.waterfallRaf || 0;
+    _waterfallObservedWidth = state.waterfallWidth || 0;
+  }
+  globalThis.MeldexFolderLarge?.swapState?.(state.large || null);
+  // 表示設定（フォルダごと）の「現在のフォルダ」も、つないでいる面へ合わせる
+  globalThis.MeldexFolderDisplaySettings?.bind?.(_folderPath);
+}
+
+// 退避してある面の後始末（タイマー・監視を止める）。
+function _folderDisposeSurfaceState(saved) {
+  if (!saved) return;
+  try { saved.waterfallOb?.disconnect?.(); } catch {}
+  try { globalThis.MeldexFolderLarge?.disposeState?.(saved.large); } catch {}
+}
+
+// 面をつなぎ替える（状態の入れ替えだけ。DOMには触らない）。つなげたら true。
+function _folderBindSurface(override) {
+  const next = override || null;
+  const current = _folderRenderContainerOverride || null;
+  if (next === current) return true;
+  if (next && !next.isConnected) return false;
+  if (current && !current.isConnected) {
+    // 今の面の描画先は外された（サブパネルを閉じた等）。状態は捨てる。
+    _folderDisposeSurfaceState(_folderCaptureSurfaceState());
+    _folderSurfaceLoadSeq.delete(current);
+    if (_folderInteractionSurface === current) _folderInteractionSurface = null;
+  } else {
+    _folderSurfaceStates.set(_folderSurfaceKey(current), _folderCaptureSurfaceState());
+  }
+  const key = _folderSurfaceKey(next);
+  const saved = _folderSurfaceStates.get(key) || null;
+  _folderSurfaceStates.delete(key);
+  _folderRenderContainerOverride = next;
+  _folderApplySurfaceState(saved);
+  return true;
+}
+
+// 外された描画先の状態を捨てる。
+function _folderPruneSurfaces() {
+  for (const [key, saved] of [..._folderSurfaceStates]) {
+    if (key === 'main' || key.isConnected) continue;
+    _folderDisposeSurfaceState(saved);
+    _folderSurfaceStates.delete(key);
+    _folderSurfaceLoadSeq.delete(key);
+    if (_folderInteractionSurface === key) _folderInteractionSurface = null;
+  }
+}
+
+// 描画先を明示的に手放す（サブパネルが内容を片付ける時）。
+function _folderReleaseSurface(element) {
+  if (!element) return;
+  if (_folderInteractionSurface === element) _folderInteractionSurface = null;
+  if (_folderRenderContainerOverride === element) {
+    _folderDisposeSurfaceState(_folderCaptureSurfaceState());
+    const saved = _folderSurfaceStates.get('main') || null;
+    _folderSurfaceStates.delete('main');
+    _folderRenderContainerOverride = null;
+    _folderApplySurfaceState(saved);
+  } else {
+    _folderDisposeSurfaceState(_folderSurfaceStates.get(element));
+    _folderSurfaceStates.delete(element);
+  }
+  _folderSurfaceLoadSeq.delete(element);
+  if ((_folderRenderContainerOverride || null) !== (_folderInteractionSurface || null)) _folderBindSurface(_folderInteractionSurface);
+  if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
+}
+
+// 利用者が操作する面を切り替える。以後のキー操作・ツールバー・貼り付け・削除はこの面へ作用する。
+function _folderActivateSurface(override) {
+  const next = override && override.isConnected ? override : null;
+  const changed = (_folderInteractionSurface || null) !== next || (_folderRenderContainerOverride || null) !== next;
+  _folderInteractionSurface = next;
+  _folderBindSurface(next);
+  if (changed) {
+    if (!next && _folderPath) {
+      const select = document.getElementById('folder-layout-select');
+      if (select) select.value = _folderLayout;
+      if (typeof syncFolderLayoutControl === 'function') syncFolderLayoutControl();
+    }
+    if (typeof _updateFolderBulkBar === 'function') _updateFolderBulkBar();
+  }
+  return true;
+}
+
+function _folderLeaveSurface() {
+  if (_folderInteractionSurface && !_folderInteractionSurface.isConnected) _folderInteractionSurface = null;
+  if ((_folderRenderContainerOverride || null) === (_folderInteractionSurface || null)) return;
+  _folderBindSurface(_folderInteractionSurface);
+}
+
+// 操作中でない面の処理の続きが、自分の面の状態で動くための入口。今の処理の区切り（呼び出しの連なりが
+// 終わった所）で、操作中の面へ自動で戻る。描画先が外されていたら false（続きは捨てる）。
+function _folderEnterSurface(override) {
+  const next = override || null;
+  if (next && !next.isConnected) { _folderPruneSurfaces(); return false; }
+  if ((_folderRenderContainerOverride || null) === next) return true;
+  if (!_folderBindSurface(next)) return false;
+  if (!_folderSurfaceLeaveQueued) {
+    _folderSurfaceLeaveQueued = true;
+    const leave = () => { _folderSurfaceLeaveQueued = false; _folderLeaveSurface(); };
+    if (typeof queueMicrotask === 'function') queueMicrotask(leave); else Promise.resolve().then(leave);
+  }
+  return true;
+}
+
+// fn をその面の状態で実行し、終わったらすぐ元の面へ戻す。描画先が外されていたら実行しない。
+function _folderOnSurface(override, fn) {
+  const next = override || null;
+  if (next && !next.isConnected) { _folderPruneSurfaces(); return undefined; }
+  const previous = _folderRenderContainerOverride || null;
+  if (previous === next) return fn();
+  if (!_folderBindSurface(next)) return undefined;
+  try { return fn(); }
+  finally {
+    if ((_folderRenderContainerOverride || null) === next) {
+      _folderBindSurface(previous && !previous.isConnected ? _folderInteractionSurface : previous);
+    }
+  }
+}
+
+// メインのフォルダパネルが開いているフォルダ（サブパネル等の面をつないでいる間も、メインの面の値を返す）。
+function _folderMainPath() {
+  if (!_folderRenderContainerOverride) return _folderPath;
+  return _folderSurfaceStates.get('main')?.path || '';
+}
+
+// 「今つないでいる面を読み直す」openFolder へ渡す指定。サブパネル等の面なら、その描画先と、メインの画面
+// （表示の切替・履歴・タイトル）へ触らない指定を返す。メインの面なら空（従来どおり）。
+function _folderSurfaceOpts() {
+  const element = _folderResolveRenderOverride();
+  return element ? { containerEl: element, skipShowView: true, skipGlobalUi: true, skipNavPush: true,
+    skipSaveLastView: true, skipHighlight: true, silent: true } : {};
+}
+
+// イベントの対象が載っている面の描画先。メインは null、フォルダの面の外は undefined。
+function _folderSurfaceOfTarget(target) {
+  const element = target && target.nodeType === 1 ? target : target?.parentElement;
+  if (!element || typeof element.closest !== 'function') return undefined;
+  const independent = element.closest('.gb-subpanel-folder-root');
+  if (independent) {
+    return independent === _folderRenderContainerOverride || _folderSurfaceStates.has(independent) ? independent : undefined;
+  }
+  return element.closest('#folder-view') ? null : undefined;
+}
+
+// 表示しているすべての面（今つないでいる面 → 他の面）で fn を実行する。
+function _folderForEachSurface(fn) {
+  _folderPruneSurfaces();
+  const bound = _folderRenderContainerOverride || null;
+  const others = [..._folderSurfaceStates.keys()].map(key => (key === 'main' ? null : key));
+  fn();
+  others.forEach(element => { if (element !== bound) _folderOnSurface(element, fn); });
+}
+
+function _folderSamePathLoose(left, right) {
+  const a = _normalizeFolderPathForCompare(left || '').toLowerCase();
+  const b = _normalizeFolderPathForCompare(right || '').toLowerCase();
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.endsWith('/' + b) || b.endsWith('/' + a);
+}
+
+// 開いている他の面（今つないでいない面）のうち、変わったフォルダを表示している面を読み直す。
+// folderPaths を省くと、他の面をすべて読み直す。続けて呼ばれた分は1回にまとめる。
+let _folderOtherSurfaceRefreshTimer = 0;
+let _folderOtherSurfaceRefreshPaths = null;
+function _folderNotifyFoldersChanged(folderPaths) {
+  if (!_folderSurfaceStates.size) return;
+  if (!Array.isArray(folderPaths)) _folderOtherSurfaceRefreshPaths = 'all';
+  else if (_folderOtherSurfaceRefreshPaths !== 'all') {
+    _folderOtherSurfaceRefreshPaths = _folderOtherSurfaceRefreshPaths || [];
+    folderPaths.forEach(path => { if (path !== undefined && path !== null) _folderOtherSurfaceRefreshPaths.push(String(path)); });
+  }
+  const origin = _folderRenderContainerOverride || null;
+  clearTimeout(_folderOtherSurfaceRefreshTimer);
+  _folderOtherSurfaceRefreshTimer = setTimeout(() => {
+    _folderOtherSurfaceRefreshTimer = 0;
+    const wanted = _folderOtherSurfaceRefreshPaths;
+    _folderOtherSurfaceRefreshPaths = null;
+    _folderRefreshOtherSurfaces(wanted === 'all' ? null : wanted, origin);
+  }, 120);
+}
+
+function _folderRefreshOtherSurfaces(folderPaths, origin) {
+  _folderPruneSurfaces();
+  const skip = origin === undefined ? (_folderRenderContainerOverride || null) : origin;
+  const surfaces = [_folderRenderContainerOverride || null];
+  for (const key of _folderSurfaceStates.keys()) surfaces.push(key === 'main' ? null : key);
+  surfaces.filter(element => element !== skip).forEach(element => {
+    if (!element && !document.getElementById('folder-grid')?.isConnected) return;
+    _folderOnSurface(element, () => {
+      const path = _folderPath;
+      if (!path) return;
+      if (Array.isArray(folderPaths) && !folderPaths.some(changed => _folderSamePathLoose(changed, path))) return;
+      if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.refresh(); return; }
+      if (typeof openFolder !== 'function') return;
+      const label = element ? (String(path).split('/').filter(Boolean).pop() || path)
+        : (document.getElementById('folder-title')?.textContent || path);
+      Promise.resolve(openFolder(label, path, {
+        containerEl: element, keepInteractionSurface: true, silent: true,
+        skipNavPush: true, skipShowView: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true,
+      })).catch(error => console.warn('[folder] 他の面の読み直しに失敗しました', error));
+    });
+  });
+}
+
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function'
+    && typeof window !== 'undefined' && !window.__gbFolderSurfaceInteractionGuard) {
+  window.__gbFolderSurfaceInteractionGuard = true;
+  // 操作した面をつなぐ。カードやツールバーの処理より先に動くよう、キャプチャで受ける。
+  const activate = event => {
+    if (!_folderSurfaceStates.size && !_folderRenderContainerOverride) return; // 面が1つだけの間は何もしない
+    const surface = _folderSurfaceOfTarget(event.target);
+    if (surface === undefined) return;
+    if (surface === (_folderInteractionSurface || null) && surface === (_folderRenderContainerOverride || null)) return;
+    _folderActivateSurface(surface);
+  };
+  ['pointerdown', 'mousedown', 'click', 'dblclick', 'contextmenu', 'dragstart', 'dragenter', 'dragover', 'drop', 'focusin', 'touchstart']
+    .forEach(type => document.addEventListener(type, activate, true));
+}
 const HOME_FOLDER_DISPLAY_LABEL = 'ホームフォルダ';
 
 function _folderScheduleRenderFrame(callback) {
@@ -438,6 +697,7 @@ function _folderEnsureTags(items, options = {}) {
     return _folderTagsAreLoading(items) ? _folderWaitForTagLoads(items) : Promise.resolve(false);
   }
   targets.forEach(target => _folderTagLoading.add(target.key));
+  const tagSurface = _folderCurrentSurface();
   return (async () => {
     let changed = false;
     try {
@@ -459,7 +719,8 @@ function _folderEnsureTags(items, options = {}) {
     } catch {
       changed = await _folderEnsureTagsIndividually(targets);
     }
-    if (changed && options.rerender && _folderPath === currentPath) {
+    // 読み込みを頼んだ面（メイン／サブパネル）をつなぎ直してから描き直す
+    if (changed && options.rerender && _folderEnterSurface(tagSurface) && _folderPath === currentPath) {
       renderFolderGrid({
         preserveSelectedPaths: (_folderSelectedItems || []).map(item => item?.path).filter(Boolean),
       });
@@ -486,6 +747,7 @@ function _folderEnsureMemberships(items, options = {}) {
     return _folderMembershipsAreLoading(items) ? _folderWaitForMembershipLoads(items) : Promise.resolve(false);
   }
   targets.forEach(target => _folderMembershipLoading.add(target.key));
+  const membershipSurface = _folderCurrentSurface();
   return (async () => {
     let changed = false;
     for (let i = 0; i < targets.length; i += 8) {
@@ -502,7 +764,7 @@ function _folderEnsureMemberships(items, options = {}) {
         }
       }));
     }
-    if (changed && options.rerender && _folderPath === currentPath) renderFolderGrid();
+    if (changed && options.rerender && _folderEnterSurface(membershipSurface) && _folderPath === currentPath) renderFolderGrid();
     return changed;
   })();
 }
@@ -876,6 +1138,7 @@ function _folderApplySavedDropResults(parentPath, savedResults, files) {
   const rows = (savedResults || []).map((saved, index) =>
     _folderDroppedFileFallbackItem(saved, files?.[index])).filter(item => item.path);
   if (!rows.length) return 0;
+  if (typeof _folderNotifyFoldersChanged === 'function') _folderNotifyFoldersChanged([parentPath]);
   if (_folderDropPathsEqual(_folderPath, parentPath)) {
     const pathKey = value => {
       const normalized = String(value || '').replace(/\\/g, '/');
@@ -947,9 +1210,19 @@ function _folderCanAcceptMoveDrop(event, targetItem) {
 }
 
 async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
-  const targetPath = targetItem?.path || '';
+  // ドロップの内容はイベントが続いている間に読む（待った後では読めない）。
+  const dropped = _folderDragPayloadItemsFromEvent(event, payloadOverride);
+  let targetPath = targetItem?.path || '';
+  // 移動先のフォルダの名前の変更がまだ保存中なら、終わるのを待って新しい場所へ移動する。
+  if (targetPath && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
+    try { targetPath = await _outlinerAwaitPendingRenameForTarget(targetPath); }
+    catch (error) {
+      showStatus(String(error?.message || '移動先の名前の変更を確認できません'), true);
+      return 0;
+    }
+  }
   const targetKey = _folderMembershipKey(targetPath);
-  const items = _folderDragPayloadItemsFromEvent(event, payloadOverride).filter(source => {
+  const items = dropped.filter(source => {
     const sourceKey = _folderMembershipKey(source.path);
     return sourceKey && sourceKey !== targetKey && !targetKey.startsWith(sourceKey + '/');
   });
@@ -999,22 +1272,37 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   try {
   pendingPaths.forEach(path => _folderPendingMovePaths.add(path));
   if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: pendingSelection });
+  // 件数が多い時は、まとめての移動（/outliner/move-batch）へ分けて送る。結果は1件ずつ受け取る。
+  const mover = _folderCreateMover(items, targetPath, { skip: source => source.sourceSurface === 'sheet-image' });
+  // 表示への反映は、まとめて送った分は塊ごとに1回（1件ごとに描き直すと件数の2乗で遅くなる）
+  let unappliedMoves = [];
+  const applyMovesToView = source => {
+    if (!unappliedMoves.length || (mover.batched && !mover.isChunkEnd(source))) return;
+    const moves = unappliedMoves;
+    unappliedMoves = [];
+    _folderApplyCommittedMoves(moves);
+  };
   try {
     for (const source of items) {
       try {
-        if (typeof _outlinerAwaitPendingRename === 'function') await _outlinerAwaitPendingRename(source);
-        const oldPath = source.path;
+        if (!mover.batched && typeof _outlinerAwaitPendingRename === 'function') await _outlinerAwaitPendingRename(source);
         const copySource = source.sourceSurface === 'sheet-image';
-        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
-          path: oldPath,
-          dest_folder: targetPath,
-        } : {
-          path: oldPath,
-          dest_folder: targetPath,
-          conflict_policy: 'error',
-        });
+        const post = dest => (copySource ? apiPost('/outliner/save-as', {
+          path: source.path,
+          dest_folder: dest,
+        }) : mover.post(source, dest));
+        let res;
+        try { res = await post(targetPath); }
+        catch (error) {
+          // 画面に残っていた移動先の場所が古かった（直前に名前の変更・移動があった）時は、今の場所で1回だけやり直す。
+          const current = error?.status === 404 && typeof resolveCurrentAppPath === 'function' ? resolveCurrentAppPath(targetPath) : targetPath;
+          if (current === targetPath) throw error;
+          targetPath = current;
+          res = await post(targetPath);
+        }
         // The move is committed. A detached view cannot turn it into a failed
         // file operation or keep the other editors bound to the old path.
+        const oldPath = source.path;
         ok += 1;
         if (!copySource) movedItems.push({
           oldPath,
@@ -1026,7 +1314,8 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
         });
         if (!copySource) {
           _folderPendingMovePaths.delete(_folderMembershipKey(oldPath));
-          _folderApplyCommittedMoves(movedItems.slice(-1));
+          unappliedMoves.push(movedItems[movedItems.length - 1]);
+          applyMovesToView(source);
         }
         if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
           try { renameAppPathReferences(oldPath, res.new_path, {
@@ -1041,32 +1330,45 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
         }
       } catch (error) {
         _folderPendingMovePaths.delete(_folderMembershipKey(source.path));
-        renderFolderGrid({ preserveSelectedPaths: pendingSelection });
+        // 失敗した項目を一覧へ戻す。まとめて送った分は、塊の終わりに1回だけ描き直す
+        if (!mover.batched) renderFolderGrid({ preserveSelectedPaths: pendingSelection });
+        else if (mover.isChunkEnd(source)) { applyMovesToView(source); renderFolderGrid({ preserveSelectedPaths: pendingSelection }); }
         failures.push({ name: source.name || source.path, error });
       }
       progress?.updateOperation?.(ok + failures.length, null, progressToken);
     }
+    // 送ったのに結果を受け取っていない項目（通常は無い）も、移動済みなら履歴と表示へ入れる
+    mover.unclaimed().forEach(({ source, res }) => {
+      ok += 1;
+      movedItems.push({ oldPath: source.path, newPath: res?.new_path || source.path, currentPath: res?.new_path || source.path,
+        name: res?.new_name || source.name, type: source.type, fileId: res?.file_id || source.file_id });
+      unappliedMoves.push(movedItems[movedItems.length - 1]);
+    });
+    if (unappliedMoves.length) { const moves = unappliedMoves; unappliedMoves = []; _folderApplyCommittedMoves(moves); }
   } finally {
-    progress?.finishOperation?.(progressToken, { failed: failures.length, summary: `${ok}件移動・${failures.length}件失敗`, details: failures });
+    const destLabel = targetItem?.name || String(targetPath).split('/').pop() || targetPath;
+    progress?.finishOperation?.(progressToken, {
+      failed: failures.length,
+      label: failures.length ? `「${destLabel}」への移動` : `${ok}件を「${destLabel}」へ移動しました`,
+      summary: failures.length ? `${ok}件を移動・${failures.length}件は移動できませんでした（元の場所に残っています）` : '',
+      details: failures,
+    });
   }
-  if (movedItems.length) _folderApplyCommittedMoves(movedItems);
+  if (movedItems.length && !mover.batched) _folderApplyCommittedMoves(movedItems);
+  // 応答を受け取れなかった塊があった時は、実際の状態が分からないので一覧を読み直す
+  if (mover.uncertain && _folderPath && typeof openFolder === 'function') {
+    try { await openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, { ..._folderSurfaceOpts(), silent: true, skipNavPush: true, skipShowView: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true }); }
+    catch (error) { console.warn('[folder move] 一覧の読み直しに失敗しました', error); }
+  }
   // パネルを先に描き直し、ツリーは移動元と移動先のフォルダだけを差分で反映する（並行）。全体の読み直しを待つと
   // 移動の反映が 0.4秒前後かかっていた（2026-11-22 M-014 フォルダパネル網羅テスト）。差分にできなければ全体を読み直す。
   const treeFolders = [targetPath, ...movedItems.map(moved => _folderDirectParentKey(moved.oldPath))];
   const treeSync = typeof folderToolbarSyncTree === 'function'
     ? folderToolbarSyncTree(treeFolders)
     : (typeof refreshOutliner === 'function' ? refreshOutliner({ force: true, reason: 'folder-panel-drop-move' }) : null);
-  if (_folderPath && typeof openFolder === 'function') {
-    const label = document.getElementById('folder-title')?.textContent || _folderPath;
-    await openFolder(label, _folderPath, {
-      silent: true,
-      skipShowView: true,
-      skipNavPush: true,
-      skipSaveLastView: true,
-      skipHighlight: true,
-      skipGlobalUi: true,
-    });
-  }
+  // パネルは確定した移動を上で1件ずつ反映済み。ここで一覧を全部読み直すと、移動の途中の古い一覧で
+  // 移動したはずの項目が元の場所に戻って見えたり、次のドラッグの最中に行の並びが変わったりしていた
+  // （2026-11-24 利用者の報告）。読み直しはしない。
   try { await treeSync; } catch (error) { console.warn('[folder move] ツリーの反映に失敗しました', error); }
   if (failures.length) {
     const first = failures[0];
@@ -1079,9 +1381,13 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     label: `フォルダパネル: ${movedItems.length} 件を移動`,
     detail: `→ ${targetPath}`,
     refresh: async () => {
-      if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-panel-move-history' });
+      // 取り消し・やり直しの後も、ツリーは移動元と移動先のフォルダだけを差分で直す（全体の読み直しは
+      // 保存先が多いと数秒かかり、その間「取り消しています」のまま止まって見えていた: 2026-11-24 利用者の報告）。
+      const historyFolders = [targetPath, ...movedItems.map(moved => _folderDirectParentKey(moved.oldPath))];
+      if (typeof folderToolbarSyncTree === 'function') await folderToolbarSyncTree(historyFolders);
+      else if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'folder-panel-move-history' });
       if (_folderPath && typeof openFolder === 'function') {
-        await openFolder(document.getElementById('folder-title')?.textContent || _folderPath, _folderPath, {
+        await openFolder(document.getElementById('folder-title')?.textContent || _folderPath, _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
           silent: true, skipNavPush: true, skipShowView: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true,
         });
       }
@@ -1097,6 +1403,125 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   }
 }
 
+// ---- 多数の項目の移動をまとめて送る（2026-11-24） ----
+// 移動は1件ずつ /outliner/move を送っていたので、数千件を選んで移動すると要求が件数ぶん出ていた。
+// 件数が多い時は /outliner/move-batch へ FOLDER_MOVE_BATCH_CHUNK 件ずつ送る。サーバーは1件ずつ同じ移動の処理を通して
+// 1件ごとに確定し、結果を項目ごとに返す（ある項目の失敗は他へ影響しない）。
+// 呼び出し側の「1件ずつ結果を受け取って履歴・表示へ反映する」流れは変えない。post(項目, 移動先) が返す結果は
+// 1件の移動と同じ形で、まとめて送った分は届いた結果から1件ずつ返す。
+// Cloud（Dropbox）にはまとめての移動が無いので、従来どおり1件ずつ送る。
+const FOLDER_MOVE_BATCH_MIN = 20;
+const FOLDER_MOVE_BATCH_CHUNK = 100;
+let _folderMoveBatchUnsupported = false;
+const _folderMoveBatchStats = { batchRequests: 0, singleRequests: 0 };
+
+function _folderMoveBatchError(entry) {
+  const detail = entry?.detail;
+  const text = typeof detail === 'string' ? detail
+    : String(detail?.message || detail?.detail || (detail ? JSON.stringify(detail) : '') || '移動できませんでした');
+  const error = new Error(text);
+  error.status = Number(entry?.status) || 500;
+  error.userMessage = text;
+  error.payload = { detail };
+  return error;
+}
+
+// sources: 移動する項目（path を持つ。順番に post する）。destFolder: 移動先。
+// options.skip(source): true の項目はまとめて送らない（呼び出し側が自分で断る・別の処理をする項目）。
+function _folderCreateMover(sources, destFolder, options = {}) {
+  const single = (source, dest) => {
+    _folderMoveBatchStats.singleRequests += 1;
+    return apiPost('/outliner/move', { path: source.path, dest_folder: dest, conflict_policy: 'error' });
+  };
+  const eligible = (Array.isArray(sources) ? sources : []).filter(source => source?.path && !(options.skip && options.skip(source)));
+  const batched = eligible.length >= FOLDER_MOVE_BATCH_MIN && !_folderMoveBatchUnsupported
+    && !window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof apiPost === 'function';
+  if (!batched) {
+    return { batched: false, uncertain: false, post: single, isChunkEnd: () => true, unclaimed: () => [] };
+  }
+  const entries = new Map(); // 項目 → { promise, resolve, reject, sent, claimed, chunkEnd }
+  eligible.forEach(source => {
+    const entry = { source, sent: false, claimed: false, chunkEnd: false, result: null };
+    entry.promise = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
+    entry.promise.then(value => { entry.result = { ok: true, value }; }, error => { entry.result = { ok: false, error }; });
+    entries.set(source, entry);
+  });
+  let cursor = 0;
+  const mover = { batched: true, uncertain: false };
+  const sendNextChunk = async () => {
+    const chunk = eligible.slice(cursor, cursor + FOLDER_MOVE_BATCH_CHUNK);
+    cursor += chunk.length;
+    if (!chunk.length) return;
+    chunk.forEach(source => { entries.get(source).sent = true; });
+    entries.get(chunk[chunk.length - 1]).chunkEnd = true;
+    // 名前の変更が保存中の項目は、終わるのを待って新しい場所で送る（1件の移動と同じ）
+    if (typeof _outlinerPendingRenames !== 'undefined' && _outlinerPendingRenames.size && typeof _outlinerAwaitPendingRename === 'function') {
+      for (const source of chunk) {
+        try { await _outlinerAwaitPendingRename(source); }
+        catch (error) { entries.get(source).failedBeforeSend = error; }
+      }
+    }
+    const sendable = chunk.filter(source => !entries.get(source).failedBeforeSend);
+    chunk.filter(source => entries.get(source).failedBeforeSend).forEach(source => entries.get(source).reject(entries.get(source).failedBeforeSend));
+    if (!sendable.length) return;
+    let payload;
+    try {
+      _folderMoveBatchStats.batchRequests += 1;
+      payload = await apiPost('/outliner/move-batch', {
+        items: sendable.map(source => ({ path: source.path })), dest_folder: destFolder, conflict_policy: 'error',
+      }, { silentError: true });
+    } catch (error) {
+      if ([404, 405].includes(Number(error?.status))) {
+        // まとめての移動が無い本体（古い版）: 1件ずつ送る
+        _folderMoveBatchUnsupported = true;
+        for (const source of sendable) {
+          try { entries.get(source).resolve(await single(source, destFolder)); }
+          catch (singleError) { entries.get(source).reject(singleError); }
+        }
+        return;
+      }
+      // 応答を受け取れなかった（通信の中断・時間切れ）。一部は移動済みかもしれないので、呼び出し側が一覧を読み直す。
+      mover.uncertain = true;
+      const uncertain = new Error('移動の結果を確認できませんでした。一覧を読み直して状態を確認してください'
+        + (error?.message ? `（${error.message}）` : ''));
+      uncertain.status = Number(error?.status) || 0;
+      uncertain.userMessage = uncertain.message;
+      sendable.forEach(source => entries.get(source).reject(uncertain));
+      return;
+    }
+    const results = Array.isArray(payload?.results) ? payload.results : [];
+    if (results.length !== sendable.length) {
+      mover.uncertain = true;
+      const mismatch = new Error('移動の結果を確認できませんでした。一覧を読み直して状態を確認してください');
+      mismatch.userMessage = mismatch.message;
+      sendable.forEach(source => entries.get(source).reject(mismatch));
+      return;
+    }
+    sendable.forEach((source, index) => {
+      const result = results[index];
+      if (result?.ok) entries.get(source).resolve(result.value || { ok: true, new_path: result.new_path, new_name: result.new_name, file_id: result.file_id });
+      else entries.get(source).reject(_folderMoveBatchError(result));
+    });
+  };
+  mover.post = (source, dest) => {
+    const entry = entries.get(source);
+    if (!entry || dest !== destFolder) return single(source, dest);
+    entry.claimed = true;
+    if (!entry.sent) {
+      // この項目が入る塊まで送る（前の塊の応答を待たずに次を送ることは無い: 呼び出し側は順番に await する）
+      const run = async () => { while (!entry.sent && cursor < eligible.length) await sendNextChunk(); };
+      run().catch(error => entry.reject(error));
+    }
+    return entry.promise;
+  };
+  // 塊の最後の項目か（表示への反映を塊ごとに1回にまとめる合図）
+  mover.isChunkEnd = source => { const entry = entries.get(source); return !entry || entry.chunkEnd; };
+  // 送ったのに呼び出し側が結果を受け取らなかった項目（通常は無い）。成功していたら履歴へ入れるために返す。
+  mover.unclaimed = () => [...entries.values()].filter(entry => entry.sent && !entry.claimed && entry.result?.ok)
+    .map(entry => ({ source: entry.source, res: entry.result.value }));
+  return mover;
+}
+
 function _folderDirectParentKey(path) {
   const normalized = _normalizeFolderPathForCompare(path);
   const slash = normalized.lastIndexOf('/');
@@ -1104,18 +1529,58 @@ function _folderDirectParentKey(path) {
 }
 
 // 保存済みの移動の結果を先に表示へ反映する。一覧の再取得を待たず、失敗した項目は残す。
+// 多数の項目の移動の結果を塊（100 件）ごとに表示へ反映する時の、一覧の描き直しの間引き。
+// 従来の描き方（件数がしきい値以下）は全項目のカードを作り直すので、塊ごとに描き直すと件数の2乗で遅くなる
+// （2,000 件の貼り付けで、画面側の処理 58 秒のうち 26 秒がカードの作り直しだった。2026-11-25 実測）。
+// 項目のデータ（_folderItems）は塊ごとにすぐ更新し、描き直しだけを間引く: 件数が多いほど間隔を空け
+// （1件 4ms の見積もり。300 件で 1.2 秒、3,000 件で 12 秒）、待っている間に来た分は最後に1回で描く。
+// 進み具合は右下の処理パネルに出続ける。操作の最後の読み直しは、従来どおりすぐ行われる。
+const _folderCommittedRender = { lastEnd: 0, lastCost: 0, timer: null };
+const FOLDER_COMMITTED_RENDER_ALWAYS_BELOW = 300;   // この件数以下は、従来どおり毎回すぐ描く
+const FOLDER_COMMITTED_RENDER_MAX_WAIT_MS = 15000;
+
+function _folderRenderAfterCommittedMoves(bulk) {
+  const state = _folderCommittedRender;
+  const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+  const run = () => {
+    if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.refresh(); return; }
+    // 選択は、描く時点のものを保つ
+    const preserve = _folderSelectedItems.map(item => item.path);
+    const started = now();
+    renderFolderGrid({ preserveSelectedPaths: preserve });
+    state.lastEnd = now();
+    state.lastCost = state.lastEnd - started;
+  };
+  const count = _folderItems.length;
+  const interval = Math.min(FOLDER_COMMITTED_RENDER_MAX_WAIT_MS, Math.max(state.lastCost * 8, count * 4));
+  const wait = state.lastEnd + interval - now();
+  // 少数の移動（1件のドラッグなど）は、件数が多いフォルダでも従来どおりすぐ描く。間引くのは、まとめての移動の塊だけ
+  if (!bulk || count <= FOLDER_COMMITTED_RENDER_ALWAYS_BELOW || wait <= 0) { run(); return; }
+  if (!state.timer) state.timer = setTimeout(run, wait);
+}
+
 function _folderApplyCommittedMoves(moves) {
+  // 他の面（メイン／サブパネル）が移動元・移動先のフォルダを表示していれば、そちらは読み直す
+  if (typeof _folderSurfaceStates !== 'undefined' && _folderSurfaceStates.size && Array.isArray(moves) && moves.length) {
+    const touched = new Set();
+    moves.forEach(move => { touched.add(_folderDirectParentKey(move.oldPath)); touched.add(_folderDirectParentKey(move.newPath)); });
+    _folderNotifyFoldersChanged([...touched]);
+  }
+  if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.refresh(); return; }
   if (!_folderPath || !Array.isArray(moves) || !moves.length) return;
   const key = value => _normalizeFolderPathForCompare(value).toLowerCase();
   const matches = (a, b) => a === b || (!!a && !!b && (a.endsWith('/' + b) || b.endsWith('/' + a)));
   let changed = false;
-  const selected = _folderSelectedItems.map(item => item.path);
+  // 比べる形（区切り・大文字小文字をそろえた形）は、項目ごとに1回だけ作る（移動ごとに全項目を作り直さない）
+  const itemKeys = _folderItems.map(item => key(item.path));
   for (const move of moves) {
     const oldKey = key(move.oldPath), newKey = key(move.newPath);
-    const index = _folderItems.findIndex(item => matches(key(item.path), oldKey) || matches(key(item.path), newKey));
+    const index = itemKeys.findIndex(itemKey => matches(itemKey, oldKey) || matches(itemKey, newKey));
     if (index < 0) {
       if (move.item && _folderIsDirectChildOfCurrent(move.newPath)) {
         _folderItems.push({ ...move.item, path: move.newPath, name: move.name || move.item.name });
+        itemKeys.push(newKey);
         changed = true;
       }
       continue;
@@ -1123,10 +1588,14 @@ function _folderApplyCommittedMoves(moves) {
     const original = _folderItems[index];
     if (_folderIsDirectChildOfCurrent(move.newPath)) {
       _folderItems[index] = { ...original, path: move.newPath, name: move.name || original.name };
-    } else _folderItems.splice(index, 1);
+      itemKeys[index] = newKey;
+    } else {
+      _folderItems.splice(index, 1);
+      itemKeys.splice(index, 1);
+    }
     changed = true;
   }
-  if (changed) renderFolderGrid({ preserveSelectedPaths: selected });
+  if (changed) _folderRenderAfterCommittedMoves(moves.length >= FOLDER_MOVE_BATCH_MIN);
 }
 
 // 開いているフォルダの直下の項目か。フォルダはツリーから開くと絶対パス、項目は保存先の相対パスで持つことがあるので、
@@ -1152,7 +1621,7 @@ function _folderManualDropIntent(event, targetElement, targetItem) {
   let position;
   // フォルダ・シートは表示形式によらず横幅いっぱいの行で描く（.fv-folder-list-item）。行の形のものは上下で前後を決める
   // （横の位置で決めると、行の左寄りに落としただけで「中へ移動」ではなく並べ替えになっていた）。
-  if (_folderLayout === 'list' || targetElement.classList?.contains('fv-folder-list-item')) {
+  if (_folderIsListLayout() || targetElement.classList?.contains('fv-folder-list-item')) {
     const ratio = (event.clientY - rect.top) / rect.height;
     if ((targetItem.type === 'folder' || targetItem.type === 'database') && ratio > 0.28 && ratio < 0.72) return null;
     position = ratio < 0.5 ? 'before' : 'after';

@@ -44,10 +44,36 @@
       const trashPath = _joinPath(trashRoot.path, trashName);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
       const meta = await _readJsonSafe(provider, metaPath, {});
-      const originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
-      if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
+      let originalPath = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '');
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, originalPath, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        // The metadata is the durable retry receipt. Remove the visible trash
+        // copy only after the row is safely restored; an uncertain write keeps it.
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error(`ゴミ箱にありません: ${trashName}`);
+      if (await _pathExists(provider, originalPath)) {
+        // 同じ名前を黙って上書きも別名にもしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        // 置き換えは、Dropbox では今ある方を回復できる形で退避できないので受け付けない。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true, trash_name: trashName };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${originalPath}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
+        const split = _splitNameAndExt(_basename(originalPath));
+        const baseDir = _dirname(originalPath);
+        const basePath = originalPath;
+        for (let counter = 2; await _pathExists(provider, originalPath); counter += 1) {
+          originalPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(basePath)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
+        }
+      }
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
       const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
@@ -145,19 +171,31 @@
       const trashPath = _joinPath(trashRoot.path, name);
       const metaPath = trashPath + '._trash_meta.json';
       const source = await _resolveEntryHandle(provider, trashPath);
-      if (!source) throw new Error('ゴミ箱に見つかりません');
       const meta = await _readJsonSafe(provider, metaPath, {});
       const baseDest = await _resolveValidatedTrashRestorePath(trashRoot, meta?.original_path || '', name);
+      if (meta.sheet_row_backup || meta.sheet_row_restored) {
+        const receipt = await internals._restoreTrashedSheetStoreEntry(provider, baseDest, meta);
+        await internals._completeSheetRowTrashRestore(provider, metaPath, meta, receipt);
+        const warnings = [];
+        if (source) await _runPostMutationStep(warnings, 'trash-copy', () => _removeEntry(provider, trashPath));
+        return { ok: true, restored_to: baseDest, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      }
+      if (!source) throw new Error('ゴミ箱に見つかりません');
       let destPath = baseDest;
       if (await _pathExists(provider, destPath)) {
+        // 同じ名前がある時は、黙って別名にしない。利用者が選んだ扱い（スキップ／両方残す）だけを行う。
+        const policy = String(body?.conflict_policy || '');
+        if (policy === 'skip') return { ok: true, skipped: true, conflict: true };
+        if (policy !== 'keep_both') {
+          const conflict = new Error(`復元先に同じ名前の項目があります: ${baseDest}`);
+          conflict.status = 409; conflict.code = 'RESTORE_CONFLICT';
+          throw conflict;
+        }
         const split = _splitNameAndExt(_basename(baseDest));
         const baseDir = _dirname(baseDest);
-        for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-          const stem = source.kind === 'directory' ? _basename(baseDest).replace(/_\d{4}$/, '') : split.stem;
-          const nextName = source.kind === 'directory'
-            ? `${stem}_restored_${String(counter).padStart(4, '0')}`
-            : `${stem}_restored_${String(counter).padStart(4, '0')}${split.ext}`;
-          destPath = _joinPath(baseDir, nextName);
+        for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
+          destPath = _joinPath(baseDir, source.kind === 'directory'
+            ? `${_basename(baseDest)} (${counter})` : `${split.stem} (${counter})${split.ext}`);
         }
       }
       await _moveEntry(provider, trashPath, destPath);

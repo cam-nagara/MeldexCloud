@@ -50,7 +50,7 @@ CalendarComponent.prototype._renderMonth = function() {
       if (eid && typeof this._showEventCardMenu === 'function') this._showEventCardMenu(moreBtn, eid);
       return;
     }
-    if (evEl) { e.stopPropagation(); const eid = evEl.dataset.eventId; const tid = evEl.dataset.taskId; if (eid) this._openEventInPanel(eid); else if (tid) this._showTaskModal(tid); return; }
+    if (evEl) { e.stopPropagation(); const eid = evEl.dataset.eventId; const tid = evEl.dataset.taskId; if (eid) this._openEventInPanel(eid, evEl.dataset.occurrenceStart); else if (tid) this._showTaskModal(tid); return; }
     const dayEl = e.target.closest('.gb-cal-day');
     if (dayEl) this._onDayClick(dayEl.dataset.date, dayEl);
   };
@@ -368,7 +368,7 @@ CalendarComponent.prototype._monthDayCell = function(dateStr, dayNum, isToday, i
   monthEvents.forEach(e => {
     const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(e, 16) : '';
     const summaryClass = ['shift', 'attendance'].includes(String(e?.calendar_source || '')) ? ' gb-cal-month-summary-event' : '';
-    html += `<div class="gb-cal-day-event${summaryClass}${this._eventSourceClass(e)}" data-event-id="${e.id}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}">${this._eventTitleContentHtml(e)}${this._eventCardMenuHtml(e, 'month-' + dateStr)}${avatars}</div>`;
+    html += `<div class="gb-cal-day-event${summaryClass}${this._eventSourceClass(e)}" data-event-id="${e.id}" data-occurrence-start="${esc(e.start || '')}" data-calendar-id="${esc(e.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(e.color)};color:var(--cal-event-fg, #fff);position:relative;" title="${esc(e.title)}">${this._eventTitleContentHtml(e)}${this._eventCardMenuHtml(e, 'month-' + dateStr)}${avatars}</div>`;
   });
   dayTasks.forEach(t => {
     const pc = {urgent:'var(--red)',high:'var(--orange)',medium:'var(--blue)',low:'var(--cal-control-bg, var(--bg3))'}[t.priority] || 'var(--cal-control-bg, var(--bg3))';
@@ -530,7 +530,7 @@ CalendarComponent.prototype._allDayStripHtml = function(dateStrs) {
     html += `<div class="gb-cal-all-day-cell" data-date="${dateStr}" style="min-height:30px;padding:2px;border-left:1px solid var(--cal-grid-line, var(--border));">`;
     this._allDayEventsForDay(dateStr).forEach(ev => {
       const avatars = typeof this._eventUserAvatarsHtml === 'function' ? this._eventUserAvatarsHtml(ev, 16) : '';
-      html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${esc(ev.id)}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'all-day-' + dateStr)}${avatars}</div>`;
+      html += `<div class="gb-cal-day-event gb-cal-all-day-event${this._eventSourceClass(ev)}" data-event-id="${esc(ev.id)}" data-occurrence-start="${esc(ev.start || '')}" data-calendar-id="${esc(ev.calendar_id||'_calendar')}" draggable="true" style="background:${this._sanitizeEventColor(ev.color)};color:var(--cal-event-fg, #fff);position:relative;margin:1px 0;" title="${esc(ev.title || '')}">${this._eventTitleContentHtml(ev)}${this._eventCardMenuHtml(ev, 'all-day-' + dateStr)}${avatars}</div>`;
     });
     html += '</div>';
   });
@@ -547,7 +547,7 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
         if (typeof this._showEventCardMenu === 'function') this._showEventCardMenu(moreBtn, evEl.dataset.eventId);
         return;
       }
-      e.stopPropagation(); this._openEventInPanel(evEl.dataset.eventId);
+      e.stopPropagation(); this._openEventInPanel(evEl.dataset.eventId, evEl.dataset.occurrenceStart);
     });
     evEl.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('application/x-cal-move', JSON.stringify({ id: evEl.dataset.eventId, startH: 0, allDay: true }));
@@ -767,6 +767,7 @@ CalendarComponent.prototype._createEventCard = function(ev, evStart, startH, end
   const card = document.createElement('div');
   card.className = 'gb-cal-week-event gb-cal-day-event' + this._eventSourceClass(ev);
   card.dataset.eventId = ev.id;
+  card.dataset.occurrenceStart = ev.start || "";
   card.dataset.calendarId = ev.calendar_id || '_calendar';
   card.style.background = this._sanitizeEventColor(ev.color);
   card.style.top = ((startH % 1) * 40) + 'px';
@@ -799,7 +800,7 @@ CalendarComponent.prototype._createEventCard = function(ev, evStart, startH, end
       if (typeof this._showEventCardMenu === 'function') this._showEventCardMenu(moreBtn, ev.id);
       return;
     }
-    e.stopPropagation(); this._openEventInPanel(ev.id);
+    e.stopPropagation(); this._openEventInPanel(ev.id, ev.start);
   });
   // リサイズハンドル
   const resBot = document.createElement('div'); resBot.className = 'gb-cal-ev-resize-bottom';

@@ -67,6 +67,14 @@
     card.dataset.e2eId = 'chat-cli-auth-recovery-' + key;
     const title = document.createElement('strong');
     title.textContent = 'CLIのログインを更新';
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+      // Cloud/スマホではこの端末のCLIを確認・起動できない。押しても動かないボタンは出さない。
+      const note = document.createElement('p');
+      note.textContent = 'CLIのログインは、CLIを入れたパソコンのデスクトップ版Meldexで更新してください。MeldexのAPIキーへは切り替えません。';
+      card.append(title, note);
+      host.appendChild(card);
+      return card;
+    }
     const description = document.createElement('p');
     description.textContent = 'MeldexのAPIキーへ切り替えず、CLI自身のログイン状態を確認します。';
     const status = document.createElement('div');
@@ -220,6 +228,82 @@
     return { models, configured };
   }
 
+  // CLI自身が示す最新のモデル一覧（/api/cli-chat/models）で CHAT_CLI_MODEL_CATALOG を差し替える。
+  // 取得できない時はコード内の一覧のまま。一覧から消えたモデルを選んでいた場合は、
+  // サーバーが示す後継（無ければCLI既定）へ移して一度だけ知らせる。
+  const cliChatLineupRequests = new Map();
+
+  function cliChatLineupEntries(models) {
+    return (Array.isArray(models) ? models : [])
+      .filter(item => item && item.id)
+      .map(item => {
+        const name = String(item.name || item.id);
+        return {
+          id: String(item.id),
+          name: item.leaving_soon ? name + '（終了予定）' : name,
+          efforts: Array.isArray(item.efforts) ? item.efforts.map(String) : [],
+          speeds: Array.isArray(item.speeds) ? item.speeds.map(String) : [],
+          leaving_soon: !!item.leaving_soon,
+        };
+      });
+  }
+
+  function cliChatApplyLineup(provider, data) {
+    if (typeof CHAT_CLI_MODEL_CATALOG === 'undefined' || !CHAT_CLI_MODEL_CATALOG[provider]) return false;
+    const entries = cliChatLineupEntries(data?.models);
+    if (!entries.length) return false;
+    const sentinel = cliChatDefaultModelSentinel();
+    const head = CHAT_CLI_MODEL_CATALOG[provider].filter(item => item.id === sentinel);
+    const before = JSON.stringify(CHAT_CLI_MODEL_CATALOG[provider]);
+    CHAT_CLI_MODEL_CATALOG[provider].splice(0, CHAT_CLI_MODEL_CATALOG[provider].length, ...head, ...entries);
+    if (typeof CHAT_DEFAULT_MODELS !== 'undefined' && CHAT_DEFAULT_MODELS[provider]) {
+      CHAT_DEFAULT_MODELS[provider] = CHAT_CLI_MODEL_CATALOG[provider].map(item => item.id);
+    }
+    const replacements = data?.replacements && typeof data.replacements === 'object' ? data.replacements : {};
+    let stored = '';
+    try { stored = localStorage.getItem('chat-model:' + provider) || ''; } catch { stored = ''; }
+    if (stored && Object.prototype.hasOwnProperty.call(replacements, stored)) {
+      const next = String(replacements[stored] || '') || sentinel;
+      try { localStorage.setItem('chat-model:' + provider, next); } catch {}
+      const nextName = next === sentinel ? 'CLI既定' : (entries.find(item => item.id === next)?.name || next);
+      if (typeof showStatus === 'function') {
+        showStatus(`選択していたモデル「${stored}」は${cliChatMeta(provider)?.label || provider}の一覧から無くなったため、「${nextName}」へ切り替えました。`);
+      }
+    }
+    return before !== JSON.stringify(CHAT_CLI_MODEL_CATALOG[provider]);
+  }
+
+  async function refreshCliChatModelLineup(provider, options = {}) {
+    const key = String(provider || '').trim();
+    if (!isCliChatProvider(key)) return false;
+    if (options.force) cliChatLineupRequests.delete(key);
+    if (!cliChatLineupRequests.has(key)) {
+      let stored = '';
+      try { stored = localStorage.getItem('chat-model:' + key) || ''; } catch { stored = ''; }
+      const query = '?provider=' + encodeURIComponent(key)
+        + (options.force ? '&refresh=true' : '')
+        + (stored ? '&selected=' + encodeURIComponent(stored) : '');
+      const request = apiFetch('/cli-chat/models' + query, { silentError: true })
+        .then(data => cliChatApplyLineup(key, data))
+        .catch(() => false);
+      cliChatLineupRequests.set(key, request);
+    }
+    const request = cliChatLineupRequests.get(key);
+    const waitMs = Number(options.waitMs);
+    if (!(waitMs > 0)) return request;
+    let timedOut = false;
+    const timer = new Promise(resolve => setTimeout(() => { timedOut = true; resolve('timeout'); }, waitMs));
+    request.then(changed => {
+      // 待ち時間を過ぎてから届いた一覧は、表示中ならモデル選択を描き直す。
+      if (timedOut && changed && typeof _chatState !== 'undefined' && _chatState.provider === key && typeof updateChatModels === 'function') {
+        updateChatModels({ suppressNotify: true });
+      }
+    });
+    const result = await Promise.race([request, timer]);
+    return result === 'timeout' ? false : result;
+  }
+  window.refreshCliChatModelLineup = refreshCliChatModelLineup;
+
   function cliChatDefaultModelSentinel() {
     return typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
   }
@@ -366,8 +450,17 @@
     const sessionId = String(options.sessionId || _chatState.sessionId || '');
     try {
       localStorage.removeItem(cliChatSessionStorageKey(provider, sessionId));
-    } catch {}
+    } catch {
+      if (!options.silent && typeof showStatus === 'function') {
+        showStatus('CLIの会話継続をリセットできません。継続情報を確認して、もう一度お試しください', true);
+      }
+      window.MeldexDiagnostics?.recordSheetIncident?.('save-failed', {
+        op: 'chat.cli.session.reset', endpoint: 'localStorage', method: 'DELETE', errorType: 'Error',
+      });
+      return false;
+    }
     if (!options.silent && typeof showStatus === 'function') showStatus('CLIの会話継続をリセットしました');
+    return true;
   }
 
   // Phase 7: AIタブはメンバー個人のAPIキー・個人のCLI専用。Meldex Cloud・スマホは
@@ -550,6 +643,11 @@
     panel.style.flexDirection = 'column';
     panel.style.flex = '1';
     panel.style.overflow = 'hidden';
+    if (cliImportDesktopOnly()) {
+      // Cloud/スマホではこの端末のCLIログを読めない。動かない設定・スキャンは出さず案内だけにする。
+      panel.innerHTML = '<div class="chat-cli-status" data-cli-import-desktop-only>外部CLIのログ取り込みは、CLIを入れたパソコンのデスクトップ版Meldexで使えます。</div>';
+      return panel;
+    }
     panel.innerHTML = `
       <div class="chat-cli-toolbar">
         <label class="chat-cli-main-toggle gb-check">
@@ -567,13 +665,71 @@
     `;
     const actions = panel.querySelector('#chat-cli-actions');
     actions.append(
-      button('保存', 'save', () => saveCliConfig(), '', 'save-config'),
+      button('保存', 'save', () => saveCliConfig().catch(error => setPanelStatus('外部CLI取り込みの設定を保存できません: ' + (error?.message || error), true)), '', 'save-config'),
       button('スキャン', 'refreshCw', () => scanCliTranscripts(), '', 'scan')
     );
     const enabled = panel.querySelector('#chat-cli-enabled');
-    if (enabled) enabled.addEventListener('change', () => saveCliConfig());
+    if (enabled) enabled.addEventListener('change', () => saveCliConfigFromControl('取り込みの有効化'));
     renderProviderSettings();
     return panel;
+  }
+
+  function cliImportDesktopOnly() {
+    return !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  }
+
+  function cliConfigPayload(config) {
+    return {
+      cli_transcript_import_enabled: !!config?.cli_transcript_import_enabled,
+      cli_transcript_sources: JSON.parse(JSON.stringify(config?.cli_transcript_sources || {})),
+      cli_transcript_extract_to_knowledge: config?.cli_transcript_extract_to_knowledge !== false,
+    };
+  }
+
+  // 設定の切替・入力は保存できた時だけ確定し、取り消し・やり直しへ載せる。
+  // 保存できない時は画面を保存済みの値へ戻し、理由を表示する（押した状態だけが残らない）。
+  async function saveCliConfigFromControl(label) {
+    const before = cliConfigPayload(cliConfig);
+    let saved;
+    try {
+      saved = await saveCliConfig();
+    } catch (error) {
+      applyConfigToPanel({ ...(cliConfig || {}), ...before });
+      setPanelStatus('外部CLI取り込みの設定を保存できません。元の設定を保持しています: ' + (error?.message || error), true);
+      return false;
+    }
+    const after = cliConfigPayload(saved);
+    if (JSON.stringify(after) === JSON.stringify(before) || typeof historyPush !== 'function') return true;
+    // 取り消しは、この操作で変わった項目だけを戻す（後から変えた別の設定は巻き戻さない）。
+    const changed = [];
+    if (before.cli_transcript_import_enabled !== after.cli_transcript_import_enabled) changed.push(['enabled']);
+    const providers = new Set([...Object.keys(before.cli_transcript_sources), ...Object.keys(after.cli_transcript_sources)]);
+    providers.forEach(key => {
+      const a = before.cli_transcript_sources[key] || {};
+      const b = after.cli_transcript_sources[key] || {};
+      ['enabled', 'watch_path'].forEach(field => { if (a[field] !== b[field]) changed.push(['source', key, field]); });
+    });
+    const withFields = source => {
+      const next = cliConfigPayload(cliConfig);
+      changed.forEach(([kind, key, field]) => {
+        if (kind === 'enabled') next.cli_transcript_import_enabled = source.cli_transcript_import_enabled;
+        else {
+          next.cli_transcript_sources[key] = { ...(next.cli_transcript_sources[key] || {}) };
+          next.cli_transcript_sources[key][field] = (source.cli_transcript_sources[key] || {})[field];
+        }
+      });
+      return next;
+    };
+    const apply = async source => {
+      const result = await apiPost('/cli-transcripts/config', withFields(source));
+      applyConfigToPanel(result);
+      setPanelStatus('設定を保存しました');
+      return true;
+    };
+    const scope = typeof _chatHistoryScope === 'function' ? _chatHistoryScope() : '';
+    if (typeof historySetScope === 'function') historySetScope(scope);
+    historyPush('外部CLI取り込み: ' + label, () => apply(before), () => apply(after), scope, label);
+    return true;
   }
 
   function liveElement(id, options = {}) {
@@ -598,9 +754,15 @@
     });
   }
 
-  function switchChatHistoryView(view) {
+  function switchChatHistoryView(view, options = {}) {
     const current = view === 'cli' ? 'cli' : 'saved';
-    try { localStorage.setItem('chat-history-view', current); } catch {}
+    if (!options.skipViewPersist) {
+      try { localStorage.setItem('chat-history-view', current); }
+      catch {
+        if (typeof showStatus === 'function') showStatus('履歴の表示を保存できません。元の表示を保持しています', true);
+        return false;
+      }
+    }
     ensureCliPanel();
     applyCliImportVisibility(current);
     if (current === 'cli') renderCliTranscripts();
@@ -635,8 +797,11 @@
       const watchPath = row.querySelector('[data-role="watch-path"]');
       enabled.checked = source.enabled !== undefined ? source.enabled !== false : provider.enabled !== false;
       watchPath.value = source.watch_path || provider.watchPath;
-      enabled.addEventListener('change', () => saveCliConfig());
-      watchPath.addEventListener('blur', () => saveCliConfig());
+      enabled.addEventListener('change', () => saveCliConfigFromControl(provider.label + 'の取り込み'));
+      watchPath.addEventListener('blur', () => {
+        if (watchPath.value.trim() === String(cliConfig?.cli_transcript_sources?.[provider.key]?.watch_path || provider.watchPath)) return;
+        saveCliConfigFromControl(provider.label + 'のログフォルダ');
+      });
       container.appendChild(row);
     });
   }
@@ -1727,6 +1892,7 @@
   async function renderCliTranscripts() {
     ensureCliPanel();
     applyCliImportVisibility('cli');
+    if (cliImportDesktopOnly()) return;
     try {
       await loadCliConfig();
       await loadCliSessions();
@@ -1744,6 +1910,7 @@
           const key = String(provider || '').trim();
           if (isCliChatProvider(key)) {
             await loadCliChatConfig();
+            await refreshCliChatModelLineup(key, { force: !!options.force, waitMs: 2500 });
             const { models, configured } = cliChatModelCatalogFor(key);
             _chatState.modelsByProvider[key] = models;
             if (configured) {

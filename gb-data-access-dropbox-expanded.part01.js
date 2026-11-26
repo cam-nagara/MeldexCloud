@@ -489,7 +489,7 @@
   }
 
   function _normalizeCreateProperties(rawProps) {
-    const out = {};
+    const out = Object.create(null);
     Object.entries(rawProps || {}).forEach(([prop, value]) => {
       const rawList = Array.isArray(value) ? value : [value];
       out[String(prop)] = rawList.map((rawCandidate) => {
@@ -1080,7 +1080,7 @@
   // 消す」という、この関数が解消しようとしている元のバグをそのまま
   // 再現してしまう（デスクトップ版の delete_sheet_entry_if_needed が
   // strict=True で例外を上位へ投げるのと対称）。
-  async function _deleteSheetStoreEntryIfNeeded(provider, rawPath) {
+  async function _deleteSheetStoreEntryIfNeeded(provider, rawPath, options = {}) {
     const path = _normalizeFolderPath(rawPath || '');
     if (!path || !/\.md$/i.test(path) || _basename(path).startsWith('_')) return null;
     const dbPath = _dirname(path);
@@ -1092,7 +1092,11 @@
     if (!existing || existing.deleted) return null;
     const previousRow = { ...existing };
     const now = _nowIso();
-    store.rows[fileName] = { file_name: fileName, deleted: true, deletedAt: now, updated: now };
+    const tombstone = { file_name: fileName, deleted: true, deletedAt: now, updated: now };
+    // A virtual row has no physical file to move. Persist its recovery copy
+    // before the first destructive write, including an exact deletion version.
+    await options.beforeDelete?.({ schema_version: 1, dbPath, fileName, previousRow, tombstone });
+    store.rows[fileName] = tombstone;
     await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
     return { ok: true, deleted_id: fileName, dbPath, fileName, previousRow };
   }
@@ -1135,6 +1139,67 @@
     await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] }).catch(() => {});
   }
   internals._restoreSheetStoreEntryAfterFailedDelete = _restoreSheetStoreEntryAfterFailedDelete;
+
+  async function _restoreTrashedSheetStoreEntry(provider, path, meta) {
+    const backup = meta?.sheet_row_backup;
+    const receipt = meta?.sheet_row_restored;
+    if (!backup && !receipt) return false;
+    if ((backup || receipt).schema_version !== 1) throw new Error('回答の復元情報の版に対応していません');
+    const normalized = _normalizeFolderPath(path);
+    const { dbPath, fileName, previousRow, tombstone } = backup || receipt;
+    if (normalized !== _joinPath(dbPath, fileName) || (backup && (!previousRow?.frontmatter || !tombstone?.deleted))) {
+      throw new Error('回答の復元情報が一致しません');
+    }
+    await _requireUnlocked(provider, dbPath, { action: 'restore' });
+    await _requireUnlocked(provider, normalized, { action: 'restore' });
+    if (await _pathExists(provider, normalized)) {
+      throw Object.assign(new Error('回答の復元先に同名のファイルがあります'), { status: 409, code: 'RESTORE_CONFLICT' });
+    }
+    const store = await _sheetStoreForRead(provider, dbPath);
+    if (!store) throw new Error('回答の復元先が見つかりません');
+    const current = store.rows[fileName];
+    const contents = row => JSON.stringify(row ? { ...row, updated: '' } : null);
+    if (receipt) {
+      const observed = await _sheetRowRecoveryReceipt(dbPath, fileName, current);
+      if (observed.row_hash !== receipt.row_hash) throw Object.assign(new Error('回答の復元先は他の操作で変更されています'), { status: 409, code: 'RESTORE_CONFLICT' });
+      return receipt;
+    }
+    // The response may have been lost after the successful write. Returning
+    // success for the same contents makes retry safe without recreating its ID.
+    const restoredReceipt = await _sheetRowRecoveryReceipt(dbPath, fileName, previousRow);
+    if (contents(current) === contents(previousRow)) return restoredReceipt;
+    if (JSON.stringify(current) !== JSON.stringify(tombstone)) {
+      throw Object.assign(new Error('回答の復元先は他の操作で変更されています'), { status: 409, code: 'RESTORE_CONFLICT' });
+    }
+    store.rows[fileName] = { ...previousRow, updated: _nowIso() };
+    await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
+    return restoredReceipt;
+  }
+  internals._restoreTrashedSheetStoreEntry = _restoreTrashedSheetStoreEntry;
+  async function _sheetRowRecoveryReceipt(dbPath, fileName, row) {
+    const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+    const bytes = new TextEncoder().encode(JSON.stringify(canonical(row ? { ...row, updated: '' } : null)));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return { schema_version: 1, dbPath, fileName, row_hash: [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('') };
+  }
+  async function _completeSheetRowTrashRestore(provider, metaPath, meta, receipt) {
+    if (typeof provider.writeJsonMerged !== 'function') throw new Error('回答の復元結果を安全に記録できません');
+    await provider.writeJsonMerged(metaPath, current => {
+      const sameBackup = !!meta.sheet_row_backup && JSON.stringify(current?.sheet_row_backup) === JSON.stringify(meta.sheet_row_backup);
+      const sameReceipt = !!current?.sheet_row_restored && JSON.stringify(current.sheet_row_restored) === JSON.stringify(receipt);
+      if (!current || (!sameBackup && !sameReceipt)) {
+        throw Object.assign(new Error('回答の復元情報は他の操作で変更されています'), { status: 409 });
+      }
+      // Preserve retry verification without retaining an invisible copy of the
+      // answer's contents once the restored row is durable.
+      const { sheet_row_backup, ...rest } = current;
+      return { ...rest, sheet_row_restored: receipt };
+    });
+  }
+  internals._completeSheetRowTrashRestore = _completeSheetRowTrashRestore;
+  internals._sheetRowTrashText = row => ['---', ...Object.entries(row.frontmatter || {}).map(
+    ([key, value]) => `${key}: ${_jsonValue(value)}`), '---', '', String(row.body || '')].join('\n');
 
   async function _uniqueSheetEntryStem(provider, dbPath, name) {
     const base = _safeFileStem(name, '無題');
@@ -1189,7 +1254,7 @@
   };
 
   function _entityPayloadFromParsed(path, parsed) {
-    const properties = {};
+    const properties = Object.create(null);
     Object.entries(parsed.frontmatter.properties || {}).forEach(([prop, rawList]) => {
       properties[prop] = _normalizeCandidates(rawList).map((candidate, index) => ({
         value: candidate.value || '',
@@ -1246,7 +1311,7 @@
   }
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
-    const entity = { _entry_path: entryPath, _revision: Number(frontmatter.meldex_revision || 0) };
+    const entity = Object.assign(Object.create(null), { _entry_path: entryPath, _revision: Number(frontmatter.meldex_revision || 0) });
     if (frontmatter.display_icon) entity._display_icon = String(frontmatter.display_icon);
     if (frontmatter.id) entity._id = frontmatter.id;
     if (frontmatter.modified) entity._modified = String(frontmatter.modified);
@@ -2060,7 +2125,77 @@
     return path;
   }
 
-  async function _createEntity(provider, body, publicSubmissionId = '') {
+  const _formCreateFlights = new WeakMap();
+  async function _createFormEntity(provider, body) {
+    const id = String(body.operation_id || '');
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(id)) throw Object.assign(new Error('保存操作IDが不正です'), {status:400});
+    const parent = _normalizeFolderPath(body.parent_path || '');
+    if (!parent) throw new Error('parent_path は必須です');
+    await _requireUnlocked(provider, parent, {action:'create-form-answer'});
+    const payload = {...body}; delete payload.operation_id;
+    const hash = await window.MeldexSystemStorage.computeRevision({operation:'form-create',payload});
+    const key = await window.MeldexSystemStorage.computeRevision({operation:'form-create-id',payload:{id}});
+    const stem = 'フォーム回答-' + key.slice(0,32), path = _joinPath(parent,stem+'.md');
+    const folder = _joinPath(parent,'_form-create-receipts'), receiptPath = _joinPath(folder,key+'.json');
+    let flights = _formCreateFlights.get(provider);
+    if (!flights) {flights=new Map();_formCreateFlights.set(provider,flights);}
+    const flightKey = JSON.stringify([provider._mediaScope || '',parent,id]);
+    if (flights.has(flightKey)) {
+      const previous = flights.get(flightKey);
+      if (previous.hash !== hash) throw Object.assign(new Error('保存操作IDが別の内容で再利用されています'), {status:409});
+      return previous.promise;
+    }
+    const validate = value => {
+      if (!value || value.fileType!=='meldex-form-create-receipt' || value.schema_version!==1
+        || value.id!==id || value.hash!==hash || value.path!==path || !/^ent_[a-zA-Z0-9_-]+$/.test(value.entry_id)
+        || !['prepared','writing','completed'].includes(value.state))
+        throw Object.assign(new Error('回答の保存記録が一致しません'), {status:409});
+      return value;
+    };
+    const promise = (async()=>{
+      if (typeof provider.writeJsonMerged!=='function') throw new Error('回答の保存記録を安全に保存できません');
+      let receipt = await _readVersionedJson(provider,receiptPath);
+      if (!receipt) {
+        const existing = await _readSheetStoreEntry(provider,path);
+        const marker = existing?.frontmatter?.meldex_form_create;
+        if (existing && (marker?.id!==id || marker?.hash!==hash))
+          throw Object.assign(new Error('回答の保存先が別のトピックに変わっています'), {status:409});
+        const proposed = {fileType:'meldex-form-create-receipt',schema_version:1,id,hash,path,
+          entry_id:existing?.frontmatter?.id || 'ent_'+crypto.randomUUID().replace(/-/g,''),state:'prepared'};
+        await _directoryHandle(provider,folder,true);
+        await provider.writeJsonMerged(receiptPath,(current,metadata)=>{
+          if (current) return validate(current);
+          if (metadata?.rev) throw Object.assign(new Error('回答の保存記録を読み取れません'), {status:409});
+          return proposed;
+        },{fallbackValue:null});
+        receipt = await _readVersionedJson(provider,receiptPath);
+      }
+      validate(receipt);
+      const store = await _sheetStoreForRead(provider,parent), row = store?.rows[stem+'.md'];
+      if (row?.deleted) throw Object.assign(new Error('保存済みの回答は削除されています'), {status:409});
+      const existing = row || (await _pathExists(provider,path) ? await _readFrontmatterFile(provider,path) : null);
+      let result;
+      if (existing) {
+        const fm=existing.frontmatter || {}, marker=fm.meldex_form_create;
+        if (fm.id!==receipt.entry_id || marker?.id!==id || marker?.hash!==hash)
+          throw Object.assign(new Error('保存済み回答が別のトピックに変わっています'), {status:409});
+        result={ok:true,replayed:true,path,name:fm.display_title || body.name,entry_id:fm.id,revision:Number(fm.meldex_revision || 0)};
+      } else {
+        if (receipt.state==='completed' || receipt.state==='writing') throw Object.assign(new Error('以前の回答の保存先を確認できません。入力を保持しています'), {status:409});
+        // A physical legacy row has no durable tombstone. An interrupted
+        // acknowledgement must never recreate a row removed by another client.
+        if (!store) await provider.writeJsonMerged(receiptPath,current=>({...validate(current),state:'writing'}));
+        result=await _createEntity(provider,body,'',{stem,entry_id:receipt.entry_id,marker:{id,hash}});
+      }
+      await provider.writeJsonMerged(receiptPath,current=>({...validate(current),state:'completed'}));
+      return result;
+    })();
+    flights.set(flightKey,{hash,promise});
+    try {return await promise;} finally {if(flights.get(flightKey)?.promise===promise)flights.delete(flightKey);}
+  }
+
+  async function _createEntity(provider, body, publicSubmissionId = '', formCreation = null) {
+    if (!publicSubmissionId && !formCreation && body?.source==='form' && body?.operation_id) return _createFormEntity(provider,body);
     const parent = _normalizeFolderPath(body?.parent_path || '');
     const rawTitle = window.GBPathUtils?.displayTitle?.validate(body?.name || '無題') || String(body?.name || '無題');
     const name = window.GBPathUtils?.displayTitle?.storageName(rawTitle) || _safeFileStem(rawTitle, '無題');
@@ -2079,7 +2214,7 @@
     if (rawTitle !== name && (await _readPivot(provider,parent)).entities?.[rawTitle]) {
       const error=new Error("同じ名前のトピックが既にあります"); error.status=409; throw error;
     }
-    const targetName = publicSubmissionId ? name : useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
+    const targetName = formCreation?.stem || (publicSubmissionId ? name : useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md'));
     const path = _joinPath(parent, targetName + '.md');
     await _requireUnlocked(provider, path, { action: 'create-entity' });
     if (publicSubmissionId) {
@@ -2094,8 +2229,9 @@
     const now = _nowIso();
     const frontmatter = {
       type: 'settings-entry',
-      id: 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
-      ...(rawTitle !== name ? {display_title:rawTitle} : {}),
+      id: formCreation?.entry_id || 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
+      ...(formCreation || rawTitle !== name ? {display_title:rawTitle} : {}),
+      ...(formCreation ? {meldex_form_create:formCreation.marker} : {}),
       category: String(body?.category || _basename(parent)),
       created: now,
       created_by: String(body?.user || 'anonymous'),
@@ -2118,12 +2254,19 @@
       snapshotKind: 'folder',
       fileKind: 'settings-entry',
     }, async () => {
-      if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, noteContent);
+      if (useStore && formCreation) {
+        const store=await _ensureSheetStore(provider,parent),fileName=targetName+'.md';
+        if (store.rows[fileName]) throw Object.assign(new Error('回答の保存先が別の操作で変更されています'), {status:409});
+        store.rows[fileName]={file_name:fileName,name:targetName,path,frontmatter,body:noteContent,updated:_nowIso()};
+        await _writeSheetStore(provider,parent,store,{changedFileNames:[fileName]});
+      }
+      else if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, noteContent);
       else await _writeFrontmatterFile(provider, path, frontmatter, noteContent);
       return {
         ok: true,
         path,
         entry_id: frontmatter.id,
+        ...(formCreation ? {name:rawTitle} : {}),
         revision: Number(frontmatter.meldex_revision || 0),
       };
     });
@@ -3175,20 +3318,28 @@
       const start = url.searchParams.get('start') || '';
       const end = url.searchParams.get('end') || '';
       const user = url.searchParams.get('user') || '';
+      const inRange = async row => {
+        const colored = _effectiveDropboxEventColor(row, calendars);
+        if (!start && !end) return [colored];
+        if (row.recurrence) {
+          colored._calendar_revision = await _calendarItemRevision(row);
+          return _expandCalendarRecurrence(colored, start, end);
+        }
+        return _dateInRange(row.start || row.due_date, start, end) ? [colored] : [];
+      };
       if (_calendarRoleIsAdmin()) {
         const filterUser = user && user !== _calendarActor() ? user : '';
-        return rows.filter(row => _calendarRowInWorkspace(row)
-          && (!filterUser || row.user === filterUser || row.creator === filterUser)
-          && _dateInRange(row.start || row.due_date, start, end))
-          .map(row => _effectiveDropboxEventColor(row, calendars));
+        return (await Promise.all(rows.filter(row => _calendarRowInWorkspace(row)
+          && (!filterUser || row.user === filterUser || row.creator === filterUser))
+          .map(inRange))).flat();
       }
       const actor = _calendarActor();
-      return rows.filter(row => {
+      return (await Promise.all(rows.filter(row => {
         let members = row?.members;
         try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
         const visible = row.user === actor || row.creator === actor || (Array.isArray(members) && members.map(String).includes(actor));
-        return _calendarRowInWorkspace(row) && visible && _dateInRange(row.start || row.due_date, start, end);
-      }).map(row => _effectiveDropboxEventColor(row, calendars));
+        return _calendarRowInWorkspace(row) && visible;
+      }).map(inRange))).flat();
     }
     if (name === 'time') {
       const user = url.searchParams.get('user') || '';
@@ -3367,9 +3518,20 @@
     if (name === 'events' || name === 'tasks') {
       const kind = name === 'events' ? 'event' : 'todo';
       return _calendarCompensated(provider, [CLOUD_CALENDAR_HISTORY_STORE, name], async () => {
-        await _calendarCaptureVersion(provider, kind, id, null, '作成前');
-        rows.push(row);
-        await _writeStore(provider, name, rows);
+        if (name === 'tasks') {
+          rows.push(row);
+          // 別ファイルへの保存は重ねる。片方が失敗しても、もう片方の完了前に復旧を始めない。
+          const results = await Promise.allSettled([
+            _calendarCaptureVersion(provider, kind, id, null, '作成前'),
+            _writeStore(provider, name, rows),
+          ]);
+          const failed = results.find(result => result.status === 'rejected');
+          if (failed) throw failed.reason;
+        } else {
+          await _calendarCaptureVersion(provider, kind, id, null, '作成前');
+          rows.push(row);
+          await _writeStore(provider, name, rows);
+        }
         return { ok: true, id };
       });
     }
@@ -3460,6 +3622,14 @@
     }
     if (name === 'events') {
       if (!(await _calendarCanEditEvent(provider, previous))) throw _calendarError('この予定を編集する権限がありません', 403, 'EVENT_EDIT_FORBIDDEN');
+      const expected = String(body?.expectedRevision || body?._calendar_expected_revision || body?.expected_revision || '');
+      if (expected && expected !== await _calendarItemRevision(previous)) {
+        throw _calendarError('表示後に予定が変更されたため保存を中止しました。最新の内容を確認してください', 409, 'CALENDAR_REVISION_CONFLICT');
+      }
+      body = { ...(body || {}) };
+      delete body.expectedRevision;
+      delete body._calendar_expected_revision;
+      delete body.expected_revision;
       _assertOwnerFieldsUnchanged(previous, body, ['user', 'creator'], '予定の所有者は他のメンバーへ変更できません', 'EVENT_USER_MISMATCH');
       const nextCalendarId = body?.calendar_id ?? previous.calendar_id;
       if (!(await _calendarCanUseCalendar(provider, nextCalendarId))) {
@@ -3483,7 +3653,7 @@
         await _calendarCaptureVersion(provider, kind, id, previous, '更新前');
         rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
         await _writeStore(provider, name, rows);
-        return { ok: true };
+        return { ok: true, revision: await _calendarItemRevision(rows[idx]) };
       });
     }
     const patch = { ...(body || {}) };
@@ -3703,15 +3873,36 @@
       .replace(/;/g, '\\;');
   }
 
+  function _icalDayOffset(value, delta) {
+    const text = String(value || ''), date = _parseCalendarDate(text);
+    if (!date) return text;
+    const shifted = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate() + delta));
+    return shifted.toISOString().slice(0, 10);
+  }
+
   function _icalExport(events) {
     const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Meldex Cloud BETA//JA'];
-    events.forEach((event) => {
+    const records = events.flatMap(event => {
+      const records = [event], rule = _recurrenceObject(event.recurrence);
+      Object.entries(rule?.overrides || {}).forEach(([original, patch]) => {
+        if (!patch || typeof patch !== 'object') return;
+        const rows = _expandCalendarRecurrence(event, patch.start || original, patch.end || patch.start || original);
+        const changed = rows.find(row => Date.parse(row.original_start) === Date.parse(original));
+        if (changed) records.push({...changed, recurrence:'', _recurrence_id:original, _recurrence_all_day:event.all_day});
+      });
+      return records;
+    });
+    records.forEach((event) => {
       lines.push('BEGIN:VEVENT');
       lines.push('UID:' + _icalText(event.ical_uid || event.uid || event.id || event.name || _randomId('ev')));
+      if (event._recurrence_id) {
+        const dateOnly = _truthy(event._recurrence_all_day);
+        lines.push((dateOnly ? 'RECURRENCE-ID;VALUE=DATE:' : 'RECURRENCE-ID:') + _icalDate(event._recurrence_id, dateOnly));
+      }
       lines.push('SUMMARY:' + _icalText(event.title || event.name || '無題'));
       const dateOnly = _truthy(event.all_day) || /^\d{4}-\d{2}-\d{2}$/.test(String(event.start || ''));
-      if (event.start) lines.push((dateOnly ? 'DTSTART;VALUE=DATE:' : 'DTSTART:') + _icalDate(event.start, dateOnly));
-      if (event.end) lines.push((dateOnly ? 'DTEND;VALUE=DATE:' : 'DTEND:') + _icalDate(event.end, dateOnly));
+      if (event.start) lines.push((dateOnly ? 'DTSTART;VALUE=DATE:' : 'DTSTART:') + _icalDate(dateOnly ? _icalDayOffset(event.start, 0) : event.start, dateOnly));
+      if (event.end) lines.push((dateOnly ? 'DTEND;VALUE=DATE:' : 'DTEND:') + _icalDate(dateOnly ? _icalDayOffset(event.end, 1) : event.end, dateOnly));
       if (event.location) lines.push('LOCATION:' + _icalText(event.location));
       if (event.url) lines.push('URL:' + _icalText(event.url));
       if (event.description) lines.push('DESCRIPTION:' + _icalText(event.description));
@@ -3766,7 +3957,10 @@
         return;
       }
       if (name === 'END' && value.toUpperCase() === 'VEVENT') {
-        if (current) events.push(current);
+        if (current) {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(String(current.start || '')) && current.end) current.end = _icalDayOffset(current.end, -1);
+          events.push(current);
+        }
         current = null;
         return;
       }
@@ -3777,8 +3971,12 @@
       }
       if (name === 'SUMMARY') current.title = _icalUnescape(value);
       if (name === 'DESCRIPTION') current.description = _icalUnescape(value);
-      if (name === 'DTSTART') current.start = _icalDateValue(value, isDateOnly);
+      if (name === 'DTSTART') {
+        current.start = _icalDateValue(value, isDateOnly);
+        current.all_day = isDateOnly || /^\d{4}-\d{2}-\d{2}$/.test(String(current.start));
+      }
       if (name === 'DTEND') current.end = _icalDateValue(value, isDateOnly);
+      if (name === 'RECURRENCE-ID') current.recurrence_id = _icalDateValue(value, isDateOnly);
       if (name === 'LOCATION') current.location = _icalUnescape(value);
       if (name === 'URL') current.url = _icalUnescape(value);
       if (name === 'RRULE') current.recurrence = _rruleToRecurrenceJson(value);
@@ -3787,7 +3985,29 @@
         if (match) current.alert_minutes = Number(match[1]) * (match[2].toUpperCase() === 'H' ? 60 : 1);
       }
     });
-    return events.filter(event => event.start || event.title || event.uid);
+    const valid = events.filter(event => event.start || event.title || event.uid);
+    const masters = new Map(valid.filter(event => event.uid && !event.recurrence_id).map(event => [event.uid, event]));
+    const merged = valid.filter(event => !event.recurrence_id);
+    valid.filter(event => event.recurrence_id).forEach(event => {
+      const master = masters.get(event.uid), rule = _recurrenceObject(master?.recurrence);
+      if (master && rule?.type) {
+        const patch = {};
+        ['title','start','end','description','location','url','alert_minutes'].forEach(key => {
+          if (Object.hasOwn(event, key)) patch[key] = event[key];
+        });
+        patch.all_day = /^\d{4}-\d{2}-\d{2}$/.test(String(event.start || ''));
+        const originalAt = _parseCalendarDate(event.recurrence_id);
+        const pad = number => String(number).padStart(2, '0');
+        const key = originalAt ? _icalDayOffset(event.recurrence_id, 0)+'T'+pad(originalAt.getHours())+':'+pad(originalAt.getMinutes())
+          : event.recurrence_id.slice(0, 16);
+        rule.overrides = {...(rule.overrides || {}), [key]:patch};
+        master.recurrence = JSON.stringify(rule);
+      } else {
+        const uid = (event.uid || '') + '#' + event.recurrence_id;
+        merged.push({...event, uid, ical_uid:uid});
+      }
+    });
+    return merged;
   }
 
   async function _importCalendarStoreIcs(provider, body) {

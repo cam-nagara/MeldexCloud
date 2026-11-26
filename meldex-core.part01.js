@@ -31,8 +31,8 @@ const API_FETCH_NATIVE_DIALOG_TIMEOUTS = new Map([
   ['/settings-transfer/export', 315000],
 ]);
 const API_FETCH_FILE_OPERATIONS = new Set([
-  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/duplicate', '/outliner/save-as',
-  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
+  '/outliner/add', '/outliner/rename', '/outliner/move', '/outliner/move-batch', '/outliner/duplicate', '/outliner/save-as',
+  '/outliner/delete', '/outliner/delete-batch', '/outliner/restore', '/outliner/restore-batch',
   '/trash/restore', '/trash/delete', '/trash/empty',
   '/import-csv', '/import-xlsx', '/import-xlsx-scriptnote', '/export-to-db', '/export/html-to-png',
   '/version/save', '/version/restore', '/version/save-db', '/version/restore-db',
@@ -200,6 +200,10 @@ async function apiFetch(path, opts) {
     window.MeldexSaveSafety?.reportApiSuccess?.(path, opts, payload);
     return _apiFetchClonePayload(payload);
   } catch (e) {
+    // 注釈は専用の記録を持つ。共有タグの書込失敗だけを共通記録へ渡す。
+    if (/^\/(?:api\/)?global-tags\/target(?:\/|\?|$)/.test(String(path)) && _apiFetchMethod(opts) !== 'GET') {
+      try { window.MeldexDiagnostics?.noteRequestFailure?.(path, opts, e); } catch {}
+    }
     if (e.name === 'AbortError' && timedOut) {
       // タイムアウト/中断はエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
       try { console.warn('[apiFetch] timed out or aborted:', path); } catch {}
@@ -423,6 +427,7 @@ document.addEventListener('DOMContentLoaded', scheduleMeldexViewportSizeUpdate, 
 window.addEventListener('load', scheduleMeldexViewportSizeUpdate, { once: true });
 
 function clampPopupToViewport(el) {
+  window.MeldexMenuIcons?.decorate?.(el);
   if (!el.matches('.modal-overlay, .gb-modal-overlay, [aria-modal="true"]')) el.classList.add('gb-popup-surface');
   const z = _getZoom();
   const vw = window.innerWidth / z, vh = window.innerHeight / z;
@@ -873,8 +878,13 @@ function _isMobileStatusToastNeeded() {
 }
 
 function _showMobileStatusToast(text, isError) {
-  if (!text || !document.body || !_isMobileStatusToastNeeded()) return;
+  if (!document.body) return;
   let toast = document.getElementById('gb-mobile-status-toast');
+  if (!text || !_isMobileStatusToastNeeded()) {
+    clearTimeout(_mobileStatusToastTimer);
+    toast?.classList.remove('is-visible');
+    return;
+  }
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'gb-mobile-status-toast';
@@ -971,6 +981,8 @@ function showStatus(msg, isError, options) {
     if (_isSaveSuccessStatusMessage(text, isError, options)) _queueSaveDialog(text);
     return;
   }
+  const messageToken = {};
+  el._statusMessageToken = messageToken;
   el.textContent = text;
   el.style.color = isError ? 'var(--red)' : 'var(--fg2)';
   if (text) {
@@ -983,7 +995,7 @@ function showStatus(msg, isError, options) {
   _showMobileStatusToast(text, !!isError);
   if (isError) {
     setTimeout(() => {
-      if (el.textContent === text) {
+      if (el._statusMessageToken === messageToken && el.textContent === text) {
         el.textContent = '';
         delete el.dataset.statusKind;
         el.removeAttribute('aria-label');
@@ -1204,6 +1216,8 @@ const LUCIDE = {
   underline: '<path d="M6 4v6a6 6 0 0 0 12 0V4"/><line x1="4" x2="20" y1="20" y2="20"/>',
   strikethrough: '<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/>',
   list: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  // フォルダパネルの表示形式「リスト・小」（行の詰まったリスト）
+  listCompact: '<line x1="8" x2="21" y1="5" y2="5"/><line x1="8" x2="21" y1="9.67" y2="9.67"/><line x1="8" x2="21" y1="14.33" y2="14.33"/><line x1="8" x2="21" y1="19" y2="19"/><line x1="3" x2="3.01" y1="5" y2="5"/><line x1="3" x2="3.01" y1="9.67" y2="9.67"/><line x1="3" x2="3.01" y1="14.33" y2="14.33"/><line x1="3" x2="3.01" y1="19" y2="19"/>',
   listOrdered: '<line x1="10" x2="21" y1="6" y2="6"/><line x1="10" x2="21" y1="12" y2="12"/><line x1="10" x2="21" y1="18" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
   quote: '<path d="M16 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M8 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/>',
   heading: '<path d="M6 12h12"/><path d="M6 20V4"/><path d="M18 20V4"/>',
@@ -1227,6 +1241,7 @@ const LUCIDE = {
   // 取り消し・やり直しボタン展開 v0.6.196（undo-redo-toolbar-plan フェーズ1-3）
   undo2: '<path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />',
   redo2: '<path d="m15 14 5-5-5-5" /><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13" />',
+  ganttChart: '<path d="M10 6h8" /><path d="M12 16h6" /><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M8 11h7" />',
   workflow: '<rect width="8" height="8" x="3" y="3" rx="2" /><path d="M7 11v4a2 2 0 0 0 2 2h4" /><rect width="8" height="8" x="13" y="13" rx="2" />',
 };
 // gb-icon-assets.js (hasLucideName) が独自アイコン (page / db / scenario 等) を
@@ -1322,11 +1337,7 @@ function toolbarAppIconName(type) {
   return uiTypeIconName(type) || UI_TOOLBAR_APP_ICON_EXTRA[type] || '';
 }
 
-// メインメニューボタンの右下に付けるメニューの印。左隣のファイルアイコン（既定ではアプリと同じ種別のアイコン）と
-// 役割を見分けられるようにする（2026-11-21。同じアイコンが2つ並んでいた）。寸法は変えない（重ねて表示する）。
-function toolbarMainMenuCaretHtml() {
-  return `<span class="tb-main-menu-caret" aria-hidden="true">${lucide('chevronDown', 10)}</span>`;
-}
+// メインメニューボタンには印（右下の下向き矢印）を付けない（2026-11-24 利用者判断で撤去。不要とのこと）。
 
 function toolbarMainMenuLabel(type) {
   const label = UI_TOOLBAR_APP_ICON_LABELS[String(type ?? '')] || '';
@@ -1346,7 +1357,7 @@ function toolbarAppIconHtml(type, options) {
   const menuType = String(options?.menu || key).replace(/[^A-Za-z0-9_-]/g, '');
   const action = options?.action === false ? '' : ` data-action="showToolMenu(event,'${menuType}')"`;
   return `<button type="button" class="tb-app-icon tb-main-menu-btn tool-menu-btn" data-app-icon="${key}" data-main-menu="${menuType}" data-gb-tooltip-key="toolbar.mainMenu"`
-    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}${toolbarMainMenuCaretHtml()}</button>`;
+    + ` title="${UI_TOOLBAR_MAIN_MENU_TITLE}" aria-label="${toolbarMainMenuLabel(key)}" aria-haspopup="menu" aria-expanded="false"${action}>${svg}</button>`;
 }
 
 // JSで組むツールバー用。onClick を渡すとその処理で開く（マップ・フォームのように部品を渡す場合）。
@@ -1374,7 +1385,8 @@ function hydrateToolbarAppIcons(root) {
     if (el.tagName === 'BUTTON') {
       // 同じ値でも書くと変更通知が積まれる（あふれ判定等の監視と押し合う）ため、足りない時だけ書く。
       if (!el.classList.contains('tb-main-menu-btn')) el.classList.add('tb-main-menu-btn');
-      if (!el.querySelector('.tb-main-menu-caret')) el.insertAdjacentHTML('beforeend', toolbarMainMenuCaretHtml());
+      // 旧版で付けた印が残っていれば取り除く（無ければ何も書かない）。
+      el.querySelector('.tb-main-menu-caret')?.remove();
       if (!el.dataset.gbTooltipKey) el.dataset.gbTooltipKey = 'toolbar.mainMenu';
       if (!el.getAttribute('title')) el.setAttribute('title', UI_TOOLBAR_MAIN_MENU_TITLE);
       if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', toolbarMainMenuLabel(key));
@@ -1576,7 +1588,9 @@ function replaceIcons(root) {
 function inheritParentTheme() {
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
-    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
+    // --theme-native-os-accent / --ui-accent: 「OSアクセント」の色は本体だけがOSから読むため、ここで渡さないと
+    // 埋め込みの画面が AccentColor（ブラウザ既定の明るい青）へ落ちる（2026-11-24）。
+    const themeVars = ['--theme-native-os-accent', '--ui-accent', '--ui-accent-fg', '--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
     themeVars.forEach(v => {
       const val = parentComputed.getPropertyValue(v).trim();
       if (val) document.documentElement.style.setProperty(v, val);

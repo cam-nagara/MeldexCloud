@@ -296,6 +296,20 @@
         }
         return destination;
       }
+      if (endpoint === '/outliner/move-batch' && method === 'POST') {
+        // まとめての移動は、1件ずつ同じ確認を通す
+        const destination = assertFolder(body.dest_folder || '', '移動');
+        (Array.isArray(body.items) ? body.items : []).forEach((item) => {
+          const source = assertMutableSource(item?.path || '', '移動');
+          const sourcePhysical = physicalPath(source);
+          const destinationPhysical = _physicalPath(`${physicalPath(destination)}/${basename(source)}`);
+          if (!sourcePhysical || !destinationPhysical || destinationPhysical === sourcePhysical
+              || destinationPhysical.startsWith(sourcePhysical + '/')) {
+            _deny('移動', destination, 'self_or_descendant_destination');
+          }
+        });
+        return destination;
+      }
       return null;
     }
 

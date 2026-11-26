@@ -522,7 +522,8 @@
 
   CalendarComponent.prototype._showEventCardMenu = function(anchor, eventId) {
     if (!anchor || !eventId) return;
-    const ev = (this._events || []).find(item => item?.id === eventId);
+    const occurrenceStart = anchor.closest('[data-occurrence-start]')?.dataset.occurrenceStart;
+    const ev = (this._events || []).find(item => item?.id === eventId && (!occurrenceStart || item.start === occurrenceStart));
     if (!ev) return;
     this._closeEventCardMenu();
     const menu = document.createElement('div');
@@ -584,7 +585,7 @@
       addItem('選択解除', 'x', () => this._clearEventSelection(), { action: 'clear-selection' });
       addSeparator();
     }
-    addItem('開く', 'fileText', () => this._openEventInPanel(eventId), { action: 'open' });
+    addItem('開く', 'fileText', () => this._openEventInPanel(eventId, occurrenceStart), { action: 'open' });
     const source = String(ev.calendar_source || '');
     const lockedGenerated = ['production-task', 'attendance'].includes(source);
     addItem(lockedGenerated ? '元データから編集' : '削除', lockedGenerated ? 'lock' : 'trash2', () => this._deleteEventFromOptions(eventId), {

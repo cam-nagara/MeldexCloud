@@ -877,8 +877,12 @@ async function _apiPutValue(valObj, updates) {
     const writeEntityPath = latestEntityPath || _resolveEntityPathFromValObj(valObj);
     const body = { ...updates };
     delete body.__source;
+    // 呼び出し側が保存先をいま読み直した版（__revisionFromRead）は、そのまま使う。覚えている版の方が大きいと、
+    // 実際の版と食い違って必ず409になる（旧形式のファイルで、中断した列名の変更を戻せなかった。2026-11-25）。
+    const revisionFromRead = body.__revisionFromRead === true;
+    delete body.__revisionFromRead;
     const requestedRevision = Number(body.baseRevision);
-    const latestRevision = _dbLatestEntryRevision(writeEntityPath, valObj);
+    const latestRevision = revisionFromRead ? NaN : _dbLatestEntryRevision(writeEntityPath, valObj);
     const usableRevisions = [requestedRevision, latestRevision]
       .filter(value => Number.isInteger(value) && value >= 0);
     if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
@@ -1359,6 +1363,8 @@ function _dbPaneContextFromEvent(eventOrElement, options = {}) {
   const embeddedEl = target?.closest?.('.gb-production-sheet-embed');
   const embeddedCtx = embeddedEl?._dbPaneContext;
   if (embeddedCtx && !embeddedCtx.destroyed) return embeddedCtx;
+  const renderedCtx = target?.closest?.('tbody')?._meldexCtx;
+  if (renderedCtx && !renderedCtx.destroyed) return renderedCtx;
   const paneEl = target?.closest?.('.gb-pane[data-pane-id]') || target?.closest?.('.gb-pane');
   const paneId = paneEl?.dataset?.paneId || '';
   if (paneId && typeof getPaneContext === 'function') {

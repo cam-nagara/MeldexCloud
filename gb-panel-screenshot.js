@@ -3,6 +3,7 @@
 (function(global) {
   'use strict';
   let cancelSelection = null;
+  let sourceRevealGeneration = 0;
   const captureHandle=crypto.randomUUID();
   let handleConfigured=false;
   try {
@@ -30,6 +31,7 @@
   }
   async function capture(surface, rect, sourceLink) {
     let stream;
+    const historyScope = global.GBAnnotationSurfaces?.historyScope?.(surface);
     try {
       // Cropping is relative to this tab's viewport. A monitor/window stream
       // cannot safely use these coordinates and is explicitly rejected.
@@ -56,9 +58,18 @@
       const home = (typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '').replace(/[\\/]$/, '');
       const saved = await apiPost('/annotation/screenshot', { data: canvas.toDataURL('image/png'),
         target_path: localStorage.getItem('meldex-screenshot-folder') || (home ? home+'/' : '')+'スクリーンショット',
-        mode: 'panel', source_target: sourceLink.path, source_link: sourceLink, width: canvas.width, height: canvas.height });
+        mode: 'panel', source_target: sourceLink.path, source_link: sourceLink, width: canvas.width, height: canvas.height },
+        { silentError: true, diagnosticOp: 'viewer.screenshot.capture' });
+      let historyFailed = false;
+      if (saved.annotation_id || saved.id) {
+        try {
+          await global._pushAnnotationCreateHistory?.(
+            saved.annotation_id || saved.id, 'アノテート: スクリーンショット撮影', sourceLink.path, historyScope,
+          );
+        } catch { historyFailed = true; }
+      }
       if (typeof loadRpAnnotationList === 'function') void loadRpAnnotationList();
-      showStatus('スクリーンショットを保存しました');
+      showStatus(historyFailed ? 'スクリーンショットは保存しましたが、取り消しの記録を作れませんでした' : 'スクリーンショットを保存しました', historyFailed);
       return saved;
     } catch(error) { if (error.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: '+error.message,true); return null; }
     finally { stream?.getTracks().forEach(t => t.stop()); }
@@ -97,21 +108,42 @@
   async function openSourceLink(link) {
     if(link?.schemaVersion!==1||typeof link.path!=='string'||!link.position)return false;
     if(link.path.length>8192||link.path.includes('\0')||/^[a-z][a-z0-9+.-]*:/i.test(link.path)&&! /^[a-z]:[\\/]/i.test(link.path))return false;
+    const generation = ++sourceRevealGeneration;
     await GBAnnotationSurfaces.reveal({target_path:link.path,type:'screenshot-source',target_kind:'none',data:{},id:''});
+    if (generation !== sourceRevealGeneration) return false;
     const same=(a,b)=>typeof _rpAnnotationPathsMatch==='function'?_rpAnnotationPathsMatch(a,b):a===b;
     const surface=surfaces().find(s=>same(s.path,link.path)||s.iframe&&same(s.sourcePath,link.path.replace(/(\.pdf)#page=\d+$/i,'$1')));
     if(!surface)return false;
     const pos=link.position;
     if(surface.iframe){
-      const viewer=surface.iframe.contentWindow.MeldexViewerScene;
+      // revealはタブの対象が切り替わると返るが、iframe内の画像/PDFはまだ読込中のことがある。
+      // 先に位置を戻すと、reopenWithUrlの初期化で倍率・回転が再び消えてしまう。
+      const documentPath = link.path.replace(/(\.pdf)#page=\d+$/i, '$1');
+      const deadline = performance.now() + 30000;
+      let viewer;
+      while (performance.now() < deadline) {
+        if (generation !== sourceRevealGeneration || !surface.host.isConnected
+          || !same(surface.sourcePath || surface.path, documentPath)) return false;
+        const frame = surface.iframe.contentWindow;
+        viewer = frame?.MeldexViewerScene;
+        if (viewer && same(viewer.currentPath(), documentPath)
+          && frame.document.getElementById('viewer-loading')?.classList.contains('hidden')) break;
+        viewer = null;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      if (!viewer) { showStatus('撮影元を読み込めませんでした。もう一度操作してください', true); return false; }
+      if(pos.mode && viewer.getMode() !== pos.mode)viewer.setMode(pos.mode);
+      if(pos.fit && viewer.getFitMode() !== pos.fit)viewer.setFitMode(pos.fit);
       await viewer.goToIndex(Math.max(0,Number(pos.pageIndex)||0));
-      if(pos.mode)viewer.setMode(pos.mode);
-      if(pos.fit)viewer.setFitMode(pos.fit);
+      if (generation !== sourceRevealGeneration || !surface.host.isConnected
+        || !same(viewer.currentPath(), documentPath)) return false;
       viewer.setRotateDeg(Number(pos.rotation)||0);
       if(!!pos.flipH!==viewer.getFlipH())viewer.toggleFlipH();
       if(!!pos.flipV!==viewer.getFlipV())viewer.toggleFlipV();
       const r=surface.iframe.getBoundingClientRect();
-      viewer.setZoomAt(r.width/2,r.height/2,Math.max(.01,Number(pos.zoom)||1));
+      await viewer.setZoomAt(r.width/2,r.height/2,Math.max(.01,Number(pos.zoom)||1));
+      if (generation !== sourceRevealGeneration || !surface.host.isConnected
+        || !same(viewer.currentPath(), documentPath)) return false;
       viewer.setPan(Number(pos.panX)||0,Number(pos.panY)||0);
     }else{
       if(surface.type==='board'&&pos.board){

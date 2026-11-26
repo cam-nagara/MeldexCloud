@@ -530,13 +530,38 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
   _bdBuildStyleFields(fieldsEl, kind, selected, (field) => {
     const needsFullRebuild = typeof _bdStyleFieldNeedsFullRebuild === 'function'
       && _bdStyleFieldNeedsFullRebuild(kind, field);
+    const appearanceOnly = kind === 'card' && ['bgColor', 'borderColor', 'textColor', 'textStrokeColor',
+      'fontBold', 'fontItalic', 'fontSize', 'textStrokeWidth', 'borderWidth', 'borderRadius', 'width',
+      'cloudBumpWidth', 'cloudBumpHeight', 'cloudOffset', 'cloudSubWidthRatio', 'cloudSubHeightRatio'].includes(field)
+      && typeof bdRefreshNodeStyleInPlace === 'function' && typeof _bdRefreshNodeDetailDirty === 'function';
+    const lineOnly = kind === 'line' && field !== 'fontFamily' && typeof bdDrawConns === 'function';
+    if (kind === 'card' && field === 'width' && bd.activeCardStyle === selected.id) bd.newCardStyleRef = selected.id;
     bdDirty();
-    if (field === 'fontFamily') {
+    // ポップアップ内の入力はcontainerの外にある。画面同期が入力欄を古い値と
+    // 判断して作り直す前に、同じ入力を保持したまま表示中の値の写しを更新する。
+    if (appearanceOnly || lineOnly) _bdRenderStyleManagerInPanel(kind, container, selected.id, 'diff');
+    if (appearanceOnly) {
+      // 標準幅は新規作成用なので、既存トピックの外観や寸法を更新しない。
+      if (field !== 'width') {
+        const fallbackId = bd.cardStyles?.[0]?.id;
+        (bd.nodes || []).filter(node => (node.cardStyle || fallbackId) === selected.id).forEach(node => {
+          // 折り畳み・絞り込み中のトピックは、再表示時に現在の書式で描画する。
+          if (bdRefreshNodeStyleInPlace(node.id)) _bdRefreshNodeDetailDirty(node.id, false, true, true);
+        });
+      }
+    } else if (field === 'fontFamily') {
       if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
+    } else if (lineOnly) {
+      // 名前付きライン書式の変更で、無関係なトピック本文や入力を作り直さない。
+      const fallbackId = bd.lineStyles?.[0]?.id;
+      const connIds = (bd.connections || []).filter(conn => (conn.styleRef || fallbackId) === selected.id).map(conn => conn.id);
+      if (connIds.length) bdDrawConns({ connIds, reason: 'named-line-style-field' });
+      if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
+      if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true }, 'named-line-style-field');
     } else {
       _bdRenderKeepingDetailTab();
     }
-    _bdRenderStyleManagerInPanel(kind, container, selected.id, needsFullRebuild ? undefined : 'diff');
+    if (!appearanceOnly && (!lineOnly || needsFullRebuild)) _bdRenderStyleManagerInPanel(kind, container, selected.id, needsFullRebuild ? undefined : 'diff');
     bdRefreshBoardToolbar();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   }, {
@@ -790,10 +815,32 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
   const depthFieldsEl = container.querySelector('[data-bd-depth-fields]');
   const applyDepthStyles = (options = {}) => {
     if (typeof bdNormalizeDepthStyles === 'function') bd.depthStyles = bdNormalizeDepthStyles(bd.depthStyles);
-    if (!options.fontOnly) _bdApplyAllAutoStyles();
+    const appearanceOnly = options.styleKind === 'card' && !!options.field
+      && typeof bdRefreshNodeStyleInPlace === 'function' && typeof _bdRefreshNodeDetailDirty === 'function';
+    // ライン欄はラインの見た目だけを変える。トピック本文・入力中の部品を作り直さない。
+    const lineOnly = options.styleKind === 'line' && !!options.field && typeof bdDrawConns === 'function';
+    const changes = { nodeIds: new Set(), connIds: new Set() };
+    if (!options.fontOnly) _bdApplyAllAutoStyles(appearanceOnly || lineOnly ? changes : undefined);
     bdDirty();
     if (options.fontOnly) {
       if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
+    } else if (lineOnly) {
+      if (changes.nodeIds.size && typeof bdRefreshNodeStyleInPlace === 'function') {
+        changes.nodeIds.forEach(id => bdRefreshNodeStyleInPlace(id));
+      }
+      if (changes.connIds.size) bdDrawConns({ connIds: [...changes.connIds], reason: 'depth-line-style-field' });
+    } else if (appearanceOnly) {
+      // 階層の値を投影した対象だけを更新し、本文・HUD・入力中の部品を保持する。
+      const renderedIds = [];
+      changes.nodeIds.forEach(id => {
+        if (bdRefreshNodeStyleInPlace(id, { geometry: options.field === 'width' || options.field === 'shape' })) {
+          renderedIds.push(id);
+        }
+      });
+      if (renderedIds.length) _bdRefreshNodeDetailDirty(renderedIds, false, true, true);
+      if (changes.connIds.size && typeof bdDrawConns === 'function') {
+        bdDrawConns({ connIds: [...changes.connIds], reason: 'depth-card-style-field' });
+      }
     } else {
       _bdRenderKeepingDetailTab();
     }
@@ -802,10 +849,14 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
   };
   if (depthFieldsEl && selected && window.gbFmt) {
     const depthEmit = (styleKind, field) => {
-      const needsFullRebuild = typeof _bdStyleFieldNeedsFullRebuild === 'function'
-        && _bdStyleFieldNeedsFullRebuild(styleKind, field);
-      applyDepthStyles({ fontOnly: field === 'fontFamily' });
-      _bdRenderDepthStyleInPanel(container, idx, needsFullRebuild ? undefined : 'diff');
+      const refresh = () => {
+        const needsFullRebuild = typeof _bdStyleFieldNeedsFullRebuild === 'function'
+          && _bdStyleFieldNeedsFullRebuild(styleKind, field);
+        applyDepthStyles({ fontOnly: field === 'fontFamily', styleKind, field });
+        _bdRenderDepthStyleInPanel(container, idx, needsFullRebuild ? undefined : 'diff');
+      };
+      if (typeof bdWithNormalizedBoardUiState === 'function') bdWithNormalizedBoardUiState(refresh);
+      else refresh();
     };
     // bdNormalizeDepthStyles が applyDepthStyles の度に bd.depthStyles[idx] を新オブジェクトに
     // 差し替えるため、closure の selected / selected.line は 1 回目の diff 再レンダー後に orphan
@@ -1140,7 +1191,7 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
       const snapshot = typeof bdNormalizeDepthStyles === 'function'
         ? bdNormalizeDepthStyles(bd.depthStyles)
         : (bd.depthStyles || []).slice();
-      _bdSaveGlobalDepthStyles(snapshot);
+      if (_bdSaveGlobalDepthStyles(snapshot) === false) return;
       showStatus('階層別スタイルをデフォルトとして保存しました');
     });
 

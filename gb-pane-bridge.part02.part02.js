@@ -603,6 +603,12 @@
       const paneNode = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
       if (!paneNode) return null;
       if (paneNode.meldexRole === 'subpanel-workspace') return _createPanelFileInSubpanel(toolType);
+      // チャット欄から右サイドバーの補助パネルを選んだ時は、右サイドバーの方を開く。
+      if (paneNode.meldexRole === 'chat-sidebar' && window.GBRailContract?.types?.().has(toolType)
+          && toolType !== 'chat' && typeof window.openRightPanelTab === 'function') {
+        window.openRightPanelTab(toolType);
+        return null;
+      }
       if (!_guardMainPanelTabType(paneId, toolType)) return null;
       if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
@@ -622,10 +628,13 @@
       const vType = target.type || 'file';
       const path = target.path || '';
       const hasPath = !!path;
-      const label = hasPath ? 'バージョン: ' + (path.split('/').pop() || path) : 'バージョン管理';
+      const label = hasPath ? 'バージョン: ' + (path.replace(/\\/g, '/').split('/').pop() || path) : 'バージョン管理';
       const paneId = options?.paneId || GBLayout.activePane;
       if (!paneId) return null;
-      if (!GBLayout.findNode?.(GBLayout.root, paneId)) return null;
+      const versionPaneNode = GBLayout.findNode?.(GBLayout.root, paneId)?.node;
+      if (!versionPaneNode) return null;
+      // チャット欄からの追加は、右サイドバーのバージョン管理を開く（チャット欄にタブを足さない）。
+      if (_isNonToolHostPane(versionPaneNode)) return window.openVersionTab(path, vType, { follow: true });
       if (!_guardMainPanelTabType(paneId, 'version')) return null;
       if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(paneId)) {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
@@ -664,6 +673,45 @@
       if (comp && comp._loadVersions) comp._loadVersions(path, vType || 'file');
     }
 
+    function _openVersionInRightRail(path, vType, follow) {
+      const rail = _findRightRailToolTab('version');
+      if (!rail) return null;
+      if (typeof GBLayout.isPaneLocked === 'function' && GBLayout.isPaneLocked(rail.paneId)) return null;
+      const paneNode = GBLayout.findNode(GBLayout.root, rail.paneId)?.node;
+      const tab = paneNode?.tabs?.find(t => t.id === rail.tabId);
+      if (!tab) return null;
+      // 右サイドバーのパネルは「表示中のファイルを追いかける」性質を保つ。対象を指定して開いた時は
+      // その対象を表示し、次にメインパネルの対象が変わった時に追従へ戻る。
+      const keepFollow = follow || !!tab.state?.versionFollow || !String(tab.state?.versionPath || tab.path || '');
+      let loadPath = path || '';
+      let loadType = vType;
+      if (path) {
+        _updateVersionTab(tab, 'バージョン: ' + (path.replace(/\\/g, '/').split('/').pop() || path), vType, path, keepFollow);
+        // 描き直しの前に部品の状態がタブへ書き戻されるため、表示中の部品にも同じ対象を渡しておく。
+        // 渡さないと、注釈の保存点（PDFは「ファイル#page=N」）を開いた直後に古い「ファイルの版」で
+        // 上書きされ、存在しないファイルの版を問い合わせていた（2026-11-24）。
+        const comp = typeof getComponentInstance === 'function' ? getComponentInstance(rail.tabId) : null;
+        if (comp?.state) comp.state = { ...comp.state, versionType: vType, versionPath: path, versionFollow: keepFollow };
+      } else {
+        tab.state = { ...(tab.state || {}), versionFollow: true };
+        loadPath = tab.state.versionPath || tab.path || '';
+        loadType = tab.state.versionType || vType;
+      }
+      _activateToolPaneMatch(rail);
+      if (typeof GBLayout.revealPane === 'function') GBLayout.revealPane(rail.paneId, { userIntent: true, activate: true });
+      if (typeof GBLayout.refreshPaneTabs === 'function') {
+        try { GBLayout.refreshPaneTabs(rail.paneId); } catch (_) {}
+      }
+      if (typeof GBLayout.saveLayout === 'function') GBLayout.saveLayout();
+      if (!path && typeof _syncFollowingVersionTabs === 'function') {
+        _syncFollowingVersionTabs();
+        loadPath = tab.state?.versionPath || loadPath;
+        loadType = tab.state?.versionType || loadType;
+      }
+      _loadVersionTab(rail.tabId, loadPath, loadType);
+      return rail.tabId;
+    }
+
     // バージョン管理タブを開く（path が空でも「対象未指定」の状態で開ける）
     // options.follow=true で開いた場合、対象未指定で終わらせず「今アクティブなファイル」を
     // 自動で追いかける追従タブになる（メインパネルのファイル切替に応じて表示対象が変わる）。
@@ -673,8 +721,13 @@
       const follow = !!options?.follow;
       const hasPath = !!path;
       const searchPath = path || '';
-      const fileName = hasPath ? (path.split('/').pop() || path) : '';
+      const fileName = hasPath ? (path.replace(/\\/g, '/').split('/').pop() || path) : '';
       const label = hasPath ? 'バージョン: ' + fileName : 'バージョン管理';
+      // 右サイドバーにバージョン管理があれば、どの入口からでもそれを開いて対象を流し込む。
+      // チャット欄や別ペインに2つ目のバージョン管理タブを作らない（2026-11-24 利用者報告）。
+      const railTabId = _openVersionInRightRail(path, vType, follow);
+      if (railTabId) return railTabId;
+
       const hostInfo = _getVersionHostPaneInfo();
 
       // 対象付きで呼ばれた時、空タブ（対象未指定）が既にあれば、そこに対象を流し込んで再利用する

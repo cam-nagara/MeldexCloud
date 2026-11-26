@@ -234,12 +234,33 @@ function _chatRestoreSessionTargets(frontmatter = {}) {
     targets, started: (_chatState.messages || []).some(message => message.role === 'user') });
 }
 
-function _chatPersistTargetSnapshot() {
+function _chatPersistTargetSnapshot(options = {}) {
   try {
-    if (window.GBChatRestore?.saveTargetState) window.GBChatRestore.saveTargetState(_chatTargetSnapshot());
+    return !!window.GBChatRestore?.saveTargetState?.(_chatTargetSnapshot(), { userInitiated: options.userInitiated === true });
   } catch {
-    // 復元用メタデータの保存失敗は、現在のチャット操作を止めない。
+    return false;
   }
+}
+
+function _chatTargetChangeSnapshot() {
+  return ['currentTargetPath', 'currentTargetKind', 'currentTargetMode', 'targetPath',
+    'lastImplicitTargetPath', 'additionalTargets', 'targetStarted'].map(key => ({
+      key, present: Object.prototype.hasOwnProperty.call(_chatState, key), value: _chatState[key],
+    }));
+}
+
+function _chatCommitTargetChange(previous) {
+  if (_chatPersistTargetSnapshot({ userInitiated: true })) {
+    if (typeof showStatus === 'function') showStatus('対象の選択を保存しました');
+    return true;
+  }
+  for (const item of previous) {
+    if (item.present) _chatState[item.key] = item.value;
+    else delete _chatState[item.key];
+  }
+  _chatRefreshCurrentTargetDisplay();
+  if (typeof showStatus === 'function') showStatus('対象の選択を保存できませんでした。選択を元に戻しました。もう一度お試しください', true);
+  return false;
 }
 
 function _chatTargetUpdateMode(options = {}) {
@@ -275,7 +296,7 @@ function _chatSetCurrentTargetPath(path, kind = '', options = {}) {
     chatState.lastImplicitTargetPath = '';
   }
   _chatRefreshCurrentTargetDisplay();
-  _chatPersistTargetSnapshot();
+  if (options.persist !== false) _chatPersistTargetSnapshot();
   return clean;
 }
 
@@ -420,6 +441,7 @@ function _chatClearCurrentTarget() {
     if (typeof showStatus === 'function') showStatus('応答生成中は対象を変更できません', true);
     return false;
   }
+  const previous = _chatTargetChangeSnapshot();
   _chatState.currentTargetPath = '';
   _chatState.currentTargetKind = '';
   _chatState.targetPath = '';
@@ -427,8 +449,7 @@ function _chatClearCurrentTarget() {
   _chatState.additionalTargets = [];
   _chatSetCurrentTargetMode('detached');
   _chatRefreshCurrentTargetDisplay();
-  _chatPersistTargetSnapshot();
-  return true;
+  return _chatCommitTargetChange(previous);
 }
 
 async function _chatPickCurrentTarget() {
@@ -463,15 +484,16 @@ async function _chatPickCurrentTarget() {
     if (typeof showStatus === 'function') showStatus('チャットの状態が変わったため、対象の追加を中止しました', true);
     return null;
   }
+  const previous = _chatTargetChangeSnapshot();
   const kind = _chatTargetKind(selection.path, selection.kind || 'folder', selection.type || '');
   // Explicit additions never replace a room's original target or its write scope.
   if (!_chatEffectiveTargetPath() && !_chatTargetHasStarted()) {
-    _chatSetCurrentTargetPath(selection.path, kind, { reason: 'chat-target-picker', mode: 'manual' });
+    _chatSetCurrentTargetPath(selection.path, kind, { reason: 'chat-target-picker', mode: 'manual', persist: false });
   } else if (!_chatEffectiveTargets().some(item => _chatTargetKey(item.path) === _chatTargetKey(selection.path))) {
     _chatState.additionalTargets = [...(_chatState.additionalTargets || []), { path: selection.path, kind }];
   }
   _chatRefreshCurrentTargetDisplay();
-  _chatPersistTargetSnapshot();
+  if (!_chatCommitTargetChange(previous)) return null;
   return selection;
 }
 
@@ -486,11 +508,12 @@ function _chatUseCurrentOpenTarget() {
     return null;
   }
   const started = _chatTargetHasStarted();
+  const previous = _chatTargetChangeSnapshot();
   let status = '開いている項目をチャットの対象にしました';
   if (!started) {
     // An explicit click pins the visible item instead of leaving a follow-main
     // target that could drift when the user changes panes before the first send.
-    _chatSetCurrentTargetPath(target.path, target.kind, { reason: 'chat-current-open-target', mode: 'manual' });
+    _chatSetCurrentTargetPath(target.path, target.kind, { reason: 'chat-current-open-target', mode: 'manual', persist: false });
   } else if (!_chatEffectiveTargets().some(item => _chatTargetKey(item.path) === _chatTargetKey(target.path))) {
     _chatState.additionalTargets = [...(_chatState.additionalTargets || []), { path: target.path, kind: target.kind }];
     status = '開いている項目をチャットの対象に追加しました';
@@ -498,7 +521,7 @@ function _chatUseCurrentOpenTarget() {
     status = '開いている項目はすでにチャットの対象です';
   }
   _chatRefreshCurrentTargetDisplay();
-  _chatPersistTargetSnapshot();
+  if (!_chatCommitTargetChange(previous)) return null;
   if (typeof showStatus === 'function') showStatus(status);
   return target;
 }

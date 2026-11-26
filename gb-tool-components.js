@@ -415,9 +415,23 @@ class FileThemeComponent extends ContextRailComponent {
       return this._empty('選択対象が現在の編集画面と一致しません。対象を開いてからテーマを編集してください');
     }
     if (typeof window.renderFileStyleTab !== 'function') return this._empty('テーマ設定を読み込めませんでした。画面を再読み込みしてください');
+    const noteHost = ctx === 'page' ? (window.GBEditorHost?.element('page-content') || document.getElementById('page-content')) : null;
+    const databaseLoading = ctx === 'db' && typeof _currentPaneState === 'function' && !!_currentPaneState()?._selectDatabaseInFlight;
+    const folderLoading = ctx === 'folder' && (typeof _folderPath === 'undefined' || !_folderPath
+      || (typeof _folderGridEl === 'function' && _folderGridEl()?.getAttribute('aria-busy') === 'true'));
+    const boardLoading = ctx === 'board' && (typeof bd === 'undefined' || !bd?.path
+      || (typeof CanvasComponent !== 'undefined' && !!CanvasComponent._lastRuntimeOwner?._boardLoadPending));
+    if ((ctx === 'page' && (!noteHost || noteHost.dataset.loadPending === '1'))
+      || (ctx === 'db' && (!state?.dbMetadata || databaseLoading)) || boardLoading || folderLoading) {
+      this.el.dataset.fileThemeState = 'loading';
+      return this._empty('読み込み中...');
+    }
     const readOnly = _railStyleIsReadOnly(ctx);
     const renderKey = `${ctx}:${_railNormalizeTargetPath(activePath || targetPath)}:${readOnly}`;
-    if (this._fileThemeRenderKey === renderKey && this.bodyEl.querySelector(`[data-file-theme-panel="${ctx}"]`)) {
+    const bindingCurrent = readOnly || [...this.bodyEl.querySelectorAll('.gb-fmt-popup-row')]
+      .every(row => row._fsAdapter?.isCurrent?.() !== false);
+    if (this._fileThemeRenderKey === renderKey && bindingCurrent && this.bodyEl.querySelector(`[data-file-theme-panel="${ctx}"]`)) {
+      if (typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect(ctx);
       this.el.dataset.fileThemeState = readOnly ? 'read-only' : 'ready';
       return;
     }
@@ -445,6 +459,13 @@ class FileThemeComponent extends ContextRailComponent {
       this._empty(`テーマ設定を表示できませんでした: ${error?.message || '不明なエラー'}`);
     }
   }
+}
+
+function _refreshFileThemeTargetBindings() {
+  if (typeof forEachComponent !== 'function') return;
+  forEachComponent(component => {
+    if (component?._active && component.constructor?.toolType === 'file-theme') component.renderTarget();
+  });
 }
 
 // === FolderComponent ===
@@ -549,13 +570,24 @@ class VersionComponent extends ToolComponent {
   activate() {
     super.activate();
     let path = this._getTabPath() || this.state.versionPath || '';
-    let vType = this.state.versionType || 'file';
+    // 開く入口（注釈の保存点など）がタブの記録へ書いた種類を優先する。部品自身の古い種類を使うと、
+    // 「ファイル#page=N」の注釈対象をファイルの版として問い合わせ、見つからない通知を出していた。
+    const ownTab = typeof GBLayout !== 'undefined'
+      ? GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || []).find(tab => tab.id === this.tabId) : null;
+    let vType = ownTab?.state?.versionType || this.state.versionType || 'file';
     // The fixed rail starts with an untargeted tab. It follows the last editor,
     // while versions explicitly opened for a path retain their pinned target.
     if ((!path || this.state.versionFollow) && typeof _getCurrentVersionTarget === 'function') {
       const target = _getCurrentVersionTarget();
-      path = target?.path || path;
-      vType = target?.type || vType;
+      // 同じファイルの間は、利用者が選んだ種類（注釈の保存点など）を保つ。表示し直すたびに
+      // 既定の「ファイルの版」へ戻していた（2026-11-24。右サイドバーの追従と同じ扱い）。
+      // PDFの注釈は「ファイル#page=N」を対象にするため、ページ指定を除いたファイルで比べる。
+      const fileOf = value => String(value || '').replace(/#page=\d+$/i, '');
+      const samePath = !!(target?.path && path && fileOf(target.path) === fileOf(path));
+      if (!samePath) {
+        path = target?.path || path;
+        vType = target?.type || vType;
+      }
       this.state.versionFollow = true;
       const tab = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || []).find(tab => tab.id === this.tabId);
       if (tab) {
@@ -645,7 +677,7 @@ class VersionComponent extends ToolComponent {
     if (vType === 'annotations') {
       let versions = [];
       try {
-        versions = await apiFetch('/annotations/versions?target=' + encodeURIComponent(path));
+        versions = await apiFetch('/annotations/versions?target=' + encodeURIComponent(path), { silentError: true });
       } catch (error) {
         if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
         this.el.innerHTML = _railTargetHeaderHtml(path) + this._loadErrorHtml(path, vType, ['アノテートバージョン: ' + (error?.message || '取得失敗')]);
@@ -757,7 +789,10 @@ class VersionComponent extends ToolComponent {
         if (reloadPath) await this._loadVersions(reloadPath, reloadType);
       }
     } catch (error) {
-      if (typeof showStatus === 'function') showStatus('バージョン操作に失敗しました: ' + (error?.message || ''), true);
+      if (typeof showStatus === 'function') {
+        if (vType === 'annotations') showStatus('注釈の保存点を操作できませんでした。保存先や現在の対象を確認して、もう一度試してください', true);
+        else showStatus('バージョン操作に失敗しました: ' + (error?.message || ''), true);
+      }
     } finally {
       this._actionBusy = false;
       this._syncVersionBusy();
@@ -768,23 +803,30 @@ class VersionComponent extends ToolComponent {
     const defaultLabel = '保存_' + new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
     const label = await cfPrompt('アノテートバージョン名:', defaultLabel);
     if (label === null || !String(label).trim()) return false;
-    await apiPost('/annotations/versions/save', { target: path, label: String(label).trim() });
+    await apiPost('/annotations/versions/save', { target: path, label: String(label).trim() }, { silentError: true, requireRemoteCommit: true });
     if (typeof showStatus === 'function') showStatus('アノテートバージョンを保存しました');
   }
 
   async _readAnnotationVersion(path, versionName) {
-    return apiFetch('/annotations/versions/read?target=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
+    return apiFetch('/annotations/versions/read?target=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName), { silentError: true });
   }
 
   async _showAnnotationVersion(path, versionName, compare) {
     const data = await this._readAnnotationVersion(path, versionName);
     const saved = Array.isArray(data?.savedAnnotations) ? data.savedAnnotations : [];
     const current = Array.isArray(data?.currentAnnotations) ? data.currentAnnotations : [];
-    const savedText = JSON.stringify(saved, null, 2);
+    const describe = rows => typeof _versionAnnotationText === 'function'
+      ? _versionAnnotationText({ targets: { [path]: rows } })
+      : rows.map(row => String(row.body || '')).join('\n');
+    const savedText = describe(saved);
     const label = data?.version?.label || '保存版';
+    if (!compare && typeof showTextPreview === 'function') {
+      showTextPreview(savedText, `${label}（${saved.length}件）`, { binary: true });
+      return;
+    }
     if (typeof showDiffModal === 'function') {
-      if (compare) showDiffModal(savedText, JSON.stringify(current, null, 2), label, '現在のアノテート');
-      else showDiffModal('', savedText, '', `${label}（${saved.length}件）`);
+      if (compare) showDiffModal(savedText, describe(current), label, '現在のアノテート', { binary: true });
+      else showDiffModal('', savedText, '', `${label}（${saved.length}件）`, { binary: true });
       return;
     }
     if (typeof cfAlert === 'function') await cfAlert(`${label}\n\n${savedText}`);
@@ -797,15 +839,36 @@ class VersionComponent extends ToolComponent {
       target: path,
       version: versionName,
       expectedRevision: current?.annotationWriteRevision || '',
-    });
+    }, { silentError: true, requireRemoteCommit: true });
     if (typeof loadAnnotations === 'function') await loadAnnotations();
     if (typeof showStatus === 'function') showStatus(`${Number(result?.count || 0)}件のアノテートを復元しました`);
   }
 
   async _deleteAnnotationVersion(path, versionName) {
-    if (!await cfConfirm('この手動保存バージョンを削除しますか？')) return false;
-    await apiDelete('/annotations/versions/' + encodeURIComponent(versionName) + '?target=' + encodeURIComponent(path));
-    if (typeof showStatus === 'function') showStatus('アノテートバージョンを削除しました');
+    const surfaces = globalThis.GBAnnotationSurfaces;
+    const annotationScope = surfaces?.usesHistory?.() ? surfaces.historyScope?.() || '' : '';
+    const normalizedPath = typeof _normalizeAnnotationTargetPath === 'function'
+      ? _normalizeAnnotationTargetPath(path) : String(path || '').replace(/\\/g, '/');
+    const documentPath = normalizedPath.replace(/(\.pdf)#page=\d+$/i, '$1');
+    const scope = documentPath && annotationScope.startsWith('annotation:' + documentPath + '#')
+      ? annotationScope : _historyActiveScope || '';
+    const route = '/annotations/versions/' + encodeURIComponent(versionName) + '?target=' + encodeURIComponent(path);
+    const options = { requireRemoteCommit: true, silentError: true };
+    const deleted = await apiDelete(route, options);
+    let token = deleted?.token || '';
+    const refresh = () => !this._destroyed && this.state.versionType === 'annotations'
+      && this.state.versionPath === path ? this._loadVersions(path, 'annotations') : undefined;
+    if (token && typeof historyPush === 'function') {
+      historyPush('注釈の保存点を削除', async () => {
+        await apiPost('/annotations/versions/undelete', { target: path, version: versionName, token }, options);
+        await refresh();
+      }, async () => {
+        const result = await apiDelete(route, options);
+        token = result?.token || '';
+        await refresh();
+      }, scope, path);
+    }
+    if (typeof showStatus === 'function') showStatus('アノテートバージョンを削除しました（取り消しで戻せます）');
   }
 
   async _promoteFolderVersion(path, versionName) {
@@ -1165,7 +1228,7 @@ class VersionComponent extends ToolComponent {
               <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('annotationPreview', path, version.name, 'annotations')}>表示</button>
               <button class="gb-btn gb-btn-xs" ${this._versionButtonAttrs('annotationCompare', path, version.name, 'annotations')}>比較</button>
               <button class="gb-btn gb-btn-xs gb-btn-warn" ${this._versionButtonAttrs('annotationRestore', path, version.name, 'annotations')}>復元</button>
-              ${version.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" ${this._versionButtonAttrs('annotationDelete', path, version.name, 'annotations')}>${typeof lucide === 'function' ? lucide('x', 12) : '削除'}</button>`}
+              ${version.auto ? '' : `<button class="gb-btn gb-btn-xs gb-btn-danger" aria-label="この注釈保存点を削除" title="この注釈保存点を削除" ${this._versionButtonAttrs('annotationDelete', path, version.name, 'annotations')}>${typeof lucide === 'function' ? lucide('x', 12) : '削除'}</button>`}
             </div>
           </div>`;
         }).join('')

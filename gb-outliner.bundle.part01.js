@@ -85,6 +85,35 @@ async function _outlinerAwaitPendingRename(item) {
   }
   throw new Error('名前の変更の完了を確認できません');
 }
+// ドロップ先・貼り付け先のフォルダ（またはその親）の名前の変更が保存中なら、終わるまで待って今の場所を返す。
+// 作ってすぐ名前を変えたフォルダへすぐドロップすると、古い名前の場所へ移動しようとして失敗していた（2026-11-24 利用者の報告）。
+async function _outlinerAwaitPendingRenameForTarget(path) {
+  let current = String(path || '');
+  for (let depth = 0; depth < 16 && current; depth++) {
+    const key = _outlinerPendingRenameKey(current);
+    const hit = [..._outlinerPendingRenames].find(([old]) => key === old || key.startsWith(old + '/')
+      || key.endsWith('/' + old) || old.endsWith('/' + key) || key.includes('/' + old + '/'));
+    if (!hit) return current;
+    const [oldKey, pending] = hit;
+    const result = await pending.promise;
+    if (!result?.ok) throw new Error('移動先の名前の変更を保存できなかったため、移動を中止しました');
+    const segments = current.replace(/\\/g, '/').split('/');
+    const oldName = oldKey.split('/').pop();
+    const newName = String(result.newPath || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+    // 名前の変更は同じフォルダの中で最後の名前だけが変わる。今の場所の中で、その古い名前の所を置き換える。
+    let replaced = false;
+    for (let i = segments.length - 1; i >= 0 && !replaced; i--) {
+      const prefix = segments.slice(0, i + 1).join('/').toLowerCase();
+      if (segments[i].toLowerCase() === oldName && (prefix === oldKey || prefix.endsWith('/' + oldKey) || oldKey.endsWith('/' + prefix))) {
+        segments[i] = newName || segments[i];
+        replaced = true;
+      }
+    }
+    if (!replaced) return current;
+    current = segments.join('/');
+  }
+  return current;
+}
 
 // サイドバー全体でブラウザ標準の右クリックメニューを抑制（captureフェーズで確実に）
 document.addEventListener('contextmenu', (e) => {
@@ -830,15 +859,14 @@ let _treeClickScrollLock = 0; // ツリークリック中のスクロール復�
 // === ツリーノードクリック時のスクロール位置保護 ===
 // ツリークリックでフォルダツリーペインがアクティブ化されても、
 // navPush → render() でタイプ変更時にスクロールがリセットされる可能性がある。
-// render() 内の _saveAllScrollPositions で保護済みだが、念押しで非同期復元も行う。
+// render() 内の位置保護に加え、同じクリック処理内でだけ位置を復元する。
 function _treeScrollGuardRestore() {
   const el = document.getElementById('tree-scroll-container');
   if (!el) return;
-  // scrollTop が 0 に落ちた場合のみ、保存値から復元を試みる
+  // 今回のpointerdownで採取した位置だけを使い、後続フレームへ復元を予約しない。
   const saved = el._savedScrollTop;
-  if (saved > 0 && (_treeClickScrollLock > 0 || el.scrollTop === 0) && Math.abs(el.scrollTop - saved) > 1) {
+  if (Number.isFinite(saved) && _treeClickScrollLock > 0 && Math.abs(el.scrollTop - saved) > 1) {
     el.scrollTop = saved;
-    requestAnimationFrame(() => { if (Math.abs(el.scrollTop - saved) > 1) el.scrollTop = saved; });
   }
 }
 // pointerdown 時にスクロール位置を保存（render() の保護と二重だが安全網）
@@ -848,7 +876,8 @@ function _treeScrollGuardRestore() {
   scroller.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     if (!e.target.closest('.tree-node-row, .fav-item')) return;
-    if (scroller.scrollTop > 0) scroller._savedScrollTop = scroller.scrollTop;
+    // 先頭(0)も今回のクリック位置。以前の正の値を残すと、先頭のクリックでそこへ飛ぶ。
+    scroller._savedScrollTop = scroller.scrollTop;
     _treeClickScrollLock++;
     setTimeout(() => { _treeClickScrollLock = Math.max(0, _treeClickScrollLock - 1); }, 1500);
   });
@@ -868,33 +897,3 @@ function _getVisibleTreeNodes(scopeSelector) {
     .flatMap(scope => [...document.querySelectorAll(`${scope} .tree-node`)])
     .filter((node, index, nodes) => nodes.indexOf(node) === index && node.getClientRects().length > 0);
 }
-
-// 複数選択管理
-// 「現在選択中」の色は、ツリー本体と最近使った項目／お気に入りを横断して一つだけにする。
-// data-active-workspace は接続先を表す別状態なので、ここでは変更しない。
-function clearSidebarShortcutSelection() {
-  document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
-    .forEach(el => el.classList.remove('selected'));
-  window._meldexSidebarShortcutSelectionPath = '';
-}
-
-function clearTreeVisibleSelection() {
-  if (typeof treeSelection !== 'undefined') treeSelection.clear();
-  document.querySelectorAll('.tree-node-row.active').forEach(row => row.classList.remove('active'));
-}
-
-function beginTreeVisibleSelection(options) {
-  clearSidebarShortcutSelection();
-  // Ctrl/Meta/Shift はツリー内の複数選択を保つため、ツリー選択そのものは呼出元へ任せる。
-  if (!options?.preserveTreeSelection) clearTreeVisibleSelection();
-}
-
-window.MeldexVisibleSelection = Object.freeze({
-  clearShortcuts: clearSidebarShortcutSelection,
-  clearTree: clearTreeVisibleSelection,
-  beginTree: beginTreeVisibleSelection,
-});
-
-const treeSelection = {
-  items: new Set(),  // Set of .tree-node elements
-  _lastClicked: null,

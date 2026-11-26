@@ -304,7 +304,170 @@
     });
   }
 
-  async function acquireMutationLocks(candidates) {
+  // 多数の対象（多数の移動・削除）は、対象ごとの要求ではなく1回の要求でまとめて取る・外す。
+  // 規則は1件の時と同じ（サーバーが対象ごとに同じ処理を通す）。古い本体と Cloud（Dropbox）は1件ずつ。
+  const BATCH_LOCK_MIN = 8;
+  const BATCH_LOCK_REQUEST_MAX = 500;
+  let batchLockApiUnsupported = false;
+
+  function _batchLockApiUsable() {
+    return !batchLockApiUnsupported && !window.MeldexRuntimeAdapter?.isDropboxMode?.();
+  }
+
+  async function _waitPendingReleases() {
+    while (pendingReleases.size) {
+      const released = await Promise.all([...pendingReleases.values()]);
+      if (released.some(result => result?.ok === false)) {
+        const error = new Error('前回の編集ロック解除を確認できません。接続の回復後に画面を再読込してください。保存処理は開始していません');
+        error.code = 'active_lock_release_unknown';
+        throw error;
+      }
+    }
+  }
+
+  function _batchItemError(row) {
+    const detail = row?.detail;
+    const message = (detail && typeof detail === 'object' ? detail.message : detail) || 'ほかの端末で編集中のため保存できません';
+    const error = new Error(String(message));
+    error.status = Number(row?.status) || 500;
+    error.payload = { detail };
+    return error;
+  }
+
+  // 戻り値: 取れなかった対象の一覧 [{ path, error }]。取れた対象は localLocks へ入る。
+  async function _ensureLocksBatch(specs) {
+    await _waitPendingReleases();
+    const need = [];
+    for (const spec of specs) {
+      lastUsedAt.set(spec.path, Date.now());
+      const current = localLocks.get(spec.path);
+      if (current
+        && (!spec.includeDescendants || current.include_descendants === true)
+        && Date.parse(current.expires_at || '') > Date.now() + HEARTBEAT_MS) continue;
+      need.push(spec);
+    }
+    if (!need.length) return [];
+    const rows = [];
+    for (let start = 0; start < need.length; start += BATCH_LOCK_REQUEST_MAX) {
+      const part = need.slice(start, start + BATCH_LOCK_REQUEST_MAX);
+      const body = _lockBody(part[0].path);
+      delete body.path;
+      delete body.include_descendants;
+      body.items = part.map(spec => ({ path: spec.path, include_descendants: spec.includeDescendants === true }));
+      const response = await _jsonFetch('/active-lock/acquire-batch', { method: 'POST', body: JSON.stringify(body) });
+      const partRows = Array.isArray(response?.results) ? response.results : [];
+      part.forEach((_spec, index) => rows.push(partRows[index] || null));
+    }
+    const failed = [];
+    need.forEach((spec, index) => {
+      const row = rows[index];
+      if (row?.ok && row.entry) {
+        localLocks.set(spec.path, row.entry);
+        return;
+      }
+      const error = row ? _batchItemError(row) : new Error('編集ロックの応答を確認できませんでした');
+      // 管理用フォルダはロック対象外。ロックを取れないことを理由に操作から外さない。
+      if (_isLockExemptError(error)) return;
+      failed.push({ path: spec.path, error });
+    });
+    if (localLocks.size) _startHeartbeat();
+    return failed;
+  }
+
+  async function _acquireMutationLocksBatch(specs, options) {
+    const acquired = [];
+    const fresh = [];
+    for (const spec of specs) {
+      const current = mutationLockRefs.get(spec.path);
+      if (current) {
+        current.count += 1;
+        acquired.push(spec.path);
+      } else fresh.push(spec);
+    }
+    let failed = [];
+    if (fresh.length) {
+      const preexisting = new Set(fresh.filter(spec => localLocks.has(spec.path)).map(spec => spec.path));
+      try {
+        failed = await _ensureLocksBatch(fresh);
+      } catch (error) {
+        await releaseMutationLocks(acquired);
+        if (error?.status === 404 || error?.status === 405) {
+          batchLockApiUnsupported = true;
+          error.code = 'active_lock_batch_unsupported';
+        }
+        throw error;
+      }
+      const failedPaths = new Set(failed.map(item => item.path));
+      for (const spec of fresh) {
+        if (failedPaths.has(spec.path)) continue;
+        mutationLockRefs.set(spec.path, { count: 1, owned: !preexisting.has(spec.path) });
+        acquired.push(spec.path);
+      }
+    }
+    if (failed.length && options?.partial !== true) {
+      await releaseMutationLocks(acquired);
+      if (failed[0].error?.status === 423) _status(_conflictMessage(failed[0].error), true);
+      throw failed[0].error;
+    }
+    return {
+      paths: acquired.slice(),
+      failed,
+      release: () => releaseMutationLocks(acquired),
+    };
+  }
+
+  async function _releaseLocksBatch(paths) {
+    const targets = _uniquePaths(paths).filter(path => !pendingReleases.has(path));
+    if (!targets.length) return;
+    targets.forEach(path => {
+      localLocks.delete(path);
+      lastUsedAt.delete(path);
+      mutationLockRefs.delete(path);
+    });
+    _stopHeartbeatIfIdle();
+    // 失敗・中断した解除も、サーバーへは届いているかもしれない。確認できなかった対象は、
+    // 1件の解除と同じく再読込まで「解除を確認できない」印を残す。
+    const request = _jsonFetch('/active-lock/release-batch', {
+      method: 'POST',
+      body: JSON.stringify({ token: token(), holder_id: holderId(), items: targets.map(path => ({ path })) }),
+    }).then(response => {
+      const rows = Array.isArray(response?.results) ? response.results : [];
+      return targets.map((_path, index) => rows[index]?.ok === true);
+    }, error => {
+      if (error?.status === 404 || error?.status === 405) batchLockApiUnsupported = true;
+      return null;
+    });
+    const releases = targets.map((path, index) => {
+      const release = request.then(async outcome => {
+        if (outcome) return outcome[index] ? { ok: true, removed: true } : { ok: false, removed: true, error_code: 'active_lock_release_unknown' };
+        if (batchLockApiUnsupported) {
+          return _releaseLock(path, false).then(
+            () => ({ ok: true, removed: true }),
+            () => ({ ok: false, removed: true, error_code: 'active_lock_release_unknown' }),
+          );
+        }
+        return { ok: false, removed: true, error_code: 'active_lock_release_unknown' };
+      });
+      pendingReleases.set(path, release);
+      return release.then(result => {
+        if (result.ok && pendingReleases.get(path) === release) pendingReleases.delete(path);
+        return result;
+      });
+    });
+    await Promise.all(releases);
+  }
+
+  // options.partial === true: 取れなかった対象があっても投げず、戻り値の failed（[{ path, error }]）で知らせる
+  // （まとめての移動・削除が、取れなかった対象だけを操作から外すため）。まとめて取る時だけ有効。
+  async function acquireMutationLocks(candidates, options) {
+    const batchSpecs = _candidateSpecs(candidates).filter(candidate => !_isLockExemptPath(candidate.path));
+    if (batchSpecs.length >= BATCH_LOCK_MIN && _batchLockApiUsable()) {
+      try {
+        return await _acquireMutationLocksBatch(batchSpecs, options);
+      } catch (error) {
+        if (error?.code !== 'active_lock_batch_unsupported') throw error;
+      }
+    }
     const acquired = [];
     try {
       for (const candidate of _candidateSpecs(candidates)) {
@@ -332,14 +495,20 @@
 
   async function releaseMutationLocks(paths) {
     const releases = [];
+    const owned = [];
     for (const path of [...(paths || [])].reverse()) {
       const current = mutationLockRefs.get(path);
       if (!current) continue;
       current.count -= 1;
       if (current.count > 0) continue;
       mutationLockRefs.delete(path);
-      if (current.owned) releases.push(releaseLock(path));
+      if (current.owned) owned.push(path);
     }
+    if (owned.length >= BATCH_LOCK_MIN && owned.length <= BATCH_LOCK_REQUEST_MAX && _batchLockApiUsable()) {
+      await _releaseLocksBatch(owned);
+      return;
+    }
+    owned.forEach(path => releases.push(releaseLock(path)));
     await Promise.all(releases);
   }
 
@@ -483,6 +652,7 @@
     header: HEADER,
     token,
     holderId,
+    normalizePath: _normalizePath,
     beforeApiFetch,
     ensureLock,
     touchLock,

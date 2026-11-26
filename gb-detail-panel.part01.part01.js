@@ -675,6 +675,11 @@ const DB_OPTION_CHIP_TYPES = [
   { id: 'relation', label: 'リレーション' },
   { id: 'rollup', label: 'ロールアップ' },
   { id: 'tag', label: 'タグ' },
+  { id: 'multi-relation', label: 'マルチリレーション' },
+  { id: 'multi-source-relation', label: '複数シートリレーション' },
+  { id: 'user', label: 'ユーザー' },
+  { id: 'multi-user', label: 'マルチユーザー' },
+  { id: 'status', label: 'ステータス' },
 ];
 function _dbOptionChipThemeFields() {
   return DB_OPTION_CHIP_TYPES.flatMap(({ id, label }) => {
@@ -683,6 +688,8 @@ function _dbOptionChipThemeFields() {
       { key: k('fg'), label: `${label} 文字色`, type: 'color' },
       { key: k('bg'), label: `${label} 背景`, type: 'color', bgType: 'rgba' },
       { key: k('bold'), label: `${label} 太字`, type: 'toggle', on: 'bold', off: 'normal' },
+      { key: k('italic'), label: `${label} 斜体`, type: 'toggle', on: 'italic', off: 'normal' },
+      { key: k('strike'), label: `${label} 取り消し線`, type: 'toggle', on: 'line-through', off: 'none' },
       { key: k('font-size'), label: `${label} フォントサイズ`, type: 'number', unit: 'px', cssUnit: 'px', min: 8, max: 24, step: 1, themeManaged: true },
       { key: k('radius'), label: `${label} 角丸`, type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, themeManaged: true, popupSection: '形' },
       { key: k('padding-x'), label: `${label} 左右の余白`, type: 'rangeNumber', unit: 'px', min: 0, max: 20, step: 1, themeManaged: true, popupSection: '形' },
@@ -903,17 +910,11 @@ function _fsStyleSnapshotsEqual(a, b) {
 
 function _fsWithStyleHistorySuppressed(fn) {
   _fsStyleHistorySuppressed += 1;
-  const release = () => {
-    _fsStyleHistorySuppressed = Math.max(0, _fsStyleHistorySuppressed - 1);
-  };
   try {
-    const result = typeof fn === 'function' ? fn() : undefined;
-    if (result && typeof result.finally === 'function') return result.finally(release);
-    release();
-    return result;
-  } catch (err) {
-    release();
-    throw err;
+    return typeof fn === 'function' ? fn() : undefined;
+  } finally {
+    // 抑止するのは同じ操作内の重複登録だけ。保存待ち中の次の入力には持ち越さない。
+    _fsStyleHistorySuppressed = Math.max(0, _fsStyleHistorySuppressed - 1);
   }
 }
 
@@ -968,7 +969,7 @@ function _fsPersistStyleDirect(ctx, adapter, style, options = {}) {
   if (adapter && typeof adapter.saveStyle === 'function') {
     return adapter.saveStyle(style, options);
   }
-  return _fsSaveStyleForContext(ctx, style);
+  return _fsSaveStyleForContext(ctx, style, options);
 }
 
 function _fsRestoreStyleSnapshot(ctx, style) {
@@ -1000,29 +1001,48 @@ function _fsPushStyleHistory(ctx, before, after, label, detail) {
   return true;
 }
 
-function _fsApplyStyleWithHistory(ctx, adapter, style, label, detail) {
+function _fsStyleBeforeMutation(ctx) {
+  if (ctx === 'page' && typeof _parseFileStyleFromFrontmatter === 'function') {
+    const pc = window.GBEditorHost?.element('page-content') || document.getElementById('page-content');
+    const saved = pc?.dataset?.lastSavedMd;
+    // 保存拒否後も入力中の書式は保持する。再試行と取り消しの基準は、
+    // その未保存値ではなく最後に保存できた書式にする。
+    if (typeof saved === 'string') return _fsStyleSnapshot(_parseFileStyleFromFrontmatter(saved));
+  }
+  return _fsStyleSnapshot(_fsGetStyleForContext(ctx));
+}
+
+function _fsApplyStyleWithHistory(ctx, adapter, style, label, detail, options = {}) {
   if (typeof _fsThemeAdapterIsCurrent === 'function' && !_fsThemeAdapterIsCurrent(ctx, adapter)) return false;
-  const before = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
+  const before = _fsStyleBeforeMutation(ctx);
   const next = _fsStyleSnapshot(style);
-  if (_fsStyleSnapshotsEqual(before, next)) return null;
+  if (_fsStyleSnapshotsEqual(before, next) && _fsStyleSnapshotsEqual(_fsGetStyleForContext(ctx), next)
+    && !(ctx === 'db' && typeof _dbFileStyleHasUnsavedChanges === 'function' && _dbFileStyleHasUnsavedChanges())) return null;
   if (ctx === 'scriptnote') {
     const ed = _getScriptNoteEditorForFileStyle?.();
     if (typeof ed?._pushUndo === 'function') ed._pushUndo(_fsStyleHistoryLabel(ctx, label));
   } else if (ctx === 'board' && typeof bdPushUndo === 'function') {
     bdPushUndo();
   }
-  const result = _fsWithStyleHistorySuppressed(() => _fsPersistStyleDirect(ctx, adapter, next, { skipUndo: true }));
+  const pendingHistory = ['db', 'page'].includes(ctx) && !_fsStyleHistorySuppressed && typeof historyReserve === 'function'
+    ? historyReserve(_fsStyleHistoryLabel(ctx, label), _fsStyleHistoryScope(ctx), detail || '') : null;
+  let result;
+  try {
+    result = _fsWithStyleHistorySuppressed(() => _fsPersistStyleDirect(ctx, adapter, next,
+      { skipUndo: true, optimistic: ctx === 'db', rollbackOnFailure: ctx === 'db' && options.rollbackOnFailure !== false }));
+  } catch (error) { pendingHistory?.cancel(); throw error; }
   const finish = saved => {
     if (saved === false) return false;
     if (adapter?.isCurrent && !adapter.isCurrent()) return next;
     if (ctx === 'board' && Object.keys(next).length === 0 && typeof _fsResetBoardRuntimeFileStyle === 'function') _fsResetBoardRuntimeFileStyle();
     if (typeof _fsApplyCurrentStyleRuntime === 'function') _fsApplyCurrentStyleRuntime(ctx);
     const after = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
-    _fsPushStyleHistory(ctx, before, after, label, detail);
+    const record = () => _fsPushStyleHistory(ctx, saved?.fileStyleBefore || before, saved?.fileStyleAfter || after, label, detail);
+    if (pendingHistory) pendingHistory.capture(record); else record();
     return after;
   };
-  if (result && typeof result.then === 'function') return result.then(finish);
-  return finish(result);
+  if (result && typeof result.then === 'function') return result.then(finish).finally(() => pendingHistory?.cancel());
+  try { return finish(result); } finally { pendingHistory?.cancel(); }
 }
 
 function _fsFormatCss(field, raw) {
@@ -1031,7 +1051,7 @@ function _fsFormatCss(field, raw) {
   if (!s) return '';
   if (field.type === 'pxtext') return /^\d+(\.\d+)?$/.test(s) ? s + 'px' : s;
   if (field.type === 'rangeNumber') return /^\d+(\.\d+)?$/.test(s) ? s + (field.unit || '') : s;
-  if (field.type === 'number' && field.unit) return s + field.unit;
+  if (field.type === 'number' && field.unit) return /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(s) ? s + field.unit : s;
   return s;
 }
 
@@ -1110,8 +1130,9 @@ function _fsGetStyleForContext(ctx) {
   return typeof _getCurrentFileStyle === 'function' ? (_getCurrentFileStyle() || {}) : {};
 }
 
-function _fsSaveStyleForContext(ctx, style) {
-  const saved = style && Object.keys(style).length ? style : null;
+function _fsSaveStyleForContext(ctx, style, options = {}) {
+  let saved = style && Object.keys(style).length ? style : null;
+  if (ctx === 'db' && _fsGetStyleForContext('db')?.__chipTypeMigration) saved = { ...saved, __chipTypeMigration: '1' };
   let result;
   if (ctx === 'folder' && typeof _saveFolderFileStyle === 'function') {
     result = _saveFolderFileStyle(saved);
@@ -1134,7 +1155,7 @@ function _fsSaveStyleForContext(ctx, style) {
     return result;
   }
   if (ctx === 'db') {
-    result = typeof _saveFileThemeToDbFolderNote === 'function' ? _saveFileThemeToDbFolderNote(saved) : undefined;
+    result = typeof _saveFileThemeToDbFolderNote === 'function' ? _saveFileThemeToDbFolderNote(saved, options) : undefined;
     _fsMarkStyleVersionDirty(ctx);
     return result;
   }
@@ -1143,15 +1164,35 @@ function _fsSaveStyleForContext(ctx, style) {
   return result;
 }
 
+function _fsStyleTargetPath(ctx) {
+  const s = typeof state !== 'undefined' ? state : null;
+  if (ctx === 'page') return s?.currentPagePath || document.getElementById('page-content')?.dataset?.path || '';
+  if (ctx === 'db') return s?.currentDbPath || '';
+  if (ctx === 'folder') return typeof _folderPath !== 'undefined' ? _folderPath : '';
+  if (ctx === 'board') return typeof bd !== 'undefined' ? bd.path || '' : '';
+  return '';
+}
+
+function _fsStyleTargetResolvedPath(path, root) {
+  const raw = String(path || '').replace(/\\/g, '/');
+  const base = String(root || '').replace(/\\/g, '/').replace(/\/$/, '');
+  return (!raw || /^(?:[a-z]:\/|\/)/i.test(raw) || !base ? raw : `${base}/${raw}`).replace(/\/$/, '');
+}
+
 function _fsGetFrontmatterAdapter(ctx) {
   const panelId = ctx === 'folder' ? 'folder-view'
     : ctx === 'page' ? 'page-content'
     : ctx === 'board' ? 'bd-canvas'
     : 'db-view-container';
-  const scope = _fsStyleHistoryScope(ctx);
-  const boardPath = ctx === 'board' && typeof bd !== 'undefined' ? bd.path : '';
-  const isCurrent = () => _fsStyleHistoryScope(ctx) === scope
-    && (ctx !== 'board' || (typeof bd !== 'undefined' && bd.path === boardPath));
+  const target = _fsStyleTargetResolvedPath(_fsStyleTargetPath(ctx), typeof state !== 'undefined' ? state.vaultPath : '');
+  let targetId = typeof _pathToFileId === 'function' ? _pathToFileId(target) : '';
+  const isCurrent = () => {
+    const current = _fsStyleTargetResolvedPath(_fsStyleTargetPath(ctx), typeof state !== 'undefined' ? state.vaultPath : '');
+    if (!targetId && typeof _pathToFileId === 'function') targetId = _pathToFileId(target);
+    const currentId = typeof _pathToFileId === 'function' ? _pathToFileId(current) : '';
+    if (targetId && currentId) return targetId === currentId;
+    return !!target && !!current && target.toLocaleLowerCase() === current.toLocaleLowerCase();
+  };
   return {
     kind: 'frontmatter',
     ctx,
@@ -1162,7 +1203,7 @@ function _fsGetFrontmatterAdapter(ctx) {
     },
     set: (field, val) => {
       if (!isCurrent()) return false;
-      const before = _fsStyleSnapshot(_fsGetStyleForContext(ctx));
+      const before = _fsStyleBeforeMutation(ctx);
       const boardUndoPushed = ctx === 'board' && typeof bdPushUndo === 'function' && !_fsStyleHistorySuppressed;
       if (boardUndoPushed) bdPushUndo();
       const current = _fsGetStyleForContext(ctx);
@@ -1171,19 +1212,27 @@ function _fsGetFrontmatterAdapter(ctx) {
       const cur = createsLocalCustom
         ? _fsBuildLocalCustomThemeStyle(ctx, { adapter: _fsGetFrontmatterAdapter(ctx) }) : current;
       const next = { ...cur };
-      if (val === null || val === undefined || val === '') delete next[field.key];
-      else next[field.key] = val;
-      const result = _fsSaveStyleForContext(ctx, next);
+      const normalized = String(field.key || '').startsWith('--') && val !== null && val !== undefined && val !== ''
+        ? _fsFormatCss(field, _fsNormalizeFieldValue(field, val)) : val;
+      if (normalized === null || normalized === undefined || normalized === '') delete next[field.key];
+      else next[field.key] = normalized;
+      const pendingHistory = ['db', 'page'].includes(ctx) && !_fsStyleHistorySuppressed && typeof historyReserve === 'function'
+        ? historyReserve('書式設定変更', _fsStyleHistoryScope(ctx), field?.label || field?.key || '') : null;
+      let result;
+      try { result = _fsSaveStyleForContext(ctx, next, { optimistic: ctx === 'db' }); }
+      catch (error) { pendingHistory?.cancel(); throw error; }
       // 選択欄は保存完了を待たずに即時、完了時（失敗時も）にもう一度揃える。
       const syncSelect = () => { if (isCurrent() && typeof _fsSyncThemeSelect === 'function') _fsSyncThemeSelect(ctx); };
       syncSelect();
       const finish = saved => {
         syncSelect();
         if (saved === false || !isCurrent()) return false;
-        _fsPushStyleHistory(ctx, before, _fsGetStyleForContext(ctx), '書式設定変更', field?.label || field?.key || '');
+        const record = () => _fsPushStyleHistory(ctx, saved?.fileStyleBefore || before, saved?.fileStyleAfter || _fsGetStyleForContext(ctx), '書式設定変更', field?.label || field?.key || '');
+        if (pendingHistory) pendingHistory.capture(record); else record();
         return true;
       };
-      return result?.then ? result.then(finish, error => { syncSelect(); throw error; }) : finish(result);
+      if (result?.then) return result.then(finish, error => { syncSelect(); throw error; }).finally(() => pendingHistory?.cancel());
+      try { return finish(result); } finally { pendingHistory?.cancel(); }
     },
     applyCss: (field, raw) => {
       const el = panelId === 'bd-canvas' && typeof bdGetBoardElement === 'function'
@@ -1203,11 +1252,11 @@ function _fsGetFrontmatterAdapter(ctx) {
         }
         if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
       }
-      // ボード固有: 影トグルは bd._showShadow に同期してカード/ライン再描画
+      // 影は表示フィルタと同じCSSだけを更新し、本文・接続線を保持する。
       if (ctx === 'board' && field.applyCustom === 'shadow' && typeof bd !== 'undefined') {
         bd._showShadow = !!raw && raw !== '' && raw !== '0';
-        if (typeof bdRender === 'function') bdRender();
-        if (typeof bdDrawConns === 'function') bdDrawConns();
+        if (typeof bdApplyDisplayFilterChange === 'function') bdApplyDisplayFilterChange('_showShadow');
+        else el.classList.toggle('bd-shadow-on', bd._showShadow);
       }
       // 2026-04-18: ボード固有: レイアウト隙間 / 自動整列 トグルを bd 側の JS state に同期。
       //   - gapSiblings / gapLevels は bdLayout* のオフセット算出で使う

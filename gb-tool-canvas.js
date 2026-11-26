@@ -62,7 +62,10 @@ class CanvasComponent extends ToolComponent {
     }).catch(() => {
       if (this.el) this.el.dataset.loadFailed = '1';
     }).finally(() => {
-      if (this._boardLoadPending === pending) this._boardLoadPending = null;
+      if (this._boardLoadPending === pending) {
+        this._boardLoadPending = null;
+        if (CanvasComponent._lastRuntimeOwner === this && typeof _refreshFileThemeTargetBindings === 'function') _refreshFileThemeTargetBindings();
+      }
     });
   }
 
@@ -168,6 +171,33 @@ class CanvasComponent extends ToolComponent {
     // inline edits, so keep the current toolbar while the text owns focus.
     if (!this._boardLoadPending && isPaneActive && !bd.editing && typeof MeldexBoardTopicIntegration !== 'undefined') {
       MeldexBoardTopicIntegration.mountToolbar(bd);
+    }
+  }
+
+  onPathRename(oldPath, newPath, options = {}) {
+    const saved = this._bdDump?.bd;
+    if (!saved) return; // 表示中の実体は renameAppPathReferences が更新する。
+    const mapPath = path => path === oldPath ? newPath
+      : typeof path === 'string' && path.startsWith(oldPath + '/') ? newPath + path.slice(oldPath.length) : path;
+    const exact = saved.path === oldPath;
+    if (!exact && mapPath(saved.path) === saved.path) return;
+    saved.path = mapPath(saved.path);
+    saved._loadedBoardPath = mapPath(saved._loadedBoardPath);
+    if (exact && options.label != null) {
+      saved.label = options.label;
+      const writer = window.GBPathUtils?.displayTitle;
+      if (writer) {
+        const header = writer.write('---\n' + (saved._preservedFrontmatter || '') + '\n---\n', options.label, saved.path);
+        saved._preservedFrontmatter = header.replace(/^---\n/, '').replace(/\n---\n?$/, '');
+      }
+      const title = this.el?.querySelector('[data-bd-control="title"]');
+      if (title && !title.querySelector?.('input')) title.textContent = options.label;
+    }
+    if (exact && options.etag) {
+      saved.lastSavedEtag = options.etag;
+      const coordinator = window.MeldexDocumentSaveCoordinator;
+      saved.lastSavedTransportRevision = options.transport_revision
+        || coordinator?.normalizeTransportRevision?.(coordinator.currentTransportName(), options.etag) || options.etag;
     }
   }
 

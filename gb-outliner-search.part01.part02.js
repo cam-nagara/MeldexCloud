@@ -98,7 +98,7 @@ async function _browseHomeFolderChildren(homePath, renderSeq) {
   const sortCfg = getSortForFolder(homePath);
   const serverSort = ['name', 'modified', 'created'].includes(sortCfg.sort) ? sortCfg.sort : 'name';
   const url = '/browse?path=' + encodeURIComponent(homePath) + '&root=' + encodeURIComponent(homePath)
-    + '&all_files=true&sort=' + serverSort + '&order=' + sortCfg.order
+    + '&all_files=true&form_hierarchy=true&sort=' + serverSort + '&order=' + sortCfg.order
     + (!['name', 'manual'].includes(sortCfg.sort) ? '&detail=true' : '');
   for (let attempt = 0; attempt <= _HOME_FOLDER_BROWSE_RETRY_DELAYS.length; attempt++) {
     if (!_isHomeFolderRenderCurrent(renderSeq, homePath)) return null;

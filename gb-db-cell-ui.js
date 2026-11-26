@@ -1117,7 +1117,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
   // 表示中のセル高を編集面へ引き継ぐ。contenteditable の既定 min-height や
   // autosize で、編集開始/終了のたびに行が上下へ跳ねるのを防ぐ。
-  const stableEditorHeight = Math.max(1, Math.ceil(span.getBoundingClientRect?.().height || span.offsetHeight || 0));
+  const stableEditorHeight = Math.max(1, span.getBoundingClientRect?.().height || span.offsetHeight || 0);
   const input = document.createElement('span');
   input.className = 'value-input value-input--textarea value-rich-editor';
   input.setAttribute('contenteditable', 'true');
@@ -1430,6 +1430,7 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
   if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
 
   const statuses = getStatusList(dbPath);
+  if (typeof _dbApplyChipTypeTheme === 'function') _dbApplyChipTypeTheme(dd, dbPath, ctx);
   statuses.forEach(stObj => {
     const st = stObj.name;
     const item = document.createElement('div');
@@ -1438,7 +1439,10 @@ function showStatusDropdown(dotEl, val, entityPath, propName) {
     d.style.cssText = 'width:8px;height:8px;border-radius:50%;display:inline-block;';
     d.style.background = stObj.color;
     item.appendChild(d);
-    item.appendChild(document.createTextNode(' ' + st));
+    const label = document.createElement('span');
+    label.className = 'db-status-label';
+    label.textContent = st;
+    item.appendChild(label);
     if (val.status === st) item.classList.add('selected');
     item.addEventListener('click', async () => {
       closeAllDropdowns(ctx || dotEl);

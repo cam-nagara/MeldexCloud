@@ -345,7 +345,9 @@ function _folderListColumnTrack(column) {
 }
 
 function _folderApplyListColumnTemplate(container) {
-  if (container) container.style.setProperty('--fv-list-grid-columns', '36px ' + _folderListColumns().map(_folderListColumnTrack).join(' '));
+  // リスト・小のアイコン列はフォルダツリーのアイコンと同じ幅（--tree-icon-size）
+  const iconTrack = container?.classList?.contains('list-small-layout') ? 'var(--tree-icon-size, 18px)' : '36px';
+  if (container) container.style.setProperty('--fv-list-grid-columns', iconTrack + ' ' + _folderListColumns().map(_folderListColumnTrack).join(' '));
 }
 
 function _folderSetListColumnWidth(container, column, width) {
@@ -606,6 +608,7 @@ function _syncFolderCheckboxes() {
 }
 
 function _normalizeFolderSelectionForVisibleItems() {
+  if (globalThis.MeldexFolderLarge?.active?.()) return globalThis.MeldexFolderLarge.normalizeSelection();
   const grid = _folderGridEl();
   if (!grid) {
     _folderSelectedItems = [];
@@ -641,14 +644,15 @@ function _updateFolderBulkBar() {
   // サブパネル側の選択を指していても、メイン画面の自動タグ付け対象を動かさない。
   if (_folderIsIndependentSurface()) return;
   const selectedCount = (state.view === 'folder') ? _normalizeFolderSelectionForVisibleItems() : 0;
+  // 大きなフォルダで多数を選んでいる間は、選択が変わった時だけ対象を渡す（毎回渡すと件数に比例して重い）
+  if (selectedCount > 2000 && globalThis.MeldexFolderLarge?.active?.() && !globalThis.MeldexFolderLarge.selectionVersionChanged('auto-tag')) return;
   window.MeldexTagManagement?.setAutoTagTargets?.(selectedCount > 0 ? _folderSelectedItems : []);
 }
 
 // 一括操作: スライドショー
 function fvBulkSlideshow() {
-  const imgItems = _folderSelectedItems.filter(i => i.type === 'image');
-  if (imgItems.length === 0) { showStatus('画像が選択されていません', true); return; }
-  openViewer('/viewer?files=' + encodeURIComponent(JSON.stringify(imgItems.map(i => i.path))));
+  const selected = new Set(_folderSelectedItems.map(item => item.path));
+  _openFolderImageSlideshow(_folderVisibleItems.filter(item => selected.has(item.path)));
 }
 
 // 一括操作: ボードに並べる
@@ -669,7 +673,7 @@ async function fvBulkDelete() {
   // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ。
   const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
     ? await handleDisplayedFolderLinkDelete(targets, _folderPath, {
-      refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
+      refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}) }); },
     })
     : { handled: false, result: null };
   if (linkedDelete.handled) {
@@ -682,13 +686,13 @@ async function fvBulkDelete() {
   const result = await deleteOutlinerItemsWithHistory(targets, {
     label: targets.length + ' 件を削除',
     refresh: async () => {
-      if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
+      if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}) });
     },
   });
   _folderSelectedItems = [];
   _folderSelected = null;
   _updateFolderBulkBar();
-  if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
+  if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}) });
   const deletedCount = result.deletedCount || result.succeeded.length;
   if (result.failedCount > 0) showStatus(`${deletedCount} 件を削除、${result.failedCount} 件は失敗しました`, true);
   else if (deletedCount > 0) showStatus(deletedCount + ' 件を削除しました（Undoで戻せます）');
@@ -707,7 +711,8 @@ function fvBulkCopyPath() {
 
 // 一括操作: 選択解除
 function fvBulkDeselect() {
-  document.querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
+  if (globalThis.MeldexFolderLarge?.active?.()) globalThis.MeldexFolderLarge.clearSelection();
+  (_folderGridEl() || document).querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
   _folderSelectedItems = [];
   _folderSelected = null;
   _syncFolderCheckboxes();
@@ -736,7 +741,8 @@ document.getElementById('folder-grid').addEventListener('click', function(e) {
   // ラッソドラッグ直後の合成 click はスキップ（せっかく選択したものを解除させない）
   if (_lassoJustCompleted) return;
   if (e.target === this) {
-    document.querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
+    if (globalThis.MeldexFolderLarge?.active?.()) globalThis.MeldexFolderLarge.clearSelection();
+    (_folderGridEl() || document).querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
     _folderSelectedItems = [];
     _folderSelected = null;
     _syncFolderCheckboxes();
@@ -755,6 +761,9 @@ document.addEventListener('keydown', function(e) {
   // Alt+←（パネル履歴を戻る）などの修飾キーつきは選択の移動に使わない。以前は Alt+← で選択が動くだけで
   // 前のフォルダへ戻れなかった（2026-11-22 M-014 フォルダパネル網羅テスト）。
   if (e.altKey || e.ctrlKey || e.metaKey) return;
+  // 大きなフォルダの表示: 上下左右・Home/End・PageUp/PageDown で、まだ取っていないページへも移る
+  // Shift を押しながらだと、起点から移った先までを選ぶ
+  if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.handleKey(e); return; }
 
   if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
@@ -805,6 +814,16 @@ let _lassoJustCompleted = false;
     // Empty-state/retry controls are actions, not blank-space lasso starts.
     // Pointer capture on the grid would retarget their click to the grid.
     if (e.target.closest('.fv-item, button, a, input, textarea, select, [role="button"], [contenteditable="true"]')) return;
+    // 大きなフォルダの表示: ドラッグした範囲を位置で選ぶ（画面の外へスクロールした行・まだ取っていない行も入る）
+    if (globalThis.MeldexFolderLarge?.active?.()) {
+      const startedLarge = globalThis.MeldexFolderLarge.lassoBegin(e, grid, moved => {
+        if (!moved) return;
+        _lassoJustCompleted = true;
+        setTimeout(() => { _lassoJustCompleted = false; }, 0);
+      });
+      if (startedLarge) e.preventDefault();
+      return;
+    }
     _lassoActive = true;
     _lassoMoved = false;
     // Ctrl+ドラッグ: 既存選択を保持

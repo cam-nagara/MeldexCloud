@@ -181,6 +181,9 @@ function _elIconDataUri(spec, color) {
       + 'font-size="100">' + esc(emoji) + '</text></svg>';
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
+  if (parsed?.type === 'material' || parsed?.type === 'pack') {
+    return GBIconAssets.materialImageDataUrlSync?.(spec, { size: 128, color: color || '#9aa0a6' }) || '';
+  }
   if (parsed?.type === 'lucide' && typeof lucide === 'function') {
     let markup = lucide(parsed.name, 96) || '';
     if (!markup) return '';
@@ -203,6 +206,18 @@ function _elBuildImageCellContent(cell, ctx, canvasEl) {
     const effectiveFg = image.color
       || (canvasEl ? getComputedStyle(canvasEl).color : '') || '#9aa0a6';
     src = _elIconDataUri(image.spec, effectiveFg);
+    // Material Symbols・塗る素材集はフォント／画像の読み込み後に画像化する（未読込の間は空の画像を置いて後から差し込む）。
+    if (!src && ['material', 'pack'].includes(GBIconAssets?.parseSpec?.(image.spec)?.type) && GBIconAssets.materialImageDataUrl) {
+      const img = document.createElement('img');
+      img.className = 'el-cell-image';
+      img.alt = String(image.alt || cell.type || '');
+      img.draggable = false;
+      img.style.objectFit = image.fit === 'cover' ? 'cover' : 'contain';
+      GBIconAssets.materialImageDataUrl(image.spec, { size: 128, color: effectiveFg })
+        .then((url) => { if (url) img.src = url; }).catch(() => {});
+      wrap.appendChild(img);
+      return wrap;
+    }
   } else if (typeof image.dataUri === 'string' && image.dataUri.startsWith('data:')) {
     // テンプレートへ同梱された画像（gb-db-template-entity-layouts.js）。パスが無くてもそのまま表示できる
     src = image.dataUri;
@@ -610,7 +625,11 @@ function _elShowCellInspector(anchor, ctx) {
     if (['field', 'label'].includes(cell.type)) { autoFit = document.createElement('input'); autoFit.type = 'checkbox'; autoFit.checked = cell.style?.autoFit === true; row('文字をセルに自動フィット', autoFit); }
     let alt;
     if (cell.type === 'image') { alt = document.createElement('input'); alt.value = cell.image?.alt || ''; row('画像の代替テキスト', alt); }
-    const button = (label, run) => { const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn'; btn.textContent = label; btn.addEventListener('click', run); body.appendChild(btn); return btn; };
+    const button = (label, run) => { const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'gb-btn'; btn.textContent = label; btn.addEventListener('click', event => {
+      // Opening a child removes this inspector. The document's outside-click
+      // handler would then treat its detached opener as outside the new popup.
+      event.stopPropagation(); run();
+    }); body.appendChild(btn); return btn; };
     const apply = button('位置・サイズ・内容を適用', () => {
       if ([...Object.values(inputs)].some(input => !input.checkValidity())) { Object.values(inputs).find(input => !input.checkValidity())?.reportValidity(); return; }
       ctx.persist('トピックレイアウト: セル設定', '', layout => {

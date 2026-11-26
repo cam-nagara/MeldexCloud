@@ -1,3 +1,63 @@
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')
+    .forEach(node => _syncOutlinerConflictBadgeToNode(node));
+}
+
+window.addEventListener('meldex-save-conflicts-change', () => {
+  refreshVisibleOutlinerConflictState();
+});
+
+function _createOutlinerAddHoverButton(nodeEl, item) {
+  const addBtn = document.createElement('span');
+  addBtn.className = 'tree-hover-btn';
+  addBtn.innerHTML = lucide('plus', 14);
+  addBtn.title = '追加';
+  addBtn.dataset.gbTooltip = 'このフォルダ内に項目を追加します';
+  addBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const r = addBtn.getBoundingClientRect();
+    const z = parseFloat(document.documentElement.style.zoom) || 1;
+    _showTreeAddMenu(r.left / z, r.bottom / z, nodeEl, item);
+  });
+  return addBtn;
+}
+
+function _syncOutlinerAddHoverButton(nodeEl, item, locked) {
+  const row = nodeEl?.querySelector?.(':scope > .tree-node-row');
+  const hoverBtns = row?.querySelector?.('.tree-hover-btns');
+  if (!hoverBtns || item?.type === 'entity') return;
+  const addButton = hoverBtns.querySelector('.tree-hover-btn[title="追加"]');
+  if (locked) {
+    addButton?.remove();
+    return;
+  }
+  if (!addButton) hoverBtns.appendChild(_createOutlinerAddHoverButton(nodeEl, item));
+}
+
+function refreshVisibleOutlinerLockState() {
+  document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')
+    .forEach(node => _applyOutlinerLockStateToNode(node));
+}
+
+let _fileLockOutlinerRefreshPending = false;
+function _scheduleFileLockRefreshForOutliner() {
+  if (_fileLockOutlinerRefreshPending || typeof _ensureLocksLoaded !== 'function') return;
+  _fileLockOutlinerRefreshPending = true;
+  Promise.resolve(_ensureLocksLoaded({ force: !_fileLockLoaded }))
+    .then(() => {
+      refreshVisibleOutlinerLockState();
+      if (typeof refreshVisibleFolderLockState === 'function') refreshVisibleFolderLockState();
+      window.MeldexFileLockBadge?.refreshAll?.();
+    })
+    .catch(() => {})
+    .finally(() => { _fileLockOutlinerRefreshPending = false; });
+}
+
+const NODE_COLORS_KEY = 'outliner-node-colors';
+function getNodeColors() {
+  try { return JSON.parse(localStorage.getItem(NODE_COLORS_KEY)) || {}; } catch { return {}; }
+}
+function getNodeColor(path) {
+  const colors = getNodeColors();
   const fid = _pathToFileId(path);
   return (fid && colors[fid]) || colors[path] || '';
 }
@@ -258,9 +318,12 @@ function createTreeNodeFromBrowse(item, rootPath) {
     });
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
-      document.querySelectorAll('.tree-node-row.active').forEach(node => node.classList.remove('active'));
-      row.classList.add('active');
+      // 選択内の「…」は右クリックと同様に複数選択を保ち、一括メニューへ渡す。
+      if (!treeSelection.has(div)) {
+        treeSelection.clear(); treeSelection.add(div); treeSelection.lastClicked = div;
+        document.querySelectorAll('.tree-node-row.active').forEach(node => node.classList.remove('active'));
+        row.classList.add('active');
+      }
       const r = menuBtn.getBoundingClientRect();
       const z = parseFloat(document.documentElement.style.zoom) || 1;
       showTreeContextMenu(r.left / z, r.bottom / z, div, item, label);
@@ -374,6 +437,10 @@ function createTreeNodeFromBrowse(item, rootPath) {
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
             const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+            // 子が多いフォルダは全件を取らず、ページごとに取って、見えている範囲が末尾へ近づいたら続きを取る
+            const pagedChildren = await _outlinerLoadPagedFolderChildren(childrenDiv, item, div, rootPath, apiSort, sortCfg.order);
+            if (pagedChildren) warmItems = [];
+            else {
             const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true&form_hierarchy=true');
             const childList = Array.isArray(children) ? children : (Array.isArray(children?.items) ? children.items : []);
             let visibleChildren = childList.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
@@ -391,6 +458,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
             else if (needsClientSort) visibleChildren = [...visibleChildren].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
             warmItems = visibleChildren;
+            }
           }
           delete childrenDiv.dataset.loadError;
           childrenDiv.dataset.loaded = 'true';
@@ -830,71 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
       } else {
         destFolder = '';
       }
-    }
-    if (destFolder && isItemLocked(destFolder)) {
-      showStatus('編集ロック中のフォルダには移動できません', true);
-      return;
-    }
-
-    // シートの中に置けるのはエントリだけ。ボード・シナリオ・画像などを
-    // 落とすと「シートの中にボードがある」状態になるため、通常移動ではなく
-    // シート全ファイル取込（MeldexSheetEntryAttachments）へルーティングしてエントリ化する。
-    if (position === 'inside' && isDB) {
-      const nonEntries = nodes.filter(n => !_outlinerItemFitsInSheet(n._nodeData));
-      if (e.altKey || nonEntries.length > 0) {
-        if (typeof MeldexSheetEntryAttachments !== 'undefined') {
-          await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
-          return;
-        }
-      }
-    }
-
-
-    // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
-    // フォルダをまたぐ移動の履歴の枠はドロップの時点で取る（移動の往復とツリーの読み直しの前に Ctrl+Z を押すと、
-    // 移動ではなくその前の操作が取り消されていた: 2026-11-22 M-014 フォルダツリー網羅テスト）。
-    const crossesFolders = nodes.some(n => {
-      const path = n._nodeData?.path || '';
-      return path && path.substring(0, Math.max(0, path.lastIndexOf('/'))) !== destFolder;
-    });
-    const moveReservation = crossesFolders && typeof historyReserve === 'function'
-      ? historyReserve(`フォルダツリー: ${nodes.length} 件を移動`, '')
-      : null;
-    const pendingMoves = new Map();
-    const finishPendingMove = (node, failed) => {
-      const pending = pendingMoves.get(node);
-      if (!pending) return;
-      node.dataset.path = pending.path;
-      node.inert = pending.inert;
-      node.removeAttribute('aria-busy');
-      if (failed && pending.parent?.isConnected) {
-        pending.parent.insertBefore(node, pending.next?.parentElement === pending.parent ? pending.next : null);
-      }
-      pendingMoves.delete(node);
-    };
-    if (crossesFolders) nodes.forEach(node => pendingMoves.set(node, {
-      path: node.dataset.path, parent: node.parentElement, next: node.nextSibling, inert: node.inert,
-    }));
-    // フォルダをまたぐ移動は、保存の往復を待たずに先に移動先へ行を移す（app/AGENTS.md の0.3秒。以前は保存の往復と
-    // 読み直しの後に出て0.4秒を超えていた: 2026-11-22 M-014 横断の検査）。移動先が読み込み済みで仮想化していない時だけ。
-    // 保存の後の差分の反映（下の _outlinerSyncFoldersOrReload）が、成功・失敗のどちらでも保存先の状態へ揃える。
-    if (crossesFolders) {
-      // フォルダの中へ落とした時は、そのフォルダを開く（以前の全体の読み直しと同じ見え方。閉じていれば開き、
-      // 未読込なら読み込みを始める＝保存の往復と並行して読み込む）
-      if (position === 'inside' && (isFolder || isDB) && toggle && childrenDiv) {
-        if (childrenDiv.dataset.loaded === 'true') {
-          childrenDiv.classList.remove('collapsed');
-          toggle.classList.add('expanded');
-          toggle.dataset.expanded = 'true';
-          saveExpandedState(item.path, true);
-        } else if (toggle.dataset.expanded !== 'true') {
-          toggle.click();
-        }
-      }
-      const optimisticContainer = position === 'inside' && (isFolder || isDB) ? childrenDiv : div.parentElement;
-      const containerReady = () => optimisticContainer && optimisticContainer.isConnected && optimisticContainer.classList.contains('tree-children')
-        && optimisticContainer.dataset.loaded === 'true' && optimisticContainer.dataset.virtual !== 'true'
-        && !optimisticContainer.classList.contains('collapsed');
-      const placeOptimistically = () => {
-        nodes.forEach(n => {
-          if (!pendingMoves.has(n)) return;

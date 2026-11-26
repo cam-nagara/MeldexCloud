@@ -167,7 +167,56 @@ function onStampSend(inputId, sendFn) {
   const btn = input?.parentElement?.querySelector('.stamp-btn');
   showStampPicker(btn || input, (spec) => {
     if (!input) return;
-    input.value = '::stamp:' + spec + '::';
-    if (typeof sendFn === 'function') sendFn();
+    _stampSendKeepingDraft(input, inputId === 'team-input', '::stamp:' + spec + '::', sendFn);
   });
+}
+
+// スタンプは単独の発言として送る。書きかけの文・選択位置・添付は送らずに入力欄へ残す。
+async function _stampSendKeepingDraft(input, team, stampText, sendFn) {
+  const draft = { value: input.value, start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection };
+  const readAttachments = () => team
+    ? (typeof _teamPendingAttachments !== 'undefined' ? _teamPendingAttachments : [])
+    : (typeof _chatState !== 'undefined' ? _chatState.pendingAttachments : []);
+  const writeAttachments = value => {
+    if (team) {
+      if (typeof _teamPendingAttachments !== 'undefined') _teamPendingAttachments = value;
+      if (typeof _renderTeamAttachments === 'function') _renderTeamAttachments();
+    } else if (typeof _chatState !== 'undefined') {
+      _chatState.pendingAttachments = value;
+      if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
+    }
+  };
+  const held = (readAttachments() || []).slice();
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    // 送信中に利用者が入力し直した文は上書きしない。
+    if (input.value !== '' && input.value !== stampText) { restored = true; return; }
+    restored = true;
+    if (held.length && !(readAttachments() || []).length) writeAttachments(held);
+    if (input.value === draft.value) return;
+    input.value = draft.value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    try { if (!team) window.GBChatFormatting?.syncInput?.(); } catch {}
+    try { if (typeof _autoGrowTextarea === 'function') _autoGrowTextarea(input, 2, team ? 8 : 10); } catch {}
+    if (draft.value && document.activeElement === input) {
+      try { input.setSelectionRange(draft.start ?? draft.value.length, draft.end ?? draft.value.length, draft.direction || 'none'); } catch {}
+    }
+  };
+  if (held.length) writeAttachments([]);
+  input.value = stampText;
+  let settled = false;
+  const sending = Promise.resolve().then(() => (typeof sendFn === 'function' ? sendFn() : undefined))
+    .finally(() => { settled = true; });
+  // 送信処理が入力欄を空にした時点（AIの応答完了を待たず）に書きかけを戻す。
+  while (!settled && input.value === stampText) {
+    await new Promise(resolve => setTimeout(resolve, 16));
+  }
+  if (!settled && input.value === '') restore();
+  try {
+    return await sending;
+  } finally {
+    restored = restored && input.value !== stampText;
+    restore();
+  }
 }

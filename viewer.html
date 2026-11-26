@@ -15,19 +15,20 @@
 <link rel="stylesheet" href="standalone-secondary-panel.css">
 <!-- 共通UIトークン・共通ツールバー・共通コンテキストメニュー（.gb-toolbar / .tb-icon-btn / .gb-context-menu 系） -->
 <link rel="stylesheet" href="gb-ui.css">
+<link rel="stylesheet" href="viewer-visual-controls.css">
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-loading-indicators.css">
 <link rel="stylesheet" href="viewer.css">
 <link rel="stylesheet" href="viewer-text-layer.css">
 <link rel="stylesheet" href="viewer-page-list.css">
-<script src="meldex-cloud-viewer-runtime-01.js?v=aa139ce525ee27ea"></script>
+<script src="meldex-cloud-viewer-runtime-01.js?v=4c3079285bdeccc7"></script>
 
 
 
 
 
-<script src="gb-cloud-runtime-config.js?v=dad18c74c11d1f98"></script>
-<script src="meldex-cloud-viewer-runtime-02.js?v=573e2f59d161e9d5"></script>
+<script src="gb-cloud-runtime-config.js?v=86d16e9ebde9639a"></script>
+<script src="meldex-cloud-viewer-runtime-02.js?v=f4f4f3e7ee6fc0b3"></script>
 
 
 
@@ -59,7 +60,7 @@
 <aside id="viewer-pages" aria-label="ページ一覧" hidden>
   <div class="viewer-pages-header"><strong>ページ一覧</strong><button id="viewer-pages-close" class="tb-icon-btn" aria-label="ページ一覧を閉じる" title="ページ一覧を閉じる">×</button></div>
   <div class="viewer-pages-settings">
-    <label>表示<select id="viewer-pages-mode" class="tb-select"><option value="single">単体</option><option value="spread">見開き（左→右）</option><option value="manga">見開き（右→左）</option></select></label>
+    <label>表示<select id="viewer-pages-mode" class="tb-select"><option value="single">単ページ</option><option value="spread">見開き_右へ</option><option value="manga">見開き_左へ</option></select></label>
     <label>開始ページ<select id="viewer-pages-first" class="tb-select"><option value="left">左ページ</option><option value="right">右ページ</option></select></label>
   </div>
   <div id="viewer-pages-status" role="status" aria-live="polite"></div>
@@ -99,9 +100,9 @@
   <input type="range" id="seek-bar" min="0" max="0" value="0" title="シークバー">
   <span id="counter">0 / 0</span>
   <select id="sel-mode" class="tb-select" title="表示モード">
-    <option value="single" selected>単体</option>
-    <option value="spread">見開き</option>
-    <option value="manga">マンガ（右→左）</option>
+    <option value="single" selected>単ページ</option>
+    <option value="spread">見開き_右へ</option>
+    <option value="manga">見開き_左へ</option>
   </select>
   <button id="btn-zoom-out" class="tb-icon-btn" title="縮小" aria-label="縮小"><span class="ico ico-zoomOut"></span></button>
   <span class="zoom-label" id="zoom-label">100%</span>
@@ -126,7 +127,10 @@
 <button id="btn-hud" style="display:none;"></button>
 <button id="btn-original" style="display:none;"></button>
 
-<script src="meldex-cloud-viewer-runtime-03.js?v=766ea207c64ed316"></script>
+<script src="meldex-cloud-viewer-runtime-03.js?v=e7fb6c78cb808cf8"></script>
+
+
+
 
 
 
@@ -161,9 +165,10 @@
     });
   });
 </script>
-<script src="meldex-cloud-viewer-runtime-04.js?v=04fbcbae33f03e04"></script>
+<script src="meldex-cloud-viewer-runtime-04.js?v=930b6ed13ca2bb66"></script>
 
 <!-- アノテートのフロートパネルは本体と同じ共通カラーパレットを開く（gb-color-palette.js） -->
+
 
 
 

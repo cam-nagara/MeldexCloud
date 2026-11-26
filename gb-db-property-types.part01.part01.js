@@ -4,6 +4,20 @@ function getPropertyTypes(dbPath, ctxOverride) {
   const targetPath = dbPath || state.currentDbPath || '';
   const localTypes = getDbViewConfig(targetPath).propertyTypes || {};
   const targetMetadata = _ptMetadataForDbPath(targetPath, ctxOverride);
+  if (targetMetadata && typeof _dbLegacyChipTheme === 'function') {
+    const migrated = _dbLegacyChipTheme(targetMetadata);
+    if (Object.keys(migrated).length) {
+      const previous = targetMetadata.style || targetMetadata.theme || {};
+      const source = previous.__themeSourceId || previous.__themeId || window.MeldexThemeManager?.getDefaultThemeId?.();
+      const sourceVars = typeof _fileStyleThemeVars === 'function' ? _fileStyleThemeVars(previous) : {};
+      targetMetadata.style = { ...sourceVars, ...previous, ...migrated, __themeId: '__fileCustomTheme',
+        __themeName: previous.__themeName || '移行した候補値の書式', __chipTypeMigration: '1' };
+      Object.defineProperty(targetMetadata, '__chipThemeMigrationPending', { value: true, writable: true, configurable: true });
+      if (source && source !== '__fileCustomTheme') targetMetadata.style.__themeSourceId = source;
+      const root = typeof _dbSheetTransitionRoot === 'function' ? _dbSheetTransitionRoot(ctxOverride || _ptContextForDbPath(targetPath)) : null;
+      if (root && typeof applyFileStyleToPanel === 'function') applyFileStyleToPanel(targetMetadata.style, 'db-view-container', root);
+    }
+  }
   // バックエンド（フォルダノート）を優先: property_types キーが存在すればそれを使う
   if (targetMetadata && 'property_types' in targetMetadata && targetMetadata.property_types !== null) {
     const backendTypes = targetMetadata.property_types || {};
@@ -430,24 +444,32 @@ async function _deleteColumnConfirmed(dbPath, propName, renderCtx, reservation, 
       ? (label, undoFn, redoFn) => reservation.fill(undoFn, redoFn, label)
       : historyPush;
     recordHistory('列削除: ' + propName,
-      () => { // undo: 設定を復元
-        saveDbViewConfig(dbPath, oldCfg);
-        if (state.dbMetadata) {
-          if (_ptIsCurrentDbPath(dbPath)) {
-            if (!state.dbMetadata.property_types) state.dbMetadata.property_types = {};
-            if (Object.keys(oldBackendPropertyTypes).length) state.dbMetadata.property_types = JSON.parse(JSON.stringify(oldBackendPropertyTypes));
-            else if (oldCfg.propertyTypes) state.dbMetadata.property_types = JSON.parse(JSON.stringify(oldCfg.propertyTypes));
-            else if (oldPT) state.dbMetadata.property_types[propName] = oldPT;
-            state.dbMetadata.property_layout = oldCfg.propertyLayout || null;
-          }
-        }
-        if (Object.keys(oldBackendPropertyTypes).length) {
+      async () => { // undo: 列タイプと削除表示を同じ保存で復元してから読み直す
+        const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+        const beforeUndoCfg = clone(getDbViewConfig(dbPath));
+        const ownerMeta = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath, renderCtx) : null;
+        const metadata = [...new Set([ownerMeta, _ptIsCurrentDbPath(dbPath) ? state.dbMetadata : null].filter(Boolean))]
+          .map(meta => ({ meta, types: clone(meta.property_types), layout: clone(meta.property_layout) }));
+        try {
+          saveDbViewConfig(dbPath, clone(oldCfg), { skipBackend: true, skipHistory: true });
+          const restoredTypes = Object.keys(oldBackendPropertyTypes).length ? clone(oldBackendPropertyTypes)
+            : clone(oldCfg.propertyTypes || (oldPT ? { [propName]: oldPT } : {}));
+          metadata.forEach(({ meta }) => { meta.property_types = clone(restoredTypes); meta.property_layout = clone(oldCfg.propertyLayout || null); });
           const cfg = getDbViewConfig(dbPath);
-          cfg.propertyTypes = JSON.parse(JSON.stringify(oldBackendPropertyTypes));
-          saveDbViewConfig(dbPath, cfg, { skipHistory: true });
+          cfg.propertyTypes = restoredTypes;
+          saveDbViewConfig(dbPath, cfg, { skipBackend: true, skipHistory: true });
+          const viewConfig = typeof _sanitizeDbViewConfigForBackend === 'function' ? _sanitizeDbViewConfigForBackend(cfg) : cfg;
+          if (await _savePropertyTypesToBackend(dbPath, { property_layout: oldCfg.propertyLayout || null, view_config: viewConfig }, renderCtx) === false) {
+            throw new Error(`列「${propName}」の取り消しを保存できませんでした`);
+          }
+          await selectDatabase(dbPath, renderCtx, { silent: true, forceReload: true });
+          return true;
+        } catch (error) {
+          saveDbViewConfig(dbPath, beforeUndoCfg, { skipBackend: true, skipHistory: true });
+          metadata.forEach(({ meta, types, layout }) => { meta.property_types = types; meta.property_layout = layout; });
+          _ptRenderAfterColumnDelete(renderCtx, dbPath);
+          throw error;
         }
-        _savePropertyTypesToBackend(dbPath, { property_layout: oldCfg.propertyLayout || null });
-        selectDatabase(dbPath, renderCtx);
       },
       () => { // redo: 再削除
         return _deleteColumnNoConfirm(dbPath, propName, renderCtx);
@@ -714,6 +736,7 @@ async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
           const meta = (typeof _ptMetadataForDbPath === 'function'
             ? _ptMetadataForDbPath(targetPath, ctxOverride)
             : null) || {};
+          if (meta.__chipThemeMigrationPending) payload.style = JSON.parse(JSON.stringify(meta.style));
           const schemaMutation = globalThis.GbDbSchemaMutation;
           if (schemaMutation && payload.property_types) {
             _ptReleaseDuplicatedPropertyIds(meta, payload.property_types);
@@ -729,6 +752,7 @@ async function _savePropertyTypesToBackend(dbPath, extraMetadata, ctxOverride) {
           } else {
             await apiPut('/db-metadata?path=' + encodeURIComponent(targetPath), payload);
           }
+          if (payload.style?.__chipTypeMigration) delete meta.__chipThemeMigrationPending;
         } catch (e) {
           console.warn('プロパティ型設定のバックエンド保存に失敗:', e);
           showStatus('列タイプの保存に失敗しました: ' + (e?.message || e), true);
@@ -1079,21 +1103,46 @@ async function _ptRecoverInterruptedLegacyRename(dbPath, ctx) {
     const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(dbPath), { skipBrowseCache: true, silentError: true });
     let restored = 0;
     let failed = 0;
+    let firstError = '';
+    const noteError = (where, error) => { if (!firstError) firstError = where + ': ' + (error?.message || error); };
     for (const name of Object.keys(pivot?.entities || {})) {
       const entryPath = typeof _entityPath === 'function' ? _entityPath(dbPath, name, pivot) : `${dbPath}/${name}.md`;
       let entity = null;
       try { entity = await apiFetch('/entity?path=' + encodeURIComponent(entryPath), { skipBrowseCache: true, silentError: true }); }
-      catch { failed += 1; continue; }
+      catch (error) { failed += 1; noteError(name, error); continue; }
       const moved = Array.isArray(entity?.properties?.[journal.newName]) ? entity.properties[journal.newName] : [];
       for (let index = moved.length - 1; index >= 0; index -= 1) {
-        const ref = { entry_path: entryPath, property: journal.newName, candidate_index: index,
-          candidate_id: moved[index]?.candidate_id || '', entry_id: entity?.id || entity?.entry_id || '' };
-        try { await _apiPutValue(ref, { new_property: journal.oldName }); restored += 1; }
-        catch { failed += 1; }
+        // 保存の版は、中断の前に覚えた版ではなく、いま読んだ版で送る（覚えた版だと「他の端末で更新」の409で
+        // 戻せず、値が見えない名前に残っていた。2026-11-25）。1件戻すごとに版が進むので、読み直してから送る。
+        // 再起動の直後は、中断前の画面の送り直しなどで版が進むことがある。版の食い違い（409）の時だけ、
+        // 読み直して数回やり直す（新しい名前に残っている値を旧名へ戻すだけなので、何度やっても同じ結果になる）。
+        let done = false;
+        let lastError = null;
+        for (let attempt = 0; attempt < 3 && !done; attempt += 1) {
+          let current = entity;
+          if (attempt > 0 || index !== moved.length - 1) {
+            try { current = await apiFetch('/entity?path=' + encodeURIComponent(entryPath), { skipBrowseCache: true, silentError: true }); }
+            catch (error) { lastError = error; break; }
+          }
+          const candidate = (current?.properties?.[journal.newName] || [])[index];
+          if (!candidate) { done = true; lastError = null; break; }
+          const ref = { entry_path: entryPath, property: journal.newName, candidate_index: index,
+            candidate_id: candidate.candidate_id || '', entry_id: current?.id || current?.entry_id || '',
+            entry_revision: current?.revision };
+          try {
+            await _apiPutValue(ref, { new_property: journal.oldName, baseRevision: current?.revision, __revisionFromRead: Number.isInteger(Number(current?.revision)) });
+            restored += 1; done = true; lastError = null;
+          } catch (error) {
+            lastError = error;
+            if (Number(error?.status) !== 409) break;
+            await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+          }
+        }
+        if (lastError) { failed += 1; noteError(name, lastError); }
       }
     }
     if (failed) {
-      showStatus('中断した列名の変更を元に戻せませんでした（' + failed + '件）。もう一度シートを開いてください', true);
+      showStatus('中断した列名の変更を元に戻せませんでした（' + failed + '件。' + firstError.slice(0, 160) + '）。もう一度シートを開いてください', true);
       window.MeldexDiagnostics?.recordSheetIncident?.('retry-failed', { op: 'column-rename-recovery', sheet: dbPath, errorType: 'partial' });
       return false;
     }
@@ -1406,12 +1455,16 @@ async function _renameDbPropertyCore(dbPath, oldName, newName, ctxOverride, opts
       : historyPush;
     recordHistory('列名変更: ' + oldName + ' → ' + newName,
       async () => { // undo: 新名 → 旧名へ戻す
-        await renameDbProperty(dbPath, newName, oldName, _ptContextForDbPath(dbPath), { skipHistory: true });
-        if (typeof selectDatabase === 'function') selectDatabase(dbPath, _ptContextForDbPath(dbPath));
+        if (await renameDbProperty(dbPath, newName, oldName, _ptContextForDbPath(dbPath), { skipHistory: true }) === false) {
+          throw new Error('列名の変更を取り消せませんでした');
+        }
+        if (typeof selectDatabase === 'function') await selectDatabase(dbPath, _ptContextForDbPath(dbPath));
       },
       async () => { // redo: 旧名 → 新名へ再適用
-        await renameDbProperty(dbPath, oldName, newName, _ptContextForDbPath(dbPath), { skipHistory: true });
-        if (typeof selectDatabase === 'function') selectDatabase(dbPath, _ptContextForDbPath(dbPath));
+        if (await renameDbProperty(dbPath, oldName, newName, _ptContextForDbPath(dbPath), { skipHistory: true }) === false) {
+          throw new Error('列名の変更をやり直せませんでした');
+        }
+        if (typeof selectDatabase === 'function') await selectDatabase(dbPath, _ptContextForDbPath(dbPath));
       },
       (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
     );

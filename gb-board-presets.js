@@ -1,6 +1,6 @@
 /* gb-board-presets.js: Board presets, toolbar markup, style previews */
 
-const BD_STYLE_PRESET_VERSION = 10;
+const BD_STYLE_PRESET_VERSION = 11;
 const BD_PRESET_THEME_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
 
 function _bdPresetClone(value) {
@@ -76,8 +76,8 @@ function _bdApplyThemeColorToCardStyle(style, color) {
   return style;
 }
 
-function _bdPresetTone(color, tone) {
-  if (typeof bdThemeTone === 'function') return bdThemeTone(color, tone || 'solid');
+function _bdPresetTone(color, tone, background) {
+  if (typeof bdThemeTone === 'function') return bdThemeTone(color, tone || 'solid', background ? { background } : {});
   const text = _bdPresetReadableTextColor(color);
   return { bgColor: color, borderColor: color, textColor: text, lineColor: color };
 }
@@ -85,12 +85,23 @@ function _bdPresetTone(color, tone) {
 // 初期搭載スタイルは「役割」で色を選ぶ。_themeColorIndex はテーマ色セットの位置
 // （0赤 1橙 2黄 3緑 4水 5青 6紫 7桃）、_themeTone は塗り方
 // （solid=塗りつぶし / tint=淡い色 / outline=枠だけ / plain=枠なし / muted=控えめ）。
+function _bdPresetBoardBackground() {
+  try {
+    return typeof bdBoardBackgroundColor === 'function' ? (bdBoardBackgroundColor() || '') : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 function bdDefaultCardStylesForBoard(board) {
   const palette = _bdPresetBoardThemeColors(board);
+  // 背景色は1回の処理の中で変わらない。スタイルごとにCSSから読み直すと、画面の書き換え直後には
+  // そのたびに見た目の再計算が走っていた（2026-11-25 応答時間検査: ボードの長い処理の約2割）。
+  const background = _bdPresetBoardBackground();
   return (BD_DEFAULT_CARD_STYLES || []).map((source, index) => {
     const style = _bdPresetClone(source);
     const color = _bdPresetThemeColorForStyle(style, index, palette);
-    const toned = _bdPresetTone(color, style._themeTone);
+    const toned = _bdPresetTone(color, style._themeTone, background);
     delete style._themeColorIndex;
     delete style._themeTone;
     style.bgColor = toned.bgColor;
@@ -102,10 +113,11 @@ function bdDefaultCardStylesForBoard(board) {
 
 function bdDefaultLineStylesForBoard(board) {
   const palette = _bdPresetBoardThemeColors(board);
+  const background = _bdPresetBoardBackground();
   return (BD_DEFAULT_LINE_STYLES || []).map((source, index) => {
     const style = _bdPresetClone(source);
     const color = _bdPresetThemeColorForStyle(style, index, palette);
-    const toned = _bdPresetTone(color, style._themeTone);
+    const toned = _bdPresetTone(color, style._themeTone, background);
     delete style._themeColorIndex;
     delete style._themeTone;
     if (toned.lineColor) style.color = toned.lineColor;
@@ -150,6 +162,12 @@ const BD_DEFAULT_CARD_STYLES = [
     borderWidth: 2, borderRadius: 0, shape: 'cloud', width: 190,
     cloudBumpWidth: 40, cloudBumpHeight: 14, cloudSideWidth: 12, cloudOffset: 0.45, cloudSubWidthRatio: 50, cloudSubHeightRatio: 45,
   }),
+  // 図解カード: 落ち着いた面に役割色の細い枠・左帯・見出し。資料やレポートの図向け。
+  _bdPresetCard('card-diagram-main', '図解カード（紫）', 6, 'card', { borderWidth: 1.5, borderRadius: 8, fontSize: 14, shape: 'accent-card', width: 460 }),
+  _bdPresetCard('card-diagram-blue', '図解カード（青）', 5, 'card', { borderWidth: 1.5, borderRadius: 8, fontSize: 14, shape: 'accent-card', width: 300 }),
+  _bdPresetCard('card-diagram-teal', '図解カード（水）', 4, 'card', { borderWidth: 1.5, borderRadius: 8, fontSize: 13, shape: 'accent-card', width: 460 }),
+  _bdPresetCard('card-diagram-yellow', '図解カード（黄）', 2, 'card', { borderWidth: 1.5, borderRadius: 8, fontSize: 13, shape: 'accent-card', width: 320 }),
+  _bdPresetCard('card-diagram-frame', '図解の区切り枠', 5, 'neutral', { borderWidth: 1, borderRadius: 10, fontSize: 13, width: 480 }),
 ];
 
 // ラインスタイル: 先頭が手で引くラインの既定。
@@ -163,6 +181,7 @@ const BD_DEFAULT_LINE_STYLES = [
   _bdPresetLine('line-std-conflict', '対立・問題', 0, 'solid', { width: 2.5 }),
   _bdPresetLine('line-std-time', '時系列', 5, 'solid', { pathType: 'straight', width: 3 }),
   _bdPresetLine('line-std-guide', '補助線', 5, 'muted', { arrow: '', pathType: 'straight', width: 1 }),
+  _bdPresetLine('line-diagram-flow', '図解（直角・細い矢印）', 5, 'neutral', { pathType: 'orthogonal', width: 1.5, branchRatio: 0.5, cornerRadius: 0 }),
 ];
 
 const BD_DEFAULT_DISPLAY_FILTERS = {
@@ -305,6 +324,7 @@ function _bdCardPreviewShapeStyle(shape, radius) {
   // 挟むため、プレビューも 12 点でくぼみを 1 点ずつ付加して爆発型を近似する。
   if (shape === 'thorn-curve') return 'border-radius:0;clip-path:polygon(50% 4%, 60% 26%, 78% 22%, 96% 50%, 78% 78%, 60% 74%, 50% 96%, 40% 74%, 22% 78%, 4% 50%, 22% 22%, 40% 26%);';
   if (shape === 'octagon') return 'border-radius:0;clip-path:polygon(12% 0%, 88% 0%, 100% 12%, 100% 88%, 88% 100%, 12% 100%, 0% 88%, 0% 12%);';
+  if (shape === 'accent-card') return `border-radius:${Math.min(nextRadius, 8)}px;border-left-width:5px;border-left-style:solid;`;
   if (shape === 'pill') return 'border-radius:999px;';
   return `border-radius:${nextRadius}px;`;
 }

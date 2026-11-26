@@ -17,8 +17,8 @@
 ::-webkit-scrollbar-thumb { background: var(--ui-scrollbar-thumb-bg, var(--bg4)); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--ui-scrollbar-thumb-hover-bg, var(--fg2)); }
 html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; overflow: hidden; display: flex; flex-direction: column; }
-/* #controlsをposition:absoluteの下端オーバーレイにするための位置基準（body=#displayとほぼ同寸のため
-   実質的に#displayの下端に重なる。ビューワー残課題修正計画 2026-08-04「6. ツールバーの自動表示/非表示」）。 */
+/* #controlsをposition:absoluteの上端オーバーレイにするための位置基準（body=#displayとほぼ同寸のため
+   実質的に#displayの上端に重なる。ビューワー残課題修正計画 2026-08-04「6. ツールバーの自動表示/非表示」）。 */
 body { position: relative; }
 
 body[data-viewer-file-drop="ready"]::after {
@@ -51,11 +51,12 @@ body[data-viewer-file-drop="ready"]::after {
 .viewer-loading-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 12; pointer-events: none; color: var(--fg2); font-size: 13px; }
 .viewer-loading-state[data-state="empty"], .viewer-loading-state[data-state="error"] { pointer-events: auto; }
 .viewer-loading-state.hidden { display: none; }
-.viewer-loading-card { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb,var(--ui-popup-bg,var(--bg2)) 94%,transparent); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.viewer-loading-card { display: flex; align-items: center; gap: 8px; max-width: min(560px,calc(100vw - 32px)); box-sizing: border-box; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb,var(--ui-popup-bg,var(--bg2)) 94%,transparent); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+#viewer-loading-text { min-width: 0; overflow-wrap: anywhere; line-height: 1.6; }
 .viewer-loading-state[data-state="error"] .viewer-loading-card { border-color: var(--danger, #d65f5f); }
 .viewer-loading-spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 999px; animation: viewer-spin 0.9s linear infinite; }
 .viewer-loading-state:not([data-state="loading"]) .viewer-loading-spinner { display: none; }
-.viewer-retry { min-width: 44px; min-height: 44px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg); background: var(--bg3); cursor: pointer; }
+.viewer-retry { flex-shrink: 0; white-space: nowrap; min-width: 44px; min-height: 44px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg); background: var(--bg3); cursor: pointer; }
 .viewer-retry.hidden { display: none; }
 @keyframes viewer-spin { to { transform: rotate(360deg); } }
 /* justify-content/align-items:center で直接センタリングする（子の margin:auto に頼らない）。
@@ -99,6 +100,8 @@ body[data-viewer-file-drop="ready"]::after {
 .viewer-ann-scene-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; }
 .viewer-ann-note[data-save-state="saving"] { outline: 2px solid var(--accent); }
 .viewer-ann-note[data-save-state="unsaved"] { outline: 2px solid var(--danger, #d65f5f); }
+.viewer-ann-note-fo:has(.viewer-ann-note[data-save-state="unsaved"]),
+.viewer-ann-note[data-save-state="unsaved"] { overflow: visible; }
 .viewer-ann-save-retry { position: absolute; right: 4px; bottom: 4px; min-width: 44px; min-height: 44px; }
 .viewer-ann-preview { pointer-events: none; }
 .viewer-ann-tail-handle { fill: #fff; stroke: rgba(0,0,0,0.4); stroke-width: 1; cursor: move; }
@@ -141,7 +144,7 @@ body[data-viewer-file-drop="ready"]::after {
 .nav-area svg { filter: drop-shadow(0 0 4px rgba(0,0,0,0.8)); }
 
 /* HUD */
-#hud { position: absolute; top: 12px; right: calc(12px + var(--sa-secondary-inset, 0px)); background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; user-select: none; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 20; transition: opacity 0.3s; max-width: 300px; }
+#hud { pointer-events: none; position: absolute; top: calc(var(--ui-toolbar-main-height, 39px) + 12px); right: calc(12px + var(--sa-secondary-inset, 0px)); background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; user-select: none; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 20; transition: opacity 0.3s; max-width: 300px; }
 #hud.hidden { opacity: 0; pointer-events: none; }
 #hud-status { color: var(--accent); font-weight: bold; margin-bottom: 4px; }
 #hud-info { color: var(--fg2); font-size: 11px; line-height: 1.5; }
@@ -149,8 +152,8 @@ body[data-viewer-file-drop="ready"]::after {
 /* コントロールバー: ボード下端ツールバーと同じ共通クラス（.gb-toolbar系）・高さ・余白トークンを使う。
    #controls は gb-ui.css の .gb-toolbar が定める min-height: var(--ui-h-md)（32px帯）・
    padding: var(--ui-space-2) var(--ui-space-4) をそのまま継承し、ビューワー固有の配色と
-   「画像側=上端の区切り線」だけをこのモディファイアで上書きする。
-   #display に重なる下端オーバーレイとして配置し、既定は非表示（マウス近接/フォーカス/タッチで
+   「画像側=下端の区切り線」だけをこのモディファイアで上書きする。
+   #display に重なる上端オーバーレイとして配置し（2026-11-24 下端から上端へ移動）、既定は非表示（マウス近接/フォーカス/タッチで
    表示。制御は viewer-controls.js）。#display は#controlsの分だけ縮まなくなり、全高を使ってフィット
    できるようになる（ビューワー残課題修正計画 2026-08-04「6. ツールバーの自動表示/非表示」）。 */
 #controls.gb-toolbar-viewer {
@@ -160,10 +163,12 @@ body[data-viewer-file-drop="ready"]::after {
      （padding-right の内側ではない）なので、ここでも同じ幅を引く
      （standalone-secondary-panel.css の --sa-secondary-inset）。 */
   right: var(--sa-secondary-inset, 0px);
-  bottom: 0;
+  /* 2026-11-24: 他のアプリと同じく上端へ置く（旧: 下端の重ね表示）。画像側との区切りは下端の線。
+     動画の標準操作（下端）とも重ならない。 */
+  top: 0;
   background: var(--panel-bg);
-  border-bottom: none;
-  border-top: 1px solid var(--border);
+  border-top: none;
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   flex-wrap: nowrap;
   overflow-x: auto;

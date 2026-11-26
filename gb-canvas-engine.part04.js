@@ -73,6 +73,7 @@ function _bdHasCommonHistory() {
 }
 function _bdHistoryScope(path) {
   const p = path != null ? path : (typeof bd !== 'undefined' ? bd.path : '');
+  if (typeof bd !== 'undefined' && bd._historyScope && (path == null || path === bd.path)) return bd._historyScope;
   return 'board:' + String(p || '').replace(/\\/g, '/');
 }
 function _bdSnapshot() {
@@ -94,6 +95,7 @@ function _bdSnapshot() {
     depthStyles: bd.depthStyles,
     activeDepthStylePreset: bd.activeDepthStylePreset || '',
     activeCardStyle: bd.activeCardStyle,
+    newCardStyleRef: bd.newCardStyleRef || '',
     activeLineStyle: bd.activeLineStyle,
     stylePresetSeedVersion: bd._stylePresetSeedVersion || 0,
     themeId: bd.themeId || '',
@@ -190,6 +192,7 @@ function _bdApplySnapshot(s) {
   bd.depthStyles = s.depthStyles || bd.depthStyles;
   bd.activeDepthStylePreset = s.activeDepthStylePreset || '';
   bd.activeCardStyle = s.activeCardStyle || bd.activeCardStyle;
+  bd.newCardStyleRef = s.newCardStyleRef || '';
   bd.activeLineStyle = s.activeLineStyle || bd.activeLineStyle;
   bd._stylePresetSeedVersion = s.stylePresetSeedVersion || 0;
   bd.themeId = s.themeId || '';
@@ -248,9 +251,30 @@ function _bdApplySnapshot(s) {
   if (document.querySelector('.gb-tool-file-theme [data-file-theme-panel="board"]')
     && typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('board');
 }
+async function _bdReplayLocalTitleCommand(from, to, kind) {
+  if (bd._titleHistoryBusy) return;
+  const entry = from[from.length - 1];
+  bd._titleHistoryBusy = true;
+  try {
+    await entry[kind]();
+    // 通信中に別のファイルへ切り替えた場合は、新しいファイルの履歴へ移さない。
+    if (from[from.length - 1] === entry) {
+      from.pop();
+      to.push(entry);
+    }
+  } catch (error) {
+    showStatus('ボード名の' + (kind === 'undo' ? '取り消し' : 'やり直し') + 'に失敗: ' + (error?.message || error), true);
+  } finally {
+    bd._titleHistoryBusy = false;
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+  }
+}
 function bdUndo() {
   if (_bdHasCommonHistory()) { return historyUndo(_bdHistoryScope()); }
   if (!_bdUndoStack.length) return;
+  if (typeof _bdUndoStack[_bdUndoStack.length - 1]?.undo === 'function') {
+    return _bdReplayLocalTitleCommand(_bdUndoStack, _bdRedoStack, 'undo');
+  }
   _bdRedoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdUndoStack.pop()));
   if (typeof bdRunFullRender === 'function') bdRunFullRender('history-undo-local');
@@ -262,6 +286,9 @@ function bdUndo() {
 function bdRedo() {
   if (_bdHasCommonHistory()) { return historyRedo(_bdHistoryScope()); }
   if (!_bdRedoStack.length) return;
+  if (typeof _bdRedoStack[_bdRedoStack.length - 1]?.redo === 'function') {
+    return _bdReplayLocalTitleCommand(_bdRedoStack, _bdUndoStack, 'redo');
+  }
   _bdUndoStack.push(_bdSnapshot());
   _bdApplySnapshot(JSON.parse(_bdRedoStack.pop()));
   if (typeof bdRunFullRender === 'function') bdRunFullRender('history-redo-local');
@@ -352,6 +379,7 @@ async function bdOpenBoard(label, path, opts) {
   const prevLoadedBoardPath = rollback.loadedBoardPath || '';
   const prevDump = rollback.dump || null;
   bdClearUndoStacks();
+  bd._historyScope = '';
   bd.selected = new Set();
   if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
   if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
@@ -401,9 +429,12 @@ async function bdOpenBoard(label, path, opts) {
       documentKeyAtOpen = coordinator.bindDocumentIdentity(nextPath, data) || documentKeyAtOpen;
       coordinator.registerParticipant(documentKeyAtOpen, bd);
     }
-    if (data.display_title && typeof renameAppPathReferences === 'function') {
-      renameAppPathReferences(nextPath, nextPath, { label: data.display_title, type: 'board' });
+    if (data.display_title) {
+      if (typeof renameAppPathReferences === 'function') {
+        renameAppPathReferences(nextPath, nextPath, { label: data.display_title, type: 'board' });
+      } else if (titleEl) titleEl.textContent = data.display_title;
     }
+    bd.label = data.display_title || label || '';
     const raw = data.content || '';
     if (typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...', { key: 'board:' + nextPath });
@@ -484,10 +515,12 @@ async function bdOpenBoard(label, path, opts) {
     bd.lineStyles = parsed.lineStyles || [];
     bd.depthStyles = parsed.depthStyles || [];
     bd.activeDepthStylePreset = parsed.boardUi?.activeDepthStylePreset || '';
-    // 新しいボードを開くたびにグローバルデフォルト適用フラグをリセット
-    bd._globalStyleDefaultsApplied = false;
+    // 全ボード共通の既定は、書式を持たないボードにだけ反映する。保存済みの書式を持つボードを
+    // 開くたびに上書きすると、このボードで変えた標準書式（形状・色など）が消える。
+    bd._globalStyleDefaultsApplied = !!((parsed.cardStyles && parsed.cardStyles.length) || (parsed.lineStyles && parsed.lineStyles.length));
     bd._globalDepthStylesApplied = false;
     bd.activeCardStyle = parsed.boardUi?.activeCardStyle || '';
+    bd.newCardStyleRef = parsed.boardUi?.newCardStyleRef || '';
     bd.activeLineStyle = parsed.boardUi?.activeLineStyle || '';
     bd._stylePresetSeedVersion = parsed.boardUi?.stylePresetSeedVersion || 0;
     bd.themeId = parsed.boardUi?.themeId || '';
@@ -615,6 +648,7 @@ function bdDumpState() {
   const keys = Object.keys(bd);
   const snap = {};
   for (const k of keys) {
+    if (['_titleMutation', '_titleHistoryBusy', '_saveOperations'].includes(k)) continue;
     const v = bd[k];
     if (v instanceof Set) snap[k] = [...v];
     else snap[k] = v;

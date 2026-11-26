@@ -25,7 +25,7 @@
   }
 
   function cloudErrorStatus(err) {
-    const explicit = Number(err?.status || err?.status_code || 0);
+    const explicit = Number(err?.status || err?.status_code || err?.httpStatus || 0);
     if (explicit) return Math.max(400, Math.min(599, explicit));
     return isSystemStorageConflict(err) ? 409 : 501;
   }

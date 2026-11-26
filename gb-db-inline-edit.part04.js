@@ -756,6 +756,7 @@ async function _dbClearSelectedCells(table) {
 // 表の外のボタン等（ツールバーのメインメニューボタンなど）にフォーカスがある時の Enter / Space は、
 // そのボタン自身の操作に任せる。選択中のセルの編集開始として横取りしない。
 function _dbKeyActivatesControlOutsideTable(e) {
+  if (e.target?.closest?.('[data-db-reorder-handle]')) return true;
   if (e.key !== 'Enter' && e.key !== ' ') return false;
   const target = e.target?.closest?.('button, [role="button"], a[href], [role="menuitem"], [role="tab"]');
   return !!target && !target.closest('table');

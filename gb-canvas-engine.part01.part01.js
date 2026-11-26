@@ -14,12 +14,13 @@ const bd = {
   lastSavedEtag:'',
   dirty:false, zoom:1, panX:0, panY:0, rotation:0, _id:0,
   connecting:null, _activeNode:null, selectedConnId:'', selectedConnIds:new Set(),
-  cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', activeLineStyle:'', activeDepthStylePreset:'',
+  cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', newCardStyleRef:'', activeLineStyle:'', activeDepthStylePreset:'',
   _stylePresetSeedVersion:0, themeId:'',
   tool:'select', displayFilters:{},
   // 2026-04-18: レイアウト隙間 / 自動整列 (スタイルタブで設定)
   gapSiblings: null, gapLevels: null, autoAlign: true,
 };
+function bdIsActiveBoardState(candidate) { return candidate === bd; }
 // 選択色 / カーソル色はスタイルタブ (_FS_FIELDS.board.editOps) の
 // `--bd-selection-color` / `--bd-caret-color` 経由で bd._fileStyle に保存され、
 // frontmatter adapter がアクティブなボードキャンバス要素に CSS 変数をセットする。
@@ -320,6 +321,8 @@ function bdSyncResizeHandles() {
   // カード本体 (.bd-node) の中ではなく `#bd-resize-layer` 内の兄弟要素として配置し、
   // node.x/y + offsetWidth/Height からサイズ・位置を同期する。
   // `node.contained` (コンテナ内ノード) はワールド座標と関係しない相対位置のためスキップ。
+  const measuredNodes = [];
+  const measurements = new Map();
   bd.nodes.forEach(node => {
     if (!node || node.contained) return;
     const safeId = MeldexEscape.cssIdent(node.id);
@@ -328,7 +331,13 @@ function bdSyncResizeHandles() {
     if (!el || !el.isConnected) return;
     const isSelected = bd.selected.has(node.id);
     const isEditing = el.classList.contains('bd-editing');
+    const width = el.offsetWidth, height = el.offsetHeight;
+    measuredNodes.push({node, isSelected, isEditing, width, height});
+    measurements.set(node.id, {el, width, height});
+  });
 
+  // 全カードの寸法を読んだ後で選択枠とハンドルへ反映する。
+  measuredNodes.forEach(({node, isSelected, isEditing, width, height}) => {
     // 選択枠 (常に同期、選択中のみ表示。編集中は非表示)
     let rect = existingRects.get(node.id);
     if (!rect) {
@@ -343,8 +352,8 @@ function bdSyncResizeHandles() {
       const offset = 4;
       rect.style.left = `${node.x - offset}px`;
       rect.style.top = `${node.y - offset}px`;
-      rect.style.width = `${el.offsetWidth + offset * 2}px`;
-      rect.style.height = `${el.offsetHeight + offset * 2}px`;
+      rect.style.width = `${width + offset * 2}px`;
+      rect.style.height = `${height + offset * 2}px`;
     }
     existingRects.delete(node.id);
 
@@ -358,8 +367,8 @@ function bdSyncResizeHandles() {
         layer.appendChild(handle);
       }
       handle.classList.toggle('is-visible', isSelected);
-      handle.style.left = `${node.x + el.offsetWidth}px`;
-      handle.style.top = `${node.y + el.offsetHeight}px`;
+      handle.style.left = `${node.x + width}px`;
+      handle.style.top = `${node.y + height}px`;
       existingHandles.delete(node.id);
     }
   });
@@ -367,7 +376,7 @@ function bdSyncResizeHandles() {
   existingRects.forEach(rect => rect.remove());
 
   // Gap-1 §9.6: マルチ選択時の統合グループアンカー（bbox の 4 辺中央 + 四隅）
-  _bdSyncGroupAnchors(layer, root);
+  _bdSyncGroupAnchors(layer, root, measurements);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdSyncResizeHandles', _bdResizePerf);
 }
 
@@ -375,7 +384,7 @@ function bdSyncResizeHandles() {
 //   - 選択 1 件以下: グループアンカー削除 + .bd-has-multi-selection クラス解除
 //   - ロック混在: グループアンカー削除（意図しない接続を避けるため。本監査 §5 仕様4 で確定）
 //   - 複数選択: bbox を計算してアンカー 8 点を配置
-function _bdSyncGroupAnchors(layer, boardRoot) {
+function _bdSyncGroupAnchors(layer, boardRoot, measurements) {
   const root = boardRoot || (typeof bdGetActiveBoardRoot === 'function' ? bdGetActiveBoardRoot() : document);
   const canvas = root?.querySelector?.('[data-bd-role="canvas"], #bd-canvas')
     || (root === document ? document.getElementById?.('bd-canvas') : null);
@@ -398,13 +407,14 @@ function _bdSyncGroupAnchors(layer, boardRoot) {
     const n = bd.nodes.find(v => v.id === id);
     if (!n || n.contained) return;
     const safeId = MeldexEscape.cssIdent(id);
-    const el = root?.querySelector?.(`#bdn-${safeId}`)
+    const measured = measurements?.get(id);
+    const el = measured?.el || root?.querySelector?.(`#bdn-${safeId}`)
       || (root === document ? document.getElementById?.('bdn-' + id) : null);
     if (!el) return;
     x0 = Math.min(x0, n.x);
     y0 = Math.min(y0, n.y);
-    x1 = Math.max(x1, n.x + el.offsetWidth);
-    y1 = Math.max(y1, n.y + el.offsetHeight);
+    x1 = Math.max(x1, n.x + (measured?.width ?? el.offsetWidth));
+    y1 = Math.max(y1, n.y + (measured?.height ?? el.offsetHeight));
   });
   if (!isFinite(x0)) {
     if (canvas) canvas.classList.remove('bd-has-multi-selection');
@@ -415,13 +425,14 @@ function _bdSyncGroupAnchors(layer, boardRoot) {
   if (!group) {
     group = document.createElement('div');
     group.className = 'bd-selection-group-anchors';
-    group.style.cssText = 'position:absolute;pointer-events:none;z-index:11;';
+    // 個別リサイズの広い当たり判定 (z-index:12) と重なる点でも接続を選べるようにする。
+    group.style.cssText = 'position:absolute;pointer-events:none;z-index:13;';
     layer.appendChild(group);
     // 2026-04-18: 四隅 (tl/tr/bl/br) を廃止して辺中央 4 点のみに統一。
     ['top', 'bottom', 'left', 'right'].forEach(pos => {
       const a = document.createElement('div');
       a.className = 'bd-group-anchor ' + pos;
-  a.title = 'ドラッグでラインを作成（選択トピックから）';
+      a.title = 'クリックして接続先を指定 / ドラッグでラインを作成（空白では子トピックも追加）';
       a.addEventListener('pointerdown', (ev) => {
         if (ev.button !== 0) return;
         ev.preventDefault(); ev.stopPropagation();
@@ -435,12 +446,7 @@ function _bdSyncGroupAnchors(layer, boardRoot) {
           if (candNode && !candNode.contained) { repId = cand; break; }
         }
         if (!repId) return;
-        bd.connecting = repId;
-        bd._connLabel = '';
-        bd._connOrigin = 'anchor';
-        if (typeof window.showStatus === 'function') {
-          window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
-        }
+        bdBeginSelectionAnchorGesture(ev, repId, pos, root);
       });
       group.appendChild(a);
     });
@@ -449,6 +455,75 @@ function _bdSyncGroupAnchors(layer, boardRoot) {
   group.style.top = y0 + 'px';
   group.style.width = (x1 - x0) + 'px';
   group.style.height = (y1 - y0) + 'px';
+}
+
+let _bdSelectionAnchorGestureCancel = null;
+function bdCancelSelectionAnchorGesture() {
+  _bdSelectionAnchorGestureCancel?.();
+}
+
+function bdBeginSelectionAnchorGesture(event, fromId, pos, root) {
+  bdCancelSelectionAnchorGesture();
+  const source = bd.nodes.find(node => node.id === fromId);
+  if (!source) return;
+  const path = bd.path, pointerId = event.pointerId;
+  const fromAnchor = typeof _bdHudPosToAnchorName === 'function' ? _bdHudPosToAnchorName(pos) : '';
+  const startX = event.clientX, startY = event.clientY;
+  let dragged = false;
+  bd.connecting = fromId;
+  bd._connLabel = '';
+  bd._connOrigin = 'anchor';
+  bd._connFromAnchor = fromAnchor;
+  const current = () => bd.path === path && bd.nodes.includes(source)
+    && root?.isConnected !== false && bd.connecting === fromId && bd._connOrigin === 'anchor';
+  const clear = () => {
+    if (bd.path === path && (bd.connecting === fromId || !bd.connecting)) {
+      bd.connecting = null; bd._connLabel = ''; bd._connOrigin = null; bd._connFromAnchor = null;
+    }
+  };
+  const cleanup = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onUp);
+    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('visibilitychange', onVisibility);
+    window.removeEventListener('blur', cancel);
+    document.getElementById('bd-conn-preview')?.remove();
+    if (_bdSelectionAnchorGestureCancel === cancel) _bdSelectionAnchorGestureCancel = null;
+  };
+  const cancel = () => { cleanup(); clear(); };
+  const moved = e => Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) >= 4;
+  const onMove = e => {
+    if (e.pointerId !== pointerId) return;
+    if (!current()) { cancel(); return; }
+    if (!dragged && !moved(e)) return;
+    dragged = true;
+    const element = root?.querySelector?.('#bdn-' + MeldexEscape.cssIdent(fromId));
+    if (element && typeof bdUpdateAnchorPreview === 'function') {
+      bdUpdateAnchorPreview(element, source, fromAnchor, e, bdScreenToWorld);
+    }
+  };
+  const onUp = e => {
+    if (e.pointerId !== pointerId) return;
+    if (e.type === 'pointercancel' || !current()) { cancel(); return; }
+    cleanup();
+    if (!dragged && !moved(e)) return; // クリック後の接続先指定は従来のキャンバス入力へ任せる。
+    try {
+      if (typeof bdHandleAnchorDrop === 'function') bdHandleAnchorDrop(e, fromId, fromAnchor, bdScreenToWorld);
+    } finally { clear(); }
+  };
+  const onKey = e => { if (e.key === 'Escape') cancel(); };
+  const onVisibility = () => { if (document.hidden) cancel(); };
+  _bdSelectionAnchorGestureCancel = cancel;
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+  document.addEventListener('keydown', onKey);
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('blur', cancel);
+  if (typeof window.showStatus === 'function') {
+    window.showStatus('接続先トピックをクリック (空白クリックで子トピック作成) またはドラッグ');
+  }
 }
 
 function bdDetachParentChildRelation(parentId, childId) {
@@ -869,6 +944,7 @@ function bdParseMd(raw) {
     const boardUiBlock = fm.match(/boardUi:\n((?:\s+\w+:.*\n?)*)/);
     if (boardUiBlock) {
       const acm = boardUiBlock[1].match(/activeCardStyle:\s*([^\n]+)/);
+      const ncm = boardUiBlock[1].match(/newCardStyleRef:\s*([^\n]+)/);
       const alm = boardUiBlock[1].match(/activeLineStyle:\s*([^\n]+)/);
       const dpm = boardUiBlock[1].match(/activeDepthStylePreset:\s*([^\n]+)/);
       const pvm = boardUiBlock[1].match(/stylePresetSeedVersion:\s*([^\n]+)/);
@@ -879,6 +955,7 @@ function bdParseMd(raw) {
       // 閉じ括弧が欠けた値も「壊れている」と検知できるよう、行の残り全体を取る。
       const dfm = boardUiBlock[1].match(/displayFilters:[ \t]*([^\n]*)/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
+      if (ncm) boardUi.newCardStyleRef = String(bdYamlScalar(ncm[1]));
       if (alm) boardUi.activeLineStyle = alm[1].trim();
       if (dpm) boardUi.activeDepthStylePreset = String(bdYamlScalar(dpm[1]));
       if (pvm) boardUi.stylePresetSeedVersion = parseInt(pvm[1], 10) || 0;

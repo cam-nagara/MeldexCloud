@@ -120,3 +120,6 @@
     justify-content: center;
   }
 }
+/* The legacy relay endpoint rejects unsigned requests. Keep its control
+   unavailable until a signed composer is connected, including cloned panes. */
+#team-workspace-cli-btn[hidden] { display: none !important; }

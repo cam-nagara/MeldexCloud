@@ -498,15 +498,21 @@
 
   function _syncPaneSafeTopBars() {
     const tabBars = Array.from(document.querySelectorAll('#gb-layout-root .gb-pane-tabs'));
-    tabBars.forEach(tabBar => tabBar.classList.remove('cloud-mobile-safe-top-bar'));
-    if (!shouldUseSidebarDrawer()) return;
+    const mobile = shouldUseSidebarDrawer();
     const visualTop = Math.max(0, Math.round(window.visualViewport?.offsetTop || 0));
-    tabBars.forEach((tabBar) => {
+    // Batch reads before writes, and keep an unchanged safe-area class intact.
+    // MAP marker edits otherwise force full layout through every pane header.
+    const updates = tabBars.map((tabBar) => {
+      if (!mobile) return { tabBar, safe: false };
       const rect = tabBar.getBoundingClientRect();
       const hasTreeBack = !!tabBar.querySelector('.cloud-mobile-pane-tree-back:not([hidden])');
-      if (rect.width > 0 && rect.height > 0 && (hasTreeBack || rect.top <= visualTop + 2)) {
+      return { tabBar, safe: rect.width > 0 && rect.height > 0 && (hasTreeBack || rect.top <= visualTop + 2) };
+    });
+    updates.forEach(({ tabBar, safe }) => {
+      if (tabBar.classList.contains('cloud-mobile-safe-top-bar') === safe) return;
+      if (safe) {
         tabBar.classList.add('cloud-mobile-safe-top-bar');
-      }
+      } else tabBar.classList.remove('cloud-mobile-safe-top-bar');
     });
   }
 
@@ -515,8 +521,13 @@
     _paneBackObserverInstalled = true;
     const root = document.getElementById('gb-layout-root') || document.body;
     if (!root) return;
-    new MutationObserver(() => {
-      if (shouldUseSidebarDrawer()) _ensurePaneTreeBackButtons();
+    new MutationObserver(records => {
+      if (!shouldUseSidebarDrawer()) return;
+      // Pane chrome changes require controls; edits inside a MAP/canvas do not.
+      const changed = records.some(record => record.target.closest?.('.gb-pane-tabs')
+        || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1
+          && (node.matches?.('.gb-pane-tabs') || node.querySelector?.('.gb-pane-tabs'))));
+      if (changed) _ensurePaneTreeBackButtons();
     }).observe(root, { childList: true, subtree: true });
   }
 

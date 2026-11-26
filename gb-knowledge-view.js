@@ -517,6 +517,7 @@
       closeLabel: 'ナレッジを閉じる',
       closeOnEsc: true,
       closeOnOverlay: true,
+      onClose: () => window.GBChatRules?.releaseHistoryScope?.(),
     });
     modalApi.overlay.classList.add('modal-overlay');
     modalApi.overlay.dataset.knowledgeHomeModal = '1';

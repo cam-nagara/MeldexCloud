@@ -21,6 +21,14 @@ function _toolMenuAppendIcon(row, iconName) {
   row.appendChild(icon);
 }
 
+// 項目にアイコン指定が無い時は、共通の対応表（メニュー項目の共通アイコン）から引く。
+// item.icon === false は「意図してアイコンを付けない」指定。
+function _toolMenuItemIcon(item) {
+  if (item?.icon === false) return '';
+  if (item?.icon) return item.icon;
+  return window.MeldexMenuIcons?.resolve?.(item?.label) || '';
+}
+
 function _toolMenuAppendLabel(row, label) {
   const labelEl = document.createElement('span');
   labelEl.className = 'menu-label';
@@ -75,7 +83,7 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
       trigger.setAttribute('aria-expanded', 'false');
       // 安定ID: メニューの中の位置（親の表示名/表示名）で決める（同じ画面に同じ項目は1つだけ）。
       trigger.dataset.e2eId = 'tool-menu-item:' + _toolMenuItemPath(container, item.label);
-      _toolMenuAppendIcon(trigger, item.icon);
+      _toolMenuAppendIcon(trigger, _toolMenuItemIcon(item));
       _toolMenuAppendLabel(trigger, item.label);
       const arrow = _toolMenuAppendShortcut(trigger, '');
       arrow.innerHTML = lucide('chevronRight', 12);
@@ -103,11 +111,13 @@ function _renderToolMenuItems(container, items, isSubmenu, rootMenu) {
     el.className = 'gb-context-menu-item ab-dropdown-item';
     el.setAttribute('role', 'menuitem');
     el.dataset.e2eId = 'tool-menu-item:' + _toolMenuItemPath(container, item.label);
+    const iconName = _toolMenuItemIcon(item);
     if (item.shortcut) {
+      _toolMenuAppendIcon(el, iconName);
       _toolMenuAppendLabel(el, item.label);
       _toolMenuAppendShortcut(el, item.shortcut);
-    } else if (item.icon) {
-      _toolMenuAppendIcon(el, item.icon);
+    } else if (iconName) {
+      _toolMenuAppendIcon(el, iconName);
       _toolMenuAppendLabel(el, item.label);
     } else {
       el.textContent = item.label;
@@ -823,7 +833,7 @@ async function _refreshWorkspaceAfterFileMutation() {
   if (typeof renderHomeFolderTree === 'function') refreshJobs.push(renderHomeFolderTree());
   await Promise.allSettled(refreshJobs);
   if (typeof openFolder === 'function' && typeof _folderPath !== 'undefined' && _folderPath) {
-    await openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, {
+    await openFolder(_folderPath.split('/').pop() || _folderPath, _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
       skipShowView: true,
       skipSaveLastView: true,
       skipNavPush: true,
@@ -916,7 +926,8 @@ async function _exportDictFile(options = {}) {
     });
     if (!fetchProgress) showStatus('辞書を準備中…');
     const work = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
-    const url = work ? '/link-dict?work=' + encodeURIComponent(work) : '/link-dict';
+    // 辞書ファイルは追加したばかりのふりがなも含めて書く（自動リンク用の速い経路は古い写しを返すことがある）。
+    const url = '/link-dict?fresh=1' + (work ? '&work=' + encodeURIComponent(work) : '');
     let data;
     try {
       data = await apiFetch(url, { timeoutMs: 120000 });

@@ -203,6 +203,39 @@
 /* ＋（候補値を追加）を最後の値と同じ行に並べるための末尾ラッパー */
 .entry-prop-value-tail { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
 .entry-prop-value-tail > .cell-value { flex: 0 1 auto; min-width: 0; }
+/* 候補メニューは短い値の上へ重ねず、表示前から同じ行に場所を確保する。 */
+.entity-props-grid-container .entry-prop-card .cell-value:not([data-more-place="corner"]) > .cell-value-more:not([hidden]) {
+  position: static !important;
+  transform: none !important;
+  order: 10;
+  display: inline-flex !important;
+  flex: 0 0 var(--sheet-cell-more-size, 22px);
+  width: var(--sheet-cell-more-size, 22px);
+  height: var(--sheet-cell-more-size, 22px);
+  padding: 0 !important;
+  align-items: center;
+  justify-content: center;
+  visibility: hidden;
+  pointer-events: none;
+}
+.entity-props-grid-container .entry-prop-card .cell-value:hover > .cell-value-more:not([hidden]),
+.entity-props-grid-container .entry-prop-card .cell-value:focus-within > .cell-value-more:not([hidden]) {
+  visibility: visible;
+  pointer-events: auto;
+}
+.entity-props-grid-container .entry-prop-card .cell-value-more[hidden] { display: none !important; }
+@media (max-width: 700px), (pointer: coarse) {
+  .entity-props-grid-container .entry-prop-card .cell-value:not([data-more-place="corner"]) { min-height: 44px; }
+  .entity-props-grid-container .entry-prop-card .cell-value:not([data-more-place="corner"]) > .cell-value-more:not([hidden]) {
+    flex-basis: var(--ui-h-touch, 44px);
+    width: var(--ui-h-touch, 44px);
+    height: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+    min-height: var(--ui-h-touch, 44px);
+    visibility: visible;
+    pointer-events: auto;
+  }
+}
 /* 列タイプ選択のカスタムドロップダウン（アイコン付き） */
 .pt-type-select-btn {
   /* 項目名と同じ行に並ぶ（設定欄の共通配置）。長い型名でも欄の外へはみ出さず省略表示する */
@@ -590,7 +623,8 @@
   .chat-session-state-indicator .chat-spinner { animation: none; }
 }
 #entity-freetext > div, :is(#page-content,[data-editor-local-id="page-content"]) > div { margin-block: 2px; }
-:is(#page-content,[data-editor-local-id="page-content"]) > div:not(.callout-block) { background: var(--page-paragraph-bg, transparent); }
+:is(#page-content,[data-editor-local-id="page-content"]) > :is(p,div):not(.callout-block),
+:is(#page-content,[data-editor-local-id="page-content"]) .heading-section > :is(p,div):not(.callout-block) { background: var(--page-paragraph-bg, transparent); }
 #entity-freetext:empty::before { content: '自由記述...'; color: var(--fg2); }
 
 /* 目次の項目。旧実装は見た目もホバーも JS のインラインstyle直書きだったため、

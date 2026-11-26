@@ -7,19 +7,61 @@
   const sep = () => ({ type: 'separator' });
   const annotationsAvailable = () => document.documentElement.dataset.viewerAnnotationCapability !== 'disabled';
   // アノテートのバージョン管理は単独ウィンドウのビューワーだけで開く（本体のパネル内では
-  // 本体のアノテートパネルにバージョン管理がある）。以前は下端ツールバーのボタンだった。
+  // 本体のアノテートパネルにバージョン管理がある）。以前はツールバーのボタンだった。
   const annotationVersionsAvailable = () => window.parent === window
-    && typeof window.MeldexStandaloneVersionHistory?.openViewerAnnotations === 'function';
+    && annotationsAvailable() && (window.MeldexStandaloneNative
+      || typeof window.MeldexStandaloneVersionHistory?.openViewerAnnotations === 'function');
 
   function openAnnotationVersions() {
     Promise.resolve()
+      .then(() => window.MeldexViewerAnnotationEntry.ensureReady())
       .then(() => window.MeldexStandaloneVersionHistory.openViewerAnnotations())
-      .catch(error => window.alert(String(error?.message || error)));
+      .catch(error => Scene()?.flashStatus?.('アノテートのバージョンを開けませんでした: ' + String(error?.message || error), 5000));
   }
 
-  function items() {
-    const scene = Scene();
+  function publicImageUrl(raw) {
+    try {
+      const url = new URL(String(raw || ''), location.href), host = url.hostname.toLowerCase().replace(/\.+$/, '');
+      if (!['http:', 'https:'].includes(url.protocol) || url.origin === location.origin || url.username || url.password) return '';
+      if (!host.includes('.') || /\.(?:localhost|local|lan|home|internal|localdomain)$/.test(host)
+        || host.includes(':') || /^(?:0|10|127)\./.test(host) || /^169\.254\./.test(host)
+        || /^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
+        || /^192\.168\./.test(host) || /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)
+        || /^198\.(?:18|19)\./.test(host) || /^(?:22[4-9]|2[3-5]\d)\./.test(host)) return '';
+      return url.href;
+    } catch { return ''; }
+  }
+
+  function searchItems(target) {
+    const text = String(window.MeldexViewerTextLayer?.getSelection?.()?.text || window.getSelection?.()?.toString?.() || '').trim();
+    const image = target?.closest?.('img') || (!target && document.querySelector?.('.layer.show img'));
+    // 端末内の画像をアップロードせず、ローカルAPIのURL・ファイルの場所も外へ渡さない。
+    const imageUrl = image && (publicImageUrl(image._viewerItem?.path || image._viewerItem?.url)
+      || publicImageUrl(image.currentSrc || image.src));
+    const open = url => {
+      try {
+        const opened = window.open(url, '_blank', 'noopener');
+        if (opened) {
+          opened.opener = null;
+          Scene()?.flashStatus?.('検索ページを開きました', 1500);
+          return;
+        }
+      } catch { /* 開く操作が拒否された時も閲覧と選択を保持する。 */ }
+      Scene()?.flashStatus?.('検索ページを開けませんでした。ブラウザーの設定を確認して、もう一度お試しください', 5000);
+    };
     return [
+      ...(text ? [{ label: 'Googleで検索', icon: 'search', action: () => open('https://www.google.com/search?q=' + encodeURIComponent(text)) }] : []),
+      ...(image ? [{ label: 'Googleで画像検索', icon: 'scanSearch', action: () => open(imageUrl
+        ? 'https://www.google.com/searchbyimage?image_url=' + encodeURIComponent(imageUrl)
+        : 'https://images.google.com/') }] : []),
+    ];
+  }
+
+  function items(target) {
+    const scene = Scene();
+    const playbackActive = scene.isPlaybackActive?.() ?? scene.isPlaying();
+    return [
+      ...searchItems(target),
       ...(window.MeldexViewerScreenshotSource?.menuItems?.() || []),
       ...(window.MeldexViewerOcr?.menuItems?.() || []),
       { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
@@ -30,7 +72,7 @@
       { label: scene.isSheetContext() ? '前の画像行' : '前のフォルダ', icon: 'folderInput', shortcutId: 'viewer.prevFolder', action: () => scene.prevFolder() },
       { label: scene.isSheetContext() ? '次の画像行' : '次のフォルダ', icon: 'folderOutput', shortcutId: 'viewer.nextFolder', action: () => scene.nextFolder() },
       sep(),
-      { label: scene.isPlaying() ? '一時停止' : '再生', icon: scene.isPlaying() ? 'pause' : 'play', shortcutId: 'viewer.playPause', action: () => scene.togglePlay() },
+      { label: playbackActive ? '一時停止' : '再生', icon: playbackActive ? 'pause' : 'play', shortcutId: 'viewer.playPause', action: () => scene.togglePlay() },
       sep(),
       { label: 'ズームイン', icon: 'zoomIn', shortcutId: 'viewer.zoomIn', action: () => scene.zoomIn() },
       { label: 'ズームアウト', icon: 'zoomOut', shortcutId: 'viewer.zoomOut', action: () => scene.zoomOut() },
@@ -44,9 +86,9 @@
       { label: '全画面', icon: 'maximize', shortcutId: 'viewer.fullscreen', action: () => scene.toggleFullscreen() },
       sep(),
       { label: '表示モード', icon: 'layout', items: [
-        { label: `${scene.getMode() === 'single' ? '● ' : ''}単体`, icon: 'rectangleHorizontal', action: () => scene.setMode('single') },
-        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き`, icon: 'bookOpen', action: () => scene.setMode('spread') },
-        { label: `${scene.getMode() === 'manga' ? '● ' : ''}マンガ（右→左）`, icon: 'bookOpenText', action: () => scene.setMode('manga') },
+        { label: `${scene.getMode() === 'single' ? '● ' : ''}単ページ`, icon: 'rectangleHorizontal', action: () => scene.setMode('single') },
+        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き_右へ`, icon: 'bookOpen', action: () => scene.setMode('spread') },
+        { label: `${scene.getMode() === 'manga' ? '● ' : ''}見開き_左へ`, icon: 'bookOpenText', action: () => scene.setMode('manga') },
       ] },
       { label: '回転・反転', icon: 'rotateCw', items: [
         { label: '左右反転', icon: 'flipHorizontal', shortcutId: 'viewer.flipH', action: () => scene.toggleFlipH() },
@@ -66,7 +108,7 @@
       ...(annotationsAvailable() ? [
         sep(),
         ...(window.MeldexViewerHighlights?.menuItems() || []),
-        { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
+        { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => window.MeldexViewerAnnotationEntry.toggle() },
         ...(annotationVersionsAvailable() ? [
           { label: 'アノテートのバージョン管理...', icon: 'history', action: openAnnotationVersions },
         ] : []),
@@ -78,13 +120,13 @@
     ];
   }
 
-  async function openMenuAt(clientX, clientY) {
+  async function openMenuAt(clientX, clientY, target) {
     if (window.MeldexStandaloneNative && !window.MeldexViewerAnnotations && window.MeldexViewerTextLayer?.getSelection()) {
       try {
         await window.MeldexViewerHighlights.ensureNative();
       } catch(error) { window.showStatus?.('ハイライトを読み込めませんでした: '+error.message,true); return; }
     }
-    window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items() });
+    window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items(target) });
   }
 
   // ツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19）。右クリックと同じメニューを
@@ -139,9 +181,9 @@
       return;
     }
     event.preventDefault();
-    openMenuAt(event.clientX, event.clientY);
+    openMenuAt(event.clientX, event.clientY, event.target);
   });
   if (typeof addLongPressHandler === 'function') {
-    addLongPressHandler(display, event => openMenuAt(event.clientX, event.clientY), { moveThreshold: 10 });
+    addLongPressHandler(display, event => openMenuAt(event.clientX, event.clientY, event.target), { moveThreshold: 10 });
   }
 })();

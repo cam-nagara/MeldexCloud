@@ -6,7 +6,7 @@
   const WRITE_ENDPOINTS = new Set([
     '/file', '/quick-memo/file', '/upload-file', '/outliner/add', '/outliner/rename',
     '/outliner/delete', '/outliner/delete-batch', '/outliner/restore',
-    '/outliner/duplicate', '/outliner/save-as', '/outliner/move',
+    '/outliner/duplicate', '/outliner/save-as', '/outliner/move', '/outliner/move-batch',
   ]);
   const TRANSIENT_ACTIVE_LOCK_ENDPOINTS = new Set([...WRITE_ENDPOINTS].filter((endpoint) => endpoint !== '/file'));
   const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif', '.ico'];
@@ -568,6 +568,9 @@
       return [source, base, base ? base + extension : ''].filter(Boolean);
     }
     if (endpoint === '/outliner/move') return [normalizePath(body?.path || ''), normalizePath(body?.dest_folder || '')];
+    if (endpoint === '/outliner/move-batch') {
+      return [...(Array.isArray(body?.items) ? body.items : []).map((item) => normalizePath(item?.path || '')), normalizePath(body?.dest_folder || '')];
+    }
     if (endpoint === '/outliner/save-as') return [normalizePath(body?.path || ''), normalizePath(body?.dest_folder || '')];
     if (endpoint.startsWith('/outliner/')) return [normalizePath(body?.path || '')];
     return [];
@@ -582,6 +585,13 @@
     if (endpoint === '/outliner/move') {
       const source = normalizePath(body?.path || '');
       return [source, joinPath(normalizePath(body?.dest_folder || ''), basename(source))];
+    }
+    if (endpoint === '/outliner/move-batch') {
+      const destination = normalizePath(body?.dest_folder || '');
+      return (Array.isArray(body?.items) ? body.items : []).flatMap((item) => {
+        const source = normalizePath(item?.path || '');
+        return source ? [source, joinPath(destination, basename(source))] : [];
+      });
     }
     return _lockPaths(endpoint, path, body);
   }
@@ -649,7 +659,8 @@
       const manualLockPaths = _uniqueLockPaths(_lockPaths(endpoint, path, originalBody));
       for (const lockPath of manualLockPaths) {
         const includeDescendants = ['/outliner/delete', '/outliner/delete-batch'].includes(endpoint)
-          || (['/outliner/move', '/outliner/rename'].includes(endpoint) && lockPath === mutationSourcePath);
+          || (['/outliner/move', '/outliner/rename'].includes(endpoint) && lockPath === mutationSourcePath)
+          || (endpoint === '/outliner/move-batch' && lockPath !== normalizePath(originalBody?.dest_folder || ''));
         await _requireUnlockedPath(lockPath, {
           action: 'standalone-' + endpoint.replace(/^\//, '').replace(/\//g, '-'),
           includeDescendants,

@@ -386,8 +386,8 @@ window.GBAnnotationSurfaces = (() => {
   async function clear() {
     const s = selected;
     if (!s || s.readOnly) return false;
-    if (!await cfConfirm('この画面のアノテートをすべて削除しますか？')) return false;
     if (s.iframe) { return s.iframe.contentWindow.MeldexViewerAnnotationScene?.clearAll({ confirmed: true }); }
+    if (!await cfConfirm('この画面のアノテートをすべて削除しますか？')) return false;
     await s.bridge.flush();
     let before;
     try { before = await apiFetch(_annotationTargetFetchUrl(s.path)); }
@@ -442,7 +442,10 @@ window.GBAnnotationSurfaces = (() => {
       if (msg.highlightRequestId) s.highlightPending?.delete(msg.highlightRequestId);
       if (msg.ok && msg.history) {
         const path = msg.targetPath || s.path;
-        const push = () => _pushAnnotationHistory('アノテート: ビューワー', msg.history.before, msg.history.after, path, reservation?.entry.scope || scope({ ...s, path }));
+        const batch = Array.isArray(msg.history.beforeRows) || Array.isArray(msg.history.afterRows);
+        const push = () => batch
+          ? _pushAnnotationBatchHistory('アノテート: 全削除', msg.history.beforeRows, msg.history.afterRows, path, reservation?.entry.scope || scope({ ...s, path }))
+          : _pushAnnotationHistory('アノテート: ビューワー', msg.history.before, msg.history.after, path, reservation?.entry.scope || scope({ ...s, path }));
         if (reservation) reservation.capture(push); else push();
       }
       else reservation?.cancel();
@@ -518,7 +521,7 @@ window.GBAnnotationSurfaces = (() => {
       .filter(s => !path || samePath(s.path, path)
         || s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path)).map(reload)); },
     describe: () => [...surfaces.values()].map(s => ({ id: s.id, path: s.path, type: s.type, embedded: !!s.iframe, host: s.host.id })),
-    historyScope: () => selected ? scope(selected) : '',
+    historyScope: (surface = selected) => surface ? scope(surface) : '',
     target: () => selected,
     undo: () => selected ? historyUndo(scope(selected)) : false,
     redo: () => selected ? historyRedo(scope(selected)) : false,

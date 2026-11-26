@@ -368,10 +368,13 @@
     warning.className = 'gb-production-bulk-warning';
     warning.hidden = true;
     warning.dataset.e2eId = 'production-bulk-conversion-warning';
-    const result = document.createElement('p');
-    result.className = 'gb-production-bulk-result';
+    const result = window.GBUI.createInlineError('');
     result.setAttribute('role', 'alert');
     result.dataset.e2eId = 'production-bulk-result';
+    const showResult = message => {
+      result.setMessage(message);
+      if (message && result.isConnected) result.scrollIntoView({ block:'nearest',behavior:'instant' });
+    };
     form.append(fields, workList, contentFieldset, summary, warning, result);
     panel.append(form);
 
@@ -536,7 +539,7 @@
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
 
-    const onInput = () => { result.textContent = ''; sync(); };
+    const onInput = () => { showResult(''); sync(); };
     const applyWorkStructure = () => {
       const meta = catalog.workMeta.get(work.value.trim());
       const savedPages = Number(meta?.pageCount);
@@ -569,13 +572,13 @@
       if (!ensureProductionWritable()) return;
       sync();
       if (submit.disabled || busy) {
-        if (!work.value.trim()) { result.textContent = '作品名を入力してください。'; work.focus(); }
-        else if (!selectedContents(contentGrid).length) result.textContent = '作業内容を1つ以上選んでください。';
-        else if (taskCount() > MAX_TASKS) result.textContent = `一度に作成できるタスクは${MAX_TASKS.toLocaleString('ja-JP')}件までです。`;
+        if (!work.value.trim()) { showResult('作品名を入力してください。'); work.focus(); }
+        else if (!selectedContents(contentGrid).length) showResult('作業内容を1つ以上選んでください。');
+        else if (taskCount() > MAX_TASKS) showResult(`一度に作成できるタスクは${MAX_TASKS.toLocaleString('ja-JP')}件までです。`);
         return;
       }
       setBusy(true);
-      result.textContent = '';
+      showResult('');
       const workTitle = work.value.trim();
       try {
         const usesPanels = unit.value === UNIT_PANEL;
@@ -611,7 +614,7 @@
         // 打ち切ると、案内どおり同じ条件で再実行しても全件が重複扱いになり、割り当てが
         // 二度と走らない行き止まりになる。
         if (shown === false) {
-          result.textContent = 'タスクの保存は完了しましたが、一覧を更新できませんでした。同じ条件でもう一度実行すると、作成済み分は重複せず表示を再試行できます。';
+          showResult('タスクの保存は完了しましたが、一覧を更新できませんでした。同じ条件でもう一度実行すると、作成済み分は重複せず表示を再試行できます。');
           notify(result.textContent, true);
           setBusy(false);
           runAutoAssign(workTitle);
@@ -621,9 +624,12 @@
         close(true);
         runAutoAssign(workTitle);
       } catch (error) {
-        const message = error?.message || 'タスクを作成できませんでした。入力内容を確認してください。';
+        const translated=window.MeldexErrorMessages?.translate?.(error);
+        const message=translated?.matched ? [translated.message,translated.action].filter(Boolean).join(' ')
+          : 'タスクを作成できませんでした。保存先の空き容量とアクセス権限を確認して、もう一度実行してください。';
+        result.title=String(error?.message || '');
         const resume = '保存途中で止まった場合も、同じ条件でもう一度実行すると不足分だけを再開できます。';
-        result.textContent = `${message} ${resume}`;
+        showResult(`${message} ${resume}`);
         notify(result.textContent, true);
         setBusy(false);
       }
@@ -651,8 +657,9 @@
     }).catch(error => {
       if (closed) return;
       catalogFailed = true;
-      result.textContent = '制作管理の設定を読み込めませんでした。通信状態を確認して、もう一度開いてください。';
-      notify(error?.message || result.textContent, true);
+      showResult('制作管理の設定を読み込めませんでした。通信状態を確認して、もう一度開いてください。');
+      result.title=String(error?.message || '');
+      notify(result.textContent, true);
       sync();
     });
     return dialog;

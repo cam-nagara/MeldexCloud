@@ -136,7 +136,7 @@ function _renderDetailContent(item) {
   if (item.type === 'folder') {
     const b = document.createElement('button');
     b.innerHTML = lucide('play', 12) + ' スライドショー';
-    b.addEventListener('click', () => openViewer('/viewer?folder=' + encodeURIComponent(item.path)));
+    b.addEventListener('click', () => openFolderSlideshow(item.path));
     actions.appendChild(b);
   }
   if (item.name && item.name.toLowerCase().endsWith('.pdf')) {
@@ -323,6 +323,7 @@ function _refreshFolderLinkUi(filePath, folderPath, tagsContainer) {
   if (typeof loadOutliner === 'function') loadOutliner();
   if (folderPath && _folderPath === folderPath && typeof openFolder === 'function') {
     openFolder(folderPath.split('/').pop() || folderPath, folderPath, {
+      ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
       skipNavPush: true,
       skipSaveLastView: true,
       skipHighlight: true,
@@ -810,6 +811,9 @@ function _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts) {
 // 高速パス成功時はローディング表示を出さない。
 function _gbOpenViewerIframe(iframe, url, resolvedUrl, openOpts) {
   if (!iframe) return;
+  // タブ復帰の表示検証（gb-pane-bridge の _gbScheduleMediaContainerResync）が、
+  // 検証待ちの間に新しく開いた内容を古いタブの内容へ戻さないための世代。
+  window.GBViewerOpenGeneration = (Number(window.GBViewerOpenGeneration) || 0) + 1;
   const frameState = _gbBindViewerFastPathListeners(iframe);
   const openSeq = frameState.openSeq = (frameState.openSeq || 0) + 1;
   const finishSwitch = ok => {
@@ -1308,6 +1312,7 @@ function showFolderDisplaySettings(options) {
     if (folderPath && typeof openFolder === 'function') {
       const label = document.getElementById('folder-title')?.textContent || folderPath;
       await openFolder(label, folderPath, {
+        ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
         silent: true,
         skipShowView: true,
         skipNavPush: true,
@@ -1385,6 +1390,7 @@ function showFolderDisplaySettings(options) {
   _fdSection(menu, '種類');
   const typeBox = document.createElement('div');
   typeBox.style.maxHeight = '150px';
+  typeBox.dataset.folderFilterSection = 'type';
   typeBox.style.overflowY = 'auto';
   if (choices.types.length === 0) {
     const empty = document.createElement('div');
@@ -1403,6 +1409,7 @@ function showFolderDisplaySettings(options) {
   _fdSection(menu, '拡張子');
   const extBox = document.createElement('div');
   extBox.style.maxHeight = '130px';
+  extBox.dataset.folderFilterSection = 'ext';
   extBox.style.overflowY = 'auto';
   if (choices.exts.length === 0) {
     const empty = document.createElement('div');
@@ -1421,6 +1428,7 @@ function showFolderDisplaySettings(options) {
   _fdSection(menu, '所属フォルダ');
   const folderBox = document.createElement('div');
   folderBox.style.maxHeight = '150px';
+  folderBox.dataset.folderFilterSection = 'folder';
   folderBox.style.overflowY = 'auto';
   if (!choices.folders || choices.folders.length === 0) {
     const empty = document.createElement('div');
@@ -1491,11 +1499,13 @@ function showFolderDisplaySettings(options) {
 
   const tagChips = document.createElement('div');
   tagChips.className = 'fd-tag-filter-chips';
+  tagChips.dataset.folderFilterSection = 'tag-chips';
   tagChips.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding:2px 12px 4px;';
   menu.appendChild(tagChips);
 
   const tagBox = document.createElement('div');
   tagBox.style.maxHeight = '150px';
+  tagBox.dataset.folderFilterSection = 'tag';
   tagBox.style.overflowY = 'auto';
   if (!choices.tags || choices.tags.length === 0) {
     const empty = document.createElement('div');
@@ -1542,6 +1552,7 @@ function showFolderDisplaySettings(options) {
 
   _fdSection(menu, '更新期間');
   const periodRow = document.createElement('div');
+  periodRow.dataset.folderFilterSection = 'modified';
   periodRow.style.cssText = 'padding:5px 12px;display:flex;flex-direction:column;gap:6px;';
   const select = document.createElement('select');
   select.dataset.folderFilter = 'modified-preset';
@@ -1606,6 +1617,8 @@ function showFolderDisplaySettings(options) {
   periodRow.appendChild(customRow);
   menu.appendChild(periodRow);
   syncCustomVisibility();
+  // 大きなフォルダの表示では、種類はサーバーで絞り込める6種だけにし、サーバーで扱えない絞り込みは使えないことを示す
+  globalThis.MeldexFolderLarge?.adjustFilterMenu?.(menu, cfg);
   if (filterOnly) {
     for (let i = 0; i < filterStartIndex; i += 1) menu.firstChild?.remove();
     if (menu.firstElementChild?.classList?.contains('gb-context-menu-sep')) {
@@ -1670,9 +1683,20 @@ function showTreeDisplaySettings(event) {
   });
 }
 
-function openFolderSlideshow() {
-  if (!_folderPath) return;
-  openViewer('/viewer?folder=' + encodeURIComponent(_folderPath));
+async function openFolderSlideshow(path = _folderPath) {
+  if (!path) return;
+  if (_folderMembershipKey(path) !== _folderMembershipKey(_folderPath)) {
+    await openFolder(path.split(/[\\/]/).pop(), path);
+    if (_folderMembershipKey(path) !== _folderMembershipKey(_folderPath)) return;
+  }
+  _openFolderImageSlideshow(_folderVisibleItems);
+}
+
+// 表示中の並びと絞り込みを確定した一覧を渡す。ビューワーでフォルダを取り直さない。
+function _openFolderImageSlideshow(items) {
+  const paths = items.filter(item => item.type === 'image').map(item => item.path);
+  if (!paths.length) { showStatus('表示中の画像がありません', true); return; }
+  openViewer('/viewer?files=' + encodeURIComponent(JSON.stringify(paths)) + '&autoplay=1', { skipHighlight: true });
 }
 
 async function openNative(path) {
@@ -1819,8 +1843,8 @@ function fvBulkCompress() {
   compressFolderItems(_folderSelectedItems);
 }
 
-function fvBulkAutoTag() {
-  const items = (_folderSelectedItems || []).filter(item => item?.path);
+function fvBulkAutoTag(sourceItems = _folderSelectedItems) {
+  const items = (sourceItems || []).filter(item => item?.path);
   if (!items.length) return;
   if (!window.MeldexGlobalTags?.autoTag) {
     showStatus('自動タグ付けを初期化できませんでした', true);

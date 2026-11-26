@@ -282,11 +282,214 @@
       remapped.set(index, node);
     });
     state.mountedByIndex = remapped;
-    owner.style.height = state.totalHeight + 'px';
+    _applyContainerHeight(owner, state);
     var scroller = _scroller(), anchorIndex = anchor && indices.get(anchor.id);
     if (scroller && anchorIndex !== undefined) scroller.scrollTop += (state.offsets[anchorIndex] || 0) - beforeOffset;
     _remountVisible(owner);
     return true;
+  }
+
+  // 大きなフォルダの続きのページを末尾へ足す（並べ替えはサーバーの順のまま）。表示中の行は取り外さず、
+  // 索引と位置だけ更新する。
+  function appendItems(childrenDiv, newItems) {
+    var owner = _resolvedVirtualContainer(childrenDiv);
+    var state = owner && owner._virtualState;
+    if (!state) return false;
+    var parentPath = childrenDiv._virtualParentPath || null;
+    var current = _siblingListFor(state, parentPath) || [];
+    var cacheKey = parentPath || '';
+    state.appendKnown = state.appendKnown || new Map();
+    var cached = state.appendKnown.get(cacheKey);
+    var known = cached && cached.list === current ? cached.paths : new Set(current.map(function (item) { return item.path; }));
+    var added = (newItems || []).filter(function (item) { return item && item.path && !known.has(item.path); });
+    if (!added.length) return true;
+    if (_appendItemsAtEnd(owner, state, parentPath, current, known, added)) return true;
+    var target = current.concat(added);
+    added.forEach(function (item) { known.add(item.path); });
+    state.appendKnown.set(cacheKey, { list: target, paths: known });
+    var oldFlat = state.flat, oldOffsets = state.offsets;
+    var anchor = oldFlat[state.rangeStart];
+    var beforeOffset = oldOffsets[state.rangeStart] || 0;
+    var mounted = Array.from(state.mountedByIndex.entries());
+    if (parentPath) state.childrenByParent.set(parentPath, target); else state.allItems = target;
+    added.forEach(function (item) { _pathToContainer.set(item.path, { childrenDiv: owner, state: state }); });
+    _rebuildModel(state);
+    var indices = new Map();
+    for (var i = 0; i < state.flat.length; i++) indices.set(state.flat[i].id, i);
+    var remapped = new Map();
+    mounted.forEach(function (pair) {
+      var index = indices.get(oldFlat[pair[0]].id), node = pair[1];
+      if (index === undefined) {
+        var currentFlat = state.flat;
+        state.flat = oldFlat;
+        try { _unmountRow(state, pair[0]); } finally { state.flat = currentFlat; }
+        return;
+      }
+      node.dataset.gbVirtualIndex = String(index);
+      node.style.top = state.offsets[index] + 'px';
+      remapped.set(index, node);
+    });
+    state.mountedByIndex = remapped;
+    _applyContainerHeight(owner, state);
+    var scroller = _scroller(), anchorIndex = anchor && indices.get(anchor.id);
+    if (scroller && anchorIndex !== undefined) {
+      var delta = (state.offsets[anchorIndex] || 0) - beforeOffset;
+      if (delta) scroller.scrollTop += delta;
+    }
+    _remountVisible(owner);
+    return true;
+  }
+
+  // 続きのページを一覧の末尾へ足すだけで済む時（一番上の階層・名前検索なし・足す項目が展開済みでない）は、
+  // 一覧を作り直さず、足す分だけ索引と位置を伸ばす（1回の時間が読み込み済みの件数に比例しない）。
+  function _appendItemsAtEnd(owner, state, parentPath, current, known, added) {
+    if (parentPath || current !== state.allItems || state.flat.length + 1 !== state.offsets.length) return false;
+    var q = '';
+    try { q = typeof _treeSearchQuery !== 'undefined' ? _treeSearchQuery : ''; } catch (e) { q = ''; }
+    if (q) return false;
+    var engine = _engine();
+    if (!engine || state.compactRowHeight !== _compactRowHeight(engine)) return false;
+    for (var i = 0; i < added.length; i++) {
+      if (state.expandedIds && state.expandedIds.has(added[i].path)) return false;
+    }
+    var heights = state.heightsByPath;
+    var total = state.totalHeight;
+    for (var j = 0; j < added.length; j++) {
+      var item = added[j];
+      known.add(item.path);
+      state.allItems.push(item);
+      _pathToContainer.set(item.path, { childrenDiv: owner, state: state });
+      if (!_itemPassesFilters(item)) continue;
+      if (state.effectiveItems && state.effectiveItems !== state.allItems) state.effectiveItems.push(item);
+      var height = (heights && heights.get(item.path)) || state.compactRowHeight;
+      state.flat.push({ id: item.path, parentId: null, depth: 0, height: height, data: item });
+      total += height;
+      state.offsets.push(total);
+    }
+    state.totalHeight = total;
+    state.appendKnown.set('', { list: state.allItems, paths: known });
+    _applyContainerHeight(owner, state);
+    _remountVisible(owner);
+    return true;
+  }
+
+  // ---- 大きなフォルダの分割読み込み: 読み込み済みの範囲（連続した1区間）の入れ替え・前への継ぎ足し ----
+  // 一覧の途中の位置へ直接飛んだ時に使う。読み込み済みの範囲より前の行数（leadRows）と後ろの行数（pendingRows）は
+  // 高さだけ確保する（スクロールバーは全体の長さを表す）。
+
+  // 読み込み済みの範囲を丸ごと入れ替える（遠くへ飛んだ時）。前の範囲の行・選択の控えは手放す。
+  function replaceWindow(childrenDiv, items, leadRows, pendingRows) {
+    var state = childrenDiv && childrenDiv._virtualState;
+    var engine = _engine();
+    if (!state || !engine) return false;
+    Array.from(state.mountedByIndex.keys()).forEach(function (index) { _unmountRow(state, index); });
+    (state.allItems || []).forEach(function (item) {
+      if (!item || !item.path) return;
+      _deleteCachedBranch(state, item.path);
+      _pathToContainer.delete(item.path);
+      if (state.selectedIds) state.selectedIds.remove(item.path);
+      if (state.expandedIds) state.expandedIds.delete(item.path);
+      if (state.heightsByPath) state.heightsByPath.delete(item.path);
+    });
+    var list = (items || []).filter(function (item) { return item && item.path; });
+    state.allItems = list;
+    state.appendKnown = new Map();
+    list.forEach(function (item) { _pathToContainer.set(item.path, { childrenDiv: childrenDiv, state: state }); });
+    var rowHeight = _compactRowHeight(engine);
+    state.leadHeight = Math.max(0, Number(leadRows) || 0) * rowHeight;
+    state.reserveHeight = Math.max(0, Number(pendingRows) || 0) * rowHeight;
+    _rebuildModel(state);
+    _applyContainerHeight(childrenDiv, state);
+    _remountVisible(childrenDiv);
+    return true;
+  }
+
+  // 読み込み済みの範囲の前へページを継ぎ足す（上へスクロールした時）。leadRows は継ぎ足した後の、前に残る行数。
+  // 表示中の行は取り外さず、索引と位置だけ更新する。足した行の高さの合計が、減らした確保分と違う時だけスクロール位置を直す。
+  function prependItems(childrenDiv, newItems, leadRows) {
+    var state = childrenDiv && childrenDiv._virtualState;
+    var engine = _engine();
+    if (!state || !engine) return false;
+    var known = new Set((state.allItems || []).map(function (item) { return item.path; }));
+    var added = (newItems || []).filter(function (item) { return item && item.path && !known.has(item.path); });
+    var oldFlat = state.flat, oldOffsets = state.offsets;
+    var anchor = oldFlat[state.rangeStart];
+    var beforeOffset = oldOffsets[state.rangeStart] || 0;
+    var mounted = Array.from(state.mountedByIndex.entries());
+    state.allItems = added.concat(state.allItems || []);
+    state.appendKnown = new Map();
+    added.forEach(function (item) { _pathToContainer.set(item.path, { childrenDiv: childrenDiv, state: state }); });
+    state.leadHeight = Math.max(0, Number(leadRows) || 0) * _compactRowHeight(engine);
+    _rebuildModel(state);
+    var indices = new Map();
+    for (var i = 0; i < state.flat.length; i++) indices.set(state.flat[i].id, i);
+    var remapped = new Map();
+    mounted.forEach(function (pair) {
+      var index = indices.get(oldFlat[pair[0]].id), node = pair[1];
+      if (index === undefined) {
+        var currentFlat = state.flat;
+        state.flat = oldFlat;
+        try { _unmountRow(state, pair[0]); } finally { state.flat = currentFlat; }
+        return;
+      }
+      node.dataset.gbVirtualIndex = String(index);
+      node.style.top = state.offsets[index] + 'px';
+      remapped.set(index, node);
+    });
+    state.mountedByIndex = remapped;
+    _applyContainerHeight(childrenDiv, state);
+    var scroller = _scroller(), anchorIndex = anchor && indices.get(anchor.id);
+    if (scroller && anchorIndex !== undefined) {
+      var delta = (state.offsets[anchorIndex] || 0) - beforeOffset;
+      if (delta) scroller.scrollTop += delta * _zoomFactor();
+    }
+    _remountVisible(childrenDiv);
+    return true;
+  }
+
+  // 見えている範囲と読み込み済みの範囲（一覧の中の位置・px）。続きや途中のページを取る判断に使う。
+  // 折りたたみ中・画面から外れている時は null。
+  function windowMetrics(childrenDiv) {
+    var state = childrenDiv && childrenDiv._virtualState;
+    var scroller = _scroller();
+    var engine = _engine();
+    if (!state || !scroller || !engine || !childrenDiv.isConnected || childrenDiv.closest('.collapsed')) return null;
+    var zoom = _zoomFactor();
+    var spacerRect = childrenDiv.getBoundingClientRect();
+    var scrollerRect = scroller.getBoundingClientRect();
+    return {
+      viewTop: (scrollerRect.top - spacerRect.top) / zoom,
+      viewBottom: (scrollerRect.bottom - spacerRect.top) / zoom,
+      loadedTop: state.leadHeight || 0,
+      loadedBottom: state.totalHeight,
+      height: state.totalHeight + (state.reserveHeight || 0),
+      rowHeight: state.compactRowHeight || _compactRowHeight(engine),
+    };
+  }
+
+  // まだ読み込んでいない続きの件数。その分の高さを確保して、スクロールバーが全体の長さを表すようにする。
+  function setPendingRows(childrenDiv, rows) {
+    var state = childrenDiv && childrenDiv._virtualState;
+    if (!state) return false;
+    var engine = _engine();
+    var rowHeight = state.compactRowHeight || (engine ? _compactRowHeight(engine) : 22);
+    var reserve = Math.max(0, Number(rows) || 0) * rowHeight;
+    if (reserve === (state.reserveHeight || 0)) return true;
+    state.reserveHeight = reserve;
+    _applyContainerHeight(childrenDiv, state);
+    return true;
+  }
+
+  // 読み込み済みの最後の子の下端（画面の座標）。続きを取る合図に使う。
+  function bottomOfItem(childrenDiv, path) {
+    var owner = _resolvedVirtualContainer(childrenDiv);
+    var state = owner && owner._virtualState;
+    if (!state || !owner.isConnected) return null;
+    var index = -1;
+    for (var i = state.flat.length - 1; i >= 0; i--) { if (state.flat[i].id === path) { index = i; break; } }
+    if (index < 0) return null;
+    var bottom = index + 1 < state.offsets.length ? state.offsets[index + 1] : state.totalHeight;
+    return owner.getBoundingClientRect().top + bottom * _zoomFactor();
   }
 
   // 同一コンテナ内でのabove/below並べ替え（movedPaths を targetPath の前後へ移動）
@@ -543,6 +746,12 @@
     clearDragExempt: clearDragExempt,
     dropInto: dropInto,
     insertItems: insertItems,
+    appendItems: appendItems,
+    prependItems: prependItems,
+    replaceWindow: replaceWindow,
+    windowMetrics: windowMetrics,
+    bottomOfItem: bottomOfItem,
+    setPendingRows: setPendingRows,
     removeFromContainer: removeFromContainer,
     removeMatchingPaths: removeMatchingPaths,
     reorderAround: reorderAround,

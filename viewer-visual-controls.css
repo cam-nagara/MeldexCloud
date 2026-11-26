@@ -1,0 +1,12 @@
+.meldex-visual-manager :is(.gb-input, .gb-select) {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+@media (max-width: 600px) {
+  .meldex-visual-manager :is(button, input:not([type="checkbox"]), select, textarea, summary),
+  .meldex-visual-manager label:has(input[type="checkbox"]) {
+    min-height: var(--ui-h-touch, 44px);
+    min-width: var(--ui-h-touch, 44px);
+  }
+}

@@ -3,6 +3,8 @@
   'use strict';
   let sequence = 0;
   const normal = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const comparablePath = path => normal(window.GBPathUtils?.resolveForClipboard?.(
+    path, typeof state !== 'undefined' ? state.vaultPath : '') ?? path);
   async function mount(grid, data, path, metadata, options) {
     if (!metadata?.default_form_path) return null;
     const wrapper = document.createElement('section'); wrapper.className = 'meldex-sheet-topic-form';
@@ -57,7 +59,7 @@
         panel.dataset.formState = 'loaded';
         if (record) Object.assign(data, record);
         const doc = MeldexFormDocument.parse(loaded.content);
-        if (normal(doc.sheet.path) !== normal(options.parentDb)) {
+        if (comparablePath(doc.sheet.path) !== comparablePath(options.parentDb)) {
           const ids = await Promise.all([doc.sheet.path, options.parentDb].map(value => apiFetch('/file-id?path=' + encodeURIComponent(value))));
           if (!ids[0]?.file_id || ids[0].file_id !== ids[1]?.file_id) throw new Error('フォームの参照先シートが変更されています');
         }
@@ -91,7 +93,7 @@
       }
     };
     await render();
-    return { flush: () => MeldexDbFormRuntime.confirmLeave(panel), showColumns };
+    return { flush: () => MeldexDbFormRuntime.confirmLeave(panel), showColumns, getView: () => panel.hidden ? 'columns' : 'form' };
   }
   window.MeldexSheetDefaultForm = Object.freeze({ mount });
 })();

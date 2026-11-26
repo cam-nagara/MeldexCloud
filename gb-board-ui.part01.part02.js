@@ -144,7 +144,7 @@ function bdOpenStylePicker(kind, anchorEl, options) {
   const applyPick = (styleId, closeMenu) => {
     opts.currentId = styleId;
     if (typeof opts.onPick === 'function') opts.onPick(styleId);
-    else if (kind === 'card') bd.activeCardStyle = styleId;
+    else if (kind === 'card') bdChooseCardStyleForNewTopics(styleId);
     else bd.activeLineStyle = styleId;
     bdRefreshBoardToolbar();
     if (closeMenu) bdCloseStylePicker({ focusTarget: getFreshTrigger });
@@ -259,8 +259,8 @@ function bdOpenToolbarStylePicker(kind, btn) {
           _bdAssignCardStyleToNodes([...bd.selected], styleId);
         } else {
           // 既定のトピックスタイルの切り替えもボードに保存されるので、取り消せるように履歴へ積む。
-          if ((bd.activeCardStyle || '') !== (styleId || '')) bdPushUndo();
-          bd.activeCardStyle = styleId || '';
+          if ((bd.activeCardStyle || '') !== (styleId || '') || (bd.newCardStyleRef || '') !== (styleId || '')) bdPushUndo();
+          bdChooseCardStyleForNewTopics(styleId);
         }
         return;
       }
@@ -273,10 +273,14 @@ function bdOpenToolbarStylePicker(kind, btn) {
       }
     },
     onAfterPick() {
-      if (isLine) bdDrawConns();
-      else bdRender();
-      bdDirty();
-      if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+      const refresh = () => {
+        if (isLine) bdDrawConns();
+        else if (typeof bdAreAllCardsSelected === 'function' && bdAreAllCardsSelected()) bdRender();
+        bdDirty();
+        if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+      };
+      if (typeof bdWithNormalizedBoardUiState === 'function') return bdWithNormalizedBoardUiState(refresh);
+      refresh();
     },
   });
 }
@@ -322,35 +326,127 @@ function _bdUpdateBoardTabMeta(oldPath, newPath, newLabel) {
     });
   });
   if (changed) {
-    GBLayout.render();
-    GBLayout.saveLayout();
+    if (typeof GBLayout.refreshPaneTabs === 'function') {
+      GBLayout.getAllPanes(GBLayout.root).forEach(pane => GBLayout.refreshPaneTabs(pane.id));
+    }
+    GBLayout.saveLayout?.();
   }
 }
 
-async function _bdRenameBoardFile(newName) {
+function _bdApplyBoardRename(oldPath, newPath, nextName, res) {
+  if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, nextName, res?.file_id);
+  if (typeof renameAppPathReferences === 'function') {
+    renameAppPathReferences(oldPath, newPath, {
+      label: nextName, type: 'board', fileId: res?.file_id, etag: res?.etag,
+      preserveMountedViews: true,
+    });
+  } else {
+    window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
+    _bdUpdateBoardTabMeta(oldPath, newPath, nextName);
+  }
+  // 通信中に別のボードを開いた場合は、その編集面を書き換えない。
+  if (bd.path === oldPath || bd.path === newPath) {
+    bd.path = newPath;
+    bd.label = nextName;
+    bd._loadedBoardPath = newPath;
+    if (res?.etag) {
+      bd.lastSavedEtag = res.etag;
+      const coordinator = window.MeldexDocumentSaveCoordinator;
+      bd.lastSavedTransportRevision = res.transport_revision || coordinator?.normalizeTransportRevision?.(coordinator.currentTransportName(), res.etag) || res.etag;
+    }
+    if (typeof renameAppPathReferences !== 'function' && window.GBPathUtils?.displayTitle) {
+      const header = window.GBPathUtils.displayTitle.write('---\n' + (bd._preservedFrontmatter || '') + '\n---\n', nextName, newPath);
+      bd._preservedFrontmatter = header.replace(/^---\n/, '').replace(/\n---\n?$/, '');
+    }
+    if (typeof state !== 'undefined' && state.currentBoardPath === oldPath) state.currentBoardPath = newPath;
+    const titleEl = _bdToolbarControl(_bdToolbarRoot(), 'title', 'bd-title');
+    if (titleEl) titleEl.textContent = nextName;
+    const mobileTitle = document.querySelector('[data-cloud-mobile-board-title]');
+    if (mobileTitle) mobileTitle.textContent = nextName;
+    window.MeldexFileLockBadge?.apply?.(titleEl, newPath);
+    if (typeof saveLastView === 'function') saveLastView({ type: 'board', label: nextName, path: newPath });
+  }
+  if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+}
+
+async function _bdRenameBoardFile(newName, previousTitle) {
   const oldPath = bd.path || (typeof state !== 'undefined' ? state.currentBoardPath : '') || '';
   const nextName = String(newName || '').trim();
   if (!oldPath || !nextName) return false;
-  const currentName = (oldPath.split('/').pop() || '').replace(/\.[^.]+$/i, '');
-  if (nextName === currentName) return true;
-  const res = await apiPost('/outliner/rename', { old_path: oldPath, new_name: nextName, type: 'board' });
-  const newPath = String(res?.new_path || '').trim();
-  if (!newPath) throw new Error('リネーム結果が不正です');
-  if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, nextName, res?.file_id);
-  bd.path = newPath;
-  if (typeof state !== 'undefined') state.currentBoardPath = newPath;
-  const titleEl = _bdToolbarControl(_bdToolbarRoot(), 'title', 'bd-title');
-  if (titleEl) titleEl.textContent = nextName;
-  window.MeldexFileLockBadge?.apply?.(titleEl, newPath);
-  if (typeof saveLastView === 'function') saveLastView({ type: 'board', label: nextName, path: newPath });
-  _bdUpdateBoardTabMeta(oldPath, newPath, nextName);
-  if (typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+  const oldTitle = previousTitle || bd.label || _bdToolbarControl(_bdToolbarRoot(), 'title', 'bd-title')?.textContent?.trim()
+    || oldPath.split('/').pop().replace(/\.(?:mel-board|board\.(?:md|json)|canvas\.json|md)$/i, '');
+  const common = typeof _bdHasCommonHistory === 'function' && _bdHasCommonHistory();
+  const scope = common ? _bdHistoryScope() : '';
+  // 改名後も、この編集面が持っていた本文の履歴と同じ枠を使う。タブの保存状態にも含まれる。
+  if (common) bd._historyScope = scope;
+  const reservation = common && typeof historyReserve === 'function'
+    ? historyReserve('ボード名の変更', scope) : null;
+  let finishLocal, undoTitle, redoTitle;
+  const localReady = new Promise(resolve => { finishLocal = resolve; });
+  const localEntry = !common && typeof _bdUndoStack !== 'undefined' ? {
+    undo: async () => { if (await localReady) await undoTitle(); },
+    redo: async () => { if (await localReady) await redoTitle(); },
+  } : null;
+  if (localEntry) {
+    _bdUndoStack.push(localEntry);
+    if (_bdUndoStack.length > _BD_UNDO_MAX) _bdUndoStack.shift();
+    _bdRedoStack.length = 0;
+  }
+  let currentPath = oldPath;
+  const renameTo = async (storedName, displayName) => {
+    const active = bd.path === currentPath;
+    const pendingSaves = active && bd._saveOperations instanceof Set
+      ? [...bd._saveOperations].filter(item => item.path === currentPath).map(item => item.promise) : [];
+    let finishMutation;
+    const mutation = { promise: new Promise(resolve => { finishMutation = resolve; }) };
+    if (active) bd._titleMutation = mutation;
+    try {
+    if (pendingSaves.length) await Promise.all(pendingSaves);
+    let res = await apiPost('/outliner/rename', { old_path: currentPath, new_name: storedName, type: 'board' });
+    let newPath = String(res?.new_path || '').trim();
+    if (!newPath) throw new Error('リネーム結果が不正です');
+    // 保存名と表示名の異なる既存ファイルも、取り消すときは両方を復元する。
+    _bdApplyBoardRename(currentPath, newPath, displayName, res);
+    currentPath = newPath;
+    if (storedName !== displayName) {
+      res = await apiPost('/outliner/rename', { old_path: currentPath, new_name: displayName, type: 'board', title_only: true });
+      _bdApplyBoardRename(currentPath, currentPath, displayName, res);
+    }
+    if (active && bd.path === currentPath) {
+      window.dispatchEvent?.(new CustomEvent('meldex:board-title-renamed', { detail: { newPath: currentPath } }));
+    }
+    } finally {
+      if (bd._titleMutation === mutation) delete bd._titleMutation;
+      finishMutation();
+    }
+  };
+  try {
+    await renameTo(nextName, nextName);
+    const oldStem = oldPath.split('/').pop().replace(/\.(?:mel-board|board\.(?:md|json)|canvas\.json|md)$/i, '');
+    const undo = () => renameTo(oldStem, oldTitle);
+    const redo = () => renameTo(nextName, nextName);
+    if (reservation) reservation.fill(undo, redo);
+    else if (common) historyPush('ボード名の変更', undo, redo, scope);
+    undoTitle = undo;
+    redoTitle = redo;
+    finishLocal(true);
+    if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
+  } catch (error) {
+    reservation?.cancel();
+    if (localEntry) {
+      const index = _bdUndoStack.indexOf(localEntry);
+      if (index >= 0) _bdUndoStack.splice(index, 1);
+    }
+    finishLocal(false);
+    throw error;
+  }
   return true;
 }
 
 function _bdStartInlineBoardTitleEdit(titleEl) {
   if (!titleEl || titleEl.dataset.bdEditing === '1') return;
-  const currentText = titleEl.textContent.trim() || (bd.path ? bd.path.split('/').pop().replace(/\.[^.]+$/i, '') : '無題');
+  if (bd._titleMutation) { showStatus('ボード名の変更を保存中です'); return; }
+  const currentText = titleEl.textContent.trim() || (bd.path ? bd.path.split('/').pop().replace(/\.(?:mel-board|board\.(?:md|json)|canvas\.json|md)$/i, '') : '無題');
   titleEl.dataset.bdEditing = '1';
   const input = document.createElement('input');
   input.type = 'text';
@@ -368,22 +464,25 @@ function _bdStartInlineBoardTitleEdit(titleEl) {
     titleEl.dataset.bdEditing = '0';
     const draft = input.value.trim();
     titleEl.textContent = currentText;
-    if (!commit) return;
+    if (!commit || draft === currentText) return;
     if (!draft) {
       showStatus('ボード名が空です', true);
       return;
     }
     // 通信を待たずに新しい名前を表示し、フォルダツリーとタブも先に変える（失敗したら戻す）
     const boardPath = bd.path || (typeof state !== 'undefined' ? state.currentBoardPath : '') || '';
+    // 楽観表示へ変える前の表示名を、取り消し用に保持する。
+    bd.label = currentText;
     titleEl.textContent = draft;
     if (draft !== currentText && typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(boardPath, draft, 'board');
     try {
-      await _bdRenameBoardFile(draft);
-      titleEl.textContent = draft;
+      await _bdRenameBoardFile(draft, currentText);
       showStatus('ボード名を変更しました');
     } catch (e) {
-      if (draft !== currentText && typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(boardPath, currentText, 'board');
-      titleEl.textContent = currentText;
+      if (bd.path === boardPath) {
+        if (typeof applyOptimisticRenameLabel === 'function') applyOptimisticRenameLabel(boardPath, currentText, 'board');
+        titleEl.textContent = currentText;
+      }
       showStatus('ボード名の変更に失敗: ' + (e?.message || ''), true);
     }
   };
@@ -623,7 +722,7 @@ function _bdAssignCardStyleToNodes(nodeIds, styleId) {
       else delete node._userCardStyle;
     }
   });
-  if (styleId) bd.activeCardStyle = styleId;
+  if (styleId) bdChooseCardStyleForNewTopics(styleId);
   return true;
 }
 

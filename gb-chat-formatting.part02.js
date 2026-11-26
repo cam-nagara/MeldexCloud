@@ -238,12 +238,31 @@
   function _bindRichInput(editor, input) {
     if (!editor || !input || editor.dataset.chatRichBound === '1') return;
     editor.dataset.chatRichBound = '1';
+    editor.addEventListener('beforeinput', (event) => {
+      if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+        _handleComposerFallbackUndo({ key: event.inputType === 'historyRedo' ? 'y' : 'z', ctrlKey: true,
+          preventDefault: () => event.preventDefault(), stopPropagation: () => event.stopPropagation() });
+        return;
+      }
+      if (_updatingFromPlain || _updatingFromRich) return;
+      if (_richInputComposing) {
+        if (_composerTypingGroup?.type === 'composition') return;
+        _rememberComposerEdit('composition', true);
+      } else {
+        _rememberComposerEdit(event.inputType || 'input', event.inputType === 'insertText');
+      }
+    });
     editor.addEventListener('input', () => {
       _richVerticalColumn = null;
       _syncPlainFromRich();
+      if (_composerTypingGroup) {
+        const range = _richSelectionSourceRange(editor, true, String(input.value || ''));
+        _composerTypingGroup.end = range?.end;
+      }
     });
     editor.addEventListener('keydown', (event) => {
       if (_handleComposerFallbackUndo(event)) return;
+      if (String(event.key || '').startsWith('Arrow') || INPUT_NAVIGATION_KEYS.has(event.key)) _composerTypingGroup = null;
       if (_handleRichInputVerticalNavigation(event, editor)) return;
       if (String(event.key || '').startsWith('Arrow') || INPUT_NAVIGATION_KEYS.has(event.key)) {
         event.stopPropagation();
@@ -266,9 +285,11 @@
         _richVerticalColumn = null;
       }
     });
-    editor.addEventListener('compositionstart', () => { _richInputComposing = true; });
-    editor.addEventListener('compositionend', () => { _richInputComposing = false; });
+    editor.addEventListener('compositionstart', () => { _composerTypingGroup = null; _richInputComposing = true; });
+    editor.addEventListener('compositionend', () => { _richInputComposing = false; _composerTypingGroup = null; });
+    editor.addEventListener('blur', () => { _composerTypingGroup = null; });
     editor.addEventListener('pointerdown', (event) => {
+      _composerTypingGroup = null;
       if (_focusEmptyRichInputAtStart(event, editor)) return;
       _richVerticalColumn = null;
     });
@@ -351,16 +372,21 @@
     },
     rememberSelection: _rememberRichInputSelection,
     syncInput: () => _renderRichInputFromSource(),
-    focusInput: () => {
+    focusInput: (options = {}) => {
       const editor = _chatRichInput();
       if (editor) {
         if (_isRichInputEmpty(editor)) _setRichCaretAtStart(editor);
+        else if (options.atEnd) {
+          const source = _richInputToMarkdown(editor);
+          _setRichSelectionFromSourceRange(editor, source, source.length, source.length);
+        }
         else editor.focus();
-        return true;
+        return document.activeElement === editor;
       }
       const input = _chatInput();
+      if (input?.classList.contains(HIDDEN_INPUT_CLASS)) return false;
       input?.focus?.();
-      return !!input;
+      return !!input && document.activeElement === input;
     },
     visibleInputForInput: (input) => {
       const editor = _chatRichInput();

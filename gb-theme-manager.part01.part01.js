@@ -49,35 +49,6 @@
       return acc;
     }, {})
   );
-  const OBSOLETE_INITIAL_CUSTOM_THEME_NAME_KEYS = Object.freeze(new Set([
-    'テストテーマ',
-    '旧テーマカラー',
-    'ネイビー',
-    'ネイビーカスタム',
-    'ネイビー カスタム',
-    'セピア',
-    'セピアカスタム',
-    'セピア カスタム',
-    'フォレスト',
-    'フォレストカスタム',
-    'フォレスト カスタム',
-    'ローズ',
-    'ローズカスタム',
-    'ローズ カスタム',
-    'ガーリー',
-    'ガーリーカスタム',
-    'ガーリー カスタム',
-    'グレースケール',
-    'グレースケールカスタム',
-    'グレースケール カスタム',
-    'レインボーブランチ',
-    'レインボー',
-    'レインボーカスタム',
-    'レインボー カスタム',
-    'ゲーミング',
-    'ゲーミングカスタム',
-    'ゲーミング カスタム',
-  ].map(_themeNameKey)));
   let _initialThemeCleanupDone = false;
   let _initialThemeCleanupRunning = false;
   let _activeThemeColorSet = null;

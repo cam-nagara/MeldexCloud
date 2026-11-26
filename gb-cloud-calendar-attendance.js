@@ -83,7 +83,41 @@
   // 互いのロックを奪い合って両方とも「更新ロックを失いました」で失敗していた（M-014 スケジュール網羅、Cloud版の初回起動で発見）。
   // 同じ保存先への更新は、この画面の中では順番に行う。入れ子の呼び出しで待ち続けないよう、待つのは最大30秒まで。
   const calendarLeaseQueues = new WeakMap();
+  const pendingCalendarReleases = new WeakMap();
   const PAGE_LEASE_TOKEN = globalThis.crypto?.randomUUID ? 'calendar-page-' + globalThis.crypto.randomUUID() : `calendar-page-${Date.now()}-${Math.random()}`;
+
+  function calendarReleaseScope() {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    return JSON.stringify([state.accountId || state.account_id || '', state.securityScopeId || state.security_scope_id || '',
+      state.path || state.folder || '', window.MeldexWorkspaces?.getActiveId?.() || '',
+      window.MeldexRuntimeAdapter?.getMode?.() || '']);
+  }
+
+  function rememberCalendarRelease(provider, scope, lease, holderId) {
+    const key = provider?.[LEASE_PROVIDER_ORIGINAL] || provider;
+    let scopes = pendingCalendarReleases.get(key);
+    if (!scopes) pendingCalendarReleases.set(key, scopes = new Map());
+    const jobs = scopes.get(scope) || [];
+    jobs.push({ provider, path: lease.path, token: PAGE_LEASE_TOKEN, holderId });
+    scopes.set(scope, jobs);
+  }
+
+  async function releasePendingCalendarLeases(provider) {
+    const key = provider?.[LEASE_PROVIDER_ORIGINAL] || provider;
+    const scopes = key && pendingCalendarReleases.get(key), scope = calendarReleaseScope();
+    const jobs = scopes?.get(scope);
+    if (!jobs?.length) return;
+    for (const job of [...jobs]) {
+      try {
+        // 同時に待つ呼出元も同じ解放を待つ。終了した操作の保持者だけを指定する。
+        job.promise ||= Promise.resolve().then(() => window.MeldexActiveLockStore.release(job.provider, job.path, job.token, job.holderId));
+        await job.promise;
+        const index = jobs.indexOf(job);
+        if (index >= 0) jobs.splice(index, 1);
+      } finally { job.promise = null; }
+    }
+    if (!jobs.length) scopes.delete(scope);
+  }
 
   async function waitForCalendarIdle(provider) {
     const key = (provider && provider[LEASE_PROVIDER_ORIGINAL]) || provider;
@@ -92,6 +126,7 @@
       pending = key && calendarLeaseQueues.get(key);
       if (pending) await pending;
     } while (pending !== (key && calendarLeaseQueues.get(key)));
+    await releasePendingCalendarLeases(provider);
   }
 
   async function withCalendarLease(provider, operation, context = null) {
@@ -115,6 +150,7 @@
       fail('カレンダーは別の更新の途中です。少し待ってから再試行してください', 409, 'calendar_lease_conflict');
     }
     try {
+      await releasePendingCalendarLeases(provider);
       return await withCalendarLeaseNow(provider, operation, context);
     } finally {
       releaseTurn();
@@ -122,6 +158,7 @@
   }
 
   async function withCalendarLeaseNow(provider, operation, context = null) {
+    const releaseScope = calendarReleaseScope();
     const store = window.MeldexActiveLockStore;
     if (!store?.acquire || !store?.release || !store?.heartbeat) {
       fail('共有カレンダーの更新ロックを利用できません。再読み込みしてから再試行してください', 503, 'CALENDAR_LOCK_UNAVAILABLE');
@@ -201,7 +238,10 @@
         if (activeCalendarLeases.get(alias)?.token === token) activeCalendarLeases.delete(alias);
       });
       try { await store.release(provider, lease.path, PAGE_LEASE_TOKEN, holderId); }
-      catch (error) { console.warn('[Calendar] 共有更新ロックの解放に失敗しました', error); }
+      catch (error) {
+        rememberCalendarRelease(provider, releaseScope, lease, holderId);
+        console.warn('[Calendar] 共有更新ロックの解放に失敗しました', error);
+      }
     }
   }
 

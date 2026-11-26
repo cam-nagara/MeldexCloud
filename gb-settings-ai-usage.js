@@ -54,6 +54,13 @@ async function renderMonthlyUsageCosts(root) {
       const names = { openai:'OpenAI', anthropic:'Anthropic', gemini:'Google Gemini', xai:'xAI', unknown:'不明' };
       const llmRows = llm.map(row => `<tr><td>${esc(names[row.provider] || row.provider)}<br><span class="gb-section-desc">${esc(row.model)}</span></td><td>${Number(row.requests).toLocaleString()}回<br><span class="gb-section-desc">入力 ${Number(row.input_tokens).toLocaleString()} / 出力 ${Number(row.output_tokens).toLocaleString()} tokens</span></td><td>${row.unpriced && !row.cost_usd ? '<strong>未算定</strong>' : money(row.cost_usd)}</td></tr>`).join('');
       const started = String(data.x_recording_since || '').replace('T', ' ');
+      const sourceNames = {bookmarks:'ブックマーク',folders:'フォルダ一覧',folder_membership:'フォルダ所属',timeline:'アカウントのポスト',replies:'返信',references:'参照・引用ポスト',users:'利用者情報・アイコン',unknown:'旧記録（取得元不明）'};
+      const triggers = {scheduled:'定期',manual:'手動',unknown:'不明'};
+      const count = value => value == null ? '不明' : Number(value).toLocaleString();
+      const costTable = (head, rows) => `<div style="overflow-x:auto"><table style="width:100%;text-align:left;border-spacing:0 8px"><thead><tr>${head.map(text => `<th scope="col">${text}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
+      const sourceRows = (data.x_sources || []).map(row => `<tr><td>${esc(sourceNames[row.source] || row.source)} ${esc(row.target ? '@'+row.target : '')}<br><span class="gb-section-desc">${esc(triggers[row.trigger] || row.trigger)}</span></td><td>${count(row.requests)}回 / ${count(row.resources)}件<br><span class="gb-section-desc">本文 ${count(row.posts)}・参照 ${count(row.references)}・利用者 ${count(row.users)}</span></td><td>${money(row.cost_usd)}</td></tr>`).join('');
+      const runRows = (data.x_runs || []).map(row => `<tr><td>${esc(String(row.started_at).replace('T',' '))}<br>${esc(sourceNames[row.source] || row.source)} ${esc(row.target ? '@'+row.target : '')}<br>${esc(triggers[row.trigger] || row.trigger)} / ${esc({done:'完了',failed:'中断',partial:'一部完了',running:'実行中'}[row.status] || row.status)}</td><td>${count(row.returned_resources)}件確認 / ${count(row.resources)}件課金対象<br>新規保存 ${count(row.created)}件</td><td>${money(row.cost_usd)}</td></tr>`).join('');
+      const dayRows = (data.x_daily || []).map(row => `<tr><td>${esc(row.day)}</td><td>${count(row.requests)}回 / ${count(row.resources)}件</td><td>${money(row.cost_usd)}</td></tr>`).join('');
       content.innerHTML = `
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">記録済み分の概算合計</div>
@@ -70,6 +77,11 @@ async function renderMonthlyUsageCosts(root) {
           <div class="gb-section-title">X API</div>
           <div>${x.length ? money(sum(x,'cost_usd')) : '<strong>未集計</strong>'} <span class="gb-section-desc">${sum(x,'requests').toLocaleString()}回の取得 / 概算の対象 ${sum(x,'resources').toLocaleString()}件</span></div>
           <div class="gb-section-desc">記録開始: ${esc(started)}。開始前の取得料金は未集計です。再取得の重複をUTC日ごとに除き、通常の読み取り単価で概算します。Owned Reads等の割引や実際の請求とは差が出る場合があります。</div>
+          <div data-x-scheduled-estimate>定期実行1回の概算: ${data.x_scheduled_estimate_usd == null ? '内訳記録後の定期実行を待っています' : money(data.x_scheduled_estimate_usd)}</div>
+          <div class="gb-section-desc">各取得先の直近の完了した定期実行を合算した目安です。新着・フォルダ確認を含み、同日再取得の割引前で計算します。空の応答はポスト分0円ですが、既存ポスト・利用者情報の再取得は翌UTC日に再び対象になります。旧記録の取得元・新規保存件数は復元できません。</div>
+          ${sourceRows ? `<details open><summary>取得元別</summary>${costTable(['取得元','取得 / 課金対象','概算料金'], sourceRows)}</details>` : ''}
+          ${runRows ? `<details><summary>実行ごとの内訳</summary>${costTable(['日時 / 対象','確認 / 新規保存','概算料金'], runRows)}</details>` : ''}
+          ${dayRows ? `<details><summary>日別の内訳</summary>${costTable(['日付','取得 / 課金対象','概算料金'], dayRows)}</details>` : ''}
           ${data.x_recording_failures ? '<div class="gb-inline-error">記録の保存に失敗した取得があるため、Xの概算には未記録分があります。</div>' : ''}
           <div class="gb-section-desc"><a href="https://console.x.com/" target="_blank" rel="noopener noreferrer">Xの利用明細・残高を確認</a> · <a href="https://docs.x.com/x-api/getting-started/pricing" target="_blank" rel="noopener noreferrer">単価と計算条件</a>（確認日 ${esc(data.x_pricing_reviewed || '')}）</div>
         </section>`;

@@ -207,9 +207,11 @@ const GBPaneBridge = (() => {
 
   function _legacySnapshotKey(tab) {
     if (!tab) return '';
-    return _isPathScopedLegacyType(tab.type)
-      ? (tab.type + '::' + (tab.path || ''))
-      : (tab.type + '::tab:' + tab.id);
+    // database は pivot の旧名。同じ表の写しは同じ更新を受け取る。
+    const type = tab.type === 'database' ? 'pivot' : tab.type;
+    return _isPathScopedLegacyType(type)
+      ? (type + '::' + (tab.path || ''))
+      : (type + '::tab:' + tab.id);
   }
 
   // スナップショット/状態保存は panelset の非アクティブグループと、
@@ -477,7 +479,7 @@ const GBPaneBridge = (() => {
     chat: ['__root__', '#chat-messages', '#team-messages', '#chat-history-list'],
     annotation: ['__root__'],
     history: ['__root__'],
-    outliner: ['__root__'],
+    outliner: ['#tree-scroll-container'],
   };
 
   function _scopedSelector(root, selector) {
@@ -536,7 +538,10 @@ const GBPaneBridge = (() => {
     const state = {
       scrolls: _captureScrollState(root, ['__root__', ...(_viewScrollSelectors[viewName] || [])]),
     };
-    if (viewName === 'chat') state.chatSessionId = typeof _chatState === 'undefined' ? '' : String(_chatState.sessionId || '');
+    if (viewName === 'chat') {
+      state.chatSessionId = typeof _chatState === 'undefined' ? '' : String(_chatState.sessionId || '');
+      state.chatContextKey = _chatViewportContextKey();
+    }
     if (viewName === 'board') {
       const canvas = root.querySelector('[data-bd-role="canvas"]');
       const world = root.querySelector('[data-bd-role="world"]');
@@ -649,6 +654,8 @@ const GBPaneBridge = (() => {
   function _captureLegacySnapshotForTab(tab, viewName, viewEl) {
     if (!tab || !viewEl) return;
     _cancelLegacySnapshotTimer(tab.id);
+    // 非表示のCSSOMはスクロール位置を0として返す。最後の表示位置を壊さない。
+    if (viewName === 'folder' && !viewEl?.getClientRects().length) return;
     _setLegacyUiState(tab, _captureLegacyDomState(viewName, viewEl));
     const clone = viewEl.cloneNode(true);
     _legacySnapshots.set(tab.id, clone);
@@ -685,7 +692,17 @@ const GBPaneBridge = (() => {
     _legacyLiveBindings.delete(containerId);
   }
 
+  const _folderScrollObserved = new WeakSet();
   function _bindLiveLegacyContainer(containerId, paneId, tab, viewName, viewEl) {
+    if (viewName === 'folder' && !_folderScrollObserved.has(viewEl)) {
+      _folderScrollObserved.add(viewEl);
+      viewEl.addEventListener('scroll', () => {
+        const live = _legacyLiveBindings.get(containerId);
+        if (live?.viewName !== 'folder' || !viewEl.getClientRects().length) return;
+        const liveTab = _findTabById(live.tabId);
+        if (liveTab) _setLegacyUiState(liveTab, _captureLegacyDomState('folder', viewEl));
+      }, true);
+    }
     const shouldTrackSnapshot = _needsLegacySnapshot(containerId, tab.id);
     const binding = _legacyLiveBindings.get(containerId);
     if (binding && binding.tabId === tab.id && binding.paneId === paneId) {
@@ -716,21 +733,35 @@ const GBPaneBridge = (() => {
       if (tab && viewEl && _needsLegacySnapshot(binding.containerId, binding.tabId)) {
         _captureLegacySnapshotForTab(tab, binding.viewName, viewEl);
       } else {
-        _captureLiveChatState(binding.containerId, viewEl);
+        _captureLiveScrollState(binding.containerId, viewEl);
       }
       if (binding.observer) binding.observer.disconnect();
     }
     _legacyLiveBindings.clear();
   }
 
-  // A single chat has no mirrored snapshot, but moving its hidden container can
-  // still reset nested scroll offsets. Capture before hiding, without cloning
-  // the conversation or replacing the live editor/draft DOM.
-  function _captureLiveChatState(containerId, viewEl) {
+  // 単独のチャット／ツリー／フォルダは複製を作らないが、退避で内側のスクロールを失う。
+  // 非表示にする前の実値を採取し、同じDOMを再表示する時にだけ戻す。
+  function _captureLiveScrollState(containerId, viewEl) {
     const binding = _legacyLiveBindings.get(containerId);
-    if (binding?.viewName !== 'chat' || !viewEl?.getClientRects().length) return;
+    if (!['chat', 'outliner', 'folder'].includes(binding?.viewName) || !viewEl?.getClientRects().length) return;
     const tab = _findTabById(binding.tabId);
-    if (tab) _setLegacyUiState(tab, _captureLegacyDomState('chat', viewEl));
+    if (!tab) return;
+    const next = _captureLegacyDomState(binding.viewName, viewEl);
+    const previous = _getLegacyUiState(tab);
+    if (binding.viewName === 'chat' && previous?.chatContextKey === next.chatContextKey) {
+      const saved = new Map((previous.scrolls || []).map(item => [item.selector, item]));
+      next.scrolls = next.scrolls.map(item => {
+        const el = _scopedSelector(viewEl, item.selector);
+        return item.selector === '#chat-messages' && el && !el.getClientRects().length && saved.has(item.selector) ? saved.get(item.selector) : item;
+      });
+    }
+    _setLegacyUiState(tab, next);
+  }
+
+  function _chatViewportContextKey() {
+    if (typeof _chatState === 'undefined') return '';
+    return JSON.stringify([_chatState.sourceFolder || '', _chatState.workspaceId || '', _chatState.sessionId || '']);
   }
 
   function _stopSnapshotInteraction(ev, preventDefault) {
@@ -843,13 +874,15 @@ const GBPaneBridge = (() => {
     binding.restoreToken = token;
     const savedState = _getLegacyUiState(tab);
     if (!savedState) return;
-    if (viewName === 'chat') {
-      // Chat already owns a live, fully rendered DOM. Restore at the visible
-      // mount, once. Delayed 80/220ms retries overwrite a user's new scroll,
-      // and a saved offset from another conversation must never be applied.
+    if (viewName === 'chat' || viewName === 'outliner') {
+      // ライブDOMは表示した時に一度だけ戻す。遅延した再試行は手動スクロールを上書きする。
+      // チャットは別の会話の位置を適用しない。
       const sessionId = typeof _chatState === 'undefined' ? '' : String(_chatState.sessionId || '');
       const root = document.getElementById(containerId);
-      if (root && savedState.chatSessionId === sessionId) _applyLegacyDomState(viewName, root, savedState, {live:true});
+      if (root && (viewName === 'outliner' || (savedState.chatSessionId === sessionId
+          && (!savedState.chatContextKey || savedState.chatContextKey === _chatViewportContextKey())))) {
+        _applyLegacyDomState(viewName, root, savedState, {live:true});
+      }
       return;
     }
     const restoresDetail = viewName === 'detail' || viewName === 'scriptnote';
@@ -885,8 +918,10 @@ const GBPaneBridge = (() => {
     if (viewName === 'page' || viewName === 'media' || viewName === 'html') currentPath = state.currentPagePath;
     else if (viewName === 'entity') currentPath = state.currentEntityPath;
     else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'gantt', 'chart', 'graph', 'form'].includes(viewName)) currentPath = state.currentDbPath;
-    else if (viewName === 'folder' && typeof _folderPath !== 'undefined') currentPath = _folderPath;
-    else if (viewName === 'csv' && typeof _csvPath !== 'undefined') currentPath = _csvPath;
+    // メインのペインの照合なので、メインの面のフォルダを見る（サブパネルの面をつないでいる間も）
+    else if (viewName === 'folder' && typeof _folderPath !== 'undefined') currentPath = typeof _folderMainPath === 'function' ? _folderMainPath() : _folderPath;
+    // CSVも面ごとの状態。メインのペインの照合なので、メインの面のCSVを見る
+    else if (viewName === 'csv' && typeof _csvPath !== 'undefined') currentPath = typeof _csvMainPath === 'function' ? _csvMainPath() : _csvPath;
     if (_normalizeLegacyLivePath(currentPath) !== expected) return false;
     if (_normalizeDbPaneView(state.view) !== _normalizeDbPaneView(viewName)) return false;
     const candidates = [viewEl, ...viewEl.querySelectorAll('[data-path]')];
@@ -967,7 +1002,12 @@ const GBPaneBridge = (() => {
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || (typeof bd !== 'undefined' && bd.path !== path))) await openBoard(label, path, scopedBridgeOpts);
         // 他の面が操作対象でも、このコンテナの内容が一致していれば再読込しない。
         else if (viewName === 'folder' && typeof openFolder === 'function' && needsLiveReload) {
-          await openFolder(label, path, scopedBridgeOpts);
+          // フォルダの表示は面（メイン／サブパネル）ごとに状態を持つ。サブパネルなど別の面を利用者が操作していて、
+          // このペインが操作対象でない間の読み直しは、操作対象の面を変えずにメインの面だけを読み直す
+          // （キー操作・貼り付け・削除の対象を、操作中のサブパネルから奪わない）。
+          const keepInteractionSurface = !!(pane?.id && pane.id !== GBLayout?.activePane
+            && typeof _folderInteractionSurface !== 'undefined' && _folderInteractionSurface);
+          await openFolder(label, path, keepInteractionSurface ? { ...scopedBridgeOpts, keepInteractionSurface: true } : scopedBridgeOpts);
         }
         // Embedded notes also bind the shared state. Returning to an already
         // rendered main note must not start a disk load that overwrites typing.
@@ -982,10 +1022,9 @@ const GBPaneBridge = (() => {
             : scopedBridgeOpts;
           openMedia(label, path, tab.state?.mediaType || 'image', mediaReloadOpts);
         }
-        // CSVの _csvPath も、フォルダの _folderPath と同じ理由（サブパネル専用描画
-        // _csvRenderContainerOverride、gb-csv-viewer.js）で単一のグローバル変数を2つの面が
-        // 共有する。同じ競合を予防的に塞ぐ（needsLiveReload || prevView !== 'csv' で
-        // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
+        // CSVの状態は面（メイン／サブパネル）ごとに持つ（gb-csv-viewer.js の _csvBindSurface）。
+        // サブパネルで別のCSVを開いても、このコンテナの内容が一致していれば読み直さない
+        // （このコンテナ自身の対象が変わった時だけ needsLiveReload で読み直す）。
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && needsLiveReload) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
         // A linked editor also changes the shared view/path. Returning to this

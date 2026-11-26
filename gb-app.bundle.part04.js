@@ -1,3 +1,185 @@
+// Startup/background reads must not queue a user mutation behind all six
+// browser connections. Do not cancel these reads or change their results.
+let _gbAppRegularRequests = 0;
+const _gbAppRegularRequestQueue = [];
+function _gbAppApiFetchAcquireLane(path, opts) {
+  const endpoint = String(path || '').split('?', 1)[0].replace(/^\/api/, '');
+  const backgroundWrite = ['/beta/consent', '/beta/feedback-template', '/staff-registry/upsert', '/debugger/flush'].includes(endpoint);
+  const visibleRead = opts?.background !== true && (opts?.foreground === true || ['/file', '/browse', '/outliner-roots'].includes(endpoint));
+  const regular = (_gbAppApiFetchMethod(opts) === 'GET' && !visibleRead) || backgroundWrite;
+  const signal = opts?.signal;
+  const abortError = () => Object.assign(new Error('リクエストが中断されました'), {name:'AbortError'});
+  if (signal?.aborted) return Promise.reject(abortError());
+  if (!regular) return Promise.resolve(() => {});
+  return new Promise((resolve, reject) => {
+    const entry = {
+      start() {
+        signal?.removeEventListener('abort', entry.abort);
+        _gbAppRegularRequests++;
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          _gbAppRegularRequests--;
+          _gbAppRegularRequestQueue.shift()?.start();
+        });
+      },
+      abort() {
+        const index = _gbAppRegularRequestQueue.indexOf(entry);
+        if (index < 0) return;
+        _gbAppRegularRequestQueue.splice(index, 1);
+        signal?.removeEventListener('abort', entry.abort);
+        reject(abortError());
+      },
+    };
+    if (_gbAppRegularRequests < 3) entry.start();
+    else {
+      _gbAppRegularRequestQueue.push(entry);
+      signal?.addEventListener('abort', entry.abort, {once:true});
+    }
+  });
+}
+
+async function apiFetch(path, opts) {
+  const historyProjection = await window.MeldexChatManagementSheet?.handleApi?.(path, opts);
+  if (historyProjection) return historyProjection.value;
+  const method = _gbAppApiFetchMethod(opts);
+  const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
+  const cacheGeneration = _gbAppApiFetchCacheGeneration;
+  if (browseCacheKey) {
+    const cached = _gbAppApiFetchBrowseCache.get(browseCacheKey);
+    if (cached && Date.now() - cached.at < GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS) {
+      return _gbAppApiFetchClonePayload(cached.payload);
+    }
+    _gbAppApiFetchBrowseCache.delete(browseCacheKey);
+  }
+  const inFlightKey = _apiFetchInFlightKey(path, opts);
+  if (inFlightKey && _apiFetchInFlightGets.has(inFlightKey)) {
+    return _gbAppApiFetchClonePayload(await _apiFetchInFlightGets.get(inFlightKey));
+  }
+  const perfInfo = _apiFetchPerfInfo(path);
+  const perfStartedAt = perfInfo ? _perfNowMs() : 0;
+  const requestPromise = (async () => {
+    let releaseLane;
+    try {
+      releaseLane = await _gbAppApiFetchAcquireLane(path, opts);
+      let requestOpts = opts;
+      let retriedAfterMutation = false;
+      while (true) {
+        const requestedTimeout = Number(requestOpts?.timeoutMs);
+        const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+          ? Math.min(requestedTimeout, GB_APP_API_FETCH_MAX_TIMEOUT_MS)
+          : _gbAppApiFetchDefaultTimeout(path, requestOpts);
+        // 本文の読込が止まった場合も、ヘッダー待ちと同じタイムアウト・キャンセルを適用する。
+        const { data, backendPerf } = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs, async res => {
+          if (perfInfo) {
+            _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+              ...perfInfo,
+              status: res.status,
+              contentLength: res.headers?.get?.('content-length') || '',
+              retriedAfterMutation,
+            });
+          }
+          const backendPerf = _apiFetchBackendPerf(res);
+          if (!res.ok) {
+            let detail = res.statusText || '';
+            let payload = null;
+            try {
+              payload = await res.clone().json();
+              const rawDetail = payload?.error || payload?.detail || detail;
+              detail = rawDetail && typeof rawDetail === 'object'
+                ? (rawDetail.message || rawDetail.code || detail)
+                : rawDetail;
+            } catch (error) { if (_gbAppApiFetchIsAbortError(error)) throw error; }
+            const error = new Error(`HTTP ${res.status}: ${detail}`);
+            error.status = res.status;
+            error.payload = payload;
+            error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+            throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+          }
+          const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+          const data = await res.json();
+          if (perfInfo) {
+            _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
+              ...perfInfo,
+              backendPerf,
+              retriedAfterMutation,
+            });
+          }
+          return { data, backendPerf };
+        });
+        // GET開始後に作成・保存・移動等が完了した場合、開始時点の古い一覧を
+        // 呼び出し元へ返さない。アプリ内キャッシュを迂回して1回だけ取り直す。
+        if (browseCacheKey && !retriedAfterMutation && cacheGeneration !== _gbAppApiFetchCacheGeneration) {
+          retriedAfterMutation = true;
+          requestOpts = { ...(opts || {}), skipBrowseCache: true, cache: 'reload' };
+          continue;
+        }
+        if (backendPerf && data && typeof data === 'object') {
+          try {
+            Object.defineProperty(data, '_backendPerf', {
+              value: backendPerf,
+              configurable: true,
+            });
+          } catch {}
+        }
+        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts, data);
+        if (method !== 'GET') {
+          _gbAppApiFetchInvalidateReadCaches();
+        } else if (browseCacheKey && cacheGeneration === _gbAppApiFetchCacheGeneration) {
+          _gbAppApiFetchRememberBrowse(browseCacheKey, data);
+        }
+        if (perfInfo) _logPerfEvent(perfInfo.label, perfStartedAt, { ...perfInfo, backendPerf, retriedAfterMutation });
+        return data;
+      }
+    } catch (e) {
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.error', perfStartedAt, {
+          ...perfInfo,
+          error: e?.message || String(e),
+        });
+      }
+      const quietReadAbort = method === 'GET' && _gbAppApiFetchIsAbortError(e);
+      // シートの保存の失敗・読み込みの失敗を自己記録へ残す（silentError の保存も含む。gb-log-export.js）。
+      try { window.MeldexDiagnostics?.noteRequestFailure?.(path, opts, e); } catch {}
+      if (!opts?.silentError && !quietReadAbort) {
+        window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      }
+      if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
+        if (quietReadAbort) {
+          // GET中断/タイムアウトはエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
+          try { console.warn('[apiFetch] aborted:', path, e.message); } catch {}
+        } else {
+          const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
+          showStatus('エラー: ' + text, true);
+        }
+      }
+      throw e;
+    } finally {
+      releaseLane?.();
+    }
+  })();
+  if (inFlightKey) {
+    _apiFetchInFlightGets.set(inFlightKey, requestPromise);
+    requestPromise.then(
+      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
+      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
+    );
+  }
+  return _gbAppApiFetchClonePayload(await requestPromise);
+}
+
+function _gbAppIsFullFileWrite(path, body) {
+  const pathname = String(path || '').split('?', 1)[0].replace(/^\/api/, '');
+  return pathname === '/file' && body && typeof body === 'object'
+    && (Object.prototype.hasOwnProperty.call(body, 'content')
+      || Object.prototype.hasOwnProperty.call(body, 'content_base64'));
+}
+
+async function _gbAppPrepareFullFileWrite(path, body) {
+  const payload = { ...(body || {}) };
+  if (!_gbAppIsFullFileWrite(path, payload)) return payload;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
   const force = !!(payload.force_overwrite || payload.forceOverwrite);
   const createOnly = !!(payload.create_only || payload.createOnly);
   let revision = payload.transport_revision || payload.transportRevision
@@ -120,6 +302,7 @@ async function apiPut(path, body, options = {}) {
     catch (error) { setTimeout(() => notify('failed'), 0); throw error; }
     _scheduleLinkDictionaryRefreshForMutation(path);
     notify('saved');
+    _gbAppNotifyPathsWritten(path, guardedBody);
     return result;
   }
   const requestOptions = {
@@ -139,6 +322,7 @@ async function apiPut(path, body, options = {}) {
   } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
   window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
+  _gbAppNotifyPathsWritten(path, guardedBody, result);
   return result;
 }
 
@@ -161,6 +345,30 @@ function _gbAppNotifyEntityValuesChanged(path, phase, body) {
     const entityPath = new URLSearchParams(String(path).split('?')[1] || '').get('path')
       || (body && typeof body === 'object' ? (body.entry_path || body.folder_path || '') : '');
     if (entityPath) window.dispatchEvent(new CustomEvent('meldex:entity-values-changed', { detail: { path: entityPath, phase } }));
+  } catch {}
+}
+
+// 書き込みが成功したファイル・フォルダを同じ画面内へ知らせる（ノートに埋め込んだ表示の差分更新用）。
+// 本文は渡さず、対象のパスだけを送る。通知の失敗で保存を失敗扱いにしない。
+function _gbAppNotifyPathsWritten(path, body, result) {
+  try {
+    const paths = new Set();
+    const add = value => { if (typeof value === 'string' && value && value.length < 2048) paths.add(value.replace(/\\/g, '/')); };
+    const query = new URLSearchParams(String(path || '').split('?')[1] || '');
+    ['path', 'db_path', 'dbPath', 'folder'].forEach(key => add(query.get(key)));
+    if (body && typeof body === 'object') {
+      ['path', 'file_path', 'entry_path', 'folder_path', 'db_path', 'dbPath', 'src', 'dst', 'old_path', 'new_path', 'target', 'dest'].forEach(key => add(body[key]));
+      if (Array.isArray(body.paths)) body.paths.slice(0, 200).forEach(add);
+    }
+    // 名前変更・移動は、応答の新しい場所と組にして知らせる（埋め込みの参照を追従させる）。
+    const renamed = [];
+    const oldPath = body && typeof body === 'object' ? (body.old_path || body.src || '') : '';
+    const newPath = result && typeof result === 'object' ? (result.new_path || result.dst || '') : '';
+    if (typeof oldPath === 'string' && typeof newPath === 'string' && oldPath && newPath && oldPath !== newPath) {
+      renamed.push({ from: oldPath, to: newPath }); add(newPath);
+    }
+    if (!paths.size) return;
+    window.dispatchEvent(new CustomEvent('meldex:paths-written', { detail: { api: String(path || '').split('?')[0], paths: [...paths], renamed } }));
   } catch {}
 }
 
@@ -199,6 +407,7 @@ async function apiPost(path, body, options = {}) {
   window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
   _scheduleLinkDictionaryRefreshForMutation(path);
   if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, 'saved', body);
+  _gbAppNotifyPathsWritten(path, body, result);
   return result;
 }
 
@@ -265,6 +474,10 @@ function _apiLockWriteCandidatePaths(path, opts) {
     addBoth('path');
     addBody('entry_path');
     addBody('folder_path');
+  } else if (route === '/db-property/rename') {
+    // 列名の変更はシート全体の行を書き換える。シート（フォルダ）を対象にする。
+    addBody('db_path');
+    if (!body?.db_path) addBody('path');
   } else if (route === '/replace-batch') {
     (Array.isArray(body?.targets) ? body.targets : []).forEach(item => _apiLockAddPath(paths, item?.path));
   } else if (route === '/upload-file' || route === '/upload-files') {
@@ -285,14 +498,21 @@ function _apiLockWriteCandidatePaths(path, opts) {
   } else if (route === '/outliner/move') {
     addBody('path');
     addBody('dest_folder');
+  } else if (route === '/outliner/move-batch') {
+    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
+    addBody('dest_folder');
   } else if (route === '/outliner/rename') {
     addBody('old_path');
     const oldPath = String(body?.old_path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName && !window.GBPathUtils?.isDisplayTitleRename?.(route, body)) {
+    const boardTitle = body?.type === 'board' ? window.GBPathUtils?.displayTitle : null;
+    const newName = boardTitle ? boardTitle.storageName(body?.new_name) : String(body?.new_name || '').trim();
+    const titleOnly = boardTitle ? body?.title_only === true : window.GBPathUtils?.isDisplayTitleRename?.(route, body);
+    if (oldPath && newName && !titleOnly) {
       const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
-      _apiLockAddPath(paths, destinationBase);
-      const extension = _apiLockRenameExtension(oldPath);
+      const extension = boardTitle
+        ? oldPath.match(/\.(?:mel-board|board\.(?:md|json)|canvas\.json|md)$/i)?.[0] || _apiLockRenameExtension(oldPath)
+        : _apiLockRenameExtension(oldPath);
+      if (!boardTitle || !extension) _apiLockAddPath(paths, destinationBase);
       if (extension) _apiLockAddPath(paths, destinationBase + extension);
     }
   } else if (route === '/entity/create') {
@@ -340,6 +560,19 @@ function _apiLockBlockIfNeeded(path, opts) {
   throw new Error(message);
 }
 
+function _apiIsSheetWideWrite(path, opts) {
+  const method = String(opts?.method || 'GET').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return false;
+  let route = '';
+  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
+  catch { return false; }
+  if (route === '/db-property/rename') return 'schema';
+  if (route !== '/db-metadata') return false;
+  // 表示の設定だけの保存は行の中身を変えないので、ほかの人が入力中の行は待たない（シートを開いた時の自動保存もある）。
+  const keys = Object.keys(_apiLockJsonBody(opts)).filter(key => !['view_config', 'operation_id', 'expected_schema_revision', 'path', 'db_path'].includes(key));
+  return keys.length ? 'schema' : 'view';
+}
+
 function _apiUsesTransientActiveLock(path) {
   let route = '';
   try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
@@ -347,26 +580,100 @@ function _apiUsesTransientActiveLock(path) {
   return new Set([
     '/upload-file', '/upload-files', '/outliner/add', '/outliner/rename', '/outliner/delete',
     '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
-    '/outliner/save-as', '/outliner/move', '/trash/restore', '/replace', '/replace-batch',
+    '/outliner/save-as', '/outliner/move', '/outliner/move-batch', '/trash/restore', '/replace', '/replace-batch',
+    // シートの行の追加・名前の自動生成・取り込みは、その間だけシートを取り、終わったら放す（シートのロックを残すと、
+    // ほかの端末・裏の取り込みがどの行へも書けなくなる。セルの入力中のロックは行だけ。2026-11-25）。
+    '/entity/create', '/entity/auto-name', '/import-csv', '/import-xlsx',
   ]).has(route);
 }
 
 // apiFetchをオーバーライドしてユーザー名を付加
 const _origApiFetch = apiFetch;
+
+// まとめての移動・削除（項目ごとに結果が返る要求）かどうか。該当すれば経路名を返す。
+function _apiLockBatchRoute(path, opts) {
+  if (String(opts?.method || 'GET').toUpperCase() !== 'POST') return '';
+  let route = '';
+  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
+  catch { return ''; }
+  return route === '/outliner/move-batch' || route === '/outliner/delete-batch' ? route : '';
+}
+
+// 編集中ロックを取れなかった項目を要求から外す。外した項目は、サーバーの項目ごとの失敗と同じ形で返す。
+// 移動先フォルダのロックが取れない時は全体を止める（fatal）。
+function _apiSplitLockRejectedItems(opts, failedLocks) {
+  const normalize = window.MeldexActiveLocks?.normalizePath || (value => String(value || ''));
+  const body = _apiLockJsonBody(opts) || {};
+  const items = Array.isArray(body.items) ? body.items : [];
+  const failedByPath = new Map((failedLocks || []).map(item => [item.path, item.error]));
+  const destination = normalize(body.dest_folder || '');
+  if (destination && failedByPath.has(destination)) return { fatal: failedByPath.get(destination) };
+  const kept = [];
+  const order = [];
+  for (const item of items) {
+    const rawPath = item && typeof item === 'object' ? item.path : item;
+    const error = failedByPath.get(normalize(rawPath));
+    if (!error) {
+      kept.push(item);
+      order.push(null);
+      continue;
+    }
+    const detail = error?.payload?.detail;
+    order.push({
+      ok: false, path: String(rawPath || ''), status: Number(error?.status) || 423,
+      detail: detail || error?.message || 'ほかの端末で編集中のため操作できません', lock_rejected: true,
+    });
+  }
+  if (!order.some(Boolean)) return { opts, order: null };
+  return { opts: { ...opts, body: JSON.stringify({ ...body, items: kept }) }, order, keptCount: kept.length };
+}
+
+function _apiMergeLockRejectedResults(result, order) {
+  const served = Array.isArray(result?.results) ? result.results.slice() : [];
+  const results = order.map(rejected => rejected || served.shift()).filter(Boolean).concat(served);
+  const failed = results.filter(item => !item?.ok);
+  return { ...(result || {}), ok: !failed.length, results, failed };
+}
+
 apiFetch = async function(path, opts) {
   opts = opts || {};
   const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
+  // まとめての移動・削除で、ロックを取れなかった項目を外した後の対象（外していなければ上と同じ）
+  let sentLockCandidatePaths = lockCandidatePaths;
   _apiLockBlockIfNeeded(path, opts);
   const activeLocks = window.MeldexActiveLocks;
-  const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
-    ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
-    : null;
+  const lockBatchRoute = _apiLockBatchRoute(path, opts);
+  // まとめての移動・削除は、取れなかった項目だけを外して残りを進める（1件ずつの時は従来どおり全体を止める）
+  // シート全体を変える保存（列・並べ替え・ビューの設定・列名の変更）は、その保存の間だけシート全体（中の行を含む）を
+  // ロックし、終わったら放す。セルの入力は行（トピック）のファイルだけをロックするので、ほかの行への書き込み
+  // （裏の取り込み・Web Clipper・ほかの端末）は通る（2026-11-25 利用者の判断「狭める」）。
+  const sheetWide = _apiIsSheetWideWrite(path, opts);
+  const lockSpecs = sheetWide === 'schema'
+    ? lockCandidatePaths.map(candidate => ({ path: candidate, includeDescendants: true }))
+    : lockCandidatePaths;
+  const transientLease = !((_apiUsesTransientActiveLock(path) || sheetWide) && activeLocks?.acquireMutationLocks) ? null
+    : lockBatchRoute ? await activeLocks.acquireMutationLocks(lockCandidatePaths, { partial: true })
+    : await activeLocks.acquireMutationLocks(lockSpecs);
+  let lockRejectedOrder = null;
+  if (lockBatchRoute && transientLease?.failed?.length) {
+    const split = _apiSplitLockRejectedItems(opts, transientLease.failed);
+    if (split.fatal || (split.order && !split.keptCount)) {
+      await transientLease.release();
+      if (split.fatal) throw split.fatal;
+      return _apiMergeLockRejectedResults({ results: [] }, split.order);
+    }
+    if (split.order) {
+      opts = split.opts;
+      sentLockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
+      lockRejectedOrder = split.order;
+    }
+  }
   const deferredCommittedUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
     && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, ''));
   let mutationSucceeded = false;
   try {
     if (activeLocks?.beforeApiFetch) {
-      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
+      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: sheetWide === 'schema' ? lockSpecs : sentLockCandidatePaths });
     }
     // 表示名と安定IDを自動付与（監査ログ・版履歴の編集者帰属用）
     const user = getUsername();
@@ -378,8 +685,9 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && actorId && !/[?&]_actor_id=/.test(path)) identityParams.push('_actor_id=' + encodeURIComponent(actorId));
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
-    const result = await _origApiFetch(path, opts);
+    let result = await _origApiFetch(path, opts);
     mutationSucceeded = true;
+    if (lockRejectedOrder) result = _apiMergeLockRejectedResults(result, lockRejectedOrder);
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
     } else if (result?.history_recorded === false) {
@@ -590,311 +898,3 @@ async function _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown) {
     skipAutoAppLayout: true,
     skipSaveLastView: true,
   });
-  return true;
-}
-
-function _repairStartupDatabaseViewTabs() {
-  try {
-    if (!state.currentDbPath || typeof _renderDbViewTabsSafely !== 'function') return;
-    const tabs = document.getElementById('db-view-tabs') || document.querySelector('.db-view-tabs');
-    if (!tabs) return;
-    if (tabs.querySelector('[data-e2e-id^="db-view-add-"]')) return;
-    _renderDbViewTabsSafely(typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-  } catch {}
-}
-
-function _scheduleStartupDatabaseViewTabsRepair() {
-  [0, 80, 250].forEach(delay => setTimeout(_repairStartupDatabaseViewTabs, delay));
-}
-
-async function _restoreStartupBoardView(label, path, opts) {
-  const openOpts = opts || {};
-  const boardLabel = label || String(path || '').split(/[\\/]/).pop() || '';
-  if (typeof GBPaneBridge !== 'undefined'
-    && GBPaneBridge?.initialized
-    && typeof GBLayout !== 'undefined'
-    && typeof GBTabs !== 'undefined'
-    && typeof navPush === 'function') {
-    state.view = 'board';
-    state.currentBoardPath = path;
-    navPush({ type: 'board', label: boardLabel, path });
-    if (typeof GBPaneBridge.refreshPaneAfterTabSwitch === 'function') {
-      GBPaneBridge.refreshPaneAfterTabSwitch(GBLayout.activePane, { force: true });
-    }
-    if (!openOpts.skipSaveLastView) saveLastView({ type: 'board', label: boardLabel, path });
-    if (!openOpts.skipRecent && typeof addRecent === 'function') addRecent(boardLabel, path, 'board');
-    if (!openOpts.skipHighlight && typeof highlightOutlinerNode === 'function') highlightOutlinerNode(path);
-    if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
-    return true;
-  }
-  const opened = typeof openBoard === 'function' ? await openBoard(boardLabel, path, openOpts) : false;
-  return opened !== false;
-}
-
-// 特定フォルダ内のパスに対するロールを取得
-function getMyRoleForPath(filePath) {
-  if (!filePath) return _myTeamRole;
-  const normFile = String(filePath).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  let matchedRole = '';
-  let matchedLength = -1;
-  for (const [folder, role] of Object.entries(_myTeamRoles)) {
-    const norm = String(folder || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    if (!norm) continue;
-    if ((normFile === norm || normFile.startsWith(norm + '/')) && norm.length > matchedLength) {
-      matchedRole = role;
-      matchedLength = norm.length;
-    }
-  }
-  return matchedRole || _myTeamRole;
-}
-
-// doLogin / ログイン画面は廃止（チーム方式に移行）
-
-// localStorage移行（旧CrossFolio → Meldex、一度だけ実行）
-(function migrateLocalStorage() {
-  if (localStorage.getItem('gb:migrated')) return;
-  const migrations = {
-    'crossfolio-auth-token': 'meldex-auth-token',
-    'crossfolio-user': 'meldex-user',
-    'crossfolio-recent': 'meldex-recent',
-    'crossfolio-theme-vars': 'meldex-theme-vars',
-    'crossfolio-favorites': 'meldex-favorites',
-    'cf-cal-start-day': 'gb-cal-start-day',
-  };
-  for (const [oldKey, newKey] of Object.entries(migrations)) {
-    const val = localStorage.getItem(oldKey);
-    if (val !== null && localStorage.getItem(newKey) === null) {
-      localStorage.setItem(newKey, val);
-    }
-  }
-  // cf-cal-mode-*, cf-cal-date-* のプレフィックス移行
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key && key.startsWith('cf-cal-')) {
-      const newKey = key.replace('cf-cal-', 'gb-cal-');
-      if (localStorage.getItem(newKey) === null) {
-        localStorage.setItem(newKey, localStorage.getItem(key));
-      }
-    }
-  }
-  localStorage.setItem('gb:migrated', '1');
-  if (typeof _refreshOutlinerStorageViewsAfterMigration === 'function') {
-    _refreshOutlinerStorageViewsAfterMigration();
-  }
-})();
-
-// 起動時に正本「スタッフ管理シート」へ自分の行を fill-only 登録する
-// （ユーザーアカウント一元管理 計画書 Phase 2、§5.6）。行が既に存在するなら
-// 一切上書きしない（管理者がシートで編集した値は同期に負けない契約）。
-// 正本シート自体が未設定の場合はここで無ダイアログ自動作成される
-// （計画書§5.1「起動時同期」が自動作成のトリガーの一つ）。
-async function _primeStaffRegistrySelfUpsert() {
-  if (!window.MeldexUserRegistry) return;
-  const me = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
-  if (!me || me === 'anonymous') return;
-  try {
-    await window.MeldexUserRegistry.upsertStaff({ user: me, display: me }, { fillOnly: true, silentError: true });
-  } catch (e) {
-    // ソースフォルダ未設定・オフライン等では起動処理を止めない。
-    console.warn('[staff-registry] 起動時のプロフィール登録を保留しました:', e);
-  }
-}
-
-async function init() {
-  const initStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
-  // チームプロフィール同期は権限情報の更新用途。起動表示は待たず、裏で完了させる。
-  _runStartupBackground('team-profile-sync', _syncMyTeamProfile());
-  _runStartupBackground('staff-registry-self-upsert', _primeStaffRegistrySelfUpsert());
-
-  try {
-    const initialFetchStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
-    const [vault, roots, homeRes] = await Promise.all([
-      _withStartupTimeout('vault', apiFetch('/vault'), 5000, { path: '', name: '' }),
-      _withStartupTimeout('outliner-roots', apiFetch('/outliner-roots').catch(() => []), 5000, []),
-      _withStartupTimeout('home-folder', apiFetch('/home-folder').catch(() => ({ exists: false })), 5000, { exists: false }),
-    ]);
-    if (typeof _logPerfEvent === 'function') {
-      _logPerfEvent('startup.initial-fetches', initialFetchStartedAt, {
-        rootsCount: Array.isArray(roots) ? roots.length : 0,
-        hasHome: !!homeRes?.exists,
-      });
-    }
-    state.vaultPath = vault.path;
-    window.MeldexRegisteredSourceRoots = Array.isArray(roots)
-      ? roots.filter(root => root?.path).map(root => ({ ...root }))
-      : [];
-    try {
-      if (homeRes?.path && typeof _homeFolderPath !== 'undefined') _homeFolderPath = homeRes.path;
-    } catch (e) {}
-
-    const hasRoots = roots.length > 0 && roots.some(r => r.visible);
-    const hasHome = homeRes.exists;
-    const onboardingShown = !!window.MeldexOnboarding?.handleStartupState?.({
-      vaultPath: vault.path || '',
-      hasRoots,
-      hasHome,
-      homePath: homeRes?.path || '',
-    });
-    if (!vault.path && !hasRoots && !hasHome) {
-      // ソースフォルダもルートもホームもない場合はウェルカム画面
-      // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
-      showView('welcome');
-    }
-
-    // ホームフォルダの版間共有: 起動時の共有警告・引き継ぎ提案チェック。
-    // オンボーディングウィザードが出る場合はダイアログの重なりを避けて後回しにする
-    // （設定画面を開いた時に loadHomeFolderSharingStatusForSettings() 経由で再チェックされる）。
-    if (!onboardingShown && window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings) {
-      _runStartupBackground(
-        'home-folder-sharing-check',
-        window.MeldexHomeFolderSharing.loadHomeFolderSharingStatusForSettings()
-      );
-    }
-
-    document.getElementById('sb-work').textContent = vault.path ? ('ソースフォルダ: ' + vault.name) : '';
-    document.getElementById('current-title').textContent = '';
-
-    // file_id マイグレーションは初回のみだが、起動表示を止めないよう背景化する。
-    const rawMigrationPromise = _migratePathsToFileIds();
-    const migrationPromise = _withStartupTimeout('file-id-migration', rawMigrationPromise, 5000, null);
-
-    // 廃止された非表示機能の localStorage を一度だけ除去
-    if (!localStorage.getItem('_folder-hidden-removed')) {
-      localStorage.removeItem('folder-files-hidden');
-      localStorage.setItem('_folder-hidden-removed', '1');
-    }
-
-    // フォルダツリーとビュー復元を並行実行
-    const outlinerStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
-    const outlinerPromise = Promise.resolve(loadOutliner()).finally(() => {
-      if (typeof _logPerfEvent === 'function') _logPerfEvent('startup.loadOutliner.promise', outlinerStartedAt);
-    });
-    const linkDictPromise = loadLinkDict();
-
-    // URLパラメータによる初期表示（新しいタブ/ウィンドウで開く用）
-    let restored = onboardingShown;
-    let openedCloudStartupHome = false;
-    const restoredByPaneLayout = _paneLayoutRestoredFromStorage();
-    const urlParams = new URLSearchParams(window.location.search);
-    const openType = urlParams.get('open');
-    const openPath = urlParams.get('path');
-    const openLabel = urlParams.get('label') || (openPath ? openPath.split('/').pop() : '');
-    const isUrlOpen = !!(openType && openPath);
-    if (isUrlOpen && _isCloudPhase1UnsupportedOpenType(openType)) {
-      _showCloudPhase1UnsupportedOpen(openType);
-      restored = true;
-    } else if (isUrlOpen) {
-      const _urlOpenOpts = { skipAutoAppLayout: true, skipSaveLastView: true };
-      // URLパラメータ経由の場合、lastViewを上書きしないフラグを設定
-      const previousSkipLastView = window._skipLastViewSave;
-      window._skipLastViewSave = true;
-      try {
-        if (openType === 'page') { openPage(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'board') { restored = await _restoreStartupBoardView(openLabel, openPath, _urlOpenOpts); }
-        else if (openType === 'form-app') { restored = (await openFormApp(openPath, openLabel, _urlOpenOpts)) !== false; }
-        else if (openType === 'map') { restored = (await openMapApp(openPath, openLabel, _urlOpenOpts)) !== false; }
-        else if (openType === 'entity') { selectEntity(openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'pivot' || openType === 'database') { await selectDatabase(openPath, null, _urlOpenOpts); restored = true; }
-        else if (openType === 'media' || openType === 'image' || openType === 'video' || openType === 'audio') {
-          const mt = urlParams.get('mediaType') || (openType === 'media' ? 'image' : openType);
-          openMedia(openLabel, openPath, mt, _urlOpenOpts);
-          restored = true;
-        }
-        else if (openType === 'document') {
-          if (typeof openViewer === 'function') {
-            const viewerUrl = /\.pdf(?:[?#]|$)/i.test(openPath)
-              ? '/viewer?pdf=' + encodeURIComponent(openPath)
-              : '/viewer?file=' + encodeURIComponent(openPath);
-            openViewer(viewerUrl, _urlOpenOpts);
-            restored = true;
-          }
-        }
-        else if (openType === 'html') { openHtmlFile(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'csv') { if (typeof openCsvFile === 'function') { openCsvFile(openLabel, openPath, _urlOpenOpts); restored = true; } }
-        else if (openType === 'folder') { openFolder(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'calendar') { await openCalendarFile(openLabel, openPath, _urlOpenOpts); restored = true; }
-        else if (openType === 'chat') {
-          if (typeof openSavedChat === 'function') {
-            await openSavedChat(openPath);
-            restored = true;
-          }
-        }
-        else if (openType === 'scriptnote' || openType === 'scenario') {
-          if (typeof openScenarioInScriptNote === 'function') {
-            openScenarioInScriptNote(openPath, openLabel, _urlOpenOpts);
-            restored = true;
-          }
-        }
-      } finally {
-        window._skipLastViewSave = previousSkipLastView;
-      }
-    }
-
-    // Cloud starts at Home even when an older document/layout is remembered.
-    // Keep saved tabs and unsaved drafts available for explicit recovery.
-    if (!restored) {
-      openedCloudStartupHome = await _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown);
-      restored = openedCloudStartupHome;
-    }
-
-    // v5.0 ペイン配置が復元済みなら、旧 lastView 復元でアクティブペインを上書きしない。
-    if (!restored && restoredByPaneLayout) restored = true;
-
-    // 前回のビューを即座に復元（URLパラメータがなかった場合）
-    if (!restored) {
-      const restoreStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
-      try {
-        let last = _readLastViewFromStorage();
-        if (last && _isCloudPhase1UnsupportedOpenType(last.type)) {
-          localStorage.removeItem('lastView');
-          _showCloudPhase1UnsupportedOpen(last.type);
-          last = null;
-        }
-        const _expOpts = { fromExplorer: true, skipAutoAppLayout: true };
-        if (last) {
-          if (last.type === 'pivot' && last.dbPath) { await selectDatabase(last.dbPath, null, _expOpts); restored = true; }
-          else if (last.type === 'entity' && last.entityPath) { selectEntity(last.entityPath, _expOpts); restored = true; }
-          else if (last.type === 'page' && last.path) { openPage(last.label || '', last.path, _expOpts); restored = true; }
-          else if (last.type === 'board' && last.path) { restored = await _restoreStartupBoardView(last.label || '', last.path, _expOpts); }
-          else if (last.type === 'form-app' && last.path) { restored = (await openFormApp(last.path, last.label || '', _expOpts)) !== false; }
-          else if (last.type === 'map' && last.path) { restored = (await openMapApp(last.path, last.label || '', _expOpts)) !== false; }
-          else if (last.type === 'media' && last.path) { openMedia(last.label || '', last.path, last.mediaType || 'image', _expOpts); restored = true; }
-          else if (last.type === 'html' && last.path) { openHtmlFile(last.label || '', last.path, _expOpts); restored = true; }
-          else if (last.type === 'csv' && last.path) { if (typeof openCsvFile === 'function') { openCsvFile(last.label || '', last.path, _expOpts); restored = true; } }
-          else if (last.type === 'scriptnote' && last.path && typeof openScenarioInScriptNote === 'function') { openScenarioInScriptNote(last.path, last.label || '', _expOpts); restored = true; }
-          else if (last.type === 'folder' && last.path) { openFolder(last.label || '', last.path, _expOpts); restored = true; }
-          else if (last.type === 'calendar' && last.path) { await openCalendarFile(last.label || '', last.path, _expOpts); restored = true; }
-        }
-      } catch (e) {}
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.restore-last-view', restoreStartedAt, { restored });
-      }
-    } // if (!restored) from URL params
-
-    if (!restored && !_isDesktopStartupLaunch()) {
-      const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
-      if (startupFolder?.path) {
-        const _startupOpts = { fromExplorer: true, skipAutoAppLayout: true };
-        await openFolder(startupFolder.label || _pathTailLabel(startupFolder.path, 'フォルダ'), startupFolder.path, _startupOpts);
-        restored = true;
-      }
-    }
-
-    // v5.0 ペインシステムがタブを復元している場合は welcome にフォールバックしない。
-    // lastView ベースの復元が hit しなくても、ペイン配置が残っていれば画面は埋まっている。
-    if (!restored) {
-      const _paneHasTabs = _paneLayoutHasAnyTabs();
-      if (!_paneHasTabs) showView('welcome');
-    }
-
-    // 起動後の重い補助処理は背景で継続し、表示を先に返す。
-    _scheduleStartupDatabaseViewTabsRepair();
-    _hideStartupSplash();
-    if (typeof _logPerfEvent === 'function') {
-      _logPerfEvent('startup.visible', initStartedAt, { restored });
-    }
-    _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
-      if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
-        _refreshDbViewConfigAfterHistory(state.currentDbPath);
-      }
-    });

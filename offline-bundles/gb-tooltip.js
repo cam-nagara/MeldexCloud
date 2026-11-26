@@ -1546,7 +1546,7 @@
 
   // フォルダ表示レイアウト
   regId('folder-layout-select', { label: 'フォルダ表示', desc: 'フォルダビューの表示形式（リスト/グリッド等）を選びます' });
-  regId('folder-layout-menu-btn', { label: '表示形式', desc: 'グリッド、ウォーターフォール、横並び、リストから表示方法を選びます' });
+  regId('folder-layout-menu-btn', { label: '表示形式', desc: 'グリッド、ウォーターフォール、横並び、リスト、リスト・小から表示方法を選びます' });
   regId('folder-display-btn', { label: '表示設定', desc: 'フォルダパネルのサムネイルサイズや表示項目を変更します' });
 
   // チャットモデル選択

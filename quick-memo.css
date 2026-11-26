@@ -9,8 +9,8 @@
   --qm-fg: var(--fg);
   --qm-muted: var(--fg2);
   --qm-strong: var(--ui-fg-strong, #fff);
-  --qm-accent: var(--accent2);
-  --qm-blue: var(--accent);
+  --qm-accent: var(--ui-accent, var(--accent));
+  --qm-blue: var(--ui-accent, var(--accent));
   --qm-danger: var(--red);
   --qm-create-clearance: calc(72px + env(safe-area-inset-bottom, 0px));
   --qm-safe-top: env(safe-area-inset-top, 0px);

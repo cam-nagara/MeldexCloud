@@ -64,6 +64,14 @@
         return { bgColor: dark ? mixColor(color, base, 0.9) : '#ffffff', borderColor: color, textColor: ink, lineColor: color };
       case 'plain':
         return { bgColor: 'transparent', borderColor: 'transparent', textColor: '', lineColor: color };
+      // 図解カード: 背景になじむ無彩色の面に、役割色を枠・左帯・見出しで出す。
+      case 'card':
+        return { bgColor: dark ? mixColor('#dfe6f0', base, 0.86) : mixColor('#f1f5f9', base, 0.35), borderColor: color, textColor: dark ? '#d4d4d4' : '#1f2937', lineColor: color };
+      // 図解の線・区切り枠: 役割色を使わない控えめな灰色。
+      case 'neutral': {
+        const gray = dark ? '#a8adb4' : '#6b7280';
+        return { bgColor: 'transparent', borderColor: gray, textColor: ink, lineColor: gray };
+      }
       case 'muted':
         return { bgColor: mixColor(color, base, 0.6), borderColor: mixColor(color, base, 0.45), textColor: ink, lineColor: mixColor(color, base, 0.45) };
       default:
@@ -342,6 +350,7 @@
   global.bdGetThemeColorSet = getThemeColorSet;
   global.bdReadableTextColor = readableTextColor;
   global.bdThemeTone = themeTone;
+  global.bdBoardBackgroundColor = boardBackgroundColor;
   global.bdThemeRoleColor = themeRoleColor;
   global.bdMixColor = mixColor;
   global.bdBuildDefaultDepthStyles = buildDefaultDepthStyles;

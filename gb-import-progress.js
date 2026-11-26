@@ -6,6 +6,34 @@
   const POLL_INTERVAL_MS = 1500;
   const CATEGORY = 'import';
   const KIND_LABELS = {
+    'import': '取り込み',
+    'archive': '圧縮・解凍',
+    'auto-tag': '自動タグ付け',
+    'auto-tag-dictionary-import': 'タグ辞書の取り込み',
+    'auto-tag-model-install': '自動タグモデルの準備',
+    'auto-tag-preset-install': 'タグプリセットの準備',
+    'backlinks-rebuild': '参照リンクの更新',
+    'duplicate-scan': '重複ファイルの確認',
+    'duplicate-baseline': '重複ファイルの全体確認',
+    'duplicate-monitor': '重複ファイルの初期確認',
+    'duplicate-pending': '追加ファイルの重複確認',
+    'duplicate-resolve': '重複ファイルの整理',
+    'extension-install': '拡張機能の準備',
+    'external-tag-catalog-prepare': '外部タグ辞書の準備',
+    'file-import': 'ファイルの取り込み',
+    'global-tag-reset': 'タグの初期化',
+    'global-tags-os-sync': 'ファイルのタグを同期',
+    'global-tags-os-sync-bulk': 'ファイルのタグを一括同期',
+    'google-import': 'Googleデータの取り込み',
+    'move-aftercare': '移動後の参照更新',
+    'rename-aftercare': '名前変更後の参照更新',
+    'notion-migration-prepare': 'Notion一括移行の確認',
+    'notion-migration-commit': 'Notionの一括取り込み',
+    'sheet-ai-auto': 'シートのAI自動入力',
+    'sheet-ai-bulk': 'シートのAI一括入力',
+    'sheet-ai-generate': 'シートのAI入力',
+    'version-migrate-shared': '履歴の共有先への移行',
+    'x-bookmark-folders': 'Xブックマークのフォルダ更新',
     'notion-sync': 'Notion同期',
     'x-bookmarks': 'Xブックマーク',
     'x-bookmark-notes': 'Xブックマークのノート',
@@ -13,6 +41,7 @@
     'x-bookmark-translations': 'Xポストの翻訳',
     'x-account-posts': 'Xアカウント投稿',
     'external-import': '外部取り込み',
+    'external-import-set': '外部取り込み',
     'pureref-import': 'PureRef取り込み',
     'enex-import': 'ENEX取り込み',
     'sheet-file-import': 'シート取り込み',
@@ -28,6 +57,37 @@
   function _progressApi() { return window.MeldexOperationProgress || null; }
   function _kindLabel(kind) { return KIND_LABELS[kind] || kind || 'インポート'; }
   function _apiAvailable() { return typeof apiFetch === 'function'; }
+  function _quietScheduleFailure(schedule) {
+    return schedule?.failure_attention_dismissed === true
+      || (schedule?.category === 'duplicate-baseline' && Number(schedule.consecutive_failures || 0) < 3);
+  }
+  function _scheduleFailureValues(schedule, run) {
+    const options = {
+      label: _jobLabel({kind: schedule.category, label: schedule.label}),
+      details: run.summary?.failure_samples,
+      attentionKey: schedule.failure_attention_key,
+    };
+    options.retry = async handle => {
+      const action = schedule.category === 'duplicate-baseline' ? 'retry-maintenance' : 'run';
+      try {
+        await apiPost(`/import-schedules/${encodeURIComponent(schedule.id)}/${action}`, {}, {silentError: true});
+      } catch (error) {
+        const state = handle?.getState();
+        if (state) {
+          handle.dispose();
+          _progressApi()?.begin({id: state.id, kind: state.kind, label: state.label,
+            settingsPanel: state.settingsPanel, persistentJobId: state.persistentJobId,
+            background: true, showImmediately: true, retry: options.retry})
+            ?.fail(window.describeJobFailure(error, options));
+        }
+        throw error;
+      }
+      handle?.dispose();
+      lastDurablePollAt = 0;
+      await poll();
+    };
+    return window.describeJobFailure(run.error || run.summary?.error || run.summary?.message, options);
+  }
   function _settingsPanelForKind(kind) {
     const normalized = String(kind || '');
     if (normalized === 'x-account-posts') return 'Xアカウント保存';
@@ -37,6 +97,7 @@
 
   function _jobLabel(job) {
     const kind = _kindLabel(job?.kind);
+    if (['duplicate-monitor', 'duplicate-pending'].includes(job?.kind)) return kind;
     return job?.label && job.label !== kind ? kind + ': ' + job.label : kind;
   }
 
@@ -132,9 +193,46 @@
 
   function _syncDurableSchedule(schedule, volatileJobIds) {
     const api = _progressApi();
+    if (!api || !schedule?.id) return;
     const dispatch = schedule?.last_dispatch || {};
     const dispatchStatus = String(dispatch.status || '');
     const jobId = String(dispatch.job_id || '');
+    const run = schedule?.last_run;
+    const receiptJobId = String(run?.job_id || (run?.dispatch_id ? 'schedule-' + run.dispatch_id : ''));
+    if (schedule.category === 'duplicate-baseline'
+        && (run?.status === 'done' || run?.status === 'cancelled' || _quietScheduleFailure(schedule))) {
+      api.list().filter(item => item.kind === 'duplicate-baseline' && item.status === 'failed')
+        .forEach(item => api.get(item.id)?.dispose());
+    }
+    const receiptKey = `${schedule?.id}:${run?.job_id}:${run?.finished_at}:${schedule?.needs_attention}:${schedule?.failure_attention_dismissed}`;
+    if (receiptJobId && run?.finished_at && ['done', 'error', 'cancelled'].includes(run.status)
+        && !volatileJobIds.has(receiptJobId) && completedScheduleReceipts.get(schedule.id) !== receiptKey) {
+      completedScheduleReceipts.set(schedule.id, receiptKey);
+      const result = {...(run.summary || {})};
+      if (!result.summary) {
+        if (result.baseline_files != null) result.summary = `全体確認 ${Number(result.baseline_files)}件 / 画像 ${Number(result.baseline_images || 0)}件`;
+        else if (result.saved != null) result.summary = `保存 ${Number(result.saved)}件`;
+        else if (result.created != null || result.updated != null) result.summary = `新規 ${Number(result.created || 0)}件 / 更新 ${Number(result.updated || 0)}件`;
+      }
+      if (result.baseline_truncated) result.warnings = ['全体確認を途中で終了しました。次回の確認を待ってください。'];
+      const quiet = schedule.category === 'webclip-inbox' && run.status === 'done'
+        && result.ok !== false && !['saved', 'failed', 'recovered'].some(key => Number(result[key]) > 0)
+        || ((run.status === 'error' || result.ok === false) && _quietScheduleFailure(schedule));
+      if (quiet) api.findByPersistentJobId(receiptJobId)?.dispose();
+      if (!quiet && !restoredJobs.has(receiptJobId)) {
+        const handle = _syncJob({id: receiptJobId, kind: schedule.category,
+          label: schedule.label, status: run.status, progress: {...dispatch, phase: dispatch.stage}});
+        if (handle) {
+          const values = window.describeImportResult(result);
+          if (run.status === 'error' || result.ok === false) handle.fail(_scheduleFailureValues(schedule, run));
+          else if (run.status === 'cancelled') handle.cancelled(values);
+          else if (schedule.category === 'x-bookmarks' && typeof result.ok !== 'boolean') handle.unknown({summary: '項目別の結果を確認できません。取り込み予定の前回結果を確認してください。'});
+          else if (values.partial) handle.partial(values);
+          else handle.succeed(values);
+          restoredJobs.delete(receiptJobId);
+        }
+      }
+    }
     const relevant = schedule?.auto_retry_blocked === true
       || dispatchStatus === 'interrupted'
       || (['claimed', 'submitted', 'running', 'cancelling'].includes(dispatchStatus)
@@ -145,7 +243,6 @@
       durableSchedules.delete(key);
       return;
     }
-    if (!api || !schedule?.id) return;
     const processed = Math.max(0, Number(dispatch.processed) || 0);
     const total = Math.max(0, Number(dispatch.total) || 0);
     const stage = String(dispatch.stage || '準備中');
@@ -214,9 +311,8 @@
     const now = Date.now();
     if (now - lastDurablePollAt < 5000) return;
     lastDurablePollAt = now;
-    const data = await apiFetch('/import-schedules', {silentError: true});
-    const schedules = (Array.isArray(data?.schedules) ? data.schedules : [])
-      .filter(schedule => schedule?.category === 'x-bookmarks' || schedule?.category === 'x-account-posts');
+    const data = await apiFetch('/import-schedules?include_system=1', {silentError: true});
+    const schedules = Array.isArray(data?.schedules) ? data.schedules : [];
     const currentKeys = new Set(schedules.map(_durableScheduleKey));
     schedules.forEach(schedule => _syncDurableSchedule(schedule, volatileJobIds));
     durableSchedules.forEach((handle, key) => {
@@ -227,8 +323,10 @@
     });
   }
 
+  const completedScheduleReceipts = new Map();
+
   async function _scheduledJobSnapshot(jobId) {
-    const data = await apiFetch('/import-schedules', { silentError: true });
+    const data = await apiFetch('/import-schedules?include_system=1', { silentError: true });
     for (const schedule of (Array.isArray(data?.schedules) ? data.schedules : [])) {
       const run = schedule.last_run;
       if (String(run?.job_id || '') !== jobId || !['done', 'error', 'cancelled'].includes(run.status)) continue;
@@ -240,6 +338,7 @@
           ? '処理終了の記録はありますが、項目別の結果は残っていません。取り込み予定の前回結果を確認してください。'
           : '定期実行の結果を保存済みの記録から確認しました' },
         error: run.error,
+        schedule,
       };
     }
     return null;
@@ -266,6 +365,16 @@
       }
     }
     entry.misses = 0;
+    if ((job?.status === 'error' || (job?.status === 'done' && job.result?.ok === false))
+        && !job.schedule && (job.kind === 'duplicate-baseline' || job.target_key)) {
+      try { job = (await _scheduledJobSnapshot(jobId)) || job; }
+      catch (_) { return; }
+    }
+    if (job?.schedule && _quietScheduleFailure(job.schedule) && job.status === 'error') {
+      entry.handle?.dispose();
+      restoredJobs.delete(jobId);
+      return;
+    }
     if (job?.status === 'done') {
       const result = job.result || {};
       if (!entry.handle && job.kind === 'webclip-inbox'
@@ -275,7 +384,9 @@
       }
       entry.handle = entry.handle || _syncJob(job);
       const values = window.describeImportResult(result);
-      if (result.ok === false) entry.handle.fail({ ...values, error: result.error || result.message || '取り込みに失敗しました' });
+      if (result.ok === false) entry.handle.fail(window.describeJobFailure(result.error || result.message, {
+        label: _jobLabel(job), details: result.failure_samples,
+      }));
       else if (values.partial) entry.handle.partial(window.importAttentionValues ? window.importAttentionValues(values, _settingsPanelForKind(job.kind)) : values);
       else entry.handle.succeed(values);
       restoredJobs.delete(jobId);
@@ -286,10 +397,9 @@
       restoredJobs.delete(jobId);
     } else if (job?.status === 'error') {
       entry.handle = entry.handle || _syncJob(job);
-      entry.handle.fail({
-        error: job.error || '取り込みに失敗しました',
-        details: job.result?.failure_samples || job.error_detail?.failure_samples || [],
-      });
+      entry.handle.fail(job.schedule ? _scheduleFailureValues(job.schedule, job.schedule.last_run)
+        : window.describeJobFailure(job.error, {label: _jobLabel(job),
+          details: job.result?.failure_samples || job.error_detail?.failure_samples}));
       restoredJobs.delete(jobId);
     } else if (job?.status === 'unknown') {
       entry.handle?.unknown({ summary: job.result?.summary || '取り込み結果の内訳を確認できません。' });
@@ -366,17 +476,50 @@
     return foregroundStack[foregroundStack.length - 1] || null;
   }
 
+  // 件数だけの更新は、1件ごとに進捗の表示を作り直さない（多数の移動・削除で、1件ごとの更新が塊ごとに
+  // 0.4〜1秒を占め、件数に応じて伸びていた。実測）。最後の値は、間隔の後に必ず表示へ出す。
+  const OPERATION_UPDATE_INTERVAL_MS = 100;
+  const operationUpdateStates = new WeakMap();
+
+  function _dropPendingOperationUpdate(handle) {
+    const state = handle && operationUpdateStates.get(handle);
+    if (!state) return;
+    if (state.timer) clearTimeout(state.timer);
+    operationUpdateStates.delete(handle);
+  }
+
   function updateOperation(processed, label, token) {
     const handle = _resolveForeground(token);
     if (!handle) return;
     const values = { processed: Math.max(0, Number(processed) || 0) };
     if (label) values.label = String(label);
-    handle.update(values);
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    let state = operationUpdateStates.get(handle);
+    if (!state) { state = { last: -Infinity, timer: null, pending: null }; operationUpdateStates.set(handle, state); }
+    if (label || now - state.last >= OPERATION_UPDATE_INTERVAL_MS) {
+      state.last = now;
+      state.pending = null;
+      if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+      handle.update(values);
+      return;
+    }
+    state.pending = values;
+    if (!state.timer) {
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        const pending = state.pending;
+        state.pending = null;
+        if (!pending) return;
+        state.last = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        handle.update(pending);
+      }, OPERATION_UPDATE_INTERVAL_MS);
+    }
   }
 
   function finishOperation(token, options) {
     const handle = _resolveForeground(token);
     if (!handle) return;
+    _dropPendingOperationUpdate(handle);
     const index = foregroundStack.indexOf(handle);
     if (index >= 0) foregroundStack.splice(index, 1);
     const opts = options || {};
@@ -389,6 +532,7 @@
   function failOperation(error, token, options) {
     const handle = _resolveForeground(token);
     if (!handle) return;
+    _dropPendingOperationUpdate(handle);
     const index = foregroundStack.indexOf(handle);
     if (index >= 0) foregroundStack.splice(index, 1);
     handle.fail(Object.assign({ error: error }, options || {}));

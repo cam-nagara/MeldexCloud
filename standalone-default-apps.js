@@ -7,6 +7,7 @@
   let statusCache = null;
   let styleInstalled = false;
   let dialogSeq = 0;
+  let lastOpenFailed = false;
 
   function isNativeStandalone() {
     return new URLSearchParams(location.search).get('native') === '1';
@@ -354,7 +355,10 @@
     try {
       const status = await loadStatus(true);
       buildDialog(status, opts);
+      if (lastOpenFailed) showMessage('既定アプリ設定を開きました', false);
+      lastOpenFailed = false;
     } catch (error) {
+      lastOpenFailed = true;
       showMessage('既定アプリ設定を開けませんでした: ' + (error?.message || error), true);
     }
   }

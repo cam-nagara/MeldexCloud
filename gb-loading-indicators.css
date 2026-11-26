@@ -282,18 +282,17 @@ img.meldex-image-load-error {
 
 .meldex-operation-heading {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 7px;
 }
 
 .meldex-operation-label {
   min-width: 0;
-  overflow: hidden;
   color: var(--fg, #e7e9ec);
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .meldex-operation-state,
@@ -303,7 +302,11 @@ img.meldex-image-load-error {
 }
 
 .meldex-operation-state { white-space: nowrap; }
-.meldex-operation-detail { overflow-wrap: anywhere; }
+.meldex-operation-detail {
+  overflow-wrap: anywhere;
+  /* 通常の状態と順番待ちの説明が切り替わっても名前と操作を動かさない。 */
+  min-height: 3lh;
+}
 
 .meldex-operation-details {
   color: var(--fg2, #b8bec7);

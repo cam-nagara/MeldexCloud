@@ -3,6 +3,9 @@
 .gb-scheduler-modal .gb-modal-body { display: flex; flex-direction: column; gap: 12px; font-size: var(--ui-font-13, 13px); }
 .gb-scheduler-allocation-form { display: grid; gap: 12px; min-width: min(540px, 76vw); }
 .gb-scheduler-field { display: grid; gap: 5px; min-width: 0; }
+.gb-scheduler-compare-task { min-width: 0; overflow-wrap: anywhere; }
+.gb-scheduler-compare-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-gap-lg, 12px); margin-top: var(--ui-gap-sm, 6px); }
+.gb-scheduler-compare-value { white-space: pre-line; overflow-wrap: anywhere; }
 .gb-scheduler-allocation-form input[type="number"] { width: 96px; min-width: 0; max-width: 100%; box-sizing: border-box; }
 .gb-scheduler-field-label { color: var(--fg2); font-size: 11px; font-weight: 600; }
 .gb-scheduler-scope-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -16,13 +19,14 @@
 .gb-scheduler-progress { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; color: var(--fg2); }
 .gb-scheduler-progress.is-error,
 .gb-scheduler-current-summary.is-error { color: var(--ui-danger, var(--red, #d9485f)); }
-.gb-scheduler-proposal-selector label { display: grid; gap: 4px; color: var(--fg2); font-size: 10px; }
+.gb-scheduler-proposal-selector label { display: grid; gap: 4px; color: var(--fg2); font-size: var(--ui-font-11, 11px); }
 .gb-scheduler-proposal-selector select { min-width: 140px; max-width: 220px; }
 .gb-scheduler-proposal-selector.is-toolbar { display: flex; align-self: center; align-items: center; min-height: 32px; margin-inline: 4px; padding-block: 2px; overflow: visible; box-sizing: border-box; }
 .gb-scheduler-proposal-selector.is-toolbar label { display: flex; align-items: center; gap: 5px; min-height: 28px; padding-bottom: 1px; line-height: 1.25; white-space: nowrap; overflow: visible; }
 .gb-scheduler-proposal-selector.is-toolbar select { width: clamp(104px, 13vw, 170px); min-height: var(--ui-h-sm, 28px); padding-block: 3px; line-height: 1.25; box-sizing: border-box; }
 .gb-scheduler-current-summary,
 .gb-scheduler-panel-status { margin: 8px 0; color: var(--fg2); font-size: 11px; line-height: 1.5; }
+.gb-scheduler-current-summary { font-size: var(--ui-font-13, 13px); }
 .gb-scheduler-proposal-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .gb-scheduler-proposal-actions .gb-scheduler-button { min-width: 0; }
 .gb-scheduler-template-host { display: grid; gap: 8px; }
@@ -100,6 +104,8 @@
   .gb-scheduler-placement-card > span { font-size: var(--ui-font-14, 14px); }
   .gb-scheduler-placement-card > strong { font-size: var(--ui-font-15, 15px); }
   .gb-scheduler-scope-grid { grid-template-columns: 1fr; }
+  .gb-scheduler-compare-columns { grid-template-columns: 1fr; }
+  .gb-scheduler-compare-complete .gb-modal-footer > .gb-scheduler-button { width: 100%; }
   .gb-scheduler-scope-grid .gb-scheduler-field:last-child { grid-column: auto; }
   .gb-scheduler-proposal-selector label { font-size: var(--ui-font-14, 14px); }
   .gb-scheduler-proposal-selector select { min-height: var(--ui-h-touch, 44px); font-size: var(--ui-font-16, 16px); }
@@ -119,5 +125,9 @@
   .gb-scheduler-e2e-visual-fixture { inset: 8px; grid-template-columns: 1fr; }
 }
 /* 制作管理タブの下段: 表示中の案の操作（名前・分岐・再計算・比較・採用・保管）。 */
+@media (max-width: 700px) {
+  /* 短い項目名の日時フォーム。通常の設定の128pxは変えない。 */
+  .gb-scheduler-occurrence-form { --ui-setting-label-width: 64px; }
+}
 .gb-production-sidebar-proposals { flex: 0 0 auto; padding: 10px; border-top: 1px solid var(--cal-grid-line, var(--border)); box-sizing: border-box; min-width: 0; }
 .gb-scheduler-allocation-host { display: grid; gap: 8px; min-width: 0; }

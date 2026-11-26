@@ -1,4 +1,47 @@
   /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
+  /* 以下の3つは gb-data-access-dropbox-fileops-versions.js が1000行を超えたため、ここへ移した（同じ関数スコープに連結される）: フォルダの中身の件数・ファイルの版の論理削除と復元。 */
+async function _countFolderEntriesIncludingTrash(provider, folderPath) {
+  let size = 0;
+  async function walk(current) {
+    for (const entry of await _listDirectoryEntries(provider, current)) {
+      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
+      else size += 1;
+    }
+  }
+  await walk(folderPath);
+  return size;
+}
+
+async function _deleteFileVersion(provider, path, version) {
+  const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
+  if (!record) throw new Error('バージョンが見つかりません');
+  const token = _deletedVersionToken();
+  await adapter.save(
+    storageKind,
+    record.documentId,
+    { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
+    { expectedRevision: record.revision },
+  );
+  return { ok: true, token, version: name };
+}
+
+async function _undeleteFileVersion(provider, path, token) {
+  const normalized = _normalizeFolderPath(path);
+  const safeToken = _safeVersionName(token);
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  await _awaitPendingEditFinalizations();
+  const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+  const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
+  if (!record) throw new Error('削除済みバージョンが見つかりません');
+  await adapter.save(
+    window.MeldexSystemStorage.SystemStorageKind.VERSIONS,
+    record.documentId,
+    { ...record.payload, deleted_at: '', deleted_token: '' },
+    { expectedRevision: record.revision },
+  );
+  return { ok: true, version: record.payload.version_name };
+}
+
   function _relativeToFolder(folderPath, filePath) {
     const folder = _normalizeFolderPath(folderPath);
     const file = _normalizeFolderPath(filePath);

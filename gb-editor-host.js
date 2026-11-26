@@ -152,6 +152,14 @@
       }
       activate(host, true); return;
     }
+    // Chat messages own their history without becoming a document editor.
+    // Keep inspectors attached to the document, but do not route chat Undo
+    // through a note that happened to be active before the sidebar click.
+    if (el?.closest('#chat-llm-panel')) {
+      if (current) { current = null; generation++; clearTimeout(syncTimer); }
+      needsSync = false;
+      return;
+    }
     const entity = el?.closest('.meldex-entity-detail[data-path]');
     const pane = el?.closest('.gb-pane');
     if (!pane || pane.matches('.gb-pane-role-left-sidebar,.gb-pane-role-right-sidebar,.gb-pane-role-chat-sidebar')) return;

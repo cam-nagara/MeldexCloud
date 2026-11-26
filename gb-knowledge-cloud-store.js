@@ -417,6 +417,11 @@
     row.source_chat_path = _normalizeFolderPath(body?.source_chat_path ?? row.source_chat_path ?? '');
     row.source_msg_id = String(body?.source_msg_id ?? row.source_msg_id ?? '').trim();
     row.created_by = String(body?.created_by ?? row.created_by ?? '').trim();
+    // デスクトップ版と同じく deleted で削除・復元（取り消し）を受け付ける。
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'deleted')) {
+      if (_asBool(body.deleted)) row.deleted_at = row.deleted_at || now;
+      else delete row.deleted_at;
+    }
     row.created = row.created || now;
     row.updated = now;
     return row;

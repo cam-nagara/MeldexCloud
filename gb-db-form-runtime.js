@@ -393,7 +393,9 @@
               topicTabs: true, readOnly: access.readOnly || ctx?.readOnly });
           } else {
             const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
-            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly }).ready;
+            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly,
+              historyScope: () => ctx?.formApp?._historyScope?.() || (typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(dbPath) : 'db:' + dbPath),
+            }).ready;
           }
         }
       } catch (error) {

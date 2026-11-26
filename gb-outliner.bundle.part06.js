@@ -1,3 +1,611 @@
+  if (!newPath || oldPath === newPath || typeof _findTreeNodeByPath !== 'function') return;
+  const node = _findTreeNodeByPath(oldPath);
+  if (!node) return;
+  const parent = _findTreeNodeByPath(_outlinerParentPath(newPath));
+  const children = parent?.querySelector(':scope > .tree-children');
+  if (node.parentElement?.dataset.virtual === 'true') return;
+  if (children?.dataset.loaded === 'true' && children.dataset.virtual !== 'true') {
+    if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, name, fileId);
+    children.appendChild(node);
+  } else {
+    if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(node);
+    node.remove();
+  }
+}
+
+function isOutlinerCopyPendingPath(path) {
+  return [..._outlinerPendingCopyPreviews].some(record => typeof _folderDropPathsEqual === 'function'
+    ? _folderDropPathsEqual(record.path, path)
+    : _normalizeOutlinerPathForCompare(record.path) === _normalizeOutlinerPathForCompare(path));
+}
+
+function _outlinerSetCopyPendingNode(node, pending) {
+  if (!node) return;
+  if (pending && node.dataset.copyPending !== 'true') {
+    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity };
+    node.dataset.copyPending = 'true'; node.inert = true; node.style.opacity = '0.62';
+    node.setAttribute('aria-busy', 'true');
+  } else if (!pending && node.dataset.copyPending === 'true') {
+    node.inert = node._copyPreviewPrevious?.inert || false;
+    node.style.opacity = node._copyPreviewPrevious?.opacity || '';
+    delete node._copyPreviewPrevious; delete node.dataset.copyPending;
+    node.removeAttribute('aria-busy');
+  }
+}
+
+function _beginOutlinerPublishedCopyPreview(item, detail) {
+  const path = detail.new_path;
+  const parent = _outlinerParentPath(path);
+  const same = other => typeof _folderDropPathsEqual === 'function' ? _folderDropPathsEqual(path, other) : path === other;
+  const findNode = () => (typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(path) : null)
+    || Array.from(document.querySelectorAll('.tree-node[data-path]')).find(node => same(node.dataset.path));
+  const hadTree = !!findNode();
+  const hadPanel = typeof _folderItems !== 'undefined' && _folderItems.some(row => same(row.path));
+  const record = { path }; _outlinerPendingCopyPreviews.add(record);
+  let finished = false;
+  const finish = outcome => {
+    if (finished) return; finished = true; _outlinerPendingCopyPreviews.delete(record);
+    if (outcome === 'abandon') return; // 接続切替後の別アカウントの表示には触れない。
+    const stillPending = isOutlinerCopyPendingPath(path);
+    if (outcome === false && !stillPending) {
+      if (!hadPanel && typeof _removeFolderItemsForPaths === 'function') _removeFolderItemsForPaths([path]);
+      if (!hadTree && typeof _removeOutlinerNodesForPaths === 'function') _removeOutlinerNodesForPaths([path]);
+    }
+    _outlinerSetCopyPendingNode(findNode(), stillPending);
+    if (typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+      renderFolderGrid({ preserveSelectedPaths: (typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems : []).map(row => row.path) });
+    }
+  };
+  try {
+    _folderApplySavedDropResults(parent, [{ item: { path, name: detail.new_name || item.name,
+      type: item.type || 'page', kind: item.type === 'folder' ? 'folder' : 'file' } }], []);
+    _outlinerSetCopyPendingNode(findNode(), true);
+  } catch (error) { try { finish(false); } catch {} console.warn('[copy preview] 表示に失敗', error); }
+  return finish;
+}
+
+function _outlinerRevealCopyDestination(path) {
+  const node = (typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(path) : null)
+    || Array.from(document.querySelectorAll('.tree-node[data-path]')).find(node => _folderDropPathsEqual(node.dataset.path, path));
+  const toggle = node?.querySelector(':scope > .tree-node-row > .tree-toggle');
+  if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
+}
+
+async function _outlinerPostCopyWithPreview(route, body, item, options = {}) {
+  if (typeof window.addEventListener !== 'function' || typeof window.removeEventListener !== 'function') return apiPost(route, body);
+  const prepared = window.MeldexStableCopyOperationIds?.prepare?.(route, body)
+    || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+  const origin = typeof state !== 'undefined' ? state.vaultPath : '';
+  let active = true, succeeded = false, finishPreview = null;
+  const abandon = () => {
+    active = false;
+    try { finishPreview?.('abandon'); } catch {} finishPreview = null;
+  };
+  const published = event => {
+    const detail = event.detail || {};
+    if (!active || finishPreview || detail.operation_id !== prepared.body.operation_id || !detail.new_path) return;
+    if ((typeof state !== 'undefined' ? state.vaultPath : '') !== origin) { abandon(); return; }
+    try { finishPreview = _beginOutlinerPublishedCopyPreview(item, detail); }
+    catch (error) { console.warn('[copy preview] 表示に失敗', error); }
+  };
+  window.addEventListener('meldex:copy-published', published);
+  window.addEventListener('meldex:dropbox-auth-session-changed', abandon);
+  window.addEventListener('meldex:mode-changed', abandon);
+  try {
+    if (options.revealTreeDestination) _outlinerRevealCopyDestination(body.dest_folder || _outlinerParentPath(body.path));
+    const result = await apiPost(route, prepared.body);
+    succeeded = result?.ok !== false;
+    if (succeeded && active) window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
+    return result;
+  } finally {
+    window.removeEventListener('meldex:copy-published', published);
+    window.removeEventListener('meldex:dropbox-auth-session-changed', abandon);
+    window.removeEventListener('meldex:mode-changed', abandon);
+    try { finishPreview?.(succeeded); } catch (error) { console.warn('[copy preview] 表示の確定に失敗', error); }
+  }
+}
+
+async function _outlinerDuplicateItems(items, options = {}) {
+  const result = { ok: 0, failed: 0, error: null, created: [] };
+  // 複製を取り消せるようにする（作ったものをゴミ箱へ移す。2026-11-21 ユーザー決定の「作る操作は取り消せる」。
+  // ツール・メニューの複製は記録していたが、フォルダツリー・フォルダパネルの右クリックの複製は記録していなかった:
+  // 2026-11-22 M-014 フォルダツリー網羅テスト）。複数を一度に複製した時は1回の取り消しで全部を戻す。
+  const historyScope = '';
+  const createdItems = [];
+  const reservation = typeof historyReserve === 'function' ? historyReserve('複製', historyScope) : null;
+  try {
+  const targets = Array.from(items || []);
+  for (let offset = 0; offset < targets.length; offset += 2) {
+    const outcomes = await Promise.all(targets.slice(offset, offset + 2).map(async target => {
+      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, options) }; }
+      catch (error) { return { target, error }; }
+    }));
+    for (const { target, res, error } of outcomes) {
+      if (error) { result.failed += 1; if (!result.error) result.error = error; continue; }
+      result.ok += 1;
+      const createdPath = res?.new_path || '';
+      if (createdPath) {
+        result.created.push(createdPath);
+        createdItems.push({ path: createdPath, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file',
+          name: res?.new_name || createdPath.split('/').pop() || createdPath });
+        try {
+          if (typeof _folderApplySavedDropResults === 'function') {
+            _folderApplySavedDropResults(_outlinerParentPath(createdPath), [{ item: createdItems[createdItems.length - 1] }], []);
+          }
+        } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
+      }
+    }
+  }
+  const register = () => {
+  if (createdItems.length === 1 && typeof pushCreatedOutlinerItemHistory === 'function') {
+    pushCreatedOutlinerItemHistory(createdItems[0], '複製: ' + createdItems[0].name, { scope: historyScope, ...(typeof options.refresh === 'function' ? { refresh: options.refresh } : {}) });
+  } else if (createdItems.length > 1) {
+    _pushCreatedOutlinerItemsHistory(createdItems, `複製: ${createdItems.length} 件`, historyScope, options);
+  }
+  };
+  if (reservation) reservation.capture(register); else register();
+  return result;
+  } finally { reservation?.cancel(); }
+}
+
+// 複数の作ったものを1つの取り消しの記録にする（取り消し=全部をゴミ箱へ、やり直し=ゴミ箱から全部戻す）。
+function _pushCreatedOutlinerItemsHistory(createdItems, label, scope, options = {}) {
+  if (typeof historyPush !== 'function' || !createdItems.length) return null;
+  const records = createdItems.map(item => ({ ...item, trashRef: null }));
+  const refresh = async () => {
+    if (typeof options.refresh === 'function') { await options.refresh(); return; }
+    await _outlinerSyncFoldersOrReload(records.map(record => _outlinerParentPath(record.path)));
+  };
+  const entry = historyPush(label,
+    async () => {
+      // 一部だけ移せた時も、成功した画像のごみ箱参照を保持して残りだけを再試行する。
+      const pending = records.filter(record => !record.trashRef);
+      if (!pending.length) { await refresh(); return; }
+      const targets = pending.map(record => ({ path: record.path, kind: record.kind }));
+      const warning = typeof MeldexDeleteImpactWarning !== 'undefined' ? MeldexDeleteImpactWarning : null;
+      const confirmation = warning?.authorizeReversibleDelete ? await warning.authorizeReversibleDelete(targets) : { confirmed: true, operation: 'trash' };
+      if (!confirmation) throw new Error('参照の確認ができなかったため取り消しを中止しました');
+      const results = await _deleteOutlinerTargetsSequentially(targets, { confirmation, silentError: true });
+      const failures = [];
+      pending.forEach((record, index) => {
+        const outcome = results[index];
+        const ref = outcome?.status === 'fulfilled' ? _outlinerTrashRefFromResponse(outcome.value) : null;
+        if (ref) record.trashRef = ref; else failures.push(record);
+      });
+      await refresh();
+      if (failures.length) throw new Error(`${failures.length} 件をゴミ箱へ移せませんでした`);
+    },
+    async () => {
+      const failures = [];
+      for (const record of records) {
+        if (!record.trashRef) continue;
+        try {
+          const restored = await apiPost('/outliner/restore', {
+            trash_name: record.trashRef.trash_name,
+            ...(record.trashRef.trash_root ? { trash_root: record.trashRef.trash_root } : {}),
+          }, { silentError: true });
+          record.path = restored?.restored_to || restored?.restored_path || record.path;
+          record.trashRef = null;
+        } catch (error) { failures.push(error); }
+      }
+      await refresh();
+      if (failures.length) throw new Error(`${failures.length} 件をゴミ箱から戻せませんでした`);
+    },
+    scope);
+  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path) });
+  return entry;
+}
+
+function _outlinerReportBatchResult(result, verbDone, failMessage) {
+  const reason = result.failed ? _outlinerFailureReason(result.error) : '';
+  const suffix = reason ? `：${reason}` : '';
+  if (!result.failed) {
+    showStatus(`${result.ok}件を${verbDone}`);
+  } else if (!result.ok) {
+    showStatus(`${failMessage}${suffix}`, true);
+  } else {
+    showStatus(`${result.ok}件を${verbDone}。${result.failed}件は失敗しました${suffix}`, true);
+  }
+}
+
+async function _outlinerRunDuplicate(items) {
+  const result = await _outlinerDuplicateItems(items);
+  if (result.ok > 0) {
+    // 複製は元と同じフォルダにできる。そのフォルダだけを差分で反映する（全体の読み直しをしない）。
+    try { await _outlinerSyncFoldersOrReload((items || []).map(item => _outlinerParentPath(item.path))); }
+    catch (error) { console.error('[outliner duplicate] 表示の更新に失敗', error); }
+  }
+  _outlinerReportBatchResult(result, '複製しました', '複製に失敗しました');
+  return result;
+}
+
+// ソースフォルダの表示名変更。失敗は原因つきで表示し、成功表示は保存と再読込の後だけ。
+async function _outlinerRenameSourceFolder(nodeData) {
+  let reservation = null;
+  try {
+    const roots = await apiFetch('/outliner-roots');
+    const baseRoots = _cloneOutlinerRootsForBase(roots);
+    const root = roots.find(r => r.path === nodeData.path);
+    if (!root) {
+      showStatus('名前を変更できませんでした：ソースフォルダの登録が見つかりません', true);
+      return false;
+    }
+    const newName = await cfPrompt('表示名を入力:', root.name);
+    if (!newName) return false;
+    reservation = typeof historyReserve === 'function' ? historyReserve('設定: ソースフォルダ表示名', '') : null;
+    const before = await captureOutlinerRootsSettingsSnapshot();
+    root.name = newName;
+    await _putOutlinerRootsWithBase(roots, baseRoots);
+    const after = { ...before, roots };
+    const register = () => pushOutlinerRootsSettingsHistory('設定: ソースフォルダ表示名', before, after, newName, '');
+    if (reservation) reservation.capture(register); else register();
+    await loadOutliner();
+    showStatus('名前を変更しました');
+    return true;
+  } catch (error) {
+    console.warn('[outliner source folder] 名前の変更に失敗（画面に原因を表示済み）', error);
+    _outlinerReportFailure('名前を変更できませんでした', error);
+    return false;
+  } finally {
+    reservation?.cancel();
+  }
+}
+
+async function _outlinerUnregisterSourceFolder(nodeData) {
+  let reservation = null;
+  try {
+    // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
+    // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
+    if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return false;
+    const roots = await apiFetch('/outliner-roots');
+    const baseRoots = _cloneOutlinerRootsForBase(roots);
+    const newRoots = roots.filter(r => r.path !== nodeData.path);
+    if (newRoots.length === roots.length) {
+      showStatus('登録を解除できませんでした：ソースフォルダの登録が見つかりません', true);
+      return false;
+    }
+    reservation = typeof historyReserve === 'function' ? historyReserve('設定: ソースフォルダ登録解除', '') : null;
+    const before = await captureOutlinerRootsSettingsSnapshot();
+    await _putOutlinerRootsWithBase(newRoots, baseRoots);
+    const after = { ...before, roots: newRoots };
+    const register = () => pushOutlinerRootsSettingsHistory('設定: ソースフォルダ登録解除', before, after, nodeData.name, '');
+    if (reservation) reservation.capture(register); else register();
+    await loadOutliner();
+    showStatus('ソースフォルダの登録を解除しました');
+    return true;
+  } catch (error) {
+    console.warn('[outliner source folder] 登録解除に失敗（画面に原因を表示済み）', error);
+    _outlinerReportFailure('ソースフォルダの登録を解除できませんでした', error);
+    return false;
+  } finally {
+    reservation?.cancel();
+  }
+}
+
+async function _outlinerCopyLink(nodeData) {
+  const linkPath = nodeData?.path;
+  if (!linkPath) return false;
+  const linkName = nodeData.name || linkPath.split(/[/\\]/).pop() || linkPath;
+  if (typeof MeldexBroadcast === 'undefined' || typeof MeldexBroadcast.copyMeldexLink !== 'function') {
+    showStatus('リンクをコピーできませんでした：この画面ではコピー機能を使えません', true);
+    return false;
+  }
+  try {
+    const ok = await MeldexBroadcast.copyMeldexLink(linkName, linkPath, nodeData.type);
+    if (ok) showStatus('リンクをコピーしました');
+    else showStatus('リンクをコピーできませんでした：クリップボードに書き込めませんでした', true);
+    return !!ok;
+  } catch (error) {
+    _outlinerReportFailure('リンクをコピーできませんでした', error);
+    return false;
+  }
+}
+
+function _outlinerAppendMenuSeparator(menu) {
+  const separator = document.createElement('div');
+  separator.className = 'gb-context-menu-sep cm-sep';
+  separator.setAttribute('role', 'separator');
+  menu.appendChild(separator);
+  return separator;
+}
+
+function _outlinerAppendSubmenu(menu, label, icon, panel) {
+  const trigger = _outlinerAppendMenuItem(menu, { label, icon, hasSubmenu: true, className: 'tree-ctx-item' });
+  const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  trigger.addEventListener('mouseenter', () => setExpanded(true));
+  trigger.addEventListener('mouseleave', () => setTimeout(() => {
+    if (panel.style.display === 'none') setExpanded(false);
+  }, 220));
+  trigger.addEventListener('click', () => {
+    trigger.dispatchEvent(new MouseEvent('mouseenter', { cancelable: true }));
+    setExpanded(true);
+  });
+  panel.addEventListener('mouseenter', () => setExpanded(true));
+  panel.addEventListener('mouseleave', () => setExpanded(false));
+  attachHoverSubmenu(trigger, panel);
+  return trigger;
+}
+
+function _outlinerPlaceContextMenu(menu) {
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const z = _getZoom();
+  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px';
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
+  const first = menu.querySelector('button.gb-context-menu-item:not(:disabled)');
+  first?.focus?.({ preventScroll: true });
+  _outlinerBindContextMenuClose(menu);
+}
+
+function _outlinerBindContextMenuClose(menu) {
+  let removed = false;
+  let pointerArmed = false;
+  const cleanup = () => {
+    if (removed) return;
+    removed = true;
+    document.removeEventListener('keydown', keyHandler, true);
+    if (pointerArmed) document.removeEventListener('pointerdown', pointerHandler, true);
+    _outlinerContextMenuCleanups.delete(cleanup);
+  };
+  const keyHandler = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeTreeContextMenu();
+  };
+  const pointerHandler = (event) => {
+    const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(event.target));
+    if (!inAnyMenu) closeTreeContextMenu();
+  };
+  _outlinerContextMenuCleanups.add(cleanup);
+  document.addEventListener('keydown', keyHandler, true);
+  pointerArmed = true;
+  document.addEventListener('pointerdown', pointerHandler, true);
+}
+
+async function _refreshOutlinerSort() {
+  const results = await refreshOutliner({ force: true, reason: 'outliner-sort' });
+  if (results?.some(result => result.status === 'rejected')) showStatus('並び順を保存しましたが、ツリーの一部を更新できませんでした', true);
+  if (typeof renderFolderGrid === 'function' && typeof _folderPath !== 'undefined' && _folderPath) {
+    await renderFolderGrid({ preserveSelectedPaths: _folderSelectedItems.map(item => item?.path).filter(Boolean) });
+  }
+}
+
+function showOutlinerSortMenu(event) {
+  event?.preventDefault();
+  event?.stopPropagation();
+  closeTreeContextMenu();
+  const trigger = document.getElementById('btn-tree-sort');
+  if (!trigger) return;
+  const rect = trigger.getBoundingClientRect();
+  const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+  const menu = _outlinerCreateContextMenu('フォルダツリーの並べ替え', rect.left / zoom, rect.bottom / zoom);
+  menu.dataset.e2eId = 'outliner-sort-menu';
+  const current = getSortSettings()._tree || { sort: 'manual', order: 'asc' };
+  getFolderSortOptions().forEach(option => {
+    const active = current.sort === option.sort && current.order === option.order;
+    const button = _outlinerAppendMenuItem(menu, {
+      label: option.label, checked: active, role: 'menuitemradio',
+      action: async () => {
+        closeTreeContextMenu();
+        const keys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
+        const before = captureOutlinerSettingsHistory(keys);
+        const settings = getSortSettings();
+        Object.keys(settings).forEach(key => { settings[key] = { sort: option.sort, order: option.order }; });
+        settings._tree = { sort: option.sort, order: option.order };
+        localStorage.setItem(SORT_SETTINGS_KEY, JSON.stringify(settings));
+        if (typeof pushLocalStorageSettingsHistory === 'function') {
+          pushLocalStorageSettingsHistory('フォルダツリー: 並べ替え設定', before,
+            captureOutlinerSettingsHistory(keys), option.label, _refreshOutlinerSort);
+        }
+        await _refreshOutlinerSort();
+      },
+    });
+    button.dataset.sort = option.sort;
+    button.dataset.order = option.order;
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+  _outlinerPlaceContextMenu(menu);
+}
+
+function _showTreeAddMenu(x, y, nodeEl, nodeData) {
+  closeTreeContextMenu();
+  const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
+  // シートを選んでいるときは、シートの中に作れる「エントリ」を先頭に出す。
+  // ほかの項目はシートの中には作らず、シートと同じ階層に作る。
+  if (nodeData?.type === 'database' && nodeData.path) {
+    _outlinerAppendMenuItem(menu, {
+      label: 'トピック',
+      icon: 'plus',
+      action: async () => { closeTreeContextMenu(); await addSheetEntryAt(nodeData.path); },
+    });
+    _outlinerAppendMenuSeparator(menu);
+  }
+  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList'],['マップ','map','map']]).forEach(([label,type,icon]) => {
+    _outlinerAppendMenuItem(menu, {
+      label,
+      icon,
+      action: async () => {
+        closeTreeContextMenu();
+        await addItemAt(getAddParentPath(nodeEl, nodeData, { insideTarget: true, itemType: type }), type, { anchorNode: nodeEl });
+      },
+    });
+  });
+  _outlinerPlaceContextMenu(menu);
+}
+
+// --- 右クリックメニュー ---
+function closeTreeContextMenu() {
+  _outlinerContextMenuOpenSeq += 1;
+  _outlinerContextMenuCleanups.forEach(cleanup => {
+    try { cleanup(); } catch {}
+  });
+  _outlinerContextMenuCleanups.clear();
+  document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+}
+
+// gb-path-utils.js（window.GBPathUtils）へ委譲。未ロード時は同等ロジックへフォールバックする。
+function _outlinerPathIsAbsolute(path) {
+  if (window.GBPathUtils?.isAbsolute) return window.GBPathUtils.isAbsolute(path);
+  const value = String(path || '');
+  return /^[a-zA-Z]:[\\/]/.test(value) || /^[/\\]{2}/.test(value) || value.startsWith('/');
+}
+
+function _outlinerJoinPath(base, rel) {
+  if (window.GBPathUtils?.join) return window.GBPathUtils.join(base, rel);
+  const left = String(base || '').replace(/[\\/]+$/, '');
+  const right = String(rel || '').replace(/^[\\/]+/, '');
+  if (!left) return right;
+  if (!right) return left;
+  return left + '/' + right;
+}
+
+function _outlinerNativeClipboardPath(path) {
+  if (window.GBPathUtils?.toNativeClipboard) return window.GBPathUtils.toNativeClipboard(path);
+  const value = String(path || '');
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return value.replace(/\//g, '\\');
+  if (/^[/\\]{2}/.test(value)) return '\\\\' + value.replace(/^[/\\]+/, '').replace(/\//g, '\\');
+  return value;
+}
+
+function _outlinerLocalCopyPath(nodeEl, nodeData) {
+  let path = String(nodeData?.path || '');
+  if (!path) return '';
+  if (!_outlinerPathIsAbsolute(path)) {
+    const rootNode = nodeEl?.closest?.('#outliner-tree > .tree-node');
+    const rootPath = rootNode?._nodeData?.path || '';
+    const base = nodeEl?.closest?.('#body-home') && _homeFolderPath
+      ? _homeFolderPath
+      : (rootPath || (typeof state !== 'undefined' ? state.vaultPath : ''));
+    if (base && _outlinerPathIsAbsolute(base)) path = _outlinerJoinPath(base, path);
+  }
+  return _outlinerNativeClipboardPath(path);
+}
+
+// フォルダツリーの右クリックからのコピー・切り取りの元（貼り付けの後に差分で反映するフォルダを決める）
+let _outlinerClipboardOrigin = null;
+
+// フォルダツリーの右クリックの貼り付けの後の反映。貼り付け先（と切り取りの元）のフォルダだけを差分で反映し、
+// 全体の読み直しをしない（2026-11-22 M-014: 以前は2〜2.5秒）。フォルダパネルで開いているフォルダも読み直す。
+// コピー・切り取りの元がツリー以外（フォルダパネル等）で分からない時は、差分の反映の後にツリー全体を裏で読み直す。
+// 取り消し・やり直し（引数なし）の時は従来どおりツリー全体を読み直す。
+async function _outlinerRefreshAfterTreePaste(destFolder, pastedPaths) {
+  const panelRefresh = async () => {
+    if (typeof _folderRefreshCurrentFolder === 'function' && typeof state !== 'undefined' && state.view === 'folder') {
+      try { await _folderRefreshCurrentFolder(); } catch (error) { console.warn('[outliner paste] フォルダパネルの更新に失敗', error); }
+    }
+  };
+  if (!Array.isArray(pastedPaths)) {
+    if (typeof refreshOutliner === 'function') await refreshOutliner({ force: true, reason: 'outliner-paste-history' });
+    await panelRefresh();
+    return;
+  }
+  const origin = _outlinerClipboardOrigin;
+  const folders = [destFolder];
+  if (origin?.mode === 'cut') origin.paths.forEach(path => folders.push(_outlinerParentPath(path)));
+  await _outlinerSyncFoldersOrReload(folders);
+  // 次の貼り付けでは、その間にフォルダパネル等でコピー・切り取りされたかもしれないので、元が分からない扱いにする
+  _outlinerClipboardOrigin = null;
+  await panelRefresh();
+  if (!origin && typeof refreshOutliner === 'function') {
+    setTimeout(() => { refreshOutliner({ force: true, reason: 'outliner-paste-unknown-origin' }).catch?.(() => {}); }, 0);
+  }
+}
+
+// フォルダツリーの選択中の項目を削除する（右クリックの削除・Delete キーの共通の入口）。
+// 途中の失敗は原因つきで表示する（以前は右クリックの削除ボタンが例外を受け止めず、失敗が画面に出なかった:
+// 2026-11-22 M-014 フォルダツリー網羅テスト）。削除済みと対象なしが混ざった時も表示を読み直す。
+async function deleteOutlinerTreeSelection() {
+  try {
+      const targets = treeSelection.getNodeData().filter(item => {
+        if (item.type === 'entity' || item._isRoot) return false;
+        return item.path && !isItemLocked(item.path);
+      });
+      if (!targets.length) {
+        showStatus('削除できる項目がありません', true);
+        return;
+      }
+      // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
+      // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ
+      // （2026-08-19 実UI検査: 同スクリプトがMeldex.htmlに読み込まれておらず、フォルダツリーの
+      // 削除ボタンがクリックしても無反応のまま静かに失敗していた）。
+      const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
+        ? await handleDisplayedFolderLinkDelete(targets, '', {
+          refresh: async () => {
+            if (typeof loadOutliner === 'function') await loadOutliner();
+            if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+            if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+          },
+        })
+        : { handled: false, result: null };
+      if (linkedDelete.handled) {
+        if (linkedDelete.result) treeSelection.clear();
+        return;
+      }
+      const names = targets.map(item => item.name).join('、');
+      treeSelection.clear();
+      const result = await deleteOutlinerItemsWithHistory(targets, {
+        label: targets.length + ' 件を削除',
+        detail: names,
+        onItemDeleted: (item) => {
+          _removeOutlinerNodesForPaths([item.path]);
+        },
+        refresh: async () => {
+          if (typeof loadOutliner === 'function') await loadOutliner();
+          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+        },
+      });
+      _removeOutlinerNodesForPaths(result.deletedPaths);
+      _outlinerRefreshFolderPanelFor((result.deletedPaths || []).map(path => _outlinerParentPath(path)));
+      if (result.failedCount) {
+        const reason = result.failed?.[0]?.error;
+        const detail = typeof reason === 'string' ? reason : reason?.message || reason?.detail?.message || reason?.detail || '';
+        showStatus(`${result.deletedCount || result.succeeded.length}件を削除、${result.failedCount}件は失敗しました${detail ? ': ' + detail : ''}`, true);
+        loadOutliner();
+      } else if (result.succeeded.length) {
+        showStatus(`${result.deletedCount || result.succeeded.length}件を削除しました（Undoで戻せます）`);
+        // 先に画面から消した中に「見つからなかった」項目が混ざっていたら、実際の状態へ読み直す
+        if (result.skipped.length) loadOutliner();
+      } else if (result.skipped.length) {
+        showStatus('削除対象が見つからなかったため、表示を更新しました', true);
+        loadOutliner();
+      }
+  
+  } catch (error) {
+    if (typeof console !== 'undefined') console.error('[outliner] 削除に失敗', error);
+    _outlinerReportFailure('削除に失敗しました', error);
+  }
+}
+
+async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
+  closeTreeContextMenu();
+  const openSeq = ++_outlinerContextMenuOpenSeq;
+  const menu = _outlinerCreateContextMenu('フォルダツリーメニュー', x, y);
+
+  const selectedCount = treeSelection.items.size;
+  const isMulti = selectedCount > 1;
+  const isFolder = nodeData.type === 'folder';
+  const isDB = nodeData.type === 'database';
+  const isEntity = nodeData.type === 'entity';
+
+  function addMenuItem(text, onclick, cls, icon, targetMenu = menu) {
+    return _outlinerAppendMenuItem(targetMenu, {
+      label: text,
+      icon,
+      danger: cls === 'danger',
+      className: cls && cls !== 'danger' ? cls : '',
+      action: onclick,
+    });
+  }
+  function addSep() {
+    _outlinerAppendMenuSeparator(menu);
+  }
+
+  // 複数選択時は先頭に件数見出しを置く（フォルダパネルの複数選択メニューと同じ）。
+  if (isMulti) {
+    menu.dataset.folderMultiSelection = String(selectedCount);
     const heading = document.createElement('div');
     heading.className = 'gb-context-menu-label';
     heading.dataset.e2eId = 'folder-tree-context-selection-count';
@@ -43,6 +651,20 @@
       });
       addSep();
     }
+  }
+
+  if (isMulti) {
+    addMenuItem(`プロパティ（${selectedCount}件）`, () => {
+      closeTreeContextMenu();
+      return showFolderSelectionProperties(treeSelection.getNodeData(), nodeEl);
+    }, null, 'info');
+    if (window.isAutoTagRuntimeAvailable?.() === true && contextOperationItems.length) {
+      addMenuItem(`自動タグ付け（${selectedCount}件）`, () => {
+        closeTreeContextMenu();
+        fvBulkAutoTag(contextOperationItems);
+      }, null, 'tags');
+    }
+    addSep();
   }
 
   // --- 新規作成サブメニュー ---（作成先が押した1項目で決まるため、複数選択時は出さない）
@@ -276,625 +898,3 @@
         closeTreeContextMenu();
         if (typeof autoTagFolderTarget === 'function') {
           autoTagFolderTarget(nodeData, { recursive: recursiveAutoTag });
-        } else {
-          showStatus('自動タグ付けを初期化できませんでした', true);
-        }
-      },
-      null,
-      'tags'
-    );
-  }
-
-  // --- ファイルのチャット（ファイル/DB/エントリのみ） ---
-  if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot) {
-    addMenuItem('チャットを開く', () => {
-      closeTreeContextMenu();
-      openFileChat(nodeData.path);
-    }, null, 'messageSquare');
-  }
-
-  // --- 比較（ファイル全般） ---
-  if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot && typeof showCompareModal === 'function') {
-    addMenuItem('比較...', () => {
-      closeTreeContextMenu();
-      showCompareModal(nodeData.path);
-    }, null, 'columns');
-  }
-
-  // --- この階層を閉じる（大量項目向けUI補助導線。§2.3） ---
-  // メニュー構築中に例外が起きても、以降の項目や末尾の_outlinerPlaceContextMenu(menu)を
-  // 必ず実行させる（例外1つでメニュー全体が出なくなる事態を避ける）。
-  try {
-    if (!isMulti && (isFolder || isDB)) {
-      const toggleEl = nodeEl.querySelector(':scope > .tree-node-row .tree-toggle');
-      if (toggleEl && toggleEl.dataset.expanded === 'true') {
-        addMenuItem('この階層を閉じる', () => {
-          closeTreeContextMenu();
-          window.GBOutlinerVirtualPin?.closeBranch(nodeEl);
-        }, null, 'chevronsUp');
-      }
-    }
-  } catch (err) {
-    console.error('[showTreeContextMenu] この階層を閉じるメニューの構築に失敗', err);
-  }
-
-  // --- リンクをコピー ---
-  if (!isMulti && nodeData.path) {
-    addMenuItem('リンクをコピー', () => {
-      closeTreeContextMenu();
-      return _outlinerCopyLink(nodeData);
-    }, null, 'link');
-  }
-
-  // --- リネーム（F2と同じ共通ヘルパー。単一選択時のみ、エントリ以外、ロック中は無効） ---
-  if (!isMulti && !isEntity && !_locked && !nodeData._isRoot) {
-    addMenuItem('リネーム', () => {
-      closeTreeContextMenu();
-      window.GBOutlinerActivation?.startRenameForNode(nodeEl, labelEl, nodeData);
-    }, null, 'pencil');
-  }
-
-  // --- パスをコピー ---
-  {
-    const pathTargets = isMulti
-      ? [...treeSelection.items]
-          .map(node => ({ node, data: node._nodeData }))
-          .filter(item => item.data?.path)
-      : (nodeData.path ? [{ node: nodeEl, data: nodeData }] : []);
-    if (pathTargets.length > 0) {
-      const pathLabel = isMulti ? `パスをコピー（${pathTargets.length}件）` : 'パスをコピー';
-      addMenuItem(pathLabel, () => {
-        closeTreeContextMenu();
-        const copyPaths = pathTargets.map(item => _outlinerLocalCopyPath(item.node, item.data)).filter(Boolean);
-        const paths = copyPaths.join('\n');
-        const msg = pathTargets.length === 1
-          ? 'パスをコピーしました: ' + copyPaths[0]
-          : `パスをコピーしました（${pathTargets.length}件）`;
-        navigator.clipboard.writeText(paths).then(() => {
-          showStatus(msg);
-        }).catch(() => {
-          const ta = document.createElement('textarea');
-          ta.value = paths; document.body.appendChild(ta);
-          ta.select(); document.execCommand('copy'); ta.remove();
-          showStatus(msg);
-        });
-      }, null, 'clipboardList');
-    }
-  }
-
-  // --- お気に入り（1項目だけが対象のため単独選択時のみ） ---
-  if (!isMulti && !isEntity && nodeData.path) {
-    const isFav = getFavorites().some(f => f.path === nodeData.path);
-    addMenuItem(isFav ? 'お気に入りを外す' : 'お気に入りに追加', () => {
-      closeTreeContextMenu();
-      if (isFav) removeFromFavorites(nodeData.path);
-      else addToFavorites(nodeData.name, nodeData.path, nodeData.type);
-    }, null, isFav ? 'starOff' : 'star');
-  }
-
-  // --- エクスポート ---
-  if (!isMulti && nodeData.path) {
-    const _expItems = [];
-    const pushExportItem = (label, url, extension, filetypes) => {
-      const baseName = (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.guessNameFromPath === 'function')
-        ? MeldexExportSave.guessNameFromPath(nodeData.path, nodeData.name || '無題')
-        : (nodeData.name || '無題');
-      const stem = String(baseName || '無題').replace(/\.[^.]+$/, '') || '無題';
-      _expItems.push({
-        label,
-        url,
-        filename: stem + extension,
-        extension,
-        filetypes,
-      });
-    };
-    if (nodeData.type === 'database') {
-      pushExportItem('CSV', '/export/db?path=' + encodeURIComponent(nodeData.path) + '&format=csv', '.csv', [['CSVファイル', '*.csv'], ['すべてのファイル', '*.*']]);
-      pushExportItem('HTML', '/export/db?path=' + encodeURIComponent(nodeData.path) + '&format=html', '.html', [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']]);
-      pushExportItem('Excel', '/export/db?path=' + encodeURIComponent(nodeData.path) + '&format=xlsx', '.xlsx', [['Excelファイル', '*.xlsx'], ['すべてのファイル', '*.*']]);
-    } else if (nodeData.type === 'board') {
-      pushExportItem('HTML', '/export/canvas?path=' + encodeURIComponent(nodeData.path) + '&format=html', '.html', [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']]);
-      pushExportItem('SVG画像', '/export/canvas?path=' + encodeURIComponent(nodeData.path) + '&format=svg', '.svg', [['SVGファイル', '*.svg'], ['すべてのファイル', '*.*']]);
-      pushExportItem('Markdown', '/export/canvas?path=' + encodeURIComponent(nodeData.path) + '&format=md', '.md', [['Markdownファイル', '*.md'], ['すべてのファイル', '*.*']]);
-    } else if (nodeData.type === 'page') {
-      pushExportItem('テキスト', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=txt', '.txt', [['テキストファイル', '*.txt'], ['すべてのファイル', '*.*']]);
-      pushExportItem('Markdown', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=md', '.md', [['Markdownファイル', '*.md'], ['すべてのファイル', '*.*']]);
-      pushExportItem('HTML', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=html', '.html', [['HTMLファイル', '*.html'], ['すべてのファイル', '*.*']]);
-      pushExportItem('Word', '/export/note?path=' + encodeURIComponent(nodeData.path) + '&format=docx', '.docx', [['Wordファイル', '*.docx'], ['すべてのファイル', '*.*']]);
-    }
-    if (_expItems.length > 0) {
-      // エクスポートサブメニュー
-      const exportIconName = typeof uiTransferIconName === 'function' ? uiTransferIconName('export') : 'upload';
-      const expPanel = _outlinerCreateSubmenu('エクスポート');
-      _outlinerAppendSubmenu(menu, 'エクスポート', exportIconName, expPanel);
-      _expItems.forEach(ei => {
-        _outlinerAppendMenuItem(expPanel, {
-          label: ei.label,
-          action: async () => {
-          closeTreeContextMenu();
-          if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveUrl !== 'function') {
-            showStatus('保存ダイアログを初期化できませんでした', true);
-            return;
-          }
-          await MeldexExportSave.saveUrl(ei.url, {
-            filename: ei.filename,
-            extension: ei.extension,
-            dialogTitle: `${ei.label}として保存`,
-            filetypes: ei.filetypes,
-            okMessage: `${ei.label} として保存しました`,
-            errorMessage: `${ei.label} の保存に失敗しました`,
-            path: nodeData.path,
-            title: nodeData.name || '無題',
-          });
-          },
-        });
-      });
-      addSep();
-    }
-  }
-
-  // --- 所属フォルダ（リンク登録。1項目だけが対象のため単独選択時のみ） ---
-  if (!isMulti && !isEntity && nodeData.path) {
-    const linkLabel = nodeData.type === 'folder' ? 'このフォルダへのリンクを作成...' : '所属フォルダを設定...';
-    addMenuItem(linkLabel, () => {
-      closeTreeContextMenu();
-      showAddFolderLinkModal(nodeData.path, null, { historyScope: '' });
-    }, null, 'link2');
-  }
-
-  // --- 色設定 ---
-  addSep();
-  {
-    const currentColor = getNodeColor(nodeData.path);
-    const colorItem = _outlinerAppendMenuItem(menu, {
-      html: '',
-      action: () => {
-        openColorPalette(swatch, currentColor, (c) => {
-          closeTreeContextMenu();
-          applyColorToSelection(c || null);
-        });
-      },
-    });
-    const swatch = document.createElement('span');
-    swatch.className = 'gb-color-swatch gb-color-swatch--inline';
-    swatch.setAttribute('aria-hidden', 'true');
-    setColorSwatchValue(swatch, currentColor || 'var(--fg)');
-    colorItem.appendChild(swatch);
-    const clbl = document.createElement('span');
-    clbl.textContent = isMulti ? `色設定（${selectedCount}件）` : '色設定';
-    colorItem.appendChild(clbl);
-  }
-
-  // --- ワークスペースルート: ソースフォルダ用メニューは出さない ---
-  // （ワークスペースはソースフォルダ設定に保存されないため、出しても無効操作になる）
-  if (nodeData._isRoot && !isMulti && (nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
-    addSep();
-    addMenuItem('ワークスペースの管理...', () => {
-      closeTreeContextMenu();
-      if (typeof openWorkspaceSettings === 'function') openWorkspaceSettings();
-    }, null, 'usersRound');
-  }
-
-  // --- ルートフォルダのパス変更 ---
-  if (nodeData._isRoot && !isMulti && !(nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
-    addSep();
-    addMenuItem('パスを変更...', async () => {
-      closeTreeContextMenu();
-      showStatus('フォルダ選択ダイアログを開いています...');
-      try {
-        const isDropbox = window.MeldexRuntimeAdapter?.isDropboxMode?.();
-        const res = isDropbox
-          ? await window.MeldexDropboxFolderPicker.pickFolder({ title: 'ソースフォルダの参照先を選択' })
-          : await apiFetch('/pick-folder');
-        if (!res?.path) { showStatus('キャンセルされました'); return; }
-        // outliner_rootsを更新
-        const roots = await apiFetch('/outliner-roots');
-        const baseRoots = _cloneOutlinerRootsForBase(roots);
-        const root = roots.find(r => r.path === nodeData.path);
-        if (root) {
-          if (isDropbox) {
-            const registry = window.MeldexSourceFolderRegistry;
-            const sourceId = root.sourceId || root.id || registry.parseSourcePath(root.path)?.sourceId;
-            if (!sourceId) throw new Error('ソースフォルダの登録IDを確認できません');
-            root.provider = 'dropbox';
-            root.id = root.sourceId = sourceId;
-            root.dropboxPath = registry.normalizeDropboxPath(res.path);
-            root.namespaceKind = registry.normalizeNamespaceKind(res.namespaceKind);
-            root.path = registry.sourcePath(sourceId);
-            root.name = res.name || res.path.split('/').filter(Boolean).pop();
-          } else {
-            root.path = res.path;
-            root.name = res.path.split(/[/\\]/).pop();
-          }
-          await _putOutlinerRootsWithBase(roots, baseRoots);
-          // The virtual ID remains the same, but cached files/revisions belong
-          // to the former physical location and must not follow the new path.
-          if (isDropbox) window.MeldexStorageAdapter?.getProvider?.()?._forgetMeta?.(root.path);
-          await loadOutliner();
-          showStatus('パスを変更しました: ' + res.path);
-        }
-      } catch (e) { showStatus('パス変更に失敗しました', true); }
-    }, null, 'folderPen');
-    addMenuItem('名前を変更...', async () => {
-      closeTreeContextMenu();
-      await _outlinerRenameSourceFolder(nodeData);
-    }, null, 'pencil');
-    addMenuItem('チーム管理...', async () => {
-      closeTreeContextMenu();
-      showSettingsModal({ panel: 'ユーザー' });
-    }, null, 'users');
-    addSep();
-    addMenuItem('このソースフォルダの登録を解除', async () => {
-      closeTreeContextMenu();
-      await _outlinerUnregisterSourceFolder(nodeData);
-    }, null, 'folder-minus');
-  }
-
-  // --- 作品フォルダ設定（フォルダのみ） ---
-  if (isFolder && !isMulti) {
-    const isWork = isWorkFolder(nodeData.path);
-    const wfPanel = _outlinerCreateSubmenu('作品フォルダ');
-    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folderDot', wfPanel);
-    [['設定する', true], ['解除する', false]].forEach(([label, setIt]) => {
-      _outlinerAppendMenuItem(wfPanel, {
-        html: radioMark(isWork === setIt) + '<span>' + _outlinerEscHtml(label) + '</span>',
-        checked: isWork === setIt,
-        action: async () => {
-        closeTreeContextMenu();
-        if (setIt) {
-          setWorkFolder(nodeData.path);
-          showStatus(`「${nodeData.name}」を作品フォルダに設定しました`);
-        } else {
-          removeWorkFolder(nodeData.path);
-          showStatus('作品フォルダの設定を解除しました');
-        }
-        await loadLinkDict();
-        tooltipCache = {};
-        await loadOutliner();
-        },
-      });
-    });
-  }
-
-  // --- 並び替え（フォルダ・DB） ---
-  if ((isFolder || isDB || isEntity) && !isMulti) {
-    const sortPath = nodeData.path;
-    const curSort = getSortForFolder(sortPath);
-    // サブメニュー風: 1項目でクリック→展開
-    const sortPanel = _outlinerCreateSubmenu('並び替え');
-    _outlinerAppendSubmenu(menu, '並び替え', 'arrowUpDown', sortPanel);
-    const sortOpts = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
-      { label: 'マニュアル', sort: 'manual', order: 'asc' },
-      { label: '名前 ↑', sort: 'name', order: 'asc' },
-      { label: '名前 ↓', sort: 'name', order: 'desc' },
-    ];
-    sortOpts.forEach(o => {
-      const active = curSort.sort === o.sort && curSort.order === o.order;
-      _outlinerAppendMenuItem(sortPanel, {
-        html: radioMark(active) + '<span>' + _outlinerEscHtml(o.label) + '</span>',
-        checked: active,
-        action: async () => {
-        closeTreeContextMenu();
-        const sortHistoryKeys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
-        const before = captureOutlinerSettingsHistory(sortHistoryKeys);
-        setSortSetting(sortPath, o.sort, o.order);
-        pushOutlinerSettingsHistory(
-          'フォルダツリー: 並び替え設定',
-          before,
-          sortPath + ' / ' + o.label,
-          sortHistoryKeys
-        );
-        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
-          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
-            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
-          renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
-        }
-        const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
-        if (childrenDiv) {
-          if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(childrenDiv);
-          childrenDiv.innerHTML = '';
-          childrenDiv.dataset.loaded = 'false';
-        }
-        const toggle = nodeEl.querySelector('.tree-toggle');
-        if (toggle && toggle.dataset.expanded === 'true') {
-          toggle.dataset.expanded = 'false'; toggle.click();
-        }
-        },
-      });
-    });
-    addSep();
-  }
-
-  // --- スプリットビュー ---
-  if (!isMulti && isDB && nodeData.path && typeof isSplitActive === 'function' && _isOutlinerFreeLayoutUiEnabled()) {
-    addSep();
-    if (isSplitActive()) {
-      addMenuItem('別の作業領域で開く', () => { closeTreeContextMenu(); openDbInOtherPane(nodeData.path); }, null, 'columns');
-    } else {
-      addMenuItem('スプリットで開く', () => { closeTreeContextMenu(); openInNewSplit(nodeData.path); }, null, 'columns');
-    }
-  }
-
-  // OSシェルメニューは取得済みなら表示前に組み込む。未取得（PowerShell起動で1秒前後）の
-  // 時はメニュー本体を待たせず即表示し、OS項目だけ表示後にメニュー下端へ追記する。
-  if (!_locked && nodeData.path && window.MeldexArchiveTools?.desktop()) {
-    const archiveItems = isMulti ? [...treeSelection.items].map(node => node._nodeData).filter(data => data?.path) : [nodeData];
-    window.MeldexArchiveTools.appendMenu(menu, archiveItems, closeTreeContextMenu);
-  }
-  const shellPath = nodeData.path && typeof appendShellVerbsToMenu === 'function' ? nodeData.path : '';
-  const shellReady = !!shellPath && typeof hasCachedShellVerbs === 'function' && hasCachedShellVerbs(shellPath);
-  if (shellReady) {
-    await appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked, beforeDisplay: true });
-  }
-  if (openSeq !== _outlinerContextMenuOpenSeq) return;
-  _outlinerPlaceContextMenu(menu);
-  if (shellPath && !shellReady) {
-    appendShellVerbsToMenu(menu, shellPath, { editingLocked: _locked }).catch(() => {});
-  }
-}
-
-// 追加先の親パスを決定
-// シートの中に入れてよいのはエントリだけ。ボードやノートの作成先としてシートが
-// 選ばれていた場合は、シート自身ではなくその親フォルダを作成先にする。
-function _outlinerContainerAcceptsItemType(nodeData, itemType) {
-  if (nodeData?.type !== 'database') return true;
-  return String(itemType || '') === 'entity';
-}
-
-// シートの中へ移動してよい項目か。規則の正本は gb-sheet-attachments.js
-// （デスクトップ版・クラウド版で共有するシートの共通規則）に置く。
-function _outlinerItemFitsInSheet(nodeData) {
-  return window.MeldexSheetAttachments?.itemFitsInSheet
-    ? window.MeldexSheetAttachments.itemFitsInSheet(nodeData)
-    : true;
-}
-
-function getAddParentPath(nodeEl, nodeData, options = {}) {
-  const isContainer = nodeData.type === 'folder'
-    || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
-  if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
-  if (nodeData._form_parent_path) {
-    const path = String(nodeData.path || '').replace(/\\/g, '/');
-    return path.slice(0, Math.max(0, path.lastIndexOf('/')));
-  }
-  if (nodeData._isRoot && nodeData.path) return nodeData.path;
-  if (isContainer) {
-    // フォルダ/DBが展開中ならその中、閉じているなら同階層
-    const toggle = nodeEl.querySelector('.tree-toggle');
-    if (toggle && toggle.dataset.expanded === 'true') return nodeData.path;
-  }
-  // ファイルやエントリ、閉じたフォルダ → 親フォルダのパス
-  const parentContainer = nodeEl.parentElement;
-  const parentNode = parentContainer?.closest('.tree-node');
-  if (parentNode && parentNode._nodeData) return parentNode._nodeData.path;
-  // ホーム内のルート直下ノード → ホームフォルダパスを返す
-  if (nodeEl.closest('#body-home') && _homeFolderPath) return _homeFolderPath;
-  return ''; // ソースフォルダルート
-}
-
-// 選択中の全ノードに色を適用
-function applyColorToSelection(color) {
-  const before = captureOutlinerSettingsHistory([NODE_COLORS_KEY]);
-  const detail = [...treeSelection.items]
-    .map(nodeEl => nodeEl._nodeData?.path || nodeEl._nodeData?.name || '')
-    .filter(Boolean)
-    .join(', ');
-  treeSelection.items.forEach(nodeEl => {
-    const data = nodeEl._nodeData;
-    if (!data) return;
-    const row = nodeEl.querySelector('.tree-node-row');
-    if (row) applyNodeColor(row, color);
-    if (data.path) setNodeColor(data.path, color);
-  });
-  pushOutlinerSettingsHistory(
-    color ? 'フォルダツリー: 色設定' : 'フォルダツリー: 色リセット',
-    before,
-    detail,
-    [NODE_COLORS_KEY]
-  );
-  showStatus(color ? '色を設定しました' : '色をリセットしました');
-}
-
-/* ==============================
-   タイムアウト事後確認（作成・リネーム共通）
-   ============================== */
-// APIタイムアウト時のポーリング間隔。合計30秒で打ち切る
-const OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS = [2000, 4000, 8000, 16000];
-// 同一キーの事後確認ポーリングが二重に走らないようにする
-const _outlinerPostTimeoutConfirmInFlight = new Set();
-
-// E2Eから待機時間を短縮できるようにする（通常はundefinedで既定値）
-function _outlinerPostTimeoutConfirmDelays() {
-  const o = window.__outlinerPostTimeoutConfirmDelaysForE2E;
-  return (Array.isArray(o) && o.length) ? o : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
-}
-
-// 親フォルダの一覧をフロントキャッシュを避けて取得する（root/sourceIdはcontextNodeElの祖先から推定）
-async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl, options = {}) {
-  const sourceId = contextNodeEl?._nodeData?.sourceId || '';
-  let rootPath = '';
-  let cur = contextNodeEl || null;
-  while (cur) {
-    if (cur._nodeData?._isRoot) { rootPath = cur._nodeData.path; break; }
-    cur = cur.parentElement ? cur.parentElement.closest('.tree-node') : null;
-  }
-  const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
-  const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
-  const controller = new AbortController();
-  let timer;
-  const timeout = new Promise(resolve => {
-    timer = setTimeout(() => { controller.abort(); resolve(null); }, options.timeoutMs || 5000);
-  });
-  try {
-    return await Promise.race([apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true&form_hierarchy=true' + (options.detail ? '&detail=true' : ''),
-      { skipBrowseCache: true, cache: 'reload', timeoutMs: options.timeoutMs || 5000, signal: controller.signal }), timeout]);
-  } catch {
-    return null;
-  } finally { clearTimeout(timer); }
-}
-
-// 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
-// oldDisplayName は拡張子を含まない表示名（/browse の name と同じ規約）を渡すこと
-function _outlinerFindRenamedItem(items, oldDisplayName, newName, originalPath) {
-  if (!Array.isArray(items)) return null;
-  // Title-only edits keep their path; another item may have the same display name.
-  if (originalPath) {
-    const original = items.find(it => it && it.path === originalPath);
-    if (original) return original.name === newName ? original : null;
-  }
-  if (oldDisplayName && oldDisplayName !== newName && items.some(it => it && it.name === oldDisplayName)) return null;
-  return items.find(it => it && it.name === newName) || null;
-}
-
-function _resolveOutlinerCreateInsertTarget(parentPath, options) {
-  const expandUnloaded = options?.expandUnloaded !== false;
-  if (options?.preferHome && parentPath === _homeFolderPath) {
-    const home = document.getElementById('body-home');
-    if (home) return { container: home, deferTreeInsert: false };
-  }
-  let container;
-  let deferTreeInsert = false;
-  if (parentPath) {
-    const parentNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(parentPath) : null;
-    if (parentNode) {
-      const childrenDiv = parentNode.querySelector(':scope > .tree-children');
-      if (childrenDiv) {
-        const toggle = parentNode.querySelector('.tree-toggle');
-        if (childrenDiv.dataset.loaded === 'false') {
-          deferTreeInsert = true;
-          if (expandUnloaded && toggle && toggle.dataset.expanded !== 'true') toggle.click();
-        } else {
-          childrenDiv.classList.remove('collapsed');
-          if (toggle) { toggle.classList.add('expanded'); toggle.dataset.expanded = 'true'; }
-          container = childrenDiv;
-        }
-      }
-    }
-    if (!container && _homeFolderPath && parentPath === _homeFolderPath) {
-      container = document.getElementById('body-home');
-    }
-    // 親ノードがDOM上に見つからず、ホームフォルダにも該当しない場合はルートへ誤挿入せず
-    // 「挿入先不明」を返す。呼び出し元は誤挿入せず全体再読込に委ねる
-    if (!container && !deferTreeInsert) return { container: null, deferTreeInsert: false };
-  }
-  if (!container && !deferTreeInsert) container = document.getElementById('outliner-tree');
-  return { container, deferTreeInsert };
-}
-
-function _insertOutlinerCreateNode(container, newNode, anchorNode) {
-  if (!container || !newNode) return;
-  if (anchorNode && (container.parentElement === anchorNode
-      || anchorNode._nodeData?.path === container.closest('.tree-node')?._nodeData?.path)) {
-    container.insertBefore(newNode, container.firstChild);
-    return;
-  }
-  const sel = anchorNode || treeSelection.lastClicked;
-  if (sel && sel._nodeData && sel.parentElement === container) {
-    const selType = sel._nodeData.type;
-    if (anchorNode || (selType !== 'folder' && selType !== 'database')) {
-      container.insertBefore(newNode, sel.nextSibling);
-      return;
-    }
-  }
-  container.appendChild(newNode);
-}
-
-function _selectOutlinerCreateNode(newNode) {
-  if (!newNode) return;
-  treeSelection.clear();
-  treeSelection.add(newNode);
-  treeSelection.lastClicked = newNode;
-  document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
-  newNode.querySelector('.tree-node-row')?.classList.add('active');
-}
-
-function _createOutlinerPendingCreateNode(type, label) {
-  const item = {
-    name: label || '無題',
-    type,
-    path: '__meldex_pending_create_' + Date.now() + '_' + Math.random().toString(36).slice(2),
-    _pendingCreate: true,
-  };
-  const node = createTreeNodeFromBrowse(item);
-  node.classList.add('tree-node-pending-create');
-  const row = node.querySelector(':scope > .tree-node-row');
-  const labelEl = node.querySelector(':scope > .tree-node-row .tree-label');
-  if (row) {
-    row.draggable = false;
-    row.style.opacity = '0.62';
-    row.style.fontStyle = 'italic';
-  }
-  if (labelEl) labelEl.textContent = (label || '無題') + '（作成中）';
-  const block = (e) => { e.preventDefault(); e.stopPropagation(); };
-  ['click', 'dblclick', 'contextmenu', 'dragstart'].forEach(eventName => {
-    node.addEventListener(eventName, block, true);
-  });
-  return node;
-}
-
-function _openOutlinerCreatedNode(nd, name) {
-  const _expOpts = { fromExplorer: true };
-  if (nd.type === 'page') openPage(name, nd.path, _expOpts);
-  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
-  else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
-  else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
-  else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
-    if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
-  }
-  else if (nd.type === 'scenario') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts); }
-  else if (nd.type === 'database') selectDatabase(nd.path, null, _expOpts);
-  else if (nd.type === 'calendar') { if (typeof openCalendarFile === 'function') openCalendarFile(name, nd.path, _expOpts); }
-}
-
-function _outlinerCreateItemIdentity(type, name) {
-  const normalizedType = String(type || '').trim();
-  const normalizedName = String(name || '').trim();
-  return normalizedType && normalizedName ? `${normalizedType}\n${normalizedName}` : '';
-}
-
-// 追加API呼び出し前の既存子ノード識別子（事後確認での新規判定に使用）。
-// 「無題」のような同名項目は種類をまたいで共存できるため、名前だけでは比較しない。
-function _outlinerSnapshotChildNames(container) {
-  const names = new Set();
-  container.querySelectorAll(':scope > .tree-node').forEach(node => {
-    const d = node._nodeData;
-    const identity = d && !d._pendingCreate
-      ? _outlinerCreateItemIdentity(d.type, d.name)
-      : '';
-    if (identity) names.add(identity);
-  });
-  return names;
-}
-
-// 一覧からタイプが一致し事前集合に無い項目を探す（作成の事後確認用）。
-// 事前集合が無い場合は新規判定ができないため常にnullを返す（誤検出防止）
-function _outlinerFindNewItemInListing(items, type, existingNames) {
-  if (!Array.isArray(items) || !(existingNames instanceof Set)) return null;
-  return items.find(it => {
-    if (!it || it.type !== type || !it.name) return false;
-    const identity = _outlinerCreateItemIdentity(it.type, it.name);
-    return identity && !existingNames.has(identity);
-  }) || null;
-}
-
-// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
-function _outlinerApplyCreateSuccess(pendingNode, found, options) {
-  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
-  if (!pendingNode || !pendingNode.parentNode) return;
-  const newNode = createTreeNodeFromBrowse(found);
-  pendingNode.replaceWith(newNode);
-  _selectOutlinerCreateNode(newNode);
-}
-
-// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
-async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
-  if (pendingNode && pendingNode.parentNode) pendingNode.remove();
-  await loadOutliner();
-  _openOutlinerCreatedNode(nd, name);
-}
-
-// 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
-async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames, onConfirmed) {
-  const confirmKey = 'create:' + (pendingNode?.dataset?.path || (parentPath + '|' + type + '|' + Date.now()));
-  if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
-  _outlinerPostTimeoutConfirmInFlight.add(confirmKey);

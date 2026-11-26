@@ -61,25 +61,14 @@ function _folderIsIndependentSurface() {
 }
 
 function _folderUpdateStatusCounts(items) {
+  // ステータスバーの件数は、利用者が操作している面のものだけを出す（他の面の裏の読み直しでは書き換えない）
+  if (typeof _folderInteractionSurface !== 'undefined'
+      && (_folderRenderContainerOverride || null) !== (_folderInteractionSurface || null)) return;
   const list = Array.isArray(items) ? items : [];
   const folderCount = list.reduce((count, item) => count + (item?.type === 'folder' ? 1 : 0), 0);
   const fileCount = list.length - folderCount;
   const countEl = document.getElementById('sb-count');
   if (countEl) countEl.textContent = `フォルダ ${folderCount} / ファイル ${fileCount}`;
-}
-
-// CSVの_csvShowTakeoverNotice()と同じ流儀・同じ見え方（メッセージ文言・空状態と
-// 同じクラス）で、直前の描画先（切り替わる側）へ通知を出す。override切り替え前に
-// 呼ぶことで、直前の描画先がメイン/サブパネルのどちらでも正しく届く。
-function _folderShowTakeoverNotice(newLabel) {
-  if (!_folderPath) return;
-  const container = _folderGridEl();
-  if (!container) return;
-  container.innerHTML = '';
-  const notice = document.createElement('div');
-  notice.className = 'fv-empty-state';
-  notice.textContent = String(newLabel || '') + ' に切り替わりました（別の画面で開かれたため）';
-  container.appendChild(notice);
 }
 
 async function openFolder(label, path, opts) {
@@ -96,21 +85,25 @@ async function openFolder(label, path, opts) {
   const folderLoadSeq = (window._openFolderLoadSeq || 0) + 1;
   window._openFolderLoadSeq = folderLoadSeq;
   const isStaleFolderLoad = () => (typeof openOpts.isLegacyLoadCurrent === 'function' && !openOpts.isLegacyLoadCurrent())
-    || window._openFolderLoadSeq !== folderLoadSeq
+    || !enterFolderSurface()
     || _folderPath !== path;
-  // 独立した描画先（サブパネル等）は共有シングルトンの#folder-gridを絶対に取り合わない。
-  // containerEl指定時は専用DOMへの直接描画へ切り替える（縮小スコープ・状態自体は
-  // 単一のグローバル変数のまま）。直前の対象が今回とは別フォルダの場合、
-  // _folderRenderContainerOverride を書き換える前に通知を出すことで、直前の
-  // 描画先（メイン or 以前のサブパネル）へ正しく届く。
-  // 通知は描画先が入れ替わる時（メイン⇔サブパネル）だけ出す。同じ描画先での普通のフォルダ移動で
-  // 「別の画面で開かれたため」と出していた（2026-11-22 M-014 フォルダパネル網羅テスト）。
+  // 面（メイン／サブパネル等の独立した描画先）ごとに状態を持つ（gb-folder.part01.part00.js）。containerEl 指定時は
+  // その描画先の面、無ければメインの面をつないでから読み込む。別の面が表示しているフォルダは奪わない。
+  // 読み込みの続き（待った後）は、毎回 isStaleFolderLoad() が自分の面をつなぎ直してから進む。
   const nextRenderOverride = openOpts.containerEl || null;
-  const switchingFolder = _folderPath !== path;
-  if (_folderPath && switchingFolder && nextRenderOverride !== (_folderRenderContainerOverride || null)) {
-    _folderShowTakeoverNotice(displayLabel);
+  const surfaceAware = typeof _folderBindSurface === 'function';
+  const surfaceKey = nextRenderOverride || 'main';
+  if (surfaceAware) {
+    _folderSurfaceLoadSeq.set(surfaceKey, folderLoadSeq);
+    // 開いた面を操作対象にする（他の面の読み直し等、利用者の操作でない読み込みは操作対象を変えない）
+    if (!openOpts.keepInteractionSurface) _folderActivateSurface(nextRenderOverride);
+  } else _folderRenderContainerOverride = nextRenderOverride;
+  function enterFolderSurface() {
+    if (!surfaceAware) return window._openFolderLoadSeq === folderLoadSeq;
+    return _folderSurfaceLoadSeq.get(surfaceKey) === folderLoadSeq && _folderEnterSurface(nextRenderOverride);
   }
-  _folderRenderContainerOverride = nextRenderOverride;
+  if (!enterFolderSurface()) return false;
+  const switchingFolder = _folderPath !== path;
   const folderLoadingGrid = _folderGridEl();
   if (folderLoadingGrid) folderLoadingGrid.setAttribute('aria-busy', 'true');
   // 別のフォルダへ切り替える時は、読み込みが終わるまで前のフォルダの中身（空なら「このフォルダは空です」）を
@@ -165,6 +158,18 @@ async function openFolder(label, path, opts) {
 
     // 表示形式・表示設定はフォルダごと（gb-folder-display-settings.js）。一覧の取得と並行して読み、描画の前に反映する。
     const folderDisplayReady = window.MeldexFolderDisplaySettings?.activate?.(path, { isCurrent: () => !isStaleFolderLoad() });
+    const listingStartedAt = Date.now();
+    // 大きなフォルダ（項目数がしきい値を超える）は、一覧をページごとに取り、見えている範囲だけ描く（gb-folder-large.js）。
+    // 小さなフォルダ・確認できない時は false が返り、従来どおり全件を取って描く。
+    const openedLarge = !Array.isArray(openOpts.items) && globalThis.MeldexFolderLarge
+      ? await globalThis.MeldexFolderLarge.open(path, {
+        isCurrent: () => !isStaleFolderLoad(), displayReady: folderDisplayReady, resetScroll: switchingFolder,
+        selectedPaths: Array.isArray(openOpts.selectedPaths) || openOpts.selectedPath !== undefined
+          ? [...(Array.isArray(openOpts.selectedPaths) ? openOpts.selectedPaths : []), openOpts.selectedPath].filter(Boolean) : undefined,
+      })
+      : (globalThis.MeldexFolderLarge?.deactivate?.(), false);
+    if (isStaleFolderLoad()) return;
+    if (!openedLarge) {
     let fetchedItems = Array.isArray(openOpts.items)
       ? openOpts.items.slice()
       : (typeof _folderFetchBrowseItems === 'function'
@@ -176,6 +181,9 @@ async function openFolder(label, path, opts) {
     }
     if (folderDisplayReady) await folderDisplayReady;
     if (isStaleFolderLoad()) return;
+    // 一覧の取得中に名前の変更・移動が確定していたら、届いた一覧は古い。古い名前のまま描くと、
+    // そのカードへのドロップが存在しない場所への移動になる（2026-11-24 利用者の報告）。
+    if (!Array.isArray(openOpts.items)) fetchedItems = _folderApplyPathChangesSince(fetchedItems, listingStartedAt);
     _folderItems = fetchedItems;
     _folderBrowseIncomplete = browseIncomplete;
     _folderUpdateStatusCounts(_folderItems);
@@ -192,6 +200,7 @@ async function openFolder(label, path, opts) {
     const openSelectedPaths = Array.isArray(openOpts.selectedPaths) || openOpts.selectedPath !== undefined
       ? requestedSelectedPaths : switchingFolder ? [] : (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
     await renderFolderGrid({ preserveSelectedPaths: openSelectedPaths });
+    }
     if (isStaleFolderLoad()) return;
     // 直接フォルダを開いた経路も、実際に描画済みの対象を記録する。
     // 他の面の開閉でpane-bridgeが未描画と誤認し、一覧を作り直さないため。
@@ -202,7 +211,7 @@ async function openFolder(label, path, opts) {
       liveFolderView.dataset.gbLegacyPath = path;
     }
     const searchConfig = getFolderDisplayConfig();
-    if (searchConfig.filterText || _folderSearchRowHasTagCondition()) {
+    if (!openedLarge && (searchConfig.filterText || _folderSearchRowHasTagCondition())) {
       _refreshFolderUnifiedSearch(searchConfig.filterText || '');
     }
     if (!openOpts.skipGlobalUi) showStatus('フォルダ: ' + displayLabel);
@@ -210,6 +219,7 @@ async function openFolder(label, path, opts) {
   } catch (e) {
     if (isStaleFolderLoad()) return;
     hadError = true;
+    globalThis.MeldexFolderLarge?.deactivate?.();
     _folderItems = [];
     _folderUpdateStatusCounts(_folderItems);
     _folderSelected = null;
@@ -230,6 +240,11 @@ async function openFolder(label, path, opts) {
     }
   }
   if (!openOpts.skipGlobalUi) _syncDetailPanel(displayLabel, path, 'folder');
+  if (!openOpts.skipGlobalUi && !hadError && !isStaleFolderLoad()) {
+    // 一覧の読込でフォルダIDが確定した後、早い段階で作った設定欄を接続し直す。
+    if (typeof applyFolderFileStyle === 'function') applyFolderFileStyle(path);
+    if (typeof _refreshFileThemeTargetBindings === 'function') _refreshFileThemeTargetBindings();
+  }
   // サブパネル（_mountFolder）が読み込み失敗を検知して再読み込みボタン付きの
   // エラー表示へ切り替えられるよう、CSV/ノートと同じくfalseを返す（成功時はtrue）。
   // 既存の呼び出し元は戻り値を使っていない（folderVisiblePromiseは _waitForBrowseItemVisible
@@ -238,6 +253,9 @@ async function openFolder(label, path, opts) {
 }
 
 function renderFolderInitialPrompt() {
+  // メインのフォルダパネルを初期表示へ戻す。サブパネル等の面をつないでいる間は、メインの面へつないで行う。
+  if (typeof _folderOnSurface === 'function' && _folderRenderContainerOverride) { _folderOnSurface(null, renderFolderInitialPrompt); return; }
+  globalThis.MeldexFolderLarge?.deactivate?.();
   _folderPath = '';
   _folderItems = [];
   _folderBrowseIncomplete = null;
@@ -257,8 +275,7 @@ function renderFolderInitialPrompt() {
 
   const grid = document.getElementById('folder-grid');
   if (!grid) return;
-  const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
-  grid.className = layoutMap[_folderLayout] || 'grid-layout';
+  grid.className = FOLDER_LAYOUT_CLASSES[_folderLayout] || 'grid-layout';
   grid.innerHTML = '';
   grid.scrollTop = 0;
 
@@ -322,7 +339,10 @@ function _disconnectWaterfallResizeObserver() {
 
 function _scheduleWaterfallLayout() {
   if (_waterfallLayoutRaf) return;
+  const surface = _folderResolveRenderOverride() || null;
   const run = () => {
+    // 予約した面（メイン／サブパネル）をつないでから配置する
+    if (!_folderEnterSurface(surface)) return;
     _waterfallLayoutRaf = 0;
     applyWaterfallLayout();
   };
@@ -340,14 +360,19 @@ function _ensureWaterfallResizeObserver() {
   if (grid.classList.contains('waterfall-layout')) {
     const target = grid.parentElement || grid;
     _waterfallObservedWidth = _waterfallElementWidth(target) || _waterfallElementWidth(grid);
+    const observedSurface = _folderResolveRenderOverride() || null;
     _waterfallResizeOb = new ResizeObserver(entries => {
-      void entries;
+      if (!_folderEnterSurface(observedSurface)) return;
       const width = _waterfallElementWidth(target) || _waterfallElementWidth(grid);
-      if (width === _waterfallObservedWidth) return;
+      const cardsChanged = entries.some(entry => entry.target !== target);
+      if (width === _waterfallObservedWidth && !cardsChanged) return;
       _waterfallObservedWidth = width;
-      _scheduleWaterfallLayout();
+      // サムネイルの後挿入、文字の折返し・フォント、付加情報もカード全体の寸法で検知する。
+      // 描画前の通知内で配置を確定し、次のフレームまで重なった状態を見せない。
+      applyWaterfallLayout();
     });
     _waterfallResizeOb.observe(target);
+    grid.querySelectorAll('.fv-item').forEach(item => _waterfallResizeOb.observe(item));
   }
 }
 
@@ -366,9 +391,13 @@ function applyWaterfallLayout() {
   if (!grid || !grid.classList.contains('waterfall-layout')) return;
   const items = Array.from(grid.querySelectorAll('.fv-item'));
   if (items.length === 0) return;
+  // 別の面が全画面になって幅が0の間は、最後の配置とスクロール範囲を維持する。
+  // 表示へ戻った時のResizeObserver通知で、実寸を使って再配置する。
+  const gridWidth = _waterfallElementWidth(grid);
+  if (gridWidth <= 0) return;
   const gap = 3;
   const colW = parseInt(getComputedStyle(grid).getPropertyValue('--fv-card-w')) || 120;
-  const containerW = _waterfallElementWidth(grid) - 24; // padding考慮
+  const containerW = gridWidth - 24; // padding考慮
   const cols = Math.max(1, Math.floor((containerW + gap) / (colW + gap)));
   const warning = grid.querySelector('.fv-browse-warning');
   const colHeights = new Array(cols).fill(warning ? warning.offsetHeight + gap : 0);
@@ -403,6 +432,7 @@ function applyFolderZoom() {
   const size = Math.max(48, Math.min(1000, Math.round(120 * _folderZoom)));
   grid.style.setProperty('--fv-card-w', size + 'px');
   grid.style.setProperty('--fv-card-h', size + 'px');
+  if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.relayout(); return; }
   if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
 }
 
@@ -606,8 +636,7 @@ function _updateFolderDisplayFilterButton(cfg) {
   const displayIcon = document.getElementById('folder-display-icon');
   const filterBtn = document.getElementById('folder-filter-btn');
   const filterCount = document.getElementById('folder-filter-count');
-  const layoutIcons = { list: 'list', grid: 'layoutGrid', waterfall: 'layoutDashboard', hflow: 'columns' };
-  const icon = layoutIcons[_folderLayout] || 'layoutGrid';
+  const icon = FOLDER_LAYOUT_ICONS[_folderLayout] || 'layoutGrid';
   if (displayIcon) {
     displayIcon.className = 'ico';
     displayIcon.innerHTML = lucide(icon, 16);
@@ -615,7 +644,7 @@ function _updateFolderDisplayFilterButton(cfg) {
   window.syncFolderLayoutControl?.();
   if (displayBtn) {
     displayBtn.dataset.layout = _folderLayout || 'grid';
-    displayBtn.title = '表示設定: ' + ({ list: 'リスト', grid: 'グリッド', waterfall: 'ウォーターフォール', hflow: '横並び' }[_folderLayout] || 'グリッド');
+    displayBtn.title = '表示設定: ' + (FOLDER_LAYOUT_LABELS[_folderLayout] || 'グリッド');
   }
   if (!filterBtn) return;
   const active = _folderHasActiveFilters(current);
@@ -638,7 +667,7 @@ function _updateFolderDisplayFilterButton(cfg) {
 }
 
 function _folderCreateItemCard(item, idx, context) {
-  const { container, filteredItems, preserveSelectedPaths, showThumbForLayout, isListLayout, showName, showSize, showDate, showType, showDimensions, showRating, showTags } = context;
+  const { container, filteredItems, preserveSelectedPaths, showThumbForLayout, isListLayout, compactList, showName, showSize, showDate, showType, showDimensions, showRating, showTags } = context;
     const el = document.createElement('div');
     el.className = 'fv-item';
     if (item.type === 'folder' || item.type === 'database') el.classList.add('fv-folder-list-item');
@@ -670,6 +699,7 @@ function _folderCreateItemCard(item, idx, context) {
     chk.setAttribute('aria-label', `フォルダ項目を選択: ${item.name || item.path || idx + 1}`);
     chk.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.cardCheck(item, el, chk.checked); return; }
       if (chk.checked) {
         el.classList.add('selected');
         if (!_folderSelectedItems.includes(item)) _folderSelectedItems.push(item);
@@ -724,12 +754,14 @@ function _folderCreateItemCard(item, idx, context) {
         const icon = document.createElement('span');
         icon.className = 'fv-icon';
         icon.innerHTML = typeof _outlinerIconMarkup === 'function'
-          ? _outlinerIconMarkup(item, 36)
+          ? _outlinerIconMarkup(item, compactList ? 18 : 36)
           : fileTypeIcon(item.type);
         thumb.appendChild(icon);
         if (!item.display_icon) window.GBOutlinerThumbnails?.attachFormatIcon?.(icon, item);
       };
-      if (window.GBOutlinerThumbnails?.canLoadThumbnail?.(item) && !item.display_icon) {
+      if (compactList) {
+        appendIconThumb();
+      } else if (window.GBOutlinerThumbnails?.canLoadThumbnail?.(item) && !item.display_icon) {
         appendIconThumb();
         window.GBOutlinerThumbnails.attachToElement(thumb, item, thumb.firstElementChild, 256);
       } else if (THUMB_TYPES.has(item.type) && !item.display_icon) {
@@ -841,6 +873,8 @@ function _folderCreateItemCard(item, idx, context) {
       if (!e.ctrlKey && !e.metaKey && !e.shiftKey && e.detail < 2
           && e.target.closest('.fv-name') && el.classList.contains('selected')
           && _folderStartRename(item, el)) return;
+      // 大きなフォルダの表示では、選択を位置とパスで持つ（まだ取っていないページをまたぐ範囲も選べる）
+      if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.cardClick(e, item, el); return; }
       if (e.ctrlKey || e.metaKey) {
         // Ctrl+クリック: トグル
         el.classList.toggle('selected');
@@ -867,7 +901,7 @@ function _folderCreateItemCard(item, idx, context) {
         }
       } else {
         // 通常クリック: 単一選択
-        document.querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
+        (_folderGridEl() || document).querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
         el.classList.add('selected');
         _folderSelectedItems = [item];
       }
@@ -891,19 +925,29 @@ function _folderCreateItemCard(item, idx, context) {
         return;
       }
       e.stopPropagation();
-      const draggedIsSelected = _folderSelectedItems.some(selected => selected?.path === item.path);
-      if (!draggedIsSelected) {
+      const largeFolder = globalThis.MeldexFolderLarge?.active?.() ? globalThis.MeldexFolderLarge : null;
+      const draggedIsSelected = largeFolder ? largeFolder.isSelectedItem(item)
+        : _folderSelectedItems.some(selected => selected?.path === item.path);
+      const largeDragItems = largeFolder && draggedIsSelected ? largeFolder.dragItems(item) : null;
+      if (largeFolder && draggedIsSelected && !largeDragItems) {
+        e.preventDefault();
+        showStatus('選択した項目を確認しています。少し待ってからドラッグしてください', true);
+        return;
+      }
+      if (!draggedIsSelected && largeFolder) largeFolder.selectOnly(item, el);
+      else if (!draggedIsSelected) {
         _folderSelected = item;
         _folderSelectedItems = [item];
-        document.querySelectorAll('.fv-item.selected').forEach(selected => selected.classList.remove('selected'));
+        (_folderGridEl() || document).querySelectorAll('.fv-item.selected').forEach(selected => selected.classList.remove('selected'));
         el.classList.add('selected');
         _syncFolderCheckboxes();
         _updateFolderBulkBar();
       }
-      const dragItems = _folderDragItemsForStart(
+      // 大きなフォルダの選択は同じフォルダの直下だけなので、親子の重なりの確認（件数の2乗）は要らない
+      const dragItems = (largeDragItems || _folderDragItemsForStart(
         item,
         draggedIsSelected ? _folderSelectedItems : [item]
-      )
+      ))
         .map(selected => ({
           name: selected.name || '',
           path: selected.path,
@@ -1029,6 +1073,10 @@ function _folderCreateItemCard(item, idx, context) {
 
 // 作成した項目だけを追加する。既存カードと選択・スクロール・プレビューを保持する。
 function _folderApplyCreatedItems(items) {
+  if (typeof _folderNotifyFoldersChanged === 'function' && Array.isArray(items) && items.length) {
+    _folderNotifyFoldersChanged([...new Set(items.map(item => _folderDirectParentKey(item?.path || '')))]);
+  }
+  if (globalThis.MeldexFolderLarge?.active?.()) { globalThis.MeldexFolderLarge.refresh(); return; }
   const container = _folderGridEl();
   if (!container || !Array.isArray(_folderItems)) return;
   const normalize = path => String(path || '').replace(/\\/g, '/').toLowerCase();
@@ -1042,8 +1090,9 @@ function _folderApplyCreatedItems(items) {
   filteredItems.splice(0, filteredItems.length, ...ordered);
   const existing = new Map(Array.from(container.querySelectorAll('.fv-item'), card => [normalize(card.dataset.path), card]));
   const dcfg = getFolderDisplayConfig();
-  const isListLayout = _folderLayout === 'list';
+  const isListLayout = _folderIsListLayout();
   const context = { container, filteredItems, preserveSelectedPaths: new Set(), isListLayout,
+    compactList: _folderLayout === 'list-small',
     showThumbForLayout: isListLayout || dcfg.showThumb !== false,
     showName: dcfg.showName !== false, showSize: dcfg.showSize !== false, showDate: dcfg.showDate !== false,
     showType: dcfg.showType !== false, showDimensions: dcfg.showDimensions !== false,
@@ -1057,6 +1106,7 @@ function _folderApplyCreatedItems(items) {
     const created = _folderCreateItemCard(item, index, context);
     const next = filteredItems.slice(index + 1).map(nextItem => existing.get(normalize(nextItem.path))).find(Boolean);
     container.insertBefore(created, next || null);
+    if (_folderLayout === 'waterfall') _waterfallResizeOb?.observe(created);
     existing.set(key, created);
   });
   container.scrollLeft = scroll[0]; container.scrollTop = scroll[1];
@@ -1068,20 +1118,97 @@ function _folderApplyCreatedItems(items) {
   if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
 }
 
+// 一覧の取得を始めた後に確定した名前の変更・移動を、届いた一覧へ当てはめる（出て行った項目は除く）。
+function _folderApplyPathChangesSince(items, since) {
+  if (!Array.isArray(items) || typeof resolveCurrentAppPath !== 'function') return items;
+  const base = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || '';
+  const stem = value => value.replace(/\.[^./]+$/, '');
+  const lower = value => String(value || '').replace(/\\/g, '/').toLowerCase();
+  const remapped = new Map();
+  const kept = [];
+  let changed = false;
+  for (const item of items) {
+    const current = item?.path ? resolveCurrentAppPath(item.path, { since }) : '';
+    if (!current || current === item.path) { kept.push(item); continue; }
+    changed = true;
+    if (!_folderIsDirectChildOfCurrent(current)) continue;
+    const oldBase = base(item.path), newBase = base(current);
+    const name = item.name === oldBase ? newBase : item.name === stem(oldBase) ? stem(newBase) : item.name;
+    remapped.set(lower(current), { ...item, path: current, name });
+  }
+  if (!changed) return items;
+  const keptPaths = new Set(kept.map(item => lower(item?.path)));
+  const out = [...kept, ...[...remapped].filter(([key]) => !keptPaths.has(key)).map(([, item]) => item)];
+  if (items._folderBrowseIncomplete) out._folderBrowseIncomplete = items._folderBrowseIncomplete;
+  return out;
+}
+
+// ドラッグ中は一覧を描き直さない。描き直すと行の並びが変わり、マウスの下に別の項目が来て、
+// 狙ったフォルダではなく隣のシートの中へ落ちてしまう（2026-11-24 利用者の報告: 4件が別のシートの中へ移動した）。
+// ドラッグが終わった直後に、最後に頼まれた描き直しを1回だけ行う。
+let _folderDragInProgress = false;
+let _folderDeferredRenderOpts = null;
+function _folderFlushDeferredRender() {
+  _folderDragInProgress = false;
+  const pending = _folderDeferredRenderOpts;
+  _folderDeferredRenderOpts = null;
+  // 描き直しは、頼まれた面（メイン／サブパネル）ごとに1回ずつ行う
+  const deferred = Array.isArray(pending) ? pending : (pending ? [{ opts: pending.opts, surface: null }] : []);
+  deferred.forEach(entry => (typeof _folderOnSurface === 'function'
+    ? _folderOnSurface(entry.surface, () => renderFolderGrid(entry.opts))
+    : renderFolderGrid(entry.opts)));
+}
+if (typeof document !== 'undefined' && !window.__gbFolderDragRenderGuard) {
+  window.__gbFolderDragRenderGuard = true;
+  document.addEventListener('dragstart', () => { _folderDragInProgress = true; }, true);
+  // ドロップでは、受け取る処理がドロップ先のカードを調べ終わってから描き直す（ドロップの最中にカードを
+  // 入れ替えると、受け取る処理がドロップ先を見失って何も起きない）。終わりの知らせは2つとも来ることがある。
+  const flushSoon = () => { if (_folderDragInProgress || _folderDeferredRenderOpts) setTimeout(_folderFlushDeferredRender, 0); };
+  document.addEventListener('drop', flushSoon, true);
+  document.addEventListener('dragend', flushSoon, true);
+  // ドラッグの終わりの知らせが来なかった時の保険（ドラッグ中はマウスの移動の知らせが来ない）
+  ['pointermove', 'pointerdown', 'keydown'].forEach(type => document.addEventListener(type, () => {
+    if (_folderDragInProgress) _folderFlushDeferredRender();
+  }, true));
+}
+
+// 表示形式ごとの描画先のclass。「リスト・小」はリストの仕組みをそのまま使い、行の寸法だけフォルダツリーと同じにする
+// （list-small-layout が付いている時だけ gb-tools.part01.part01.css の寸法の上書きが効く）。
+const FOLDER_LAYOUT_CLASSES = { grid: 'grid-layout', list: 'list-layout', 'list-small': 'list-layout list-small-layout',
+  waterfall: 'waterfall-layout', hflow: 'hflow-layout' };
+const FOLDER_LAYOUT_LABELS = { grid: 'グリッド', waterfall: 'ウォーターフォール', hflow: '横並び', list: 'リスト', 'list-small': 'リスト・小' };
+const FOLDER_LAYOUT_ICONS = { grid: 'layoutGrid', waterfall: 'layoutDashboard', hflow: 'columns', list: 'list', 'list-small': 'listCompact' };
+// リストの行の形で描く表示形式（リスト・リスト・小）
+function _folderIsListLayout(mode) {
+  const value = mode === undefined ? _folderLayout : mode;
+  return value === 'list' || value === 'list-small';
+}
+
 function renderFolderGrid(opts) {
+  if (_folderDragInProgress) {
+    const deferSurface = _folderResolveRenderOverride() || null;
+    _folderDeferredRenderOpts = (Array.isArray(_folderDeferredRenderOpts) ? _folderDeferredRenderOpts : []).filter(entry => entry.surface !== deferSurface);
+    _folderDeferredRenderOpts.push({ opts, surface: deferSurface });
+    return;
+  }
+  if (globalThis.MeldexFolderLarge?.active?.()) return globalThis.MeldexFolderLarge.render(opts);
+  // 従来の描き方で描く時は、前に開いていた大きなフォルダの表示の後始末をする
+  globalThis.MeldexFolderLarge?.deactivate?.();
   const renderOpts = opts || {};
   const preserveSelectedPaths = new Set((renderOpts.preserveSelectedPaths
     ?? (_folderSelectedItems || []).map(item => item?.path)).filter(Boolean));
   const resetScrollTop = !!renderOpts.resetScrollTop;
   const container = _folderGridEl();
   if (!container) return;
+  // 描画の続き（分割して置くカード・タグの読み込み後）は、この面をつなぎ直してから進める
+  const renderSurface = _folderResolveRenderOverride() || null;
+  const renderStillCurrent = () => _folderEnterSurface(renderSurface) && renderSeq === _folderRenderSeq;
   _folderUpdateStatusCounts(_folderItems);
   const renderSeq = ++_folderRenderSeq;
   window.GBOutlinerThumbnails?.detachWithin?.(container);
   container.innerHTML = '';
   if (resetScrollTop) container.scrollTop = 0;
-  const layoutMap = {grid:'grid-layout', list:'list-layout', waterfall:'waterfall-layout', hflow:'hflow-layout'};
-  const layoutClass = layoutMap[_folderLayout] || 'grid-layout';
+  const layoutClass = FOLDER_LAYOUT_CLASSES[_folderLayout] || 'grid-layout';
   // レイアウトモードclassをまるごと差し替える（containerが#folder-gridの場合は
   // 元々classを持たないため問題ない）。独立した描画先（サブパネル等）は自身の
   // 識別class（gb-subpanel-folder-root。gb-subpanel.cssの対応スタイルが参照する）
@@ -1131,7 +1258,9 @@ function renderFolderGrid(opts) {
     const folderCountEl = document.getElementById('folder-item-count');
     if (folderCountEl) folderCountEl.textContent = filteredItems.length + (_folderItems.length !== filteredItems.length ? ' / ' + _folderItems.length : '') + ' 項目';
   }
-  const isListLayout = _folderLayout === 'list';
+  const isListLayout = _folderIsListLayout();
+  // リスト・小はサムネイルを出さずアイコンだけ（フォルダツリーと同じ大きさ）
+  const compactList = _folderLayout === 'list-small';
   const showThumbForLayout = isListLayout || showThumb;
   _folderConfigureListLayout(container, isListLayout);
   if (isListLayout) _folderRenderListHeader(container);
@@ -1211,7 +1340,7 @@ function renderFolderGrid(opts) {
   let resolveRender;
   const rendered = new Promise(resolve => { resolveRender = resolve; });
   const finishFolderGridRender = () => {
-    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
+    if (!renderStillCurrent()) { resolveRender(false); return; }
     _syncFolderCheckboxes();
     _updateFolderBulkBar();
     if (preserveSelectedPaths.size > 0 && _folderSelected) {
@@ -1219,35 +1348,27 @@ function renderFolderGrid(opts) {
       if ((panelCfg.previewVisible ?? true) || (panelCfg.detailVisible ?? true)) showFolderPreview(_folderSelected);
     }
 
-    // ウォーターフォール: 全アイテム追加後にレイアウト計算 + 画像読み込み完了後に再計算（debounce）
+    // 後から挿入される画像も含め、カード全体の寸法を監視する。
     if (_folderLayout === 'waterfall') {
       _scheduleWaterfallLayout();
-      let _wfDebounceTimer = null;
-      const debouncedLayout = () => {
-        clearTimeout(_wfDebounceTimer);
-        _wfDebounceTimer = setTimeout(() => _scheduleWaterfallLayout(), 80);
-      };
-      container.querySelectorAll('img').forEach(img => {
-        if (!img.complete) img.onload = debouncedLayout;
-      });
       _ensureWaterfallResizeObserver();
     }
     tagLoadPromise?.then(() => {
-      if (renderSeq !== _folderRenderSeq) return;
+      if (!renderStillCurrent()) return;
       window.MeldexEmbeddedMetadata?.refreshFolderTags?.(container);
       if (_folderLayout === 'waterfall') _scheduleWaterfallLayout();
     });
     resolveRender(true);
   };
   const renderFolderGridChunk = () => {
-    if (renderSeq !== _folderRenderSeq) { resolveRender(false); return; }
+    if (!renderStillCurrent()) { resolveRender(false); return; }
     const fragment = document.createDocumentFragment();
     const firstChunk = nextRenderIndex === 0;
     const endIndex = Math.min(filteredItems.length, nextRenderIndex + _folderPanelRenderChunkSize(filteredItems.length));
     for (; nextRenderIndex < endIndex; nextRenderIndex++) {
       const item = filteredItems[nextRenderIndex];
       const idx = nextRenderIndex;
-    const el = _folderCreateItemCard(item, idx, { container, filteredItems, preserveSelectedPaths, showThumbForLayout, isListLayout, showName, showSize, showDate, showType, showDimensions, showRating, showTags });
+    const el = _folderCreateItemCard(item, idx, { container, filteredItems, preserveSelectedPaths, showThumbForLayout, isListLayout, compactList, showName, showSize, showDate, showType, showDimensions, showRating, showTags });
     fragment.appendChild(el);
     }
     (stagedCards && !firstChunk ? stagedCards : container).appendChild(fragment);
@@ -1281,7 +1402,7 @@ async function _toggleFolderItemLock(item) {
   if (!item?.path || typeof toggleItemLock !== 'function') return;
   const changed = await toggleItemLock(item.path);
   if (!changed) return;
-  if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, {
+  if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}),
     skipSaveLastView: true,
     skipNavPush: true,
     skipHighlight: true,
@@ -1369,6 +1490,7 @@ function _folderStartRename(item, card) {
 
 // DOMを作り直さず、選択・スクロール・プレビューを保って改名結果を反映する。
 function _folderApplyRename(oldPath, newPath, newName, fileId) {
+  if (typeof _folderNotifyFoldersChanged === 'function') _folderNotifyFoldersChanged([_folderDirectParentKey(oldPath || '')]);
   if (_folderPendingMovePaths.delete(_folderMembershipKey(oldPath))) _folderPendingMovePaths.add(_folderMembershipKey(newPath));
   const seen = new Set();
   const update = item => {
@@ -1422,7 +1544,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   const blankTarget = !!options.blankTarget;
   const alreadySelected = !blankTarget && _folderSelectedItems.some(selected => selected?.path === item.path);
   if (!blankTarget && !alreadySelected) {
-    document.querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
+    (_folderGridEl() || document).querySelectorAll('.fv-item.selected').forEach(s => s.classList.remove('selected'));
     if (itemEl) itemEl.classList.add('selected');
     _folderSelectedItems = [item];
     _folderSelected = item;
@@ -1468,6 +1590,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
     }
     const d = document.createElement('div');
     d.className = 'gb-context-menu-item';
+    if (!icon && icon !== false) icon = window.MeldexMenuIcons?.resolve?.(label) || '';
     if (icon && typeof lucide === 'function') {
       d.innerHTML = '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' + label;
     } else {
@@ -1533,7 +1656,7 @@ async function showFolderItemContextMenu(e, item, options = {}) {
       onCut: () => folderToolbarCutItems(operationItems),
       onPaste: () => folderToolbarPasteToFolder(pasteTarget),
       onDuplicate: () => _folderDuplicateItems(editableItems, () => (
-        _folderPath ? openFolder(_folderPath.split('/').pop(), _folderPath) : null
+        _folderPath ? openFolder(_folderPath.split('/').pop(), _folderPath, { ...(typeof _folderSurfaceOpts === 'function' ? _folderSurfaceOpts() : {}) }) : null
       )),
       onDelete: () => folderToolbarDeleteSelection(),
       copyDisabled: operationItems.length === 0,
@@ -1604,6 +1727,9 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   }
   if (!isMulti && item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
   if (isMulti) {
+    if (_canUseRightSidebar) {
+      addItem(`プロパティ（${multiItems.length}件）`, () => showFolderSelectionProperties(multiItems, itemEl), null, 'info');
+    }
     // 旧「一括操作バー」の画像向け操作。画像を含む時だけ出す。
     const imgCount = multiItems.filter(i => i.type === 'image').length;
     if (imgCount > 0) {

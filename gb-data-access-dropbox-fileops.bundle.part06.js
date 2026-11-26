@@ -1,3 +1,37 @@
+      let cascadeCount = 0;
+      const records = await _listAnnotationRecords(provider);
+      for (const record of records) {
+        const matchedWithoutCascade = _annotationMatchesOrphan(record, body || {}, false);
+        const matchedWithCascade = !matchedWithoutCascade && _annotationMatchesOrphan(record, body || {}, cascade);
+        if (!matchedWithoutCascade && !matchedWithCascade) continue;
+        record.orphan = 1;
+        record.orphaned_at = now;
+        record.target_file_name = targetFileName;
+        if (body?.target_snapshot && !record.target_snapshot) record.target_snapshot = body.target_snapshot;
+        record.modified = now;
+        record.modified_at = now;
+        if (matchedWithoutCascade) directCount += 1;
+        else cascadeCount += 1;
+        await _writeAnnotationRecord(provider, record);
+      }
+      return { ok: true, orphaned: directCount, cascade_orphaned: cascadeCount };
+    }
+    if (pathname === '/annotation/screenshot-source' && method === 'GET') {
+      const provider=await _requirePwaProvider('read');
+      const path=url.searchParams.get('path')||'';
+      if(!/\.png$/i.test(path))return {source_link:null};
+      const file=await provider.downloadAsFile(path);
+      return {source_link:window.GBScreenshotPng.read(new Uint8Array(await file.arrayBuffer()))};
+    }
+    if (pathname === '/annotation/screenshot' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const imageAftercare = window.MeldexCreatedImageIdentityAftercare;
+      if (!imageAftercare?.prepare || !imageAftercare?.record
+          || !imageAftercare?.cancel || !imageAftercare?.drainPrepared) {
+        throw new Error('Cloud画像identity aftercareが読み込まれていません');
+      }
+      const drainedIdentity = await imageAftercare.drainPrepared(provider);
+      const dataUrl = String(body?.data || '');
       if (!dataUrl) throw new Error('data は必須です');
       const ts = _versionTimestamp();
       const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
@@ -864,37 +898,3 @@
           }));
           await _runPostMutationStep(warnings, 'version-history', async () => {
             if (!mappings.length) return;
-            await _awaitPendingEditFinalizations();
-            const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-            const adapter = await _managementAdapterForProvider(provider, kind, mappings[0].oldPath);
-            const records = await adapter.listDocuments(kind);
-            for (const record of records) {
-              const current = _normalizeFolderPath(record?.payload?.original_relative_path || '');
-              const mapping = mappings.find(row => row.oldPath === current);
-              if (!mapping) continue;
-              await adapter.save(kind, record.documentId, { ...record.payload, original_relative_path: mapping.newPath }, { expectedRevision: record.revision });
-            }
-          });
-          await _runPostMutationStep(warnings, 'stored-paths', () => (
-            typeof _rewriteStoredPathsBatchForProvider === 'function'
-              ? _rewriteStoredPathsBatchForProvider(provider, mappings)
-              : Promise.all(mappings.map(row => _rewriteStoredPathsForProvider(provider, row.oldPath, row.newPath, false)))
-          ));
-          for (const entry of entries || []) {
-            const oldPath = direction === 'reverse' ? entry.destination : entry.source;
-            const newPath = direction === 'reverse' ? entry.source : entry.destination;
-            await _runPostMutationStep(warnings, 'csv-sidecars', () => _relocateCsvSidecars(provider, oldPath, newPath, false, false));
-            await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: false, operationId }, warnings);
-            await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, {
-              action: 'rename', oldPath, newPath, isFolder: false,
-              annotationPlan: prepared?.get?.(oldPath),
-            }));
-          }
-          let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-          await _runPostMutationStep(warnings, 'references', async () => {
-            relocate = typeof _relocateReferencesBatch === 'function'
-              ? await _relocateReferencesBatch(provider, mappings)
-              : await _relocateReferences(provider, mappings[0]?.oldPath, mappings[0]?.newPath, false);
-          });
-          for (const mapping of mappings) {
-            window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(mapping.oldPath, mapping.newPath);

@@ -1140,10 +1140,7 @@ function updateRecentItems() {
         updateRecentItems();
       }, 1600);
     }
-    if (typeof _treeScrollGuardRestore === 'function') {
-      _treeScrollGuardRestore();
-      requestAnimationFrame(_treeScrollGuardRestore);
-    }
+    // クリック後のホイール操作を、クリック時の古い位置へ戻さない。
     return;
   }
   const savedScrollTop = (!lockActive && treeScroll) ? treeScroll.scrollTop : 0;

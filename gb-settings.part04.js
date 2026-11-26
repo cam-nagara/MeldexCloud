@@ -24,6 +24,13 @@
     if (typeof applyStatusbarHidden === 'function') applyStatusbarHidden(statusbarHiddenCb.checked);
   }
 
+  const toolbarAutoHideCb = settingsControl('modal-toolbar-autohide');
+  if (toolbarAutoHideCb) {
+    if (window.MeldexToolbarAutoHide?.setEnabled) window.MeldexToolbarAutoHide.setEnabled(toolbarAutoHideCb.checked);
+    else if (toolbarAutoHideCb.checked) localStorage.removeItem('meldex-toolbar-autohide');
+    else localStorage.setItem('meldex-toolbar-autohide', '0');
+  }
+
   const pasteLinkPromptCb = settingsControl('modal-paste-link-prompt-enabled');
   if (pasteLinkPromptCb) {
     if (pasteLinkPromptCb.checked) localStorage.removeItem('meldex_suppress_folder_paste_link_choice');
@@ -331,8 +338,8 @@
     // ユーザー表示を更新（ユーザー名変更 / アバター設定を反映）
     try { if (typeof updateUserIcon === 'function') updateUserIcon(); } catch {}
     try { if (typeof updateLeftChromeUser === 'function') updateLeftChromeUser(); } catch {}
-    // フォルダツリーを再読み込み
-    try {
+    // フォルダツリーを再読み込み（テーマだけの保存では不要）
+    if (!themeOnlySave) try {
       const outlinerReload = typeof loadOutliner === 'function' ? loadOutliner() : null;
       outlinerReload?.catch?.(() => {});
     } catch {}
@@ -356,6 +363,12 @@
         rollbackFailures.push(rollbackError?.message || String(rollbackError));
         console.error('設定のロールバック失敗:', rollbackError);
       }
+    }
+    // Color swatches edit the preview directly, rather than retaining a form
+    // value. Keep that draft after rolling back the failed persisted write.
+    if (themeDraftBeforeSave && typeof restoreThemeSnapshot === 'function') {
+      try { restoreThemeSnapshot(themeDraftBeforeSave); }
+      catch (draftError) { rollbackFailures.push(draftError?.message || '編集中の配色を復元できませんでした'); }
     }
     if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(themeDirty);
     if (sourceFolderHistoryBefore) {
@@ -454,6 +467,14 @@ async function showTrashModal(options = {}) {
     loadError = e;
     if (typeof showStatus === 'function') showStatus('ゴミ箱の読み込みに失敗しました', true);
   }
+  // 複数選択（チェックボックス、Shift＋クリック＝範囲、Ctrl/Cmd＋クリック＝追加・解除）。
+  // 選んだ行の「復元」は、選択中のすべての行をまとめて戻す（共通ルール §6「行の選択と一括実行」）。
+  const keyOf = it => _trashItemKey(it);
+  const liveKeys = new Set(items.map(keyOf));
+  const selected = new Set([...(options.selectKeys || [])].filter(key => liveKeys.has(key)));
+  const rowResults = options.rowResults instanceof Map ? options.rowResults : new Map();
+  const retryKeys = [...(options.retryKeys || [])].filter(key => liveKeys.has(key));
+  let anchorIndex = -1;
 
   function renderList() {
     if (loadError) {
@@ -475,10 +496,16 @@ async function showTrashModal(options = {}) {
       const delDate = it.deleted_at ? new Date(it.deleted_at).toLocaleString('ja-JP') : '';
       const origPath = it.original_path || '';
       const rootName = it.trash_root_name || '';
-      html += `<div class="trash-dialog-row" data-e2e-id="trash-dialog-row-${i}">
-          <span class="trash-dialog-icon">${icon}</span>
+      const outcome = rowResults.get(keyOf(it));
+      const badge = outcome?.state === 'failed'
+        ? `<span class="gb-badge gb-badge-danger trash-dialog-result" data-e2e-id="trash-dialog-result-${i}" tabindex="0" data-gb-tooltip="${esc(outcome.message || '復元できませんでした')}" aria-label="${esc('復元できませんでした: ' + (outcome.message || ''))}">失敗</span> `
+        : (outcome?.state === 'skipped'
+          ? `<span class="gb-badge trash-dialog-result" data-e2e-id="trash-dialog-result-${i}" tabindex="0" data-gb-tooltip="戻さず、ゴミ箱に残しました" aria-label="スキップ（戻さず、ゴミ箱に残しました）">スキップ</span> `
+          : '');
+      html += `<div class="trash-dialog-row${selected.has(keyOf(it)) ? ' is-selected' : ''}" data-trash-row="${i}" data-e2e-id="trash-dialog-row-${i}">
+          <span class="trash-dialog-icon"><input type="checkbox" class="trash-dialog-check" data-trash-select="${i}" data-e2e-id="trash-dialog-select-${i}" aria-label="${esc('「' + it.name + '」を選択')}"${selected.has(keyOf(it)) ? ' checked' : ''}>${icon}</span>
           <div class="trash-dialog-copy">
-            <div class="trash-dialog-name">${esc(it.name)}${info}</div>
+            <div class="trash-dialog-name">${badge}${esc(it.name)}${info}</div>
             <div class="trash-dialog-detail">${rootName ? esc(rootName) + ' / ' : ''}${origPath ? '元: '+esc(origPath) : ''}${delDate ? ' | '+delDate : ''}</div>
           </div>
           <button type="button" class="gb-btn gb-btn-sm" data-trash-restore="${i}" data-e2e-id="trash-dialog-restore-${i}">復元</button>
@@ -490,8 +517,109 @@ async function showTrashModal(options = {}) {
   showTrashModal._activeDialog?.close?.('superseded');
   const body = document.createElement('div');
   body.className = 'trash-dialog-body';
-  body.innerHTML = `<div id="trash-list" class="trash-dialog-list" data-e2e-id="trash-dialog-list">${renderList()}</div>
+  const headHtml = items.length && !loadError
+    ? `<div class="trash-dialog-head" data-e2e-id="trash-dialog-head">
+        <span class="trash-dialog-head-check"></span>
+        <span class="trash-dialog-count" data-e2e-id="trash-dialog-count" aria-live="polite"></span>
+        ${fieldHelp('行を選び（Shiftで範囲、Ctrlで追加）、選んだ行の「復元」を押すと、選んだ行をまとめて戻します。', { e2eId: 'trash-dialog-select-help' })}
+      </div>`
+    : '';
+  body.innerHTML = `${headHtml}<div id="trash-list" class="trash-dialog-list" data-e2e-id="trash-dialog-list">${renderList()}</div>
+    <div class="trash-dialog-retry" data-e2e-id="trash-dialog-retry-area"></div>
     <div class="gb-section-desc trash-dialog-status" data-e2e-id="trash-dialog-status" aria-live="polite"></div>`;
+  const applySelectAll = shouldSelect => {
+    selected.clear();
+    if (shouldSelect) items.forEach(it => selected.add(keyOf(it)));
+    anchorIndex = -1;
+    syncSelection();
+  };
+  const selectAll = items.length && !loadError && window.MeldexRowHandleMenu?.createSelectAllCheckbox
+    ? window.MeldexRowHandleMenu.createSelectAllCheckbox({
+      unit: '項目',
+      e2eId: 'trash-dialog-select-all',
+      onToggle: shouldSelect => applySelectAll(shouldSelect),
+    })
+    : null;
+  if (selectAll) {
+    // ダイアログの中では、共通の仕組みがチェックボックスを押した時点で切り替えて change を出す（click は届かない）
+    selectAll.addEventListener('change', () => applySelectAll(selectAll.checked));
+    body.querySelector('.trash-dialog-head-check')?.append(selectAll);
+  }
+  const selectedIndexes = () => items.map((it, index) => (selected.has(keyOf(it)) ? index : -1)).filter(index => index >= 0);
+  // 押した行が選択中で、選択が2行以上なら、選択中のすべての行が対象（判定は共通部品だけで行う）
+  const restoreTargets = index => {
+    const order = items.map((_, position) => position);
+    const resolved = window.MeldexRowHandleMenu?.resolveTargets?.(index, order, selectedIndexes());
+    return resolved?.batch ? resolved.ids : [index];
+  };
+  function syncSelection() {
+    const count = selected.size;
+    body.querySelectorAll('[data-trash-row]').forEach(row => {
+      const index = Number(row.dataset.trashRow);
+      const on = selected.has(keyOf(items[index]));
+      row.classList.toggle('is-selected', on);
+      const box = row.querySelector('[data-trash-select]');
+      if (box && box.checked !== on) box.checked = on;
+      const restore = row.querySelector('[data-trash-restore]');
+      if (restore) {
+        // 選んだ行の「復元」がまとめての復元になることは、共通のツールチップで示す（ボタンの寸法は変えない）
+        if (on && count > 1) {
+          restore.setAttribute('data-gb-tooltip', `選択中の ${count} 件を復元`);
+          restore.setAttribute('aria-label', `選択中の ${count} 件を復元`);
+        } else {
+          restore.removeAttribute('data-gb-tooltip');
+          restore.removeAttribute('aria-label');
+        }
+      }
+    });
+    const countLabel = body.querySelector('[data-e2e-id="trash-dialog-count"]');
+    if (countLabel) countLabel.textContent = count ? `${count}件を選択中` : '';
+    if (selectAll) window.MeldexRowHandleMenu.syncSelectAllCheckbox(selectAll, { total: items.length, selected: count, unit: '項目' });
+  }
+  const selectRange = (from, to, on) => {
+    const [start, end] = from <= to ? [from, to] : [to, from];
+    for (let index = start; index <= end; index += 1) {
+      if (on) selected.add(keyOf(items[index])); else selected.delete(keyOf(items[index]));
+    }
+  };
+  const listElement = body.querySelector('#trash-list');
+  // ダイアログの中のチェックボックスは、共通の仕組み（押した時点で切り替え、なぞって連続で切り替え）が change を出す。
+  // そのためチェックボックスは change で受け、Shift は押した時点の状態を覚えておく。
+  let shiftOnPointer = false;
+  listElement?.addEventListener('pointerdown', event => { shiftOnPointer = !!event.shiftKey; }, true);
+  listElement?.addEventListener('keydown', event => { shiftOnPointer = !!event.shiftKey; }, true);
+  listElement?.addEventListener('change', event => {
+    const box = event.target?.closest?.('[data-trash-select]');
+    if (!box) return;
+    const index = Number(box.dataset.trashSelect);
+    if (shiftOnPointer && anchorIndex >= 0 && box.checked) {
+      selectRange(anchorIndex, index, true);
+    } else {
+      if (box.checked) selected.add(keyOf(items[index])); else selected.delete(keyOf(items[index]));
+      anchorIndex = index;
+    }
+    syncSelection();
+  });
+  listElement?.addEventListener('click', event => {
+    if (busy) return;
+    const row = event.target?.closest?.('[data-trash-row]');
+    if (!row || event.target.closest('button, a, input, .trash-dialog-result')) return;
+    const index = Number(row.dataset.trashRow);
+    const key = keyOf(items[index]);
+    if (event.shiftKey && anchorIndex >= 0) {
+      // 範囲: 起点の行から押した行までを選ぶ
+      selectRange(anchorIndex, index, true);
+    } else if (event.ctrlKey || event.metaKey) {
+      if (selected.has(key)) selected.delete(key); else selected.add(key);
+      anchorIndex = index;
+    } else {
+      // 行の単純なクリック: その行だけを選ぶ
+      selected.clear();
+      selected.add(key);
+      anchorIndex = index;
+    }
+    syncSelection();
+  });
   const emptyButton = document.createElement('button');
   emptyButton.type = 'button';
   emptyButton.className = 'gb-btn gb-btn-danger';
@@ -533,7 +661,18 @@ async function showTrashModal(options = {}) {
   o.classList.add('modal-overlay');
   o.dataset.trashModal = '1';
   dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'trash-dialog-close-icon');
-  body.querySelectorAll('[data-trash-restore]').forEach(button => button.addEventListener('click', () => trashRestore(Number(button.dataset.trashRestore))));
+  body.querySelectorAll('[data-trash-restore]').forEach(button => button.addEventListener('click', () => {
+    const targets = restoreTargets(Number(button.dataset.trashRestore));
+    return targets.length > 1 ? trashRestoreMany(targets) : trashRestore(targets[0]);
+  }));
+  if (retryKeys.length && window.GBUI?.createInlineError) {
+    // 一部が戻せなかった時: 何件が残ったかをこの領域に残し、同じ項目だけをもう一度送れるようにする
+    body.querySelector('[data-e2e-id="trash-dialog-retry-area"]')?.append(window.GBUI.createInlineError({
+      message: `${retryKeys.length} 件を復元できませんでした`,
+      onRetry: () => trashRestoreMany(items.map((it, index) => (retryKeys.includes(keyOf(it)) ? index : -1)).filter(index => index >= 0)),
+    }));
+  }
+  syncSelection();
   body.querySelectorAll('[data-trash-delete]').forEach(button => button.addEventListener('click', () => trashDelete(Number(button.dataset.trashDelete))));
   emptyButton.addEventListener('click', () => trashEmpty());
   closeButton.addEventListener('click', () => dialogApi.close('close-button'));
@@ -545,12 +684,89 @@ async function showTrashModal(options = {}) {
     if (status) status.textContent = message || '';
   };
   dialogApi.open();
+  if (options.statusMessage) window._setTrashDialogStatus(options.statusMessage);
 }
 
-function _refreshTrashDialog() {
+function _trashItemKey(item) {
+  return `${item?.trash_root || ''}\n${item?.name || ''}`;
+}
+
+function _refreshTrashDialog(options = {}) {
   const returnFocus = showTrashModal._returnFocus;
   showTrashModal._activeDialog?.close?.('refresh');
-  return showTrashModal({ returnFocus });
+  return showTrashModal({ ...options, returnFocus });
+}
+
+function _trashRestoreFailureText(outcome) {
+  const detail = outcome?.detail;
+  if (detail && typeof detail === 'object') return String(detail.message || detail.code || '復元できませんでした');
+  return String(detail || outcome?.error?.userMessage || outcome?.error?.message || '復元できませんでした');
+}
+
+// 選んだ複数の項目をまとめて戻す。100 件ずつ /outliner/restore-batch へ送り（少数・Cloud は従来どおり1件ずつ）、
+// 同じ名前がある項目は共通のダイアログでたずねる。結果は項目ごと: 戻した項目は一覧から消え、
+// 戻さなかった項目（スキップ・失敗）は一覧に印を付けて残す。失敗した項目だけを選んだままにし、再試行できる。
+async function trashRestoreMany(indexes) {
+  const all = window._trashItems || [];
+  const targets = (indexes || []).map(index => all[index]).filter(item => item?.name);
+  if (!targets.length) return;
+  const restoreMany = window.MeldexRestoreConflict?.restoreTrashRefs;
+  if (typeof restoreMany !== 'function') {
+    showStatus('まとめての復元を利用できません', true);
+    return;
+  }
+  window._setTrashDialogBusy?.(true);
+  window._setTrashDialogStatus?.(`${targets.length} 件を復元中...`);
+  showStatus(`${targets.length} 件を復元中...`);
+  let outcomes = [];
+  try {
+    outcomes = await restoreMany(
+      targets.map(item => ({ trash_name: item.name, trash_root: item.trash_root || '' })),
+      {
+        allowMissingOriginal: true,
+        // 1件ずつ送る時（少数・Cloud）は、1行の「復元」と同じ入口を使う
+        singleRequest: (ref, policy) => ({
+          path: '/trash/restore',
+          body: {
+            name: ref.trash_name,
+            ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
+            ...(policy ? { conflict_policy: policy } : {}),
+          },
+        }),
+        onProgress: (done, total) => window._setTrashDialogStatus?.(`${done} / ${total} 件を復元中...`),
+      },
+    );
+  } catch (error) {
+    outcomes = targets.map(() => ({ ok: false, error }));
+  }
+  const rowResults = new Map();
+  const failedKeys = [];
+  let restored = 0;
+  let skipped = 0;
+  targets.forEach((item, position) => {
+    const outcome = outcomes[position];
+    const key = _trashItemKey(item);
+    if (outcome?.ok && outcome.skipped) {
+      skipped += 1;
+      rowResults.set(key, { state: 'skipped' });
+    } else if (outcome?.ok) {
+      restored += 1;
+    } else {
+      failedKeys.push(key);
+      rowResults.set(key, { state: 'failed', message: _trashRestoreFailureText(outcome) });
+    }
+  });
+  const parts = [`${restored} 件を復元しました`];
+  if (skipped) parts.push(`スキップ ${skipped} 件`);
+  if (failedKeys.length) parts.push(`失敗 ${failedKeys.length} 件`);
+  const message = parts.length > 1 ? `${parts[0]}（${parts.slice(1).join('・')}）` : parts[0];
+  showStatus(message, failedKeys.length > 0);
+  try {
+    if (restored && typeof loadOutliner === 'function') await loadOutliner();
+  } finally {
+    window._setTrashDialogBusy?.(false);
+  }
+  await _refreshTrashDialog({ selectKeys: failedKeys, retryKeys: failedKeys, rowResults, statusMessage: message });
 }
 
 async function trashRestore(idx) {
@@ -559,7 +775,22 @@ async function trashRestore(idx) {
   if (!name) return;
   window._setTrashDialogBusy?.(true);
   try {
-    const res = await apiPost('/trash/restore', { name, ...(item.trash_root ? { trash_root: item.trash_root } : {}) });
+    const request = { name, ...(item.trash_root ? { trash_root: item.trash_root } : {}) };
+    let res;
+    try {
+      res = await apiPost('/trash/restore', request, { silentError: true });
+    } catch (error) {
+      // 戻し先に同じ名前の項目がある: 黙って上書きも別名にもせず、利用者に選んでもらう
+      const conflict = window.MeldexRestoreConflict?.detail?.(error);
+      if (!conflict) throw error;
+      const answer = await window.MeldexRestoreConflict.ask(conflict, 0);
+      if (!answer || answer.policy === 'skip') {
+        showStatus(`「${name}」は戻さず、ゴミ箱に残しました`);
+        window._setTrashDialogBusy?.(false);
+        return;
+      }
+      res = await apiPost('/trash/restore', { ...request, conflict_policy: answer.policy }, { silentError: true });
+    }
     showStatus(`「${name}」を復元しました → ${res.restored_to}`);
     window._trashItems.splice(idx, 1);
     await loadOutliner();
@@ -945,7 +1176,7 @@ if (typeof window !== 'undefined') window.applyThumbnailSize = applyThumbnailSiz
 const _UI_CONFIG_KEYS = [
   'gb:rail-app-launch-mode',
   // UI設定
-  'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule', 'meldex-user', 'meldex-statusbar-hidden',
+  'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule', 'meldex-user', 'meldex-statusbar-hidden', 'meldex-toolbar-autohide',
   'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion', 'meldex-a11y-colorblind-safe', 'meldex-a11y-browser-warning-dismissed',
   'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg',
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
@@ -984,7 +1215,7 @@ const _SETTINGS_PROFILE_KEYS = ['meldex-user', 'meldex-avatar', 'meldex-avatar-s
 const _SETTINGS_RESETTABLE_KEYS = [
   'gb:rail-app-launch-mode',
   'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule',
-  'meldex-statusbar-hidden', 'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion',
+  'meldex-statusbar-hidden', 'meldex-toolbar-autohide', 'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion',
   'meldex-a11y-colorblind-safe', 'note-vertical', 'note-heading-indent', 'note-toc-visible',
   'gb:thumbnail-fit', 'gb:tree-thumbnail-size', 'gb:tree-open-click-mode', 'gb:viewer-wheel-mode',
   'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'meldex-wheel-speed',
@@ -1023,6 +1254,9 @@ function _restoreSettingsDialogStorageAfterHistory(keys) {
   }
   if (keys.includes('meldex-statusbar-hidden') && typeof applyStatusbarHidden === 'function') {
     applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
+  }
+  if (keys.includes('meldex-toolbar-autohide') && window.MeldexToolbarAutoHide?.setEnabled) {
+    window.MeldexToolbarAutoHide.setEnabled(localStorage.getItem('meldex-toolbar-autohide') !== '0');
   }
   if (keys.includes('gb:thumbnail-fit') && typeof applyThumbnailFit === 'function') {
     applyThumbnailFit(resolveThumbnailFitMode());

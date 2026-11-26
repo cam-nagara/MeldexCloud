@@ -11,6 +11,7 @@
   const API = Utils.API;
 
   const params = new URLSearchParams(location.search);
+  let autoplay = params.get('autoplay') === '1';
   let folderPath = (params.get('folder') || '').replace(/\\/g, '/');
   let pdfPath = params.get('pdf') || '';
   let singleFile = params.get('file') || '';  // 単一ファイル表示
@@ -97,18 +98,35 @@
   const storedMode = localStorage.getItem('viewer-mode');
   let mode = ['single', 'spread', 'manga'].includes(storedMode) ? storedMode : 'single';
   let firstSide = 'left';
+  // 1枚ずらし（見開きの組を全体で1ページずらす）。開いている間だけの表示状態で、保存しない。
+  // 開くファイル・表示モード・開始ページを変えたら元へ戻す。
+  let pairShift = 0;
   const PageState = window.MeldexViewerPageState;
+  function leadOffset() { return (PageState.leadingBlank(mode, firstSide) ? 1 : 0) ^ pairShift; }
+  function pdfPairStart(index) {
+    if (mode === 'single') return index;
+    const offset = leadOffset();
+    return index < offset ? 0 : offset + Math.floor((index - offset) / 2) * 2;
+  }
   function preferenceIdentity() { return pdfPath || singleFile || folderPath || sheetContextId || 'local'; }
   function savePageSettings(patch) {
     const ok = PageState.write(preferenceIdentity(), patch);
     window.dispatchEvent(new CustomEvent('viewer-page-settings-save', { detail: { ok } }));
     if (!ok) flashStatus('表示設定を保存できませんでした。もう一度操作してください');
+    else reportDisplaySettingSaved();
     return ok;
+  }
+  function reportDisplaySettingSaved() {
+    // 別の保存失敗は消さず、この設定の再試行が成功した時だけ更新する。
+    if (document.getElementById('hud-status')?.textContent === '表示設定を保存できませんでした。もう一度操作してください') {
+      flashStatus('表示設定を保存しました', 1500);
+    }
   }
   // 設定を書けない時は表示だけ先に変えない。次の同じ操作で再試行できる。
   function saveDisplayPreference(key, value) {
     try {
       localStorage.setItem(key, value);
+      reportDisplaySettingSaved();
       return true;
     } catch (_) {
       flashStatus('表示設定を保存できませんでした。もう一度操作してください', 5000);
@@ -116,6 +134,7 @@
     }
   }
   function restorePageSettings() {
+    pairShift = 0;
     const saved = PageState.read(preferenceIdentity());
     mode = ['single', 'spread', 'manga'].includes(saved.mode) ? saved.mode : PageState.defaultMode(preferenceIdentity(), storedMode);
     firstSide = ['left', 'right'].includes(saved.firstSide) ? saved.firstSide : (mode === 'manga' ? 'left' : 'right');
@@ -157,6 +176,15 @@
     await prepareNativeInitialTarget();
     if (isPdf) await PdfRenderer.ensurePdfjs();
   })();
+
+  function pdfLoadErrorMessage(error) {
+    const status = Number(error?.status);
+    if (status === 401 || status === 403) return 'PDFを開く権限を確認して、もう一度お試しください。';
+    if (status === 404) return 'PDFが見つかりません。保存場所を確認してください。';
+    if (error?.name === 'InvalidPDFException') return 'PDFの内容を読み取れませんでした。ファイルを確認してください。';
+    if (error?.name === 'PasswordException') return 'このPDFはパスワードで保護されています。開けるPDFを選んでください。';
+    return 'PDFを読み込めませんでした。接続や保存先を確認して、再試行してください。';
+  }
 
   function showViewerLoading(message = '読み込み中...') {
     const token = ++viewerLoadingToken;
@@ -340,7 +368,9 @@
     if (!sheetContextId || message?.contextId !== sheetContextId) return false;
     if (message.boundary) {
       clearTimeout(sheetContextTimer);
-      showViewerStableState('empty', message.message || 'これ以上の画像はありません', requestSheetContext);
+      const messageText = message.message || 'これ以上の画像はありません';
+      if (items.length) flashStatus(messageText, 2500);
+      else showViewerStableState('empty', messageText, requestSheetContext);
       return true;
     }
     const nextItems = Array.isArray(message.images)
@@ -405,6 +435,7 @@
   }
 
   async function refreshSingleFileFolderItems(parentFolder, fileName, filePath, loadToken) {
+    if (loadToken !== collectionLoadToken) return;
     let data = [];
     try {
       data = await Utils.fetchJsonChecked(API + '/images-in-folder?path=' + encodeURIComponent(parentFolder) + '&include_videos=1&include_audio=1');
@@ -482,8 +513,9 @@
         applyFit();
       } catch (e) {
         if (generation !== targetGeneration) return false;
-        showViewerStableState('error', 'PDFを読み込めませんでした: ' + (e?.message || e), () => retryTarget(generation));
-        document.getElementById('hud-info').textContent = 'PDF読み込み失敗: ' + e.message;
+        const message = pdfLoadErrorMessage(e);
+        showViewerStableState('error', message, () => retryTarget(generation));
+        document.getElementById('hud-info').textContent = message;
         return false;
       }
     } else if (isMulti) {
@@ -534,13 +566,15 @@
     }
     if (items.length > 0) {
       await showGroup(idx);
+      if (generation !== targetGeneration) return false;
       updateHud();
       if (deferredSingleFileFolderRefresh) {
         const runDeferredRefresh = deferredSingleFileFolderRefresh;
         deferredSingleFileFolderRefresh = null;
         setTimeout(runDeferredRefresh, 450);
       }
-      pause();
+      if (autoplay) play();
+      else pause();
     }
     return true;
   }
@@ -574,6 +608,7 @@
   // fitMode・表示モード(mode)は維持する。ページ遷移は行わない。
   async function reopenWithUrl(urlString) {
     const sp = new URL(String(urlString || ''), location.origin).searchParams;
+    autoplay = sp.get('autoplay') === '1';
     if (window.MeldexViewerAnnotationNotes?.hasUnsaved?.()) flashStatus('未保存のアノテートがあります');
     pause();
     showGroupToken++;
@@ -673,11 +708,11 @@
     const a = items[startIdx];
     if (!a) return [startIdx];
     if (isPdf) {
-      if (startIdx === 0 && PageState.leadingBlank(mode, firstSide)) return [0];
+      if (startIdx === 0 && leadOffset() === 1) return [0];
       if (startIdx + 1 < items.length) return [startIdx, startIdx + 1];
       return [startIdx];
     }
-    if (startIdx === 0 && PageState.leadingBlank(mode, firstSide)) return [0];
+    if (startIdx === 0 && leadOffset() === 1) return [0];
     // 動画・音声は見開き/マンガモードでも常に単体表示
     if (a.type === 'video' || a.type === 'audio') return [startIdx];
     // 画像: 縦長2枚連続→見開き
@@ -798,7 +833,7 @@
     if (newIdx < 0) newIdx = items.length - 1;
     if (newIdx >= items.length) newIdx = 0;
     // PDF見開き: 1ページ目は単体、以降は 2-3 / 4-5 相当の組に調整
-    if (isPdf) newIdx = PageState.pdfStart(newIdx, mode, firstSide);
+    if (isPdf) newIdx = pdfPairStart(newIdx);
     if (mode === 'single') {
       if (!isPdf) loadImageMeta(items[newIdx]);
     } else {
@@ -932,7 +967,8 @@
       window.MeldexViewerAnnotations?.onSceneChanged?.();
       if (!window.MeldexViewerAnnotations) void window.MeldexViewerHighlights?.loadNativeExisting?.();
       if (isPdf) layer.querySelectorAll('canvas.page-canvas').forEach(canvas => {
-        canvas._viewerTextReady = window.MeldexViewerTextLayer?.pdf(canvas, pdfDoc, canvas._viewerPageNum, zoom, pdfPath)
+        canvas._viewerNativeTextReady = window.MeldexViewerTextLayer?.pdf(canvas, pdfDoc, canvas._viewerPageNum, zoom, pdfPath);
+        canvas._viewerTextReady = canvas._viewerNativeTextReady
           .then(() => window.MeldexViewerOcr?.onSceneChanged())
           .catch(error => console.warn('テキストを読み込めませんでした', error));
       });
@@ -943,7 +979,7 @@
       window.MeldexStandaloneNative?.markReady();
     };
     if (media.length > 0) {
-      Promise.all([...media].map(el => {
+      await Promise.all([...media].map(el => {
         if (el.tagName === 'VIDEO') return window.MeldexViewerVideo.waitForVideoReady(el);
         if (el.tagName === 'AUDIO') return window.MeldexViewerAudio.waitForAudioReady(el);
         return waitForViewerImage(el);
@@ -998,7 +1034,7 @@
     if (prev < 0) prev = items.length - 1;
     if (!isPdf) await Promise.all([items[prev], items[prev - 1]].filter(Boolean).map(loadImageMeta));
     if (mode !== 'single' && !isPdf && prev > 0 && items[prev] && items[prev-1] && Utils.isPortrait(items[prev]) && Utils.isPortrait(items[prev-1])) prev--;
-    if (isPdf) prev = PageState.pdfStart(prev, mode, firstSide);
+    if (isPdf) prev = pdfPairStart(prev);
     showGroup(prev);
   }
 
@@ -1019,6 +1055,10 @@
     button.innerHTML = viewerIcon('play');
     button.setAttribute('aria-label', '再生');
   }
+  function isPlaybackActive() {
+    const media = document.querySelector('.layer.show video, .layer.show audio');
+    return media ? !media.paused && !media.ended : playing;
+  }
   function togglePlay() {
     // 動画・音声表示中はスライドショーのタイマーではなくメディア自体の再生/一時停止を
     // 切り替える（ビューワー残課題修正計画 2026-08-04「4. 動画ファイル対応」。音声は
@@ -1035,17 +1075,27 @@
   function scheduleNext() {
     clearTimeout(timer);
     if (!playing) return;
-    timer = setTimeout(() => { reversePlay ? prevGroup() : nextGroup(); scheduleNext(); }, speed * 1000);
+    // 動画・音声は自身の終了イベントから送る。画像用タイマーでは途中で飛ばさない。
+    if (['video', 'audio'].includes(items[idx]?.type)) return;
+    timer = setTimeout(() => { advanceSlideshow(); scheduleNext(); }, speed * 1000);
+  }
+  function advanceSlideshow() {
+    return reversePlay ? prevGroup() : nextGroup();
   }
 
   // 1枚ずつシフト（見開き時に見開きの組み合わせを1枚ずらす）
+  // 見開きでは組み合わせを全体で1ページずらし、1ページ先（前）から表示する。
+  // 例: p01, p02-p03, p04-p05 で p02-p03 を表示中に「1枚進む」→ p01-p02, p03-p04, p05 の p03-p04。
+  // PDFは組の始まりを規則で決め直すため、ずれを持たないと元の組へ戻っていた。
   function shiftForward() {
     if (mode === 'single') { nextGroup(); return; }
-    showGroup(idx + 1);
+    pairShift ^= 1;
+    showGroup(Math.min(items.length - 1, idx + 1));
   }
   function shiftBackward() {
     if (mode === 'single') { prevGroup(); return; }
-    showGroup(idx - 1);
+    pairShift ^= 1;
+    showGroup(Math.max(0, idx - 1));
   }
 
   // 画像要素にフィットモード+ズームを適用（width/heightで直接サイズ指定）
@@ -1179,10 +1229,10 @@
     updateViewerPositionControls();
     const layer = document.getElementById('layer' + activeLayer);
     const canvases = layer ? Array.from(layer.querySelectorAll('canvas.page-canvas')) : [];
-    canvases.forEach(canvas => {
+    return Promise.all(canvases.map(canvas => {
       const pageNum = canvas._viewerPageNum;
       if (!pageNum || !pdfDoc) return;
-      PdfRenderer.refitCanvas(canvas, pdfDoc, pageNum, zoom)
+      return PdfRenderer.refitCanvas(canvas, pdfDoc, pageNum, zoom)
         .then(() => {
           cachePdfCanvas(pageNum + '_' + zoom.toFixed(4), canvas);
           // refitCanvas()はasync（canvas.style.width/heightの更新が非同期）のため、
@@ -1191,7 +1241,7 @@
           applyPan();
         })
         .catch(() => {});
-    });
+    }));
   }
 
   // リサイズ後の非破壊PDF再フィット。fitMode==='none'では倍率を変えない。
@@ -1222,6 +1272,7 @@
     if (!flashStatusTimer) flashStatusRestore = el.textContent;
     clearTimeout(flashStatusTimer);
     el.textContent = msg;
+    document.getElementById('hud-info').hidden = !hudVisible;
     document.getElementById('hud').classList.remove('hidden');
     flashStatusTimer = setTimeout(() => {
       el.textContent = flashStatusRestore;
@@ -1240,9 +1291,10 @@
   }
 
   function updateHud() {
+    document.getElementById('hud-info').hidden = !hudVisible;
     const fitLabels = {original_contain:'原寸（収める）',contain:'全体',width:'幅',height:'高さ',none:'原寸'};
     const info = [isPdf ? 'PDF: ' + pdfPath.split('/').pop() : isSingle ? singleFile.split('/').pop() : '画像: ' + items.length + '枚'];
-    info.push('モード: ' + ({single:'単体',spread:'見開き',manga:'マンガ'}[mode] || mode));
+    info.push('モード: ' + ({single:'単ページ',spread:'見開き_右へ',manga:'見開き_左へ'}[mode] || mode));
     info.push('フィット: ' + (fitLabels[fitMode] || fitMode));
     if (!isPdf) info.push('再生速度: ' + speed.toFixed(1) + 's' + (reversePlay ? ' (逆順)' : ''));
     if (isPdf) info.push('ズーム: ' + Math.round(zoom * 100) + '%');
@@ -1272,9 +1324,13 @@
 
   function setMode(nextMode) {
     if (!['single', 'spread', 'manga'].includes(nextMode)) return;
+    if (!savePageSettings({ mode: nextMode, firstSide })) {
+      document.getElementById('sel-mode').value = mode;
+      return false;
+    }
     mode = nextMode;
+    pairShift = 0;
     document.getElementById('sel-mode').value = mode;
-    savePageSettings({ mode, firstSide });
     notifyPageState();
     if (isPdf) applyFit();
     if (refreshCurrentGroupInPlace()) return;
@@ -1283,8 +1339,9 @@
 
   function setFirstSide(value) {
     if (!['left', 'right'].includes(value)) return;
+    if (!savePageSettings({ mode, firstSide: value })) return false;
     firstSide = value;
-    savePageSettings({ mode, firstSide });
+    pairShift = 0;
     notifyPageState();
     if (!refreshCurrentGroupInPlace()) showGroup(idx);
   }
@@ -1319,6 +1376,7 @@
   // 2026-08-04「2. カーソル位置中心のホイールズーム」）。PDFはcanvasのbacking storeだけ更新、
   // 画像/動画はstyle.width/heightだけ再計算する。clientX/Yを渡すとカーソル位置を中心にズームする
   // （渡さない場合は#display中心を基準にする）。
+  // PDFでは再描画完了のPromiseを返す。位置の復元はこれを待ってからパンを適用する。
   function setZoomAt(clientX, clientY, requestedZoom) {
     if (items.length === 0) return;
     const oldZoom = zoom;
@@ -1331,7 +1389,8 @@
     const cX = point.x;
     const cY = point.y;
     const oldPanX = panX, oldPanY = panY;
-    if (isPdf) { pdfAutoFit = false; applyPdfZoomInPlace(targetZoom); }
+    let rendering;
+    if (isPdf) { pdfAutoFit = false; rendering = applyPdfZoomInPlace(targetZoom); }
     else { zoom = targetZoom; reapplyMediaFitStyle(); }
     const k = targetZoom / oldZoom; // ズーム前後の倍率比
     // newPan = c − k*(c − oldPan)
@@ -1341,6 +1400,7 @@
     applyPan();
     updateViewerPositionControls();
     updateHud();
+    return rendering;
   }
   // ボタン・キー・ホイールの段階ズーム。画面上の倍率で1.2倍ずつ変え、原寸（100%）をまたぐ時は
   // 一度100%で止める。
@@ -1380,6 +1440,7 @@
   function toggleHud() {
     if (!saveDisplayPreference('viewer-hud', !hudVisible)) return;
     hudVisible = !hudVisible;
+    document.getElementById('hud-info').hidden = !hudVisible;
     document.getElementById('hud').classList.toggle('hidden', !hudVisible);
     document.getElementById('btn-hud').classList.toggle('active', hudVisible);
   }
@@ -1891,7 +1952,7 @@
   window.MeldexViewerScene = {
     ready, icon: viewerIcon,
     // 再生・ナビゲーション
-    pause, play, togglePlay, toggleReversePlay, rescheduleSlideshow: scheduleNext,
+    pause, play, togglePlay, toggleReversePlay, advanceSlideshow, rescheduleSlideshow: scheduleNext,
     isReversePlay: () => reversePlay,
     prevGroup, nextGroup, shiftBackward, shiftForward, goToIndex, prevFolder, nextFolder,
     // 表示状態の参照
@@ -1905,10 +1966,10 @@
     ensureItemUrl,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
     getPdfDocument: () => pdfDoc, getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
-    getFitMode: () => fitMode, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,
+    getFitMode: () => fitMode, isPdfAutoFit: () => pdfAutoFit, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,
     getFlipH: () => flipH, getFlipV: () => flipV,
     getRotateDeg: () => rotateDeg, isBgBlur: () => bgBlur, isHudVisible: () => hudVisible,
-    getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing,
+    getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing, isPlaybackActive,
     isSheetContext: () => !!sheetContextId,
     // 表示状態の変更・その他
     setMode, setFitMode, cycleFit, zoomIn, zoomOut, zoomAt, setZoomAt, resetZoom,

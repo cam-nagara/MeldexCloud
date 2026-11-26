@@ -575,12 +575,12 @@ async function showVersionsModal(path, type) {
       const label = v.label ? ' — ' + esc(v.label) : '';
       listHtml += `<div class="gb-history-row">
         ${badge}
-        <span style="flex:1;">${esc(dt)}${label}</span>
+        <span class="gb-history-label" style="flex:1;">${esc(dt)}${label}</span>
         <span class="gb-history-size">${esc(formatFileSize(v.size))}</span>
         <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('previewVersion', [path, v.name, type])}>表示</button>
         <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('compareVersion', [path, v.name, type])}>比較</button>
         <button class="gb-btn gb-btn-xs gb-btn-warn" ${_historyActionAttrs('restoreVersion', [path, v.name, type])}>復元</button>
-        <button class="gb-btn gb-btn-xs gb-btn-danger" ${_historyActionAttrs('deleteVersion', [path, v.name, type])}>${lucide('x', 12)}</button>
+        <button class="gb-btn gb-btn-xs gb-btn-danger" aria-label="この保存版を削除" title="この保存版を削除" ${_historyActionAttrs('deleteVersion', [path, v.name, type])}>${lucide('x', 12)}</button>
       </div>`;
     });
   }
@@ -638,13 +638,24 @@ async function saveManualVersion(path, type) {
 }
 
 async function deleteVersion(path, versionName, type) {
-  if (!await cfConfirm('このバージョンを削除しますか？')) return false;
+  const surfaces = globalThis.GBAnnotationSurfaces;
+  const annotationScope = surfaces?.usesHistory?.() ? surfaces.historyScope?.() || '' : '';
+  const normalizedPath = typeof _normalizeAnnotationTargetPath === 'function'
+    ? _normalizeAnnotationTargetPath(path) : String(path || '').replace(/\\/g, '/');
+  // 画像/PDFのUndo入口と同じ面へ登録する。他のファイルの面には混ぜない。
+  const historyScope = normalizedPath && annotationScope.startsWith('annotation:' + normalizedPath + '#')
+    ? annotationScope : _historyActiveScope || '';
   let currentName = versionName;
   let deletedToken = '';
   const versionType = type || 'file';
   const deleteRoute = versionType === 'db' ? '/version/delete-db' : '/version/delete';
   const undeleteRoute = versionType === 'db' ? '/version/undelete-db' : '/version/undelete';
-  const result = await apiPost(deleteRoute, { path, version: currentName });
+  let result;
+  try { result = await apiPost(deleteRoute, { path, version: currentName }); }
+  catch {
+    showStatus('バージョンを削除できませんでした。もう一度試してください', true);
+    return false;
+  }
   deletedToken = result?.token || '';
   if (deletedToken && typeof historyPush === 'function') {
     historyPush('バージョン削除: ' + versionName,
@@ -661,7 +672,7 @@ async function deleteVersion(path, versionName, type) {
         currentName = deleted?.version || currentName;
         _refreshVersionViews(path, versionType);
       },
-      _historyActiveScope || '',
+      historyScope,
       path
     );
   }
@@ -755,30 +766,15 @@ async function previewVersion(path, versionName, type) {
     return;
   }
   const data = await apiFetch('/version/read?path=' + encodeURIComponent(path) + '&version=' + encodeURIComponent(versionName));
-  showTextPreview((data.binary ? 'バイナリファイルの保存版\n\nサイズ: ' + formatFileSize(data.size) + '\nSHA-256: ' + data.sha256 : data.content)
-    + _versionAnnotationText(data.annotation_snapshot), versionName);
+  showTextPreview((data.binary ? 'ファイルの保存版\n\nサイズ: ' + formatFileSize(data.size) + '\n内容の照合値: ' + data.sha256 : data.content)
+    + _versionAnnotationText(data.annotation_snapshot), versionName, { binary: !!data.binary });
 }
 
 function _versionAnnotationText(snapshot) {
-  if (!snapshot) return '';
-  const lines = [];
-  for (const rows of Object.values(snapshot.targets || {})) for (const row of rows) {
-    let data = row.data || {};
-    try { if (typeof data === 'string') data = JSON.parse(data); } catch { data = {}; }
-    const kind = data.highlight || row.type === 'highlight' ? 'ハイライト'
-      : ({comment:'コメント',screenshot:'スクリーンショット',stroke:'線',marker:'マーカー',rect:'矩形',lasso:'投げ縄'})[row.type] || '描画';
-    const text = String(row.body || data.text || '').replace(/\s+/g,' ').slice(0,200);
-    const area = ['x','y','width','height'].filter(key => data[key] != null).map(key => Number(data[key]).toFixed(1)).join(', ');
-    const points = data.points ? data.points.map(point => point.map(value => Number(value).toFixed(1)).join(',')).join(' / ') : '';
-    lines.push(`${kind} [${String(row.id).slice(0,8)}] ${text} ／色 ${row.color || '指定なし'} ／濃さ ${row.opacity ?? 1}`
-      + (data.pageIndex != null ? ` ／${data.pageIndex+1}ページ` : '') + (area ? ` ／範囲 ${area}` : '')
-      + (points ? ` ／線の位置 ${points}` : '') + (data.boxes ? ' ／文字の範囲 '+JSON.stringify(data.boxes) : '')
-      + (data.textAnchor ? ' ／文字の位置 '+data.textAnchor.start+'〜'+data.textAnchor.end : ''));
-  }
-  return '\n\nアノテート ('+lines.length+'件)\n'+(lines.join('\n') || 'なし')+'\n';
+  return window.MeldexAnnotationSnapshotText.format(snapshot);
 }
 
-function showTextPreview(content, title) {
+function showTextPreview(content, title, renderOptions = {}) {
   // フロントマター除去
   let md = content;
   const fmMatch = md.match(/^---\n[\s\S]*?\n---\n?/);
@@ -786,6 +782,7 @@ function showTextPreview(content, title) {
   const html = md.trim() ? mdToHtml(md) : '<span class="gb-section-desc">(空)</span>';
   const body = document.createElement('div');
   body.className = 'gb-history-preview';
+  if (renderOptions?.binary) body.classList.add('gb-history-binary');
   body.innerHTML = html;
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
@@ -872,7 +869,7 @@ async function compareVersion(path, versionName, type) {
   const oldAnnotations = _versionAnnotationText(verData.annotation_snapshot);
   const currentAnnotations = verData.annotation_snapshot ? _versionAnnotationText(verData.current_annotation_snapshot) : '';
   if (verData.binary) {
-    showDiffModal('SHA-256: ' + verData.sha256 + oldAnnotations, 'SHA-256: ' + verData.current_sha256 + currentAnnotations, versionName, '現在');
+    showDiffModal('内容の照合値: ' + verData.sha256 + oldAnnotations, '内容の照合値: ' + verData.current_sha256 + currentAnnotations, versionName, '現在', { binary: true });
     return;
   }
   const curData = await apiFetch('/file?path=' + encodeURIComponent(path));
@@ -976,12 +973,13 @@ function showScriptNoteDiff(oldDoc, newDoc, oldTitle, newTitle) {
   modalApi.open();
 }
 
-function showDiffModal(oldText, newText, oldTitle, newTitle) {
+function showDiffModal(oldText, newText, oldTitle, newTitle, renderOptions = {}) {
   // フロントマター除去
   function stripFm(t) { const m = t.match(/^---\n[\s\S]*?\n---\n?/); return m ? t.substring(m[0].length) : t; }
   const diff = textDiff(stripFm(oldText), stripFm(newText));
 
   const body = document.createElement('div');
+  if (renderOptions?.binary) body.classList.add('gb-history-binary');
   body.innerHTML = '<div class="gb-history-diff-container" data-diff-container></div>';
   const toggleBtn = document.createElement('button');
   toggleBtn.type = 'button';
@@ -1008,6 +1006,8 @@ function showDiffModal(oldText, newText, oldTitle, newTitle) {
   o.classList.add('modal-overlay');
   o.style.zIndex = '110';
   modalApi.modal.classList.add('history-file-diff-modal');
+  o._diffModeError = window.GBUI.createInlineError({ message: '' });
+  body.prepend(o._diffModeError);
   modalApi.modal.style.width = 'min(800px, calc(100vw - 24px))';
   modalApi.modal.style.maxWidth = '95vw';
   const headerClose = modalApi.header.querySelector('.gb-modal-close');
@@ -1024,10 +1024,16 @@ function showDiffModal(oldText, newText, oldTitle, newTitle) {
 }
 
 function toggleDiffMode(btn, modal = null) {
-  _diffMode = _diffMode === 'side' ? 'inline' : 'side';
-  localStorage.setItem('diff-mode', _diffMode);
+  const overlay = modal || btn.closest('.modal-overlay');
+  const next = _diffMode === 'side' ? 'inline' : 'side';
+  const errorMessage = '比較の表示方法を保存できませんでした。もう一度試してください';
+  try { localStorage.setItem('diff-mode', next); }
+  catch { overlay?._diffModeError?.setMessage(errorMessage); showStatus(errorMessage, true); return false; }
+  _diffMode = next;
+  overlay?._diffModeError?.setMessage('');
   btn.textContent = _diffMode === 'side' ? 'インライン表示' : '左右表示';
-  renderDiff(modal || btn.closest('.modal-overlay'));
+  renderDiff(overlay);
+  if (document.getElementById('sb-msg')?.textContent === errorMessage) showStatus('比較の表示方法を保存しました');
 }
 
 function renderDiff(modal = null) {
@@ -1129,7 +1135,7 @@ function _buildVersionsPanelHtml(path, type, versions) {
           <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('previewVersion', [path, v.name, type])}>表示</button>
           <button class="gb-btn gb-btn-xs" ${_historyActionAttrs('compareVersion', [path, v.name, type])}>比較</button>
           <button class="gb-btn gb-btn-xs gb-btn-warn" ${_historyActionAttrs('restoreVersion', [path, v.name, type])}>復元</button>
-          <button class="gb-btn gb-btn-xs gb-btn-danger" ${_historyActionAttrs('deleteVersion', [path, v.name, type])}>${lucide('x', 12)}</button>
+          <button class="gb-btn gb-btn-xs gb-btn-danger" aria-label="この保存版を削除" title="この保存版を削除" ${_historyActionAttrs('deleteVersion', [path, v.name, type])}>${lucide('x', 12)}</button>
         </div>
       </div>`;
     });

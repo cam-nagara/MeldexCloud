@@ -139,7 +139,21 @@
     const header = document.createElement('div');
     header.className = 'cloud-mobile-sheet-header';
     const title = document.createElement('strong');
-    title.textContent = 'ボード';
+    const currentBoardTitle = typeof _bdToolbarRoot === 'function'
+      ? _bdToolbarRoot()?.querySelector('[data-bd-control="title"],#bd-title')?.textContent?.trim() : '';
+    title.textContent = currentBoardTitle || (typeof bd !== 'undefined' && bd.label) || 'ボード';
+    title.dataset.cloudMobileBoardTitle = '1';
+    title.setAttribute('role', 'button');
+    title.setAttribute('aria-label', 'ボード名を編集');
+    title.title = 'ボード名を編集';
+    title.tabIndex = 0;
+    const editTitle = () => window._bdStartInlineBoardTitleEdit?.(title);
+    title.addEventListener('click', editTitle);
+    title.addEventListener('keydown', event => {
+      if (event.target !== title || !['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      editTitle();
+    });
     header.appendChild(title);
     const closeButton = _button('cloud-mobile-sheet-close', '閉じる', 'x', _closeOverflowSheet);
     closeButton.dataset.cloudMobileMenuAction = 'close';

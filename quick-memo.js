@@ -88,6 +88,12 @@
   let deliveryProgress = null;
   let resolvedDeliveryTarget = null;
   const PREPARATION_TIMEOUT_MS = 15000;
+  // 保存（編集ロック・権限の確認とシートへの書き込み）は録音つきでも終わる長さを取る。
+  // 返らない要求で先頭のメモが止まり、後ろのメモまで待たされ続けていた（2026-11-26 iPhone）。
+  // 時間切れは失敗として記録し、後ろのメモの送信へ進む。書き込みは条件付きなので、
+  // 遅れて成立しても再送は既存の行を確認して更新し、重複しない。
+  const SAVE_STEP_TIMEOUT_MS = Number(window.__MELDEX_QUICK_MEMO_TEST__?.saveTimeoutMs) > 0
+    ? Number(window.__MELDEX_QUICK_MEMO_TEST__.saveTimeoutMs) : 120000;
   const durableMemory = new Map();
   const failedLocalWrites = new Set();
 
@@ -1185,7 +1191,7 @@
     const results = new Map();
     const signatures = new Map(snapshot.map((item) => [item.memo_id, queueItemSignature(item)]));
     for (const item of snapshot) {
-      recordDelivery(item, { attempted_at: new Date().toISOString(), reason: '送信中です', state: 'sending', failure_path: '', blocker: '' });
+      recordDelivery(item, { attempted_at: new Date().toISOString(), reason: '送信中です', state: 'sending', failure_path: '', blocker: '', code: '', status: 0 });
       try {
         const result = cloud ? await saveMemoCloud(item) : await postJson('/api/quick-memo', item);
         if (!result || result.ok !== true) throw new Error(result && (result.error || result.detail) || 'save failed');
@@ -1669,11 +1675,15 @@
     }
     const frontmatter = cloudMemoFrontmatter(item, path, tags, existing.frontmatter);
     recordDelivery(item, { blocker: '編集ロック・権限の確認と保存', reason: 'Dropboxへ保存しています' });
-    const written = await cloudWriteFile(
-      path,
-      cloudFrontmatterText(frontmatter, cloudMemoBody(item), existing.rawFrontmatter),
-      existingData,
-    );
+    let timer;
+    const written = await Promise.race([
+      cloudWriteFile(path, cloudFrontmatterText(frontmatter, cloudMemoBody(item), existing.rawFrontmatter), existingData),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error(
+          `編集ロック・権限の確認と保存が${Math.round(SAVE_STEP_TIMEOUT_MS / 1000)}秒以内に終わりませんでした。入力は端末に残っています。今すぐ再送してください`,
+        ), { code: 'save_timeout', dropboxPath: location?.path || path, namespaceKind: location?.namespaceKind || '' })), SAVE_STEP_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
     return { ok: true, path, target_sheet: folder, tags, cloud_etag: written?.etag || '' };
   }
 

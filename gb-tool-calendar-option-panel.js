@@ -436,18 +436,31 @@
     body.querySelector('[data-cal-settings-sidebar-only]')?.addEventListener('change', e => this._setSidebarOnly(e.currentTarget.checked));
     body.querySelector('[data-cal-settings-start-day]')?.addEventListener('change', e => {
       const before = _calCaptureSettingsHistory(['gb-cal-start-day']);
-      this._startDay = parseInt(e.currentTarget.value, 10);
-      localStorage.setItem('gb-cal-start-day', this._startDay);
+      const next = parseInt(e.currentTarget.value, 10);
+      try {
+        localStorage.setItem('gb-cal-start-day', next);
+      } catch {
+        e.currentTarget.value = String(this._startDay);
+        this._showStatus?.('週の開始曜日を保存できませんでした。設定は変更していません。もう一度操作してください', true);
+        return;
+      }
+      this._startDay = next;
       _calPushSettingsHistory('スケジュール: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
       this._render();
       this._renderMiniCal();
     });
     body.querySelector('[data-cal-settings-time-format]')?.addEventListener('change', e => {
       const val = e.currentTarget.value;
+      const previous = window.MeldexProductionTimeFormatter?.getPreference?.() || currentTimeFormat;
       // 週の開始曜日と同じく取り消しの履歴へ積む（積まないと、次の Ctrl+Z が前の別の設定変更を戻してしまう）。
       const before = _calCaptureSettingsHistory([TIME_FORMAT_KEY]);
-      if (window.MeldexProductionTimeFormatter?.setPreference) {
+      try {
+        if (!window.MeldexProductionTimeFormatter?.setPreference) throw new Error('time formatter unavailable');
         window.MeldexProductionTimeFormatter.setPreference(val);
+      } catch {
+        e.currentTarget.value = previous;
+        this._showStatus?.('時間の表記を保存できませんでした。設定は変更していません。もう一度操作してください', true);
+        return;
       }
       _calPushSettingsHistory('スケジュール: 時間の表記変更', before, [TIME_FORMAT_KEY], val);
       this._render?.();

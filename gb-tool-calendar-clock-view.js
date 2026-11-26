@@ -413,7 +413,7 @@
       const selectPoint = _clockPoint(Math.min(slice.endAngle - 0.5, slice.startAngle + selectAnglePad), Math.max(slice.inner + 7, slice.outer - 7));
       const avatarPoint = avatarRadius ? _clockPoint(avatarAngle, Math.min(slice.outer - avatarRadius - 2, slice.inner + avatarRadius + 2)) : null;
       const eventE2eId = `calendar-clock-event-${_clockStableIdSuffix(slice.ev?.id, index)}-${index}`;
-      html += `<g class="gb-cal-clock-event" data-e2e-id="${_clockEsc(eventE2eId)}" data-clock-event-id="${_clockEsc(slice.ev.id)}" data-calendar-id="${_clockEsc(slice.ev.calendar_id || '_calendar')}" data-clock-start-min="${_clockEsc(slice.start)}" data-clock-end-min="${_clockEsc(slice.end)}" role="button" tabindex="0" aria-label="${_clockEsc(_clockEventTitle(slice.ev))}">`;
+      html += `<g class="gb-cal-clock-event" data-e2e-id="${_clockEsc(eventE2eId)}" data-clock-event-id="${_clockEsc(slice.ev.id)}" data-occurrence-start="${_clockEsc(slice.ev.start || '')}" data-calendar-id="${_clockEsc(slice.ev.calendar_id || '_calendar')}" data-clock-start-min="${_clockEsc(slice.start)}" data-clock-end-min="${_clockEsc(slice.end)}" role="button" tabindex="0" aria-label="${_clockEsc(_clockEventTitle(slice.ev))}">`;
       html += `<clipPath id="${_clockEsc(clipId)}"><path d="${slice.path}"></path></clipPath>`;
       if (avatarPoint) html += `<clipPath id="${_clockEsc(avatarClipId)}"><circle cx="${avatarPoint.x.toFixed(2)}" cy="${avatarPoint.y.toFixed(2)}" r="${avatarRadius.toFixed(2)}"></circle></clipPath>`;
       html += `<path id="${_clockEsc(titlePathId)}" class="gb-cal-clock-event-label-path" d="${_clockArcPath(slice.startAngle + selectAnglePad * 1.8, Math.max(slice.startAngle + selectAnglePad * 2.2, slice.endAngle - avatarAnglePad * 2), titleRadius)}"></path>`;
@@ -482,7 +482,7 @@
     });
     root.querySelectorAll('.gb-cal-clock-event[data-clock-event-id]').forEach(item => {
       const eventId = item.dataset.clockEventId || '';
-      const ev = (this._events || []).find(entry => entry.id === eventId);
+      const ev = (this._events || []).find(entry => entry.id === eventId && (!item.dataset.occurrenceStart || entry.start === item.dataset.occurrenceStart));
       item.addEventListener('click', (event) => {
         if (this._clockSuppressCardClickUntil && Date.now() < this._clockSuppressCardClickUntil) {
           event.preventDefault();
@@ -501,7 +501,7 @@
         else if (event.ctrlKey || event.metaKey) this._toggleEventSelection?.(eventId);
         else {
           this._setSelectedEvents?.([eventId], eventId);
-          this._openEventInPanel(eventId);
+          this._openEventInPanel(eventId, item.dataset.occurrenceStart);
         }
         this._syncAnalogClockSelectionDom();
       });
@@ -510,7 +510,7 @@
         event.preventDefault();
         this._setSelectedEvents?.([eventId], eventId);
         this._syncAnalogClockSelectionDom();
-        this._openEventInPanel(eventId);
+        this._openEventInPanel(eventId, item.dataset.occurrenceStart);
       });
       item.addEventListener('pointerenter', (event) => {
         if (ev) this._showClockHoverCard(event, ev);

@@ -60,7 +60,7 @@
     if (spec === '') return '';
     if (typeof spec !== 'string' || spec.length > 2500) throw new Error('アイコンの形式が不正です');
     const parsed = GBIconAssets.parseSpec(spec);
-    if (!['lucide', 'noto', 'image'].includes(parsed.type) || !parsed.spec || /[\x00-\x1f\x7f]/.test(parsed.spec)) throw new Error('アイコンの形式が不正です');
+    if (!['lucide', 'material', 'pack', 'noto', 'image'].includes(parsed.type) || !parsed.spec || /[\x00-\x1f\x7f]/.test(parsed.spec)) throw new Error('アイコンの形式が不正です');
     if (parsed.type === 'lucide' && !/^[A-Za-z][A-Za-z0-9_-]{0,99}$/.test(parsed.name)) throw new Error('アイコンの形式が不正です');
     if (parsed.type === 'noto') {
       const points = parsed.spec.slice(5).split('-').map(part => parseInt(part,16));
@@ -120,7 +120,7 @@
     const spec = item?.display_icon ?? cache.get(key(item?.path));
     if (!spec || !global.GBIconAssets) return fallback;
     const parsed = GBIconAssets.parseSpec(spec);
-    if (!['lucide', 'noto', 'image'].includes(parsed.type) || (parsed.type === 'lucide' && !GBIconAssets.hasLucideName(parsed.name))) return fallback;
+    if (!['lucide', 'material', 'pack', 'noto', 'image'].includes(parsed.type) || (parsed.type === 'lucide' && !GBIconAssets.hasLucideName(parsed.name))) return fallback;
     const markup = GBIconAssets.render(spec, size || 18, {contextPath: item.path, className: 'gb-file-custom-icon'});
     return parsed.type === 'image' ? '<span data-file-icon-type="' + MeldexEscape.attr(item.type || 'page') + '">' + markup + '</span>' : markup;
   }
@@ -222,8 +222,18 @@
         const previousIcon = loaded.icon || '';
         const reservation = typeof global.historyReserve === 'function' ? global.historyReserve('アイコンを変更', '') : null;
         try {
-          const result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({path, icon: spec || '', if_match_etag: loaded.etag}), silentError: true});
+          let result;
+          try {
+            result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({path, icon: spec || '', if_match_etag: loaded.etag}), silentError: true});
+          } catch (error) {
+            // 応答が届かなくても（時間切れ・通信の失敗）、サーバーは書き込み済みのことがある。
+            // 読み直して選んだアイコンになっていれば成功として扱う（失敗表示なのに変わっている、を防ぐ）。
+            if (error?.status) throw error;
+            const saved = await apiFetch('/file-icon?path=' + encodeURIComponent(path), {silentError: true}).catch(() => null);
+            if (!saved || (saved.icon || '') !== (spec || '') || !saved.etag || saved.etag === loaded.etag) throw error;
+            result = saved;
+          }
           if (!isCurrent()) { reservation?.cancel(); return; }
           item.display_icon = result.icon || '';
           adoptRevision(path, loaded.etag, result.etag);
@@ -235,7 +245,9 @@
           await refresh(path, result.icon);
         } catch (error) {
           reservation?.cancel();
-          showStatus('アイコンを保存できませんでした。開き直して再試行してください: ' + (error.userMessage || error.message || error), true);
+          const busy = error?.payload?.detail?.code === 'write_busy' ? error.payload.detail.message : '';
+          showStatus(busy ? 'アイコンを保存できませんでした。' + busy
+            : 'アイコンを保存できませんでした。開き直して再試行してください: ' + (error.userMessage || error.message || error), true);
         }
       };
       GBIconAssets.openPicker({...imageOptions, title: 'ファイルアイコン', anchorEl, current: loaded.icon || '',

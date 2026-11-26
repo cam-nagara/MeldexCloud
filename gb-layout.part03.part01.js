@@ -861,7 +861,9 @@
     const isLocked = () => (adapter ? false : isPaneLocked(paneId));
     // 左右サイドバーのパネルは閉じるとレールのアイコンごと消えるため、
     // 閉じる系の項目自体を出さない（closeTab 側でも入口を塞いでいる）。
-    const isFixedRail = adapter ? false : isFixedRailPane(paneId);
+    const isFixedRail = adapter ? false : isFixedRailTab(paneId, tab);
+    // チャット欄に紛れ込んだタブは「タブを閉じる」だけを出す（チャットのタブを巻き込む一括操作は出さない）。
+    const chatDockStray = !adapter && !isFixedRail && isFixedRailPane(paneId);
     const showLockedStatus = () => {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
     };
@@ -905,7 +907,7 @@
     (adapter?.leadingItems || []).forEach(item => addItem(item.label, item.action, item.icon, !!item.disabled));
     // メインパネルのタブは「サブパネルで開く」（サブパネルのタブの「メインパネルで開く」と対）。
     // 左右サイドバーのパネル（閉じられない）とスマホのドロワー表示では出さない。
-    if (!adapter && !isFixedRail && typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.moveMainTab === 'function') {
+    if (!adapter && !isFixedRail && !chatDockStray && typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.moveMainTab === 'function') {
       addItem('サブパネルで開く', async () => {
         if (isLocked()) { showLockedStatus(); return; }
         const ok = await GBSubPanel.moveMainTab(paneId, tab.id);
@@ -913,7 +915,7 @@
       }, 'panelRight', !tab.path);
     }
     // 新しいウィンドウで開く
-    addItem('新しいウィンドウで開く', () => {
+    if (!chatDockStray) addItem('新しいウィンドウで開く', () => {
       if (isLocked()) { showLockedStatus(); return; }
       if (adapter) { adapter.openInNewWindow(); return; }
       _openTabInNewWindow(tab, () => { if (!isFixedRail) GBTabs.closeTab(paneId, tab.id); });
@@ -923,14 +925,14 @@
       if (adapter) { adapter.close(); return; }
       GBTabs.closeTab(paneId, tab.id);
     }, 'x');
-    if (!isFixedRail) {
+    if (!isFixedRail && !chatDockStray) {
       const pane = adapter ? null : findNode(_root, paneId)?.node;
       const tabIndex = adapter ? adapter.index : (pane?.tabs?.findIndex(item => item.id === tab.id) ?? -1);
       const tabCount = adapter ? adapter.count : (pane?.tabs?.length || 0);
       addItem('左のタブを閉じる', () => (adapter ? adapter.closeSide('left') : closeTabsOnSide('left')), 'panelLeftClose', tabIndex <= 0);
       addItem('右のタブを閉じる', () => (adapter ? adapter.closeSide('right') : closeTabsOnSide('right')), 'panelRightClose', tabIndex < 0 || tabIndex >= tabCount - 1);
     }
-    if (!isFixedRail) addItem('他のタブをすべて閉じる', async () => {
+    if (!isFixedRail && !chatDockStray) addItem('他のタブをすべて閉じる', async () => {
       if (isLocked()) { showLockedStatus(); return; }
       if (adapter) { await adapter.closeOthers(); return; }
       const paneInfo = findNode(_root, paneId);

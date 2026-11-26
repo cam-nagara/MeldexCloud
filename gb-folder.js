@@ -10,4 +10,5 @@ __loadSplitScript('gb-folder.js', [
   'gb-folder-link-batch.js',
   'gb-folder-link-actions.js',
   'gb-folder-display-settings.js',
+  'gb-folder-large.js',
 ]);

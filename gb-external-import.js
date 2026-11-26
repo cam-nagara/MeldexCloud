@@ -85,6 +85,33 @@
     return apiFetch('/external-import/config', { silentError: true });
   }
 
+  function applyEagleFolderColors(result) {
+    if (!result?.folder_colors || !result.save_dir || typeof getNodeColors !== 'function') return;
+    const key = 'meldex-eagle-colors:' + result.save_dir;
+    const previous = JSON.parse(localStorage.getItem(key) || '{}');
+    const next = result.folder_colors;
+    const colors = getNodeColors();
+    let changed = false;
+    for (const path of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+      if (previous[path] === next[path]) continue;
+      // 取り込み後に利用者が選び直した色は保持する。
+      const fileId = typeof _pathToFileId === 'function' ? _pathToFileId(path) : '';
+      const colorKey = fileId || path;
+      const current = colors[colorKey] || colors[path] || '';
+      if (!current || current === previous[path]) {
+        if (next[path]) colors[colorKey] = next[path];
+        else delete colors[colorKey];
+        if (colorKey !== path) delete colors[path];
+        changed = true;
+      }
+    }
+    if (changed) {
+      try { localStorage.setItem('outliner-node-colors', JSON.stringify(colors)); }
+      catch { throw new Error('Eagleのフォルダ色を保存できませんでした。もう一度取り込み設定を開いてください。'); }
+    }
+    localStorage.setItem(key, JSON.stringify(next));
+  }
+
   function renderSetList(data) {
     const list = document.getElementById('external-import-set-list');
     if (!list) return;
@@ -121,7 +148,7 @@
       row.style.justifyContent = 'flex-start';
       row.style.flexWrap = 'wrap';
 
-      const copyCompleted = item.service === 'eagle-copy' && item.last_result && item.last_result.ok !== false && !item.last_result.cancelled && !item.last_result.unprocessed;
+      const copyCompleted = item.service === 'eagle-copy' && item.last_result?.metadata_version === 1 && item.last_result.ok !== false && !item.last_result.cancelled && !item.last_result.unprocessed;
       const runBtn = document.createElement('button');
       runBtn.type = 'button';
       runBtn.className = 'gb-btn gb-btn-sm';
@@ -207,6 +234,7 @@
       if (sequence !== refreshSequence || !document.getElementById(rootId)) return;
       if (!data) throw new Error('取り込みAPIを利用できません');
       lastConfig = data;
+      (data.sets || []).filter(item => /^eagle-/.test(item.service)).forEach(item => applyEagleFolderColors(item.last_result));
       const notionConn = data?.connections?.notion || {};
       const evernoteConn = data?.connections?.evernote || {};
       const notion = notionConn.connected ? `取り込み接続済み${notionConn.name ? ': ' + notionConn.name : ''}` : '取り込み未接続';
@@ -798,6 +826,7 @@
       setStatus('取り込みを開始しました...', false);
       const job = await apiPost(`/external-import/sets/${encodeURIComponent(id)}/run`, {}, { silentError: true });
       const result = await pollJob(job.job_id);
+      applyEagleFolderColors(result);
       let finalMessage = null;
       let finalIsError = false;
       if ((item?.service || result?.service) === 'eagle-reference' && result?.save_dir) {
@@ -1061,7 +1090,7 @@
             <span class="external-import-provider-last">コピー / 参照</span>
             <div class="external-import-provider-actions"><button type="button" id="external-import-eagle-copy-add" class="gb-btn gb-btn-sm">${icon('copy', 14)} コピー型を追加</button><button type="button" id="external-import-eagle-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-eagle-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>
-          <div id="external-import-eagle-details" class="external-import-provider-details" hidden><div class="gb-section-desc">ライブラリをソースフォルダへコピー、または参照ノートとして取り込みます。</div><button type="button" id="external-import-eagle-reference-add" class="gb-btn gb-btn-sm">${icon('link', 14)} 参照型を追加</button></div>
+          <div id="external-import-eagle-details" class="external-import-provider-details" hidden><div class="gb-section-desc">タグ・タググループと色、深いフォルダ階層を引き継ぎます。複数の所属は同じファイルへの所属フォルダリンクになります。元のEagleライブラリは変更しません。</div><button type="button" id="external-import-eagle-reference-add" class="gb-btn gb-btn-sm">${icon('link', 14)} 参照型を追加</button></div>
         </section>
         <section class="external-import-provider" data-provider="pureref">
           <div class="external-import-provider-row">

@@ -123,7 +123,7 @@ function getDbTreeViewConfig(dbPath, ctx) {
 
 function setDbTreeViewConfig(dbPath, config, ctx) {
   if (typeof _saveCurrentDbViewField !== 'function') return;
-  _saveCurrentDbViewField(dbPath, 'シート表示: ツリービュー設定', '', { ctx }, view => {
+  return _saveCurrentDbViewField(dbPath, 'シート表示: ツリービュー設定', '', { ctx }, view => {
     if (!view.typeSpecific || typeof view.typeSpecific !== 'object') view.typeSpecific = {};
     view.typeSpecific.tree = { ...config };
   });
@@ -1052,7 +1052,12 @@ function renderDbTreeView(ctx) {
         if (!await setPropertyType(dbPath, propName, { type: 'relation', relationDb: '' }, ctx)) {
           throw new Error('階層用の列を追加できませんでした');
         }
-        setDbTreeViewConfig(dbPath, { ...config, parentProp: propName }, ctx);
+        if (await setDbTreeViewConfig(dbPath, { ...config, parentProp: propName }, ctx) === false) {
+          throw new Error('階層用の列の設定を保存できませんでした');
+        }
+        if (typeof flushPendingDbViewConfigBackendSave === 'function') {
+          await flushPendingDbViewConfigBackendSave(dbPath);
+        }
         await _dbTreeRefreshAfterEdit(dbPath, ctx);
       } catch (error) {
         showStatus(error?.message || '階層用の列を追加できませんでした', true);

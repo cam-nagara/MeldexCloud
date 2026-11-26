@@ -400,6 +400,14 @@
     return _googlePullFull(provider, user);
   }
 
+  function _requireProviderRecurrenceSupported(row) {
+    let rule = row.recurrence;
+    if (typeof rule === 'string') { try { rule = JSON.parse(rule); } catch { return; } }
+    if (rule?.overrides && Object.keys(rule.overrides).length) {
+      throw new Error('一回だけ変更した繰り返し予定は、この連携先へまだ送信できません。内容は残っています。iCal書き出しをご利用ください');
+    }
+  }
+
   async function _googlePush(provider, body) {
     const user = String(body?.user || '').trim();
     const auth = await _googleAccessToken(provider);
@@ -410,6 +418,7 @@
     for (const row of rows) {
       if (!_isLocalUnsent(row, user)) continue;
       try {
+        _requireProviderRecurrenceSupported(row);
         const providerId = await _stableProviderEventKey(row.id);
         const eventBody = { id: providerId, summary: row.title || '', description: row.description || '', location: row.location || '' };
         if (row.all_day) {
@@ -646,6 +655,7 @@
     for (const row of rows) {
       if (!_isLocalUnsent(row, user) || !row.start) continue;
       try {
+        _requireProviderRecurrenceSupported(row);
         const eventBody = _microsoftEventBody(row);
         eventBody.transactionId = await _stableProviderEventKey(row.id);
         const result = await _graphJson('POST', '/me/events', auth.access_token, eventBody);
