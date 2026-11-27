@@ -315,6 +315,64 @@
     return refreshed;
   }
 
+  // --- 他の端末・スマホ（Cloud版）からのシート更新の見張り（デスクトップ版のみ） ---------
+  // スマホのクイックメモ等は、シートの保管ファイル（_meldex_sheet.cloud.json）へ直接届く。
+  // 取り込みはシートを読む時にだけ走るので、開いたままのシートには出なかった（2026-11-26）。
+  // 開いているシートの保管ファイルが取り込み後に変わったかを数秒おきに（画面に戻った時も）
+  // 確かめ、変わったシートだけを外部の変更の読み直しへ回す。入力中のセルがあれば入力を
+  // 終えるまで待ち、保存待ちの入力は先に保存する（reloadOpenFilesAfterExternalMutation）。
+  const sheetCloudWatch = { timer: null, busy: false };
+
+  function _sheetCloudWatchInterval() {
+    const override = Number(window.__MELDEX_SHEET_CLOUD_WATCH_MS__);
+    return override > 0 ? override : 10000;
+  }
+
+  function _sheetCloudWatchEnabled() {
+    if (document.body?.dataset?.cloudMode === 'dropbox') return false;
+    try { if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return false; } catch {}
+    return typeof apiFetch === 'function';
+  }
+
+  function _openSheetPaths() {
+    const paths = new Set();
+    for (const pane of document.querySelectorAll('.gb-pane[data-pane-id]')) {
+      const tab = _tabFromPaneId(pane.dataset.paneId);
+      if (!tab || !DB_VIEW_TYPES.has(tab.type || '')) continue;
+      const path = String(_tabPath(tab) || '').trim();
+      if (path) paths.add(path);
+    }
+    return [...paths];
+  }
+
+  async function checkOpenSheetsForCloudChanges() {
+    if (sheetCloudWatch.busy || document.visibilityState === 'hidden' || !_sheetCloudWatchEnabled()) return 0;
+    const paths = _openSheetPaths();
+    if (!paths.length) return 0;
+    sheetCloudWatch.busy = true;
+    try {
+      const result = await apiFetch('/sheet-cloud-changes?paths=' + encodeURIComponent(JSON.stringify(paths)), { silentError: true });
+      const changed = Array.isArray(result?.changed) ? result.changed.filter(path => paths.includes(path)) : [];
+      return changed.length ? await reloadOpenFilesAfterExternalMutation(changed) : 0;
+    } catch {
+      return 0;
+    } finally {
+      sheetCloudWatch.busy = false;
+    }
+  }
+
+  function restartSheetCloudWatch() {
+    if (sheetCloudWatch.timer) clearInterval(sheetCloudWatch.timer);
+    sheetCloudWatch.timer = setInterval(checkOpenSheetsForCloudChanges, _sheetCloudWatchInterval());
+  }
+
+  restartSheetCloudWatch();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkOpenSheetsForCloudChanges();
+  });
+  window.addEventListener('focus', () => { checkOpenSheetsForCloudChanges(); });
+
+  window.MeldexSheetCloudWatch = { check: checkOpenSheetsForCloudChanges, restart: restartSheetCloudWatch };
   window.reloadCurrentOpenFile = reloadCurrentOpenFile;
   window.reloadOpenFilesAfterExternalMutation = reloadOpenFilesAfterExternalMutation;
 })();

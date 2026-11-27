@@ -1,3 +1,29 @@
+          visibleLeft = Math.min(...pts.map(pt => pt.x));
+          visibleTop = Math.min(...pts.map(pt => pt.y));
+          visibleRight = Math.max(...pts.map(pt => pt.x));
+          visibleBottom = Math.max(...pts.map(pt => pt.y));
+        }
+      } catch (_) {}
+    }
+    const pad = 256;
+    const left = Math.floor(Math.min(0, visibleLeft) - pad);
+    const top = Math.floor(Math.min(0, visibleTop) - pad);
+    const right = Math.ceil(Math.max(wrapper.scrollWidth || 0, wrapper.clientWidth || 0, visibleRight, viewportW / zoom) + pad);
+    const bottom = Math.ceil(Math.max(wrapper.scrollHeight || 0, wrapper.clientHeight || 0, visibleBottom, viewportH / zoom) + pad);
+    return { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+  }
+  function _applyNotePosition(note, data) {
+    if (!note || !data) return;
+    note.style.left = ((Number(data.x) || 0) - _surfaceBounds.left) + 'px';
+    note.style.top = ((Number(data.y) || 0) - _surfaceBounds.top) + 'px';
+  }
+  function _boardClientToWorld(clientX, clientY) {
+    const targetCanvas = host || wrapper;
+    if (!targetCanvas) return { x: clientX, y: clientY };
+    const local = (typeof bdClientToCanvasLocal === 'function')
+      ? bdClientToCanvasLocal(clientX, clientY, targetCanvas)
+      : (() => {
+          const r = targetCanvas.getBoundingClientRect();
           return { x: clientX - r.left, y: clientY - r.top };
         })();
     let lx = local.x;
@@ -872,29 +898,3 @@
         if (item.id && !String(item.id).startsWith('pending-note-') && typeof apiPut === 'function') {
           if (!_updateBoardAnnotation(item.id, { data: payload })) {
             apiPut('/annotations/' + encodeURIComponent(item.id), { data: payload })
-              .catch(error => _reportMarkupSaveFailure(error));
-          }
-        } else {
-          item._pendingData = payload;
-        }
-      };
-      const applyTailOperation = (isRemove) => {
-        const hasTailMod = (typeof AnnotationStickyTail !== 'undefined');
-        if (isRemove) {
-          if (hasTailMod && note._annTailCtx) {
-            delete note._annTailCtx.data.tail;
-            delete note._annTailCtx.data.tailX;
-            delete note._annTailCtx.data.tailY;
-          }
-          note.querySelectorAll(':scope > .ann-tail, :scope > .ann-tail-line, :scope > .ann-tail-shape, :scope > .ann-tail-handle').forEach(el => el.remove());
-          delete data.tail;
-          delete data.tailX;
-          delete data.tailY;
-        } else if (hasTailMod && !note.querySelector('.ann-tail,.ann-tail-shape')) {
-          const w = note.offsetWidth || data.width || 180;
-          const h = note.offsetHeight || data.height || 100;
-          const newTail = {
-            startX: w / 2,
-            startY: h / 2,
-            endX: w / 2,
-            endY: h + 40,

@@ -1,3 +1,9 @@
+        subtree: true,
+      });
+    }
+    const annToolbar = document.getElementById('ann-toolbar');
+    if (annToolbar) {
+      annToolbar.addEventListener('click', () => setTimeout(_scheduleRefresh, 0), true);
       new MutationObserver((records) => {
         if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
       }).observe(annToolbar, {

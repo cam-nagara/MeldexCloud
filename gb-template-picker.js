@@ -70,7 +70,7 @@
   }
 
   function writePreference(key, value) {
-    try { global.localStorage?.setItem(key, JSON.stringify(value)); } catch (_) {}
+    try { global.localStorage?.setItem(key, JSON.stringify(value)); return true; } catch (_) { return false; }
   }
 
   function itemDate(item, kind) {
@@ -333,8 +333,14 @@
         favorite.setAttribute('aria-pressed', favorites.has(item.id) ? 'true' : 'false');
         favorite.addEventListener('click', event => {
           event.stopPropagation();
-          if (favorites.has(item.id)) favorites.delete(item.id); else favorites.add(item.id);
-          writePreference(favoritesKey, [...favorites]);
+          const next = new Set(favorites);
+          if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+          if (!writePreference(favoritesKey, [...next])) {
+            ctx.setStatus('お気に入りを保存できません。もう一度お試しください。', true);
+            return;
+          }
+          favorites = next;
+          ctx.setStatus('');
           render();
         });
         wrap.append(card, favorite);
@@ -387,8 +393,14 @@
 
     search.addEventListener('input', () => { query = search.value.trim(); renderGrid(); renderPreview(); });
     sort.addEventListener('change', () => {
-      sortMode = sort.value;
-      writePreference(sortKey, sortMode);
+      const next = sort.value;
+      if (!writePreference(sortKey, next)) {
+        sort.value = sortMode;
+        ctx.setStatus('並び順を保存できません。もう一度お試しください。', true);
+        return;
+      }
+      sortMode = next;
+      ctx.setStatus('');
       renderGrid(); renderPreview();
     });
     grid.addEventListener('keydown', event => {

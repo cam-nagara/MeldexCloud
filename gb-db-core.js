@@ -736,14 +736,16 @@ async function waitForPendingDbValueMutations(dbPath) {
 
 // セルの値変更は、保存の完了順ではなく確定の順で取り消せるよう、確定時に共通履歴の枠を先に取る。
 // 枠の履歴スコープは、保存後に履歴を登録する _dbUndoValue と同じ求め方にそろえる。
-function _dbReserveValueHistory(label, valueRef, dbPathFallback) {
+function _dbReserveValueHistory(label, valueRef, dbPathFallback, options = {}) {
   if (typeof historyReserve !== 'function') return null;
   let dbPath = '';
   try {
-    if (valueRef && typeof _dbResolveUndoDbPath === 'function') dbPath = _dbResolveUndoDbPath(valueRef, {});
+    if (valueRef && typeof _dbResolveUndoDbPath === 'function') dbPath = _dbResolveUndoDbPath(valueRef, options);
   } catch {}
   dbPath = dbPath || dbPathFallback || '';
-  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath)
+  const scope = typeof options.historyScope === 'function' ? options.historyScope()
+    : typeof options.historyScope === 'string' ? options.historyScope
+    : typeof _dbScope === 'function' ? _dbScope(dbPath)
     : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : '');
   if (!scope) return null;
   return historyReserve(label, scope);

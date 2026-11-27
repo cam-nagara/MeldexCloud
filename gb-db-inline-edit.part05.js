@@ -58,6 +58,8 @@ function setColWidth(colIndex, width, table) {
       cell.style.maxWidth = nextWidth + 'px';
     }
   });
+  // スクロールで後から描く行も同じ幅にする（gb-db-table.part03.js）。
+  if (typeof _dbUpdateRowRenderWidth === 'function') _dbUpdateRowRenderWidth(table, colIndex, nextWidth);
 }
 
 function _showBulkColumnWidthModal(propName, ctxOrDbPath) {

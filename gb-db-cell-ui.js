@@ -419,7 +419,7 @@ function _ensureCellValueDragDelegate() {
   globalThis.__gbCellValueDragInstalled = true;
 }
 
-function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt) {
+function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt, options = {}) {
   const accepts = e => !e.dataTransfer.files.length
     && !e.dataTransfer.types.includes('application/x-meldex-node')
     && !e.dataTransfer.types.includes('application/x-meldex-board-nodes')
@@ -435,7 +435,7 @@ function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt) {
     try { text = JSON.parse(e.dataTransfer.getData('application/x-meldex-text')).text ?? text; } catch {}
     if (typeof text !== 'string' || !text) return;
     // 通常のセル編集を通すことで列ロック、保存失敗の復旧、Undoを維持する。
-    startInlineEdit(txt, val, entityPath, propName);
+    startInlineEdit(txt, val, entityPath, propName, options);
     const editor = txt.querySelector('[contenteditable="true"]');
     if (!editor) return;
     editor.focus();
@@ -450,7 +450,7 @@ function _cellUiShouldRenderMultiSelectTags(propName, valueText) {
   return propName.startsWith('タグ') || propName === 'tags' || (text.includes(',') && text.split(',').every(s => s.trim().length < 30));
 }
 
-function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
+function _cellUiRenderMultiSelectTags(container, val, entityPath, propName, options = {}) {
   if (!container) return false;
   const rawText = _cellUiValueToString(val?.value);
   if (!_cellUiShouldRenderMultiSelectTags(propName, rawText)) return false;
@@ -466,12 +466,12 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
       tag.addEventListener('click', (e) => {
         e.stopPropagation();
         if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
-        startInlineEdit(container, val, entityPath, propName);
+        startInlineEdit(container, val, entityPath, propName, options);
       });
     } else {
       tag.addEventListener('click', (e) => {
         e.stopPropagation();
-        startInlineEdit(container, val, entityPath, propName);
+        startInlineEdit(container, val, entityPath, propName, options);
       });
     }
     container.appendChild(tag);
@@ -479,7 +479,7 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
   container.addEventListener('click', (e) => {
     if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
     e.stopPropagation();
-    startInlineEdit(container, val, entityPath, propName);
+    startInlineEdit(container, val, entityPath, propName, options);
   });
   return true;
 }
@@ -551,7 +551,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
       span.className = 'value-text';
       span.textContent = v;
       link.replaceWith(span);
-      startInlineEdit(span, val, entityPath, propName);
+      startInlineEdit(span, val, entityPath, propName, { ...options, dbPath });
     });
     row.appendChild(link);
     return row;
@@ -600,7 +600,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   // マルチセレクト判定（カンマ区切り値）
   if (_cellUiShouldRenderMultiSelectTags(propName, v)) {
     const tagContainer = document.createElement('div');
-    if (_cellUiRenderMultiSelectTags(tagContainer, val, entityPath, propName)) {
+    if (_cellUiRenderMultiSelectTags(tagContainer, val, entityPath, propName, { ...options, dbPath })) {
       row.appendChild(tagContainer);
       return row;
     }
@@ -609,7 +609,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   // 通常テキスト（カスタム数値単位対応）
   const txt = document.createElement('span');
   txt.className = 'value-text';
-  _cellUiBindTextDrop(txt, val, entityPath, propName, row);
+  _cellUiBindTextDrop(txt, val, entityPath, propName, row, { ...options, dbPath });
   const richHtml = _dbRichHtmlForValue(val);
   if (richHtml) {
     txt.classList.add('value-text--rich');
@@ -622,10 +622,10 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     // auto-link がある場合はクリックハンドラを分岐
     txt.addEventListener('click', (e) => {
       if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
-      startInlineEdit(txt, val, entityPath, propName);
+      startInlineEdit(txt, val, entityPath, propName, { ...options, dbPath });
     });
   } else {
-    txt.addEventListener('click', () => startInlineEdit(txt, val, entityPath, propName));
+    txt.addEventListener('click', () => startInlineEdit(txt, val, entityPath, propName, { ...options, dbPath }));
   }
   row.appendChild(txt);
 
@@ -766,6 +766,19 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
         const sub = document.createElement('div');
         sub.className = 'gb-context-menu gb-context-submenu';
         sub.style.display = 'none';
+        // リンク先のトピックの今の保存先（シートが持つ保存先）。表示名から組み立てると、表示名とファイル名が違う
+        // トピック（索引で持つシートの「無題_4.md」など）で、存在しない場所を開いてしまう（2026-11-27）。
+        const resolveRelationTarget = async () => {
+          let name = idOrName;
+          if (typeof _resolveRelationName === 'function' && relDb) name = (await _resolveRelationName(idOrName, relDb)) || idOrName;
+          let path = '';
+          if (relDb && typeof _getRelationMap === 'function' && typeof _relationEntityPathFromMap === 'function') {
+            const map = await _getRelationMap(relDb).catch(() => null);
+            if (map?.entities?.[name]) path = _relationEntityPathFromMap(relDb, name, map);
+          }
+          if (!path && typeof _entityPath === 'function') path = _entityPath(relDb, name);
+          return { name, path };
+        };
         const openItem = document.createElement('div');
         openItem.className = 'gb-context-menu-item';
         openItem.innerHTML = lucide('externalLink', 14) + ' リンク先を開く';
@@ -783,11 +796,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
         copyItem.innerHTML = lucide('copy', 14) + ' パスをコピー';
         copyItem.addEventListener('click', async () => {
           menu.remove();
-          let name = idOrName;
-          if (typeof _resolveRelationName === 'function' && relDb) {
-            name = await _resolveRelationName(idOrName, relDb);
-          }
-          const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+          const { name, path } = await resolveRelationTarget();
           const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
           const copied = await window.GBPathUtils?.copyToClipboard?.(path, basePath);
           if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
@@ -798,11 +807,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
         rightItem.innerHTML = lucide('panelRight', 14) + ' サブパネルで開く';
         rightItem.addEventListener('click', async () => {
           menu.remove();
-          let name = idOrName;
-          if (typeof _resolveRelationName === 'function' && relDb) {
-            name = await _resolveRelationName(idOrName, relDb);
-          }
-          const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+          const { name, path } = await resolveRelationTarget();
           if (path && typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(path, name || idOrName, { linkType: 'entity', sourcePaneId });
           else navigateToEntity(name || idOrName, relDb, currentCtx);
         });
@@ -813,11 +818,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
           revealItem.innerHTML = lucide('folderTree', 14) + ' フォルダツリーに表示';
           revealItem.addEventListener('click', async () => {
             menu.remove();
-            let name = idOrName;
-            if (typeof _resolveRelationName === 'function' && relDb) {
-              name = await _resolveRelationName(idOrName, relDb);
-            }
-            const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+            const { path } = await resolveRelationTarget();
             if (path) window.revealPathInFolderTree(path);
           });
           sub.appendChild(revealItem);
@@ -1090,19 +1091,22 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
 /* ==============================
    インライン編集
    ============================== */
-function startInlineEdit(span, val, entityPath, propName) {
-  const dbPath = _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
+function startInlineEdit(span, val, entityPath, propName, options = {}) {
+  const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
+  const ctx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(span, { dbPath })
-    : null;
+    : null);
+  const historyOptions = { dbPath, ctx,
+    historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+    onHistoryChanged: options.onHistoryChanged };
   // 列ロックチェック
-  const lockMsg = checkColumnEditable(dbPath, propName);
+  const lockMsg = checkColumnEditable(dbPath, propName, ctx);
   if (lockMsg) { showStatus(lockMsg); return; }
   if (span.querySelector('input,textarea,[contenteditable="true"]')) return;
   // user / multi-user 型: クリックでドロップダウンを表示
   const ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc && (ptc.type === 'user' || ptc.type === 'multi-user')) {
-    _showUserDropdown(span, val, entityPath, propName, _cellUiValueToString(val.value), ptc.type === 'multi-user', { dbPath, ctx });
+    _showUserDropdown(span, val, entityPath, propName, _cellUiValueToString(val.value), ptc.type === 'multi-user', { ...options, ...historyOptions });
     return;
   }
   const old = _cellUiValueToString(val.value);
@@ -1112,7 +1116,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   if (editedTd) editedTd._dbInlineEditorSession = editorSession;
   const ownsEditor = () => span.isConnected !== false
     && (!editedTd || (editedTd.isConnected !== false && editedTd._dbInlineEditorSession === editorSession));
-  const editedPos = typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
+  const editedPos = editedTd && typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
   const editedFocusSeq = Number(editedPos?.__sourceSeq || editedTd?.dataset?.dbActiveSeq || 0);
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
   // 表示中のセル高を編集面へ引き継ぐ。contenteditable の既定 min-height や
@@ -1155,7 +1159,7 @@ function startInlineEdit(span, val, entityPath, propName) {
 
   const restoreOldDisplay = () => {
     span.textContent = '';
-    if (span.classList?.contains('multi-select-tags') && _cellUiRenderMultiSelectTags(span, { ...val, value: old }, entityPath, propName)) return;
+    if (span.classList?.contains('multi-select-tags') && _cellUiRenderMultiSelectTags(span, { ...val, value: old }, entityPath, propName, options)) return;
     if (oldRichHtml) span.innerHTML = oldRichHtml;
     else {
       span.textContent = old;
@@ -1203,6 +1207,29 @@ function startInlineEdit(span, val, entityPath, propName) {
   // その間に次のセルの入力が確定しても取り消しの順番が逆転しないよう、確定の予定が立った時点で
   // 履歴の枠を取っておく（確定しなかった・変更が無かった時は取り除く）。
   let earlyHistorySlot = null;
+  let failedDraft = null;
+  let editorGeneration = 0;
+  const refreshValueHistory = async () => {
+    if (typeof historyOptions.onHistoryChanged === 'function') await historyOptions.onHistoryChanged();
+    else if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+  };
+  const retainRejectedInput = error => {
+    if (!ownsEditor() || editedTd) return false;
+    editorGeneration++;
+    done = false;
+    span.textContent = '';
+    span.appendChild(input);
+    const message = GBUI.createInlineError({
+      message: propName + 'を保存できません。入力した値は保持しています。' + (error?.message || error),
+      onRetry: () => finish(),
+    });
+    message.addEventListener('click', event => event.stopPropagation());
+    message.addEventListener('pointerdown', event => event.stopPropagation());
+    span.appendChild(message);
+    document.addEventListener('pointerdown', outsidePointerDown, true);
+    showStatus('保存に失敗: ' + (error?.message || error), true);
+    return true;
+  };
   const reserveEarlyHistorySlot = () => {
     if (done || canceled || earlyHistorySlot || typeof _dbReserveValueHistory !== 'function') return;
     // 変更の無い確定で枠を取ると、やり直しの記録まで消えてしまうため、変更がある時だけ取る。
@@ -1210,7 +1237,7 @@ function startInlineEdit(span, val, entityPath, propName) {
     const richNow = _dbRichSanitizeHtml(input.innerHTML);
     const nextRichNow = _dbRichHtmlHasFormatting(richNow) ? richNow : '';
     if (nvNow ? (nvNow === old && nextRichNow === oldRichHtml) : !old) return;
-    earlyHistorySlot = _dbReserveValueHistory(propName + ': ' + old, val, dbPath);
+    earlyHistorySlot = _dbReserveValueHistory(propName + ': ' + old, val, dbPath, historyOptions);
   };
   const releaseEarlyHistorySlot = () => {
     const slot = earlyHistorySlot;
@@ -1239,9 +1266,20 @@ function startInlineEdit(span, val, entityPath, propName) {
       // 入力要素を即座に消して見た目をクリア
       span.textContent = '';
       const deleteSlot = earlySlot || (typeof _dbReserveValueHistory === 'function'
-        ? _dbReserveValueHistory('値削除: ' + propName + '=' + old, val, dbPath) : null);
+        ? _dbReserveValueHistory('値削除: ' + propName + '=' + old, val, dbPath, historyOptions) : null);
       try {
-        await _apiPutValue(val, { _delete: true });
+        const candidates = options.entityData?.[propName];
+        // Restoring an atomic snapshot keeps the same candidate ID. A new POST
+        // would give it another ID and invalidate earlier edits in the history.
+        const canRestoreIdentity = val.candidate_id && val.entry_id && Array.isArray(candidates)
+          && typeof _dbPersistAtomicCellCandidates === 'function';
+        if (canRestoreIdentity && candidates.filter(candidate => candidate.candidate_id === val.candidate_id).length !== 1) {
+          throw new Error('候補が変更されています。再読込してから削除してください。');
+        }
+        const atomic = canRestoreIdentity ? await _dbPersistAtomicCellCandidates(entityPath, propName,
+            candidates.filter(candidate => candidate.candidate_id !== val.candidate_id), ctx, val.entry_id)
+          : null;
+        if (!atomic) await _apiPutValue(val, { _delete: true });
         showStatus('削除しました');
         // 値削除の Undo: _dbUndoValue は _apiPutValue で書き戻すが、削除済みファイルへの
         // PUT は失敗するため、専用の undo (再作成) / redo (再削除) を組む
@@ -1253,6 +1291,11 @@ function startInlineEdit(span, val, entityPath, propName) {
         const pushDeleteHistory = () => {
           historyPush('値削除: ' + propName + '=' + old,
             async () => {
+              if (atomic) {
+                await _dbPersistAtomicCellCandidates(entityPath, propName, atomic.previous_candidates, ctx, val.entry_id, true);
+                await refreshValueHistory();
+                return;
+              }
               const result = await _apiPostValue(entityPath, propName, old, savedStatus, savedNote, savedRichHtml);
               if (result) {
                 currentVal = {
@@ -1266,13 +1309,14 @@ function startInlineEdit(span, val, entityPath, propName) {
                 };
                 if (savedRichHtml) currentVal.rich_html = savedRichHtml;
               }
-              if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+              await refreshValueHistory();
             },
             async () => {
-              await _apiPutValue(currentVal, { _delete: true });
-              if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+              if (atomic) await _dbPersistAtomicCellCandidates(entityPath, propName, atomic.candidates, ctx, val.entry_id, true);
+              else await _apiPutValue(currentVal, { _delete: true });
+              await refreshValueHistory();
             },
-            _dbScope(dbPath)
+            typeof historyOptions.historyScope === 'string' ? historyOptions.historyScope : _dbScope(dbPath)
           );
         };
         if (typeof historyPush === 'function') {
@@ -1280,6 +1324,10 @@ function startInlineEdit(span, val, entityPath, propName) {
           else pushDeleteHistory();
         }
         deleteSlot?.cancel();
+        window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
+          candidateIndex: val.candidate_index, value: '', operation: 'delete' });
+        if (failedDraft) window.MeldexSheetCellRecovery?.clear(failedDraft);
+        failedDraft = null;
         // Step 3: 部分更新化 (空文字列 delete) — 削除済み val をローカル pivotData から除去
         if (typeof _removeLocalPivotValue === 'function') _removeLocalPivotValue(val, entityPath, propName);
         if (ownsEditor()) {
@@ -1290,8 +1338,9 @@ function startInlineEdit(span, val, entityPath, propName) {
       } catch (e) {
         deleteSlot?.cancel();
         if (ownsEditor()) span.textContent = old;
-        window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+        failedDraft = window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: val.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: '', operation: 'delete' });
+        if (retainRejectedInput(e)) return;
         restoreEditedCellSelection(true);
         await _cellUiRecoverMutationFailure(dbPath, ctx, e, '削除');
       }
@@ -1307,7 +1356,7 @@ function startInlineEdit(span, val, entityPath, propName) {
       else delete val.rich_html;
       // 取り消しの順番は保存の完了順ではなく確定の順にする。確定時に履歴の枠だけ先に取る。
       const historySlot = earlySlot || (typeof _dbReserveValueHistory === 'function'
-        ? _dbReserveValueHistory(propName + ': ' + old + ' → ' + nv, val, dbPath) : null);
+        ? _dbReserveValueHistory(propName + ': ' + old + ' → ' + nv, val, dbPath, historyOptions) : null);
       // 描画後に送る保存も、送るまでの間から保存待ちとして数える（再読込・取り消しが追い越さないように）。
       let releaseScheduled = null;
       const scheduled = new Promise(resolve => { releaseScheduled = resolve; });
@@ -1319,13 +1368,15 @@ function startInlineEdit(span, val, entityPath, propName) {
           if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
           else if (saveRef.file) val.file = saveRef.file;
           const pushUndo = () => {
-            _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml);
+            _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml, historyOptions);
           };
           if (historySlot) historySlot.capture(pushUndo);
           else pushUndo();
           showStatus('保存しました', false, { passiveSave: true });
           window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
             candidateIndex: val.candidate_index, value: nv });
+          if (failedDraft) window.MeldexSheetCellRecovery?.clear(failedDraft);
+          failedDraft = null;
           if (ownsEditor()) {
             if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
             else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
@@ -1334,13 +1385,14 @@ function startInlineEdit(span, val, entityPath, propName) {
         } catch (e) {
           releaseScheduled();
           historySlot?.cancel();
-          window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+          failedDraft = window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
             candidateIndex: saveRef.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: nv, richHtml: nextRichHtml });
           if (val.value === nv) {
             val.value = old;
             if (oldRichHtml) val.rich_html = oldRichHtml;
             else delete val.rich_html;
           }
+          if (retainRejectedInput(e)) return;
           if (ownsEditor()) restoreOldDisplay();
           restoreEditedCellSelection(true);
           await _cellUiRecoverMutationFailure(dbPath, ctx, e, '保存');
@@ -1367,8 +1419,9 @@ function startInlineEdit(span, val, entityPath, propName) {
       return;
     }
     reserveEarlyHistorySlot();
+    const generation = editorGeneration;
     setTimeout(() => {
-      if (done) return;
+      if (done || generation !== editorGeneration) return;
       const active = document.activeElement;
       if (active === input || input.contains(active) || isFormatSurface(active)) { releaseEarlyHistorySlot(); return; }
       finish();
@@ -1382,7 +1435,8 @@ function startInlineEdit(span, val, entityPath, propName) {
       return;
     }
     reserveEarlyHistorySlot();
-    setTimeout(finish, 0);
+    const generation = editorGeneration;
+    setTimeout(() => { if (generation === editorGeneration) finish(); }, 0);
   };
   document.addEventListener('pointerdown', outsidePointerDown, true);
   input.addEventListener('blur', scheduleBlurFinish);

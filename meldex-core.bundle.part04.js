@@ -1,3 +1,29 @@
+              .catch(error => _reportMarkupSaveFailure(error));
+          }
+        } else {
+          item._pendingData = payload;
+        }
+      };
+      const applyTailOperation = (isRemove) => {
+        const hasTailMod = (typeof AnnotationStickyTail !== 'undefined');
+        if (isRemove) {
+          if (hasTailMod && note._annTailCtx) {
+            delete note._annTailCtx.data.tail;
+            delete note._annTailCtx.data.tailX;
+            delete note._annTailCtx.data.tailY;
+          }
+          note.querySelectorAll(':scope > .ann-tail, :scope > .ann-tail-line, :scope > .ann-tail-shape, :scope > .ann-tail-handle').forEach(el => el.remove());
+          delete data.tail;
+          delete data.tailX;
+          delete data.tailY;
+        } else if (hasTailMod && !note.querySelector('.ann-tail,.ann-tail-shape')) {
+          const w = note.offsetWidth || data.width || 180;
+          const h = note.offsetHeight || data.height || 100;
+          const newTail = {
+            startX: w / 2,
+            startY: h / 2,
+            endX: w / 2,
+            endY: h + 40,
             target: null,
           };
           data.tail = newTail;
@@ -872,29 +898,3 @@ function initStandaloneMarkup(container, getTargetPath) {
     }
     _ann.drawing = true;
     _ann.targetPath = targetPath;
-    _ann.path = [[pt.x, pt.y]]; _ann.pressures = [e.pressure || 0.5];
-    svg.setPointerCapture(e.pointerId);
-  });
-
-  svg.addEventListener('pointermove', (e) => {
-    if (!_ann.drawing) return;
-    const pt = _toCoords(e.clientX, e.clientY);
-    _ann.path.push([pt.x, pt.y]); _ann.pressures.push(e.pressure || 0.5);
-    let preview = layer.querySelector('.ann-preview');
-    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
-    if (!preview || preview.tagName.toLowerCase() !== previewTag) { preview?.remove(); preview = document.createElementNS(_svgNS, previewTag); preview.classList.add('ann-preview'); layer.appendChild(preview); }
-    if (_ann.tool === 'rect') {
-      _saApplyRect(preview, _saRectData(_ann.path), _ann.color, _ann.opacity, true);
-    } else if (_ann.tool === 'lasso') {
-      preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
-      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
-      preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-width', '1'); preview.setAttribute('stroke-dasharray', '4,4');
-    } else {
-      preview.setAttribute('d', _pathD(_ann.path)); preview.setAttribute('fill', 'none'); preview.setAttribute('stroke', _ann.color);
-      preview.setAttribute('stroke-width', _ann.tool === 'pen' ? '3' : '12');
-      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? String(_saNormalizeOpacity(_ann.opacity, 1) * 0.5) : String(_saNormalizeOpacity(_ann.opacity, 1))); preview.setAttribute('stroke-linecap', 'round');
-    }
-  });
-
-  svg.addEventListener('pointerup', async () => {
-    if (!_ann.drawing) return;

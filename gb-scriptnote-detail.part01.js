@@ -7,7 +7,30 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!container || !this.doc) return;
     const result = this._renderSeparatedRoleManagement(container);
     this._sn2EnsureStableControlIds?.(container, 'scriptnote-role-manage');
+    try {
+      this._lastRoleManagementRender = {
+        container, doc: this.doc, editor: this.doc.editor,
+        types: this.doc.scenarioTypes, characters: this.doc.characters,
+        revision: this._detailDataRevision || 0, readOnly: !!this._readOnly,
+        path: this._path || '', snapshot: JSON.stringify(this.doc),
+      };
+    } catch (_) {
+      this._lastRoleManagementRender = null;
+    }
     return result;
+  },
+
+  _canReuseRoleManagementPanel(container) {
+    const rendered = this._lastRoleManagementRender;
+    // 列幅は既存の監視が追随する。監視が使えない旧環境では従来の再描画へ戻す。
+    if (typeof ResizeObserver !== 'function' || !container?.isConnected || !rendered || rendered.container !== container
+      || rendered.doc !== this.doc || rendered.editor !== this.doc?.editor
+      || rendered.types !== this.doc?.scenarioTypes || rendered.characters !== this.doc?.characters
+      || rendered.revision !== (this._detailDataRevision || 0)
+      || rendered.readOnly !== !!this._readOnly || rendered.path !== (this._path || '')
+      || !container.querySelector('.sn2-role-management')) return false;
+    try { return rendered.snapshot === JSON.stringify(this.doc); }
+    catch (_) { return false; }
   },
 
   _renderLegacyDetailPanel(container) {

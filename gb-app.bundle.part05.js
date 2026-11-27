@@ -1,3 +1,6 @@
+    skipAutoAppLayout: true,
+    skipSaveLastView: true,
+  });
   return true;
 }
 
@@ -895,6 +898,3 @@ function _buildCfDialogBodyNodes(message, idBase) {
     if (entry.kind === 'muted') node.style.color = 'var(--ui-fg-muted)';
     return node;
   });
-}
-
-// 短い問いかけ用の .gb-confirm 表示を保ちつつ、生成・閉鎖・フォーカス・

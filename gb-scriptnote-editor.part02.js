@@ -2,14 +2,13 @@
       }
       this._setupPanSpacer(scroll, editor, viewMode);
       // スクロール位置を復元
-      scroll.scrollTop = savedScrollTop;
-      scroll.scrollLeft = viewMode === 'vertical' ? 0 : savedScrollLeft;
-      if (viewMode === 'vertical') resetVerticalWrapHorizontalPosition();
+      if (savedScrollTop) scroll.scrollTop = savedScrollTop;
+      if (viewMode !== 'vertical' && savedScrollLeft) scroll.scrollLeft = savedScrollLeft;
       // 折り返し表示でも行コメントバッジを通常表示と同じタイミングで再描画する
       if (this._path && typeof CommentBadges !== 'undefined') {
         try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
       }
-      this._setupWrapResizeObserver(scroll, viewMode, wrapMode);
+      this._setupWrapResizeObserver(scroll, viewMode, wrapMode, lastWrapViewportRectSize);
       return;
     }
 
@@ -26,23 +25,23 @@
         if (!h) return;
         const zV = typeof _getZoom === 'function' ? _getZoom() : 1;
         const hH = h.getBoundingClientRect().height / zV;
-        scroll.querySelectorAll('.sn2-row').forEach(r => {
-          r.style.height = hH + 'px';
+        const rows = [...scroll.querySelectorAll('.sn2-row')];
+        rows.forEach(r => { r.style.height = hH + 'px'; });
+        const widths = rows.map(r => {
           const txt = r.querySelector('.sn2-text');
-          if (txt) {
-            const rW = r.getBoundingClientRect().width / zV;
-            const scrollW = txt.scrollWidth;
-            if (scrollW > rW) {
-              r.style.minWidth = scrollW + 'px';
-            }
-          }
+          return txt ? [r, r.getBoundingClientRect().width / zV, txt.scrollWidth] : null;
+        });
+        widths.forEach(measurement => {
+          if (!measurement) return;
+          const [row, width, textWidth] = measurement;
+          if (textWidth > width) row.style.minWidth = textWidth + 'px';
         });
       });
     }
     this._setupPanSpacer(scroll, editor, viewMode);
     // スクロール位置を復元
-    scroll.scrollTop = savedScrollTop;
-    scroll.scrollLeft = savedScrollLeft;
+    if (savedScrollTop) scroll.scrollTop = savedScrollTop;
+    if (savedScrollLeft) scroll.scrollLeft = savedScrollLeft;
     // Phase 2e-ii: 行コメントバッジを描画
     if (this._path && typeof CommentBadges !== 'undefined') {
       try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}

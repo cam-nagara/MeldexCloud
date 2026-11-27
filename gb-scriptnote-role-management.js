@@ -214,8 +214,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     container.appendChild(root);
     // 表示領域の幅が決まってから列幅を収める（描画前の幅0では縮められないため）。
-    root.querySelectorAll('table[data-role-management-kind]').forEach(table => {
-      this._applyRoleManagementColumnWidths(table, table.dataset.roleManagementKind);
+    const tableWidths = [...root.querySelectorAll('table[data-role-management-kind]')]
+      .map(table => ({ table, width: table.parentElement?.clientWidth || 0 }));
+    tableWidths.forEach(({ table, width }) => {
+      this._applyRoleManagementColumnWidths(table, table.dataset.roleManagementKind, null, null, width);
     });
   },
 
@@ -1079,10 +1081,11 @@ Object.assign(ScriptNoteEditor.prototype, {
   // 可変列（既定値なし）は記憶した幅を使わず、常に残りの幅を受け持つ。表は表示領域の幅（100%）で描き、
   // 右端を表示領域の端へ揃える。表示領域が固定列の合計より狭い時は、直前に幅を変えた列以外の固定列を
   // 比率を保って縮めて収める（記憶する幅は変えない）。それでも収まらない時だけ横スクロールになる。
-  _applyRoleManagementColumnWidths(table, kind, overrides = null, pinnedKey = null) {
+  _applyRoleManagementColumnWidths(table, kind, overrides = null, pinnedKey = null, availableWidth = null) {
     const FLEX_MIN_WIDTH = 48;
     const MIN_WIDTH = 28;
     const saved = this._roleManagementColumnWidthStore();
+    const available = Math.floor(Number.isFinite(availableWidth) ? availableWidth : (table.parentElement?.clientWidth || 0));
     const cols = [...table.querySelectorAll(':scope > colgroup > col[data-role-col-key]')];
     const pinned = pinnedKey || table.dataset.rolePinnedKey || '';
     let hasFlexible = false;
@@ -1100,7 +1103,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       fixed.push({ col, key, width: Number.isFinite(stored) && stored > 0 ? stored : fallback });
     });
     const reserve = hasFlexible ? FLEX_MIN_WIDTH : 0;
-    const available = Math.floor(table.parentElement?.clientWidth || 0);
     let excess = available > 0 ? fixed.reduce((sum, entry) => sum + entry.width, 0) + reserve - available : 0;
     if (excess > 0) {
       const shrinkable = fixed.filter(entry => entry.key !== 'control' && entry.key !== pinned);

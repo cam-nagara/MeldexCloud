@@ -62,7 +62,7 @@
       noteRevision(ctx, result);
       candidate.value = value;
       if (typeof historyPush === 'function' && old !== value) {
-        const restore = async next => { noteRevision(ctx, await _apiPutValue(candidate, { new_value: next })); candidate.value = next; ctx.rerender(); };
+        const restore = async next => { noteRevision(ctx, await _apiPutValue(candidate, { new_value: next })); candidate.value = next; ctx.rerender(prop); };
         historyPush('フォーム: ' + prop + 'を変更', () => restore(old), () => restore(value), historyScope(ctx), prop);
       }
       return candidate;
@@ -77,12 +77,12 @@
     if (typeof historyPush === 'function') {
       historyPush('フォーム: 項目を入力 ' + prop, async () => {
         noteRevision(ctx, await _apiPutValue(created, { _delete: true }));
-        ctx.data.properties[prop] = ctx.data.properties[prop].filter(item => item !== created); ctx.rerender();
+        ctx.data.properties[prop] = ctx.data.properties[prop].filter(item => item !== created); ctx.rerender(prop);
       }, async () => {
         const next = await _apiPostValue(path, prop, value, '採用', '');
         noteRevision(ctx, next);
         Object.assign(created, { candidate_id: next?.candidate_id, entry_id: next?.entry_id, candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
-        ctx.data.properties[prop].push(created); ctx.rerender();
+        ctx.data.properties[prop].push(created); ctx.rerender(prop);
       }, historyScope(ctx), prop);
     }
     return created;
@@ -172,7 +172,9 @@
     if (candidates.length > 1) {
       const more = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '候補一覧（' + candidates.length + '件）'; more.appendChild(summary);
       const list = document.createElement('div');
-      renderEntityPropValuesInto(list, prop, ctx.data, ctx.entityPath, ctx.propTypes, { readOnly: true, viewType: 'form' });
+      renderEntityPropValuesInto(list, prop, ctx.data, ctx.entityPath, ctx.propTypes, {
+        readOnly: true, viewType: 'form', dbPath: ctx.options?.ctx?.dbPath || ctx.dbPath, ctx: ctx.options?.ctx,
+      });
       more.appendChild(list); body.appendChild(more);
     }
     return true;
@@ -295,6 +297,50 @@
     await Promise.allSettled(hosts.flatMap(host => [...(host._formPendingSaves || [])]));
     return !root.querySelector('[data-form-dirty="true"]') || await cfConfirm('保存できていない入力を破棄して切り替えますか？');
   }
+  function beginSubmissionPreview(form, cfg, {nav, fresh, previous, next}) {
+    const preview = document.createElement('section');
+    preview.className = 'gb-form-pending-response';
+    preview.dataset.formHasPending = 'true'; preview.setAttribute('aria-busy', 'true');
+    preview.setAttribute('aria-label', '保存中の回答');
+    const title = document.createElement('h3'); title.textContent = '保存中の回答'; preview.appendChild(title);
+    const status = document.createElement('p'); status.className = 'gb-form-description'; status.setAttribute('role', 'status');
+    status.textContent = '内容を保存しています。保存が確定すると編集できます。'; preview.appendChild(status);
+    for (const prop of cfg.fields || []) {
+      const input = Array.from(form.elements).find(control => control.name === prop);
+      if (!input || input.disabled) continue;
+      const row = document.createElement('div'); row.className = 'gb-form-input-row';
+      const label = document.createElement('span'); label.className = 'gb-form-input-label'; label.textContent = cfg.labels?.[prop] || prop;
+      const output = document.createElement(input.type === 'checkbox' ? 'input' : 'output');
+      output.dataset.formPendingProp = prop;
+      output.dataset.e2eId = _dbFormControlIdentity(cfg, prop, 'pending-value');
+      output.setAttribute('aria-label', label.textContent);
+      if (input.type === 'checkbox') { output.type = 'checkbox'; output.checked = input.checked; output.disabled = true; }
+      else {
+        output.className = 'gb-input gb-form-pending-value';
+        output.textContent = input.type === 'file' ? Array.from(input.files || []).map(file => file.name).join(', ') : input.value;
+      }
+      row.append(label, output); preview.appendChild(row);
+    }
+    const controls = Array.from(nav.querySelectorAll('button,select,input')).map(control => [control, control.disabled]);
+    const focused = document.activeElement, hidden = form.hidden, freshLabel = fresh.textContent;
+    const caret = typeof focused?.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+    controls.forEach(([control]) => { control.disabled = true; }); fresh.textContent = '新しい回答（保存中）';
+    form.hidden = true; form.after(preview);
+    let finished = false;
+    return { finish(confirmed) {
+      if (finished) return; finished = true;
+      const active = document.activeElement;
+      const ownsFocus = active === document.body || preview.contains(active) || form.contains(active);
+      preview.remove(); form.hidden = hidden; fresh.textContent = freshLabel;
+      for (const [control, disabled] of controls) {
+        if (!confirmed || control !== previous && control !== next) control.disabled = disabled;
+      }
+      if (!confirmed && ownsFocus && focused?.isConnected && form.contains(focused) && form.getClientRects().length) {
+        focused.focus({preventScroll:true});
+        if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
+      }
+    }};
+  }
   function renderView(root, dbPath, cfg, propTypes, ctx) {
     const owner = ctx?.containerEl || root;
     let session = viewSessions.get(owner);
@@ -364,6 +410,7 @@
               ownerApp.ctx.pivotData = updated; renderDbFormView(ownerApp.ctx);
             }
           },
+          onSubmitting: form => beginSubmissionPreview(form, effective, {nav, fresh, previous, next}),
           canWrite: () => canWrite(panel, dbPath, dbPath, ctx), async onCreated(result) {
           if (typeof _elInvalidatePivotData === 'function') _elInvalidatePivotData(dbPath);
           const name = result.name || result.entity || (result.path || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '') || 'トピック';

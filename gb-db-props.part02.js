@@ -339,12 +339,11 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
       action: async () => {
       if (batch) return _bulkDeleteEntities(targets.ids.slice(), ctx);
       const assetId = String(entityData?.asset_id || entityData?.assetId || '');
-      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      const authorize = async latestPath => typeof MeldexDeleteImpactWarning !== 'undefined'
         ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
-            { path: ep, kind: 'file', ...(assetId ? { assetId } : {}) },
+            { path: latestPath || ep, kind: 'file', ...(assetId ? { assetId } : {}) },
           ])
         : { confirmed: true, operation: 'trash' };
-      if (!confirmed) return;
       const entryId = String(
         entityData?._id
         || (state.currentDbPath === targetDbPath ? state.pivotData?.entities?.[entityName]?._id : '')
@@ -356,7 +355,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
           ctx,
           entries: [{ name: entityName, path: ep, entryId }],
           source: 'context-menu',
-          confirmation: confirmed,
+          authorize,
         });
         const response = result.responses[0];
         const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'

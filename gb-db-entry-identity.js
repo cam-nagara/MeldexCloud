@@ -466,6 +466,11 @@
   async function performDelete(queue, item) {
     const ref = { entry_id: item.entryId, entry_path: item.path };
     return queueMutation(ref, item.path, queue.dbPath, async latestPath => {
+      if (item.authorize) {
+        const confirmation = await item.authorize(latestPath || item.path);
+        if (!confirmation?.confirmed) throw Object.assign(new Error('削除の参照確認に失敗しました。行は保持しています'), { code: 'DELETE_AUTHORIZATION_FAILED' });
+        item.confirmationPayload = window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmation) || {};
+      }
       const body = {
         path: latestPath || item.path,
         expected_entry_id: item.entryId || undefined,
@@ -697,6 +702,7 @@
             ...entry,
             ctx: options?.ctx || null,
             operationId: operationId('entry-delete'),
+            authorize: typeof options?.authorize === 'function' ? options.authorize : null,
             confirmationPayload: window.MeldexDeleteImpactWarning?.confirmationPayload?.(options?.confirmation) || {},
             subscribers: [],
           };

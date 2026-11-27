@@ -297,12 +297,15 @@ function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTy
         entityData: data.properties,
         propTypes,
         viewType: options.viewType,
+        dbPath: options.dbPath, ctx: options.ctx,
         historyScope: options.historyScope,
         onHistoryChanged: options.onHistoryChanged,
         readOnly: options.readOnly === true,
       });
     } else if (typeof createValueElement === 'function') {
-      valEl = createValueElement(val, entityPath, propName, undefined, { readOnly: options.readOnly === true });
+      valEl = createValueElement(val, entityPath, propName, undefined, {
+        readOnly: options.readOnly === true, dbPath: options.dbPath, ctx: options.ctx,
+      });
     }
     if (valEl) valuesEl.appendChild(valEl);
     if (val.relations && val.relations.length > 0) {

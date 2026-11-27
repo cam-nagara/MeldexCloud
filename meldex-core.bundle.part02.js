@@ -1,3 +1,26 @@
+    }
+    return;
+  }
+  if (!atPaint && typeof _mobileStatusToastFrame !== 'undefined' && _mobileStatusToastFrame) {
+    cancelAnimationFrame(_mobileStatusToastFrame);
+    _mobileStatusToastFrame = 0;
+    _mobileStatusToastPending = null;
+  }
+  let toast = document.getElementById('gb-mobile-status-toast');
+  if (!text || !_isMobileStatusToastNeeded()) {
+    clearTimeout(_mobileStatusToastTimer);
+    toast?.classList.remove('is-visible');
+    return;
+  }
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'gb-mobile-status-toast';
+    toast.setAttribute('aria-atomic', 'true');
+    document.body.appendChild(toast);
+  }
+  toast.textContent = text;
+  toast.dataset.statusKind = isError ? 'error' : 'success';
+  toast.setAttribute('role', isError ? 'alert' : 'status');
   toast.setAttribute('aria-live', isError ? 'assertive' : 'polite');
   toast.classList.add('is-visible');
   clearTimeout(_mobileStatusToastTimer);
@@ -690,6 +713,9 @@ function replaceIcons(root) {
 
 // 親ウィンドウ（Meldex）からテーマを継承
 function inheritParentTheme() {
+  // 親の画面が無い（単独アプリ・本体そのもの）時は受け継ぐものが無い。自分の見た目を全部計算させて
+  // 自分へ書き戻すだけになり、単独ビューワーの起動で最初の画像を約20ms遅らせていた（2026-11-27 計測）。
+  if (window.parent === window) return;
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
     // --theme-native-os-accent / --ui-accent: 「OSアクセント」の色は本体だけがOSから読むため、ここで渡さないと
@@ -872,29 +898,3 @@ function initIframeMarkup(scrollContainer, options = {}) {
           _boardClientToWorld(r.left, r.bottom),
         ].filter(pt => Number.isFinite(pt?.x) && Number.isFinite(pt?.y));
         if (pts.length) {
-          visibleLeft = Math.min(...pts.map(pt => pt.x));
-          visibleTop = Math.min(...pts.map(pt => pt.y));
-          visibleRight = Math.max(...pts.map(pt => pt.x));
-          visibleBottom = Math.max(...pts.map(pt => pt.y));
-        }
-      } catch (_) {}
-    }
-    const pad = 256;
-    const left = Math.floor(Math.min(0, visibleLeft) - pad);
-    const top = Math.floor(Math.min(0, visibleTop) - pad);
-    const right = Math.ceil(Math.max(wrapper.scrollWidth || 0, wrapper.clientWidth || 0, visibleRight, viewportW / zoom) + pad);
-    const bottom = Math.ceil(Math.max(wrapper.scrollHeight || 0, wrapper.clientHeight || 0, visibleBottom, viewportH / zoom) + pad);
-    return { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
-  }
-  function _applyNotePosition(note, data) {
-    if (!note || !data) return;
-    note.style.left = ((Number(data.x) || 0) - _surfaceBounds.left) + 'px';
-    note.style.top = ((Number(data.y) || 0) - _surfaceBounds.top) + 'px';
-  }
-  function _boardClientToWorld(clientX, clientY) {
-    const targetCanvas = host || wrapper;
-    if (!targetCanvas) return { x: clientX, y: clientY };
-    const local = (typeof bdClientToCanvasLocal === 'function')
-      ? bdClientToCanvasLocal(clientX, clientY, targetCanvas)
-      : (() => {
-          const r = targetCanvas.getBoundingClientRect();

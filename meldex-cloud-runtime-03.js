@@ -24,12 +24,12 @@
     complete(key) { if (key) pendingStableCopies.delete(key); },
   });
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '525b2698053f', parts: { 'meldex-core.bundle.part01.js': '6319b76cc9b1', 'meldex-core.bundle.part02.js': '3300b1c5ffd7', 'meldex-core.bundle.part03.js': '570bbe8f05cc', 'meldex-core.bundle.part04.js': 'cd7c8d725981', 'meldex-core.bundle.part05.js': '2bf09617cb49', 'meldex-core.bundle.part06.js': '7213b70fd525' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '7d5c2657e144', parts: { 'gb-app.bundle.part01.js': '527a873de9a7', 'gb-app.bundle.part02.js': '25827e9d48a2', 'gb-app.bundle.part03.js': '30fd9837b5ee', 'gb-app.bundle.part04.js': 'f492cff7449e', 'gb-app.bundle.part05.js': '164da8c5b02a', 'gb-app.bundle.part06.js': 'a28d2a076d21', 'gb-app.bundle.part07.js': 'e511ebc740b0' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '55fe9c295966', parts: { 'meldex-core.bundle.part01.js': 'e3fa06014bf4', 'meldex-core.bundle.part02.js': '3edf59ffd4b7', 'meldex-core.bundle.part03.js': '3d9fac612269', 'meldex-core.bundle.part04.js': '0924e9562c4f', 'meldex-core.bundle.part05.js': '7aa818c68cf4', 'meldex-core.bundle.part06.js': '9b244b4874fc' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '324894b9d77d', parts: { 'gb-app.bundle.part01.js': '527a873de9a7', 'gb-app.bundle.part02.js': '25827e9d48a2', 'gb-app.bundle.part03.js': '30fd9837b5ee', 'gb-app.bundle.part04.js': '6f2b9a95524f', 'gb-app.bundle.part05.js': '4b5091ee2e5f', 'gb-app.bundle.part06.js': 'be60ec27e1c4', 'gb-app.bundle.part07.js': '4f9f32428abd' } },
     'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'fb9e1997dbe2', parts: { 'gb-theme-manager.bundle.part01.js': 'ebd3511355c6', 'gb-theme-manager.bundle.part02.js': '9f350dc0e5f6', 'gb-theme-manager.bundle.part03.js': 'c7abc148525e', 'gb-theme-manager.bundle.part04.js': '198020453e81' } },
     'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: 'e99808530415', parts: { 'gb-outliner.bundle.part01.js': '44422cf290a3', 'gb-outliner.bundle.part02.js': 'd44fc90862f5', 'gb-outliner.bundle.part03.js': '7066494430ac', 'gb-outliner.bundle.part04.js': 'd5543a48fd64', 'gb-outliner.bundle.part05.js': '834ad5ce271a', 'gb-outliner.bundle.part06.js': 'a9fd2b102648', 'gb-outliner.bundle.part07.js': '6a7bfd901d99', 'gb-outliner.bundle.part08.js': 'd7ea67cc41aa', 'gb-outliner.bundle.part09.js': '70def11116d6' } },
     'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'da221f09318c', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '26133ac4c082', 'gb-data-access-dropbox-fileops.bundle.part02.js': '66ab5a3f90d8', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'e2989dc177f8', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'dd038bef28b3', 'gb-data-access-dropbox-fileops.bundle.part05.js': 'e101b9b50746', 'gb-data-access-dropbox-fileops.bundle.part06.js': '7368951228bd', 'gb-data-access-dropbox-fileops.bundle.part07.js': '5d5277c6b9ae' } },
-    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '30952f7196ca', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '507ed054aca0', 'gb-cloud-mobile-editbar.bundle.part02.js': '8f576960351b', 'gb-cloud-mobile-editbar.bundle.part03.js': 'f4ced88bd074' } },
+    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '122ee69cef45', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '507ed054aca0', 'gb-cloud-mobile-editbar.bundle.part02.js': '0060cd6dcf8a', 'gb-cloud-mobile-editbar.bundle.part03.js': 'f26afc920317' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
@@ -697,7 +697,7 @@
 /* === gb-cloud-asset-loader.js === */
 ;
 (function(){
-const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=22838d966bb1c0fa", "meldex-cloud-scenario.css?v=74a2be005f16aef4"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
+const groups={"icons": ["meldex-cloud-feature-icons-01.js?v=92ffe74af959a5cd"], "scenario": ["meldex-cloud-feature-scenario-01.js?v=39e5d1a3c285e349", "meldex-cloud-scenario.css?v=74a2be005f16aef4"], "capture": ["meldex-cloud-feature-capture-01.js?v=ec657d96b990c537"]}, pending=new Map();
 window.MeldexCloudAssets={load(name){
  if(!groups[name])return Promise.resolve();
  if(pending.has(name))return pending.get(name);

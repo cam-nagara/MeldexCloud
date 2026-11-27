@@ -785,6 +785,13 @@ const GBSubPanel = (() => {
           entry.label = name;
           _navHistory.forEach(item => { if (item.path === entry.path) item.label = name; });
           _onEntryLabelChanged?.();
+        }, onPathResolved: (path, name, previousPath) => {
+          // タブが今の保存先ではない場所を指していた（トピックのIDや表示名のファイル）。今の保存先へ付け替え、
+          // 次に起動した時もそこから開く（2026-11-27）。
+          entry.path = path;
+          if (name) entry.label = name;
+          _navHistory.forEach(item => { if (item.path === previousPath) { item.path = path; if (name) item.label = name; } });
+          _onEntryLabelChanged?.();
         } });
       return true;
     }

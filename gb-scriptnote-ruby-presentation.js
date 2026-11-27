@@ -523,8 +523,8 @@
       const crossSize = (isVertical ? rect.width : rect.height) / z;
       baseEdges.push([span, ((crossSize + baseEm) * 0.5) + 'px']);
     });
-    baseEdges.forEach(([span, value]) => span.style.setProperty(prefix + '-base-edge', value));
     if (typeof options.beforeResolve === 'function') options.beforeResolve(rows, spanToInfo);
+    baseEdges.forEach(([span, value]) => span.style.setProperty(prefix + '-base-edge', value));
     rows.forEach(infos => {
       resolveRubyOverlaps(infos).forEach(info => {
         if (!info.span) return;

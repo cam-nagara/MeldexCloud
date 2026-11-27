@@ -42,10 +42,18 @@
     status.textContent = ok ? '' : '表示設定を保存できませんでした。もう一度操作してください';
     return ok;
   }
+  let applied = null;
   function layout() {
+    // 値が変わらない時は書き換えない。画面全体の幅の指定を書き換えると、閉じたままでも
+    // 起動直後に見た目の再計算が走り、最初の画像の表示が遅れる。
+    const key = visible + ':' + width;
+    if (applied === key) return;
+    applied = key;
     pane.hidden = !visible;
     toggle.setAttribute('aria-expanded', String(visible));
-    document.body.style.setProperty('--viewer-page-list-width', width + 'px');
+    if (visible || document.body.style.getPropertyValue('--viewer-page-list-width')) {
+      document.body.style.setProperty('--viewer-page-list-width', width + 'px');
+    }
     document.body.classList.toggle('viewer-pages-open', visible);
     grip.setAttribute('aria-valuenow', String(width));
     // viewer-resize observes the actual display size once, after layout.
@@ -67,7 +75,8 @@
       const saved = prefs.read(identity);
       visible = saved.visible === true;
       width = Number.isFinite(saved.width) ? Math.max(160, Math.min(480, saved.width)) : 200;
-      scroll.scrollTop = 0;
+      // 閉じている間は位置を読み書きしない（読むだけで配置の計算が走る）。開く時に先頭へ戻す。
+      if (visible) scroll.scrollTop = 0;
       extraEntries = []; folderEntries = []; folderRequest = null;
       folderStatus.replaceChildren(); status.replaceChildren();
       layout();
@@ -76,6 +85,11 @@
     mode.value = Scene.getMode();
     first.value = Scene.getFirstSide();
     first.disabled = mode.value === 'single';
+    if (!visible) {
+      // 閉じている間はページの組み分けを作らない。開いた時に作り直す（起動直後の最初の画像を待たせない）。
+      source = null;
+      return;
+    }
     const items = Scene.getItems();
     const names = new Set(items.map(item => item.name));
     extraEntries = folderEntries.filter(entry => !names.has(entry.name));

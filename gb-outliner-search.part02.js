@@ -990,13 +990,36 @@ function _selectedSearchFolderPath() {
   return slash >= 0 ? path.slice(0, slash) : '';
 }
 
+let _vaultSearchRequestSeq = 0;
+
+function _vaultSearchConditionKey(includeReplacement = false) {
+  const query = document.getElementById('sp-query');
+  const caseOption = document.getElementById('sp-case');
+  const regexOption = document.getElementById('sp-regex');
+  const folderOption = document.getElementById('sp-folder-only');
+  const replacement = document.getElementById('sp-replace');
+  if (!query || !caseOption || !regexOption || !folderOption || (includeReplacement && !replacement)) return null;
+  return JSON.stringify([query.value, caseOption.checked, regexOption.checked,
+    folderOption.checked, folderOption.checked ? _selectedSearchFolderPath() : '',
+    includeReplacement ? replacement.value : null]);
+}
+
+async function fetchVaultSearch(params, options) {
+  const path = '/search?' + String(params);
+  return typeof runBackgroundQuery === 'function'
+    ? runBackgroundQuery(path, { label: '検索', cancellable: false, startOptions: options })
+    : apiFetch(path, options);
+}
+
 async function doVaultSearch() {
+  const seq = ++_vaultSearchRequestSeq;
   const q = document.getElementById('sp-query').value;
   if (!q) return;
   const caseSensitive = document.getElementById('sp-case').checked;
   const useRegex = document.getElementById('sp-regex').checked;
   const folderOnly = document.getElementById('sp-folder-only').checked;
   const searchPath = folderOnly ? _selectedSearchFolderPath() : '';
+  const conditionKey = _vaultSearchConditionKey();
 
   document.getElementById('sp-status').textContent = '検索中...';
   document.getElementById('sp-results').innerHTML = '';
@@ -1004,7 +1027,8 @@ async function doVaultSearch() {
   try {
     const params = new URLSearchParams({ q, case: caseSensitive, regex: useRegex });
     if (searchPath) params.set('path', searchPath);
-    const data = await apiFetch('/search?' + params.toString());
+    const data = await fetchVaultSearch(params);
+    if (seq !== _vaultSearchRequestSeq || conditionKey !== _vaultSearchConditionKey()) return;
     if (data.error) {
       const container = document.getElementById('sp-results');
       renderEmptyState(container, 'search', data.error, '検索語を確認してください');
@@ -1013,6 +1037,7 @@ async function doVaultSearch() {
     }
     renderSearchResults(data, q, caseSensitive, useRegex);
   } catch (e) {
+    if (seq !== _vaultSearchRequestSeq || conditionKey !== _vaultSearchConditionKey()) return;
     document.getElementById('sp-status').textContent = '検索エラー';
   }
 }
@@ -1295,11 +1320,21 @@ async function doVaultReplace(all) {
   const useRegex = document.getElementById('sp-regex').checked;
   const folderOnly = document.getElementById('sp-folder-only').checked;
   const searchPath = folderOnly ? _selectedSearchFolderPath() : '';
+  const conditionKey = _vaultSearchConditionKey(true);
+  const requireCurrentConditions = () => {
+    if (conditionKey === _vaultSearchConditionKey(true)) return true;
+    const message = '検索条件が変わったため、置換を中止しました。もう一度検索してください';
+    showStatus(message, true);
+    const status = document.getElementById('sp-status');
+    if (status) status.textContent = message;
+    return false;
+  };
 
   // まず検索して対象ファイルを取得
   const params = new URLSearchParams({ q, case: caseSensitive, regex: useRegex, full_scan: '1' });
   if (searchPath) params.set('path', searchPath);
-  const data = await apiFetch('/search?' + params.toString());
+  const data = await fetchVaultSearch(params);
+  if (!requireCurrentConditions()) return;
   if (data.error) {
     document.getElementById('sp-status').textContent = data.error;
     showStatus(data.error, true);
@@ -1319,11 +1354,13 @@ async function doVaultReplace(all) {
     return;
   }
   if (!await cfConfirm(`${targets.length}ファイルの${all ? '全一致箇所' : '各ファイルの最初の一致箇所'}を一括置換しますか？\n途中で失敗した場合は全ファイルを元に戻します。\n\n「${q}」→「${r}」`)) return;
+  if (!requireCurrentConditions()) return;
 
   let result;
   let scriptnotes;
   try {
     scriptnotes = await _prepareVaultReplaceScriptnotes(targets);
+    if (!requireCurrentConditions()) return;
     // flushで保存した場合は検索時の版が古くなるため、確定後の版で条件付き保存する。
     for (const { editor, path } of scriptnotes) {
       const target = targets.find(item => item.path === path);

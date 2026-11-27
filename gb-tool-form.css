@@ -9,6 +9,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-form-app-save { display:flex; align-items:center; gap:8px; padding:4px 10px; font-size:12px; flex-wrap:wrap; }
 .gb-form-app-surface { flex:1; min-height:0; overflow:auto; }
 .gb-form-app-surface > p { margin:24px; }
+.gb-form-app .gb-form-record-panel .value-text { white-space:pre-wrap; }
 .gb-form-app-surface { container: form-app-surface / inline-size; }
 .gb-form-app .gb-check { gap:var(--ui-space-4); font-size:var(--ui-font-13); }
 .gb-form-app .gb-form-editor { grid-template-columns:minmax(220px,280px) minmax(0,1fr); }
@@ -24,3 +25,8 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-form-field-inspector { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
 .gb-form-field-inspector dt { color: var(--ui-fg-muted, var(--fg2)); }
 .gb-form-field-inspector dd { margin: 0; overflow-wrap: anywhere; }
+
+/* 保存中も、入力した回答そのものを読み取れる状態で保持する。 */
+.gb-form-pending-response { min-width:0; padding:var(--ui-space-3,12px); }
+.gb-form-pending-response > h3 { margin:0 0 var(--ui-space-2,8px); }
+.gb-form-pending-value { display:block; height:auto; min-height:var(--ui-h-sm,28px); white-space:pre-wrap; overflow-wrap:anywhere; }

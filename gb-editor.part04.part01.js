@@ -191,7 +191,7 @@ async function _commitFileSearchReplacement(editable) {
     }
     // 応答待ち中の追加入力・別表示面の編集をドラフトから消さない。
     // 切替済みの旧文書は、次の読込でサーバー本文と照合する。
-    await _syncNoteDraftAfterSave(editable, path, res?.savedMd ?? md);
+    await _syncNoteDraftAfterSave(editable, path, res?.savedMd ?? md, md);
     if (!res?.joined) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(previousMd, md)

@@ -97,11 +97,16 @@ async function handleXlsxImportToOutliner(e) {
 
   try {
     const data = await _readFileAsDataUrl(file);
-    const res = await apiPost('/import-xlsx-scriptnote', {
+    const body = {
       filename: file.name,
       title: baseName,
       data,
-    });
+    };
+    const res = typeof runBackgroundJob === 'function'
+      ? await runBackgroundJob('/import-xlsx-scriptnote', { ...body, background: true }, {
+        label: 'Excelからシナリオを取り込み', cancellable: false,
+      })
+      : await apiPost('/import-xlsx-scriptnote', body);
     const scriptnotePath = res.path || res.node?.path;
     const label = res.label || baseName;
     if (!scriptnotePath) throw new Error('取り込んだシナリオの保存先を確認できませんでした');

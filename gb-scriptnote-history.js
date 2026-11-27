@@ -6,6 +6,19 @@ function _sn2FindRowFromNode(node) {
   return el?.closest?.('.sn2-row') || null;
 }
 
+function _sn2HistoryValueKey(value) {
+  return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+}
+
+function _sn2HistoryLayoutKey(doc) {
+  // 保存時の印や文書IDは履歴から戻さない。実際に復元する表示・書式だけを比較する。
+  const keys = ['fileType', 'version', 'title', 'layoutMode', 'templateId', 'templateVersion',
+    'templatePurpose', 'templateSourceRefs', 'pageSettings', 'editor', 'scenarioTypes', 'characters',
+    'characterDb', 'notes', 'rubyRules', 'rubyPresentation', 'source', 'views'];
+  return _sn2HistoryValueKey(Object.fromEntries(keys.map(key => [key, doc[key]])));
+}
+
 function _sn2CaptureSnapshotFocus(editor) {
   let focusRowId = null;
   let focusRowIdx = -1;
@@ -195,43 +208,57 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
       if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
       const data = createScriptNoteDoc(JSON.parse(snap));
-      this._rebindRoleFilters?.(
-        [...(this.doc.scenarioTypes || []), ...(this.doc.characters || [])],
-        [...data.scenarioTypes, ...data.characters],
-      );
-      this.doc.fileType = data.fileType;
-      this.doc.version = data.version;
-      this.doc.title = data.title;
-      this.doc.layoutMode = data.layoutMode;
-      // 版付きテンプレートと紙面設定も本文と同じ履歴単位で復元する。
-      // 欠けている旧文書へ戻す時は、現在値を残さず明示的に取り除く。
-      ['templateId', 'templateVersion', 'templatePurpose', 'templateSourceRefs', 'pageSettings'].forEach((key) => {
-        if (Object.prototype.hasOwnProperty.call(data, key)) this.doc[key] = data[key];
-        else delete this.doc[key];
-      });
-      this.doc.editor = data.editor;
-      this.doc.scenarioTypes = data.scenarioTypes;
-      this.doc.characters = data.characters;
-      this.doc.characterDb = data.characterDb;
-      this.doc.notes = data.notes;
-      this.doc.rubyRules = data.rubyRules || [];
-      this.doc.rubyPresentation = data.rubyPresentation;
-      this.doc.rows = data.rows;
-      this.doc.source = data.source;
+      const rowsOnly = _sn2HistoryLayoutKey(this.doc) === _sn2HistoryLayoutKey(data);
+      if (rowsOnly) {
+        // 残すセルのハンドラーが参照する行と書式も、現在の文書のオブジェクトに保つ。
+        const previousById = new Map(rowsBefore.map(row => [row.id, row]));
+        data.rows = data.rows.map(row => {
+          const previous = previousById.get(row.id);
+          return previous && _sn2HistoryValueKey(previous) === _sn2HistoryValueKey(row) ? previous : row;
+        });
+      }
+      if (!rowsOnly) {
+        this._rebindRoleFilters?.(
+          [...(this.doc.scenarioTypes || []), ...(this.doc.characters || [])],
+          [...data.scenarioTypes, ...data.characters],
+        );
+        this.doc.fileType = data.fileType;
+        this.doc.version = data.version;
+        this.doc.title = data.title;
+        this.doc.layoutMode = data.layoutMode;
+        // 版付きテンプレートと紙面設定も本文と同じ履歴単位で復元する。
+        // 欠けている旧文書へ戻す時は、現在値を残さず明示的に取り除く。
+        ['templateId', 'templateVersion', 'templatePurpose', 'templateSourceRefs', 'pageSettings'].forEach((key) => {
+          if (Object.prototype.hasOwnProperty.call(data, key)) this.doc[key] = data[key];
+          else delete this.doc[key];
+        });
+        this.doc.editor = data.editor;
+        this.doc.scenarioTypes = data.scenarioTypes;
+        this.doc.characters = data.characters;
+        this.doc.characterDb = data.characterDb;
+        this.doc.notes = data.notes;
+        this.doc.rubyRules = data.rubyRules || [];
+        this.doc.rubyPresentation = data.rubyPresentation;
+        this.doc.rows = data.rows;
+        this.doc.source = data.source;
+        // ビュー一覧は本文と同じ履歴単位で戻す。表示中のビューは戻さない（表示の切替は履歴に入れない）。
+        if (Array.isArray(data.views)) this.doc.views = data.views;
+        else delete this.doc.views;
+        if (typeof this._ensureScenarioViews === 'function') {
+          this._ensureScenarioViews();
+          this._applyScenarioViewFilter?.(this._activeScenarioView(), { render: false });
+          this._refreshScenarioViewTabs?.();
+        }
+      } else {
+        this.doc.rows = data.rows;
+        this._refreshScenarioViewTabs?.();
+      }
       // カーソルは、取り消し・やり直しで変わった行へ置く（変わった行が無ければ操作前の位置）。
       const changedFocus = _sn2ChangedRowFocus(rowsBefore, data.rows);
       if (changedFocus) Object.assign(focusState, changedFocus);
-      // ビュー一覧は本文と同じ履歴単位で戻す。表示中のビューは戻さない（表示の切替は履歴に入れない）。
-      if (Array.isArray(data.views)) this.doc.views = data.views;
-      else delete this.doc.views;
-      if (typeof this._ensureScenarioViews === 'function') {
-        this._ensureScenarioViews();
-        this._applyScenarioViewFilter?.(this._activeScenarioView(), { render: false });
-        this._refreshScenarioViewTabs?.();
-      }
-      this._ensureDefaultChara();
+      if (!rowsOnly) this._ensureDefaultChara();
       this._calcCache = null;
-      this._render();
+      if (!rowsOnly || !this._renderRowsIncrementally?.(rowsBefore)) this._render();
       this._syncAllFromDom();
       if (this._rowSelection instanceof Set) {
         const rowIds = createScriptNoteRowIdSet(this.doc);

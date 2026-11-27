@@ -101,6 +101,7 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, 
     } else if (typeof setColWidth === 'function') {
       setColWidth(colIndex, nextWidth);
     }
+    if (table) _dbUpdateRowRenderWidth(table, colIndex, nextWidth);
     if (dbPath && propName && typeof setColWidthPersist === 'function') {
       setColWidthPersist(dbPath, propName, nextWidth, {
         ctx,
@@ -127,6 +128,30 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, 
     applyWidth(current + (e.key === 'ArrowRight' ? step : -step));
   });
   handle.addEventListener('focus', syncValue);
+}
+
+// 列幅を画面の上で変えた時（境界のドラッグ・キーボード）、後から描く行の設定の幅も同じにする。
+// 長いシートはスクロールで見えてきた行をその時に描くため、設定が古い幅のままだと、新しい行だけ元の幅になり、
+// スワイプ中にトピック名列などの幅が変更前と変更後で行き来していた（2026-11-26 スマホの報告）。
+function _dbUpdateRowRenderWidth(table, colIndex, width) {
+  const opts = table?._dbEntityRowOpts;
+  if (!opts) return;
+  const header = table.querySelector('thead tr')?.children?.[colIndex];
+  if (!header) return;
+  const nextWidth = Math.max(60, Math.round(Number(width) || 60));
+  if (header.classList.contains('col-entity-header')) {
+    opts._entityW = nextWidth;
+  } else {
+    const prop = header.dataset.prop || header.dataset.propName || '';
+    if (!prop) return;
+    // 表示設定の中の値そのものは書き換えない（保存は呼び出し元が行う）。
+    opts.savedWidths = { ...(opts.savedWidths || {}), [prop]: nextWidth };
+  }
+  if (typeof _dbPinnedColumnOffsets === 'function' && opts.renderedCols) {
+    const rowControlsWidth = typeof _dbRowControlsWidth === 'function' ? _dbRowControlsWidth(table) : 56;
+    opts.pinnedOffsets = _dbPinnedColumnOffsets(opts.renderedCols, opts.pinnedCols, opts.entityColumnPinned,
+      opts.savedWidths, opts._entityW, rowControlsWidth);
+  }
 }
 
 function _dbReflowPinnedColumnOffsets(table) {
@@ -1082,6 +1107,9 @@ function renderPivot(ctx) {
     selectedCols, _entityW, _tbl, _tblId, entityColumnPinned,
     cellDisplayByCol, renderedCols, pinnedOffsets, cellImageThumbCount,
   };
+  // 後から描く行（スクロールで現れる行・分けて描く残りの行）は、この設定の列幅で作る。境界のドラッグなどで
+  // 幅を変えた時に、ここも書き換える（_dbUpdateRowRenderWidth）。
+  if (tblEl) tblEl._dbEntityRowOpts = entityRowOpts;
 
   // 行生成タスクをフラット化 (グループヘッダー + エントリ行を順序通りに並べる)
   // チャンク分割レンダリングで使用 (Step2)

@@ -126,6 +126,7 @@ function _multiSelectValueTokens(value) {
 }
 
 function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,options={}){
+  if(anchor._multiSelectSaving)return;
   const dbPath=options.dbPath||_valueEditorDbPath(entityPath,anchor);
   const ctx=options.ctx||_valueEditorContext(entityPath,anchor,dbPath);
   const blocked=options.readOnly?'読み取り専用です':_valueEditorLockMessage(dbPath,propName,ctx);
@@ -133,7 +134,8 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   closeAllDropdowns(ctx||anchor);
   const historyOptions={dbPath,ctx,historyScope:typeof options.historyScope==='function'?options.historyScope():options.historyScope,
     onHistoryChanged:options.onHistoryChanged};
-  const selected=new Set(_multiSelectValueTokens(val.value||''));
+  const draft=anchor._formMultiSelectDraft;
+  const selected=new Set(draft?.values||_multiSelectValueTokens(val.value||''));
   const entity=options.entityData||{};
   const dynamic=window.MeldexDbDynamicOptions?.resolve?.(config,entity);
   const columnValues=!dynamic&&typeof collectDbColumnValues==='function'?collectDbColumnValues(ctx?.pivotData,propName,{splitCsv:true}):[];
@@ -147,6 +149,8 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   const search=document.createElement('input');search.type='search';search.className='gb-input';
   search.placeholder='検索...';search.setAttribute('aria-label',propName+'の選択肢を検索');
   const list=document.createElement('div'),error=document.createElement('div');
+  const preview=document.createElement('output');preview.className='gb-input gb-value-save-preview';preview.hidden=true;
+  preview.setAttribute('aria-label','保存中の値');
   let busy=false,closed=false,pointerCloser=null;
   function close(restoreFocus=false){
     if(closed)return;closed=true;
@@ -172,7 +176,8 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   }
   const footer=document.createElement('div');footer.style.cssText='display:flex;gap:4px;flex-wrap:wrap;';
   const button=(label,handler)=>{const element=document.createElement('button');element.type='button';element.className='gb-btn gb-btn-xs status-dropdown-item';element.textContent=label;element.addEventListener('click',handler);return element;};
-  const cancel=button('キャンセル',()=>{if(!busy)close(true);});
+  const discardDraft=()=>{delete anchor._formMultiSelectDraft;delete anchor.dataset.formDirty;};
+  const cancel=button('キャンセル',()=>{if(!busy){discardDraft();close(true);}});
   const clear=button('選択を解除',()=>{if(busy)return;selected.clear();render();void commit();});
   const apply=button('確定',()=>void commit());apply.classList.add('gb-btn-primary');
   footer.append(clear,cancel,apply);
@@ -180,32 +185,46 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   async function commit(){
     if(busy||closed)return;
     const next=[...selected].join(', '),before=String(val.value||'');
-    if(next===before){close(true);return;}
+    if(next===before){discardDraft();close(true);return;}
     const lock=options.readOnly?'読み取り専用です':_valueEditorLockMessage(dbPath,propName,ctx);
     if(lock){error.replaceChildren(GBUI.createInlineError({message:lock}));return;}
     const ref={...val,entry_path:entityPath,property:propName};
     setBusy(true);error.replaceChildren();
+    preview.textContent=next||'選択なし';preview.hidden=false;
+    anchor._multiSelectSaving=true;anchor.dataset.formHasPending='true';anchor.setAttribute('aria-busy','true');
+    options.onPreview?.(next);
+    const pending=Promise.resolve().then(()=>_apiPutValue(ref,{new_value:next}));
+    if(!anchor._formPendingSaves)anchor._formPendingSaves=new Set();
+    anchor._formPendingSaves.add(pending);
     let saved=false;
     try{
-      await _apiPutValue(ref,{new_value:next});
+      await pending;
       saved=true;
     }catch(failure){
-      if(popup.isConnected)error.replaceChildren(GBUI.createInlineError({message:propName+'を保存できません。選択は保持しています。'+(failure?.userMessage||failure?.message||failure),onRetry:commit}));
-    }finally{setBusy(false);}
+      const message=propName+'を保存できません。選択は保持しています。'+(failure?.userMessage||failure?.message||failure);
+      anchor._formMultiSelectDraft={values:[...selected],message};anchor.dataset.formDirty='true';
+      if(anchor.isConnected)options.onSaved?.(before);
+      if(popup.isConnected)error.replaceChildren(GBUI.createInlineError({message,onRetry:commit}));
+    }finally{
+      anchor._formPendingSaves.delete(pending);delete anchor.dataset.formHasPending;
+      anchor._multiSelectSaving=false;anchor.setAttribute('aria-busy','false');preview.hidden=true;setBusy(false);
+    }
     if(!saved)return;
+    discardDraft();
     val.value=next;
     if(typeof _syncValueRefAfterSave==='function')_syncValueRefAfterSave(ref,val);
     _dbUndoValue(propName+': '+before+' → '+next,val,before,next,undefined,undefined,historyOptions);
     if(anchor.isConnected)options.onSaved?.(next);
     close(true);
   }
-  popup.addEventListener('db-dropdown-cancel',()=>close());
+  popup.addEventListener('db-dropdown-cancel',()=>close(true));
   popup.addEventListener('keydown',event=>{
     if(event.isComposing)return;
     if(event.key==='Escape'){event.preventDefault();event.stopPropagation();if(!busy)close(true);}
     else if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();event.stopPropagation();void commit();}
   });
-  search.addEventListener('input',render);render();popup.append(search,list,error,footer);
+  search.addEventListener('input',render);render();popup.append(search,list,preview,error,footer);
+  if(draft?.message)error.appendChild(GBUI.createInlineError({message:draft.message,onRetry:commit}));
   _positionCellDropdown(popup,anchor,{gap:2,minWidth:180});
   if(typeof _enableDropdownKeyNav==='function')_enableDropdownKeyNav(popup,'.dd-nav-item');
   search.focus({preventScroll:true});
@@ -496,12 +515,14 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     const swatch = document.createElement('span');
     swatch.className = 'cell-color-swatch value-text';
     const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-    const applyColor = (hex) => {
-      const ok = HEX.test(String(hex || '').trim());
-      swatch.style.background = ok ? hex.trim() : '';
+    const normalizeColor = color => typeof _normalizeCustomColor === 'function'
+      ? _normalizeCustomColor(color) : HEX.test(String(color || '').trim()) ? String(color).trim() : '';
+    const applyColor = color => {
+      const value = normalizeColor(color), ok = !!value;
+      swatch.style.background = value;
       swatch.classList.toggle('is-empty', !ok);
       swatch.textContent = ok ? '' : '色を設定';
-      if (ok) swatch.title = hex.trim(); else swatch.removeAttribute('title');
+      if (ok) swatch.title = value; else swatch.removeAttribute('title');
     };
     applyColor(v);
     swatch.addEventListener('click', (e) => {
@@ -518,14 +539,17 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           }
           const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
           if (lockMsg) { applyColor(val.value || ''); showStatus(lockMsg, true); return; }
-          const nv = HEX.test(String(color || '').trim()) ? color.trim() : '';
+          const nv = normalizeColor(color);
           const oldColor = val.value || '';
           if (nv === oldColor) return;
           try {
             const hasExisting = val?.file && val.candidate_index != null;
             if (hasExisting) {
               await _apiPutValue(val, { new_value: nv });
-              _dbUndoValue(propName + ': ' + oldColor + ' → ' + nv, val, oldColor, nv);
+              _dbUndoValue(propName + ': ' + oldColor + ' → ' + nv, val, oldColor, nv, undefined, undefined, {
+                dbPath, ctx: valueCtx, historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+                onHistoryChanged: options.onHistoryChanged,
+              });
             } else {
               const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
               val.file = result?.path || entityPath;
@@ -734,7 +758,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       }
       const latestConfig = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, valueCtx)?.[propName] : null;
       showMultiSelectValueDropdown(tagContainer, val, entityPath, propName, latestConfig || propTypeConfig,
-        { ...options, dbPath, ctx: valueCtx, onSaved: renderTags });
+        { ...options, dbPath, ctx: valueCtx, onPreview: renderTags, onSaved: renderTags });
     });
     {
       tagContainer.tabIndex = 0;
@@ -759,17 +783,13 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     const span = document.createElement('span');
     span.className = 'cell-user-val';
     span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;cursor:pointer;';
-    if (v) {
-      span.innerHTML = _userAvatarSmall(v) + ' ' + esc(v);
-    } else {
-      span.textContent = '—';
-      span.style.color = 'var(--fg2)';
-    }
+    _renderUserValueControl(span, v, false);
     span.addEventListener('click', (e) => {
       e.stopPropagation();
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      _showUserDropdown(span, val, entityPath, propName, v, false, { dbPath, ctx: valueCtx });
+      _showUserDropdown(span, val, entityPath, propName, String(val.value ?? ''), false, { ...options, dbPath, ctx: valueCtx,
+        onValueSaved(value) { if (span.isConnected) _renderUserValueControl(span, value, false); options.onValueSaved?.(value); } });
     });
     row.appendChild(span);
     return row;
@@ -779,25 +799,13 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     const container = document.createElement('div');
     container.className = 'multi-user-tags';
     container.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;cursor:pointer;';
-    const users = v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
-    if (users.length === 0) {
-      container.textContent = '—';
-      container.style.color = 'var(--fg2)';
-      container.style.fontSize = '12px';
-      container.style.padding = '2px';
-    }
-    users.forEach(u => {
-      const tag = document.createElement('span');
-      tag.className = 'multi-user-tag';
-      tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;';
-      tag.innerHTML = _userAvatarSmall(u) + ' ' + esc(u);
-      container.appendChild(tag);
-    });
+    _renderUserValueControl(container, v, true);
     container.addEventListener('click', (e) => {
       e.stopPropagation();
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      _showUserDropdown(container, val, entityPath, propName, v, true, { dbPath, ctx: valueCtx });
+      _showUserDropdown(container, val, entityPath, propName, String(val.value ?? ''), true, { ...options, dbPath, ctx: valueCtx,
+        onValueSaved(value) { if (container.isConnected) _renderUserValueControl(container, value, true); options.onValueSaved?.(value); } });
     });
     row.appendChild(container);
     return row;
@@ -1515,6 +1523,24 @@ window.openEntityChatForPath = async function openEntityChatForPath(entityPath) 
 window.openEntityAiChat = window.openEntityChatForPath;
 
 // ユーザープロパティ: 小型アバター
+function _renderUserValueControl(control, value, multi) {
+  const text = String(value ?? '');
+  const names = multi ? text.split(',').map(name => name.trim()).filter(Boolean) : text ? [text] : [];
+  control.replaceChildren();
+  control.style.color = names.length ? '' : 'var(--fg2)';
+  if (multi) {
+    control.style.fontSize = names.length ? '' : '12px';
+    control.style.padding = names.length ? '' : '2px';
+  }
+  if (!names.length) { control.textContent = '—'; return; }
+  if (!multi) { control.innerHTML = _userAvatarSmall(String(value)) + ' ' + esc(String(value)); return; }
+  names.forEach(name => {
+    const tag = document.createElement('span'); tag.className = 'multi-user-tag';
+    tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;';
+    tag.innerHTML = _userAvatarSmall(name) + ' ' + esc(name); control.appendChild(tag);
+  });
+}
+
 function _userAvatarSmall(username) {
   // avatar URL は属性だけに入れ、onerror 内にユーザー由来文字列を埋め込まない。
   const teamAvatar = window.MeldexDataAccess?.team?.avatarUrl?.(username || 'anonymous', {}) || ('/api/team/avatar/' + encodeURIComponent(username));

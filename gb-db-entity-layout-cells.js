@@ -28,6 +28,44 @@ function _elPropIconHtml(propName, propTypes, size) {
   return '';
 }
 
+async function _elRefreshFormValueHistory(ctx, propName) {
+  const runtime = globalThis.MeldexDbFormRuntime;
+  if (typeof runtime?.historyScope !== 'function') return ctx.rerender?.();
+  const normalize = path => String(path || '').replace(/\\/g, '/');
+  const entryId = data => String(data?.entry_id || data?.id || Object.values(data?.properties || {})
+    .flatMap(values => Array.isArray(values) ? values : []).find(value => value?.entry_id)?.entry_id || '');
+  const ownValues = data => Object.prototype.hasOwnProperty.call(data?.properties || {}, propName) ? data.properties[propName] : undefined;
+  const scope = runtime.historyScope(ctx), id = entryId(ctx.data);
+  const matches = live => {
+    if (!live || live.editMode || runtime.historyScope(live) !== scope) return false;
+    if (!scope && normalize(live.dbPath) !== normalize(ctx.dbPath)) return false;
+    const currentId = entryId(live.data);
+    return id && currentId ? id === currentId : normalize(live.entityPath) === normalize(ctx.entityPath);
+  };
+  for (const canvas of document.querySelectorAll('.el-canvas')) {
+    const live = canvas._elContext;
+    if (!canvas.isConnected || !live?.grid?.isConnected || !matches(live)) continue;
+    const before = JSON.stringify(ownValues(live.data));
+    const fresh = await apiFetch('/entity?path=' + encodeURIComponent(live.entityPath), { silentError: true, skipBrowseCache: true, cache: 'no-store' });
+    if (!canvas.isConnected || !live.grid.isConnected || !matches(live) || JSON.stringify(ownValues(live.data)) !== before) continue;
+    if (!live.data.properties) live.data.properties = {};
+    Object.defineProperty(live.data.properties, propName, { value: Array.isArray(ownValues(fresh)) ? ownValues(fresh) : [], enumerable: true, writable: true, configurable: true });
+    if (fresh.revision != null) { live.data.revision = fresh.revision; live.options?.onRevision?.(fresh.revision); }
+    for (const cell of live.layout.cells.filter(cell => cell.type === 'field' && cell.prop === propName)) {
+      const body = canvas.querySelector('.el-cell[data-cell-id="' + CSS.escape(cell.id) + '"] .el-cell-body');
+      if (!body || body.querySelector('[data-form-dirty="true"],.value-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,[contenteditable="true"]')) continue;
+      const replacement = _elBuildFieldCellContent(cell, live).querySelector('.el-cell-body');
+      if (replacement) {
+        body.replaceChildren(...replacement.childNodes);
+        if (typeof _elAutoFitCellText === 'function') {
+          const element = body.closest('.el-cell'); if (element) _elAutoFitCellText(element, cell);
+        }
+      }
+    }
+    if (typeof _elRefreshLayoutCharts === 'function') _elRefreshLayoutCharts(live);
+  }
+}
+
 /* field セル: 列キャプション + 値エディタ。値の描画は列一覧（renderEntityPropsGridInto）と
    同じ共通ヘルパー renderEntityPropValuesInto を使い、見た目と編集挙動を揃える。 */
 function _elBuildFieldCellContent(cell, ctx) {
@@ -54,8 +92,13 @@ function _elBuildFieldCellContent(cell, ctx) {
     if (globalThis.MeldexDbFormRuntime?.renderField(body, cell, ctx)) {
       // Both form views and topic layouts use the same rule-aware input controls.
     } else if (typeof renderEntityPropValuesInto === 'function') {
-      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes,
-        { readOnly: ctx.readOnly === true || !!formConfig && !formConfig.fields.includes(propName) });
+      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes, {
+        readOnly: ctx.readOnly === true || !!formConfig && !formConfig.fields.includes(propName),
+        dbPath: ctx.options?.ctx?.dbPath || ctx.dbPath, ctx: ctx.options?.ctx,
+        historyScope: formConfig && typeof globalThis.MeldexDbFormRuntime?.historyScope === 'function'
+          ? () => globalThis.MeldexDbFormRuntime.historyScope(ctx) : ctx.options?.historyScope,
+        onHistoryChanged: ctx.options?.onHistoryChanged || (formConfig ? () => _elRefreshFormValueHistory(ctx, propName) : undefined),
+      });
     } else {
       const values = Array.isArray(ctx.data.properties[propName]) ? ctx.data.properties[propName] : [];
       values.forEach(val => {

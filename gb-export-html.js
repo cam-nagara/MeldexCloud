@@ -736,7 +736,12 @@ const MeldexExportHtml = (() => {
     const usage = collectFontUsage(rootEl);
     if (!usage.requests.length) return null;
     try {
-      const result = await apiPost('/export/font-subset', { fonts: usage.requests, text: usage.text }, { silentError: true, timeoutMs: 180000 });
+      const body = { fonts: usage.requests, text: usage.text };
+      const result = typeof runBackgroundJob === 'function'
+        ? await runBackgroundJob('/export/font-subset', { ...body, background: true }, {
+          label: '書き出し用フォントの準備', cancellable: false, startTimeoutMs: 180000,
+        })
+        : await apiPost('/export/font-subset', body, { silentError: true, timeoutMs: 180000 });
       if (!result || typeof result.css !== 'string' || !result.css) return null;
       return result;
     } catch {

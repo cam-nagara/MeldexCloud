@@ -1355,7 +1355,7 @@ class ScriptNoteEditor {
     this._wrapResizeLastSize = 0;
   }
 
-  _setupWrapResizeObserver(scroll, viewMode, wrapMode) {
+  _setupWrapResizeObserver(scroll, viewMode, wrapMode, measuredSize = null) {
     this._teardownWrapResizeObserver();
     if (!scroll || !wrapMode) return;
     const isVertical = viewMode === 'vertical';
@@ -1365,7 +1365,8 @@ class ScriptNoteEditor {
       const size = isVertical ? rect.width : rect.height;
       return Number.isFinite(size) ? Math.round(size) : 0;
     };
-    let lastSize = readSize();
+    // 段組みで直前に読んだ実寸を使う。監視コールバックでは毎回実測し、以後の変更も検出する。
+    let lastSize = Number.isFinite(measuredSize) && measuredSize > 0 ? Math.round(measuredSize) : readSize();
     this._wrapResizeLastSize = lastSize;
     const scheduleRender = () => {
       if (this._wrapResizeTimer != null) return;
@@ -1429,6 +1430,38 @@ class ScriptNoteEditor {
       return 0;
     });
     return handle ? ['_handle', ...rest] : rest;
+  }
+
+  _measurementHtmlWithoutAria(html) {
+    // 本文やコメントに含まれる文字列は保持し、HTMLタグ内の補助ラベルだけを除く。
+    return html.replace(/<!--[\s\S]*?-->|<(?:[^>"']|"[^"]*"|'[^']*')*>/g,
+      tag => tag.startsWith('<!--') ? tag : tag.replace(/\saria-label="[^"]*"/g, ''));
+  }
+
+  _wrapRowMeasurementKey(el, viewMode) {
+    let key = this._measurementHtmlWithoutAria(el.outerHTML);
+    if (viewMode === 'horizontal') {
+      el.querySelectorAll('.sn2-gutter[data-overflow="overflow"]').forEach(node => {
+        if (node.children.length) return;
+        const original = this._measurementHtmlWithoutAria(node.outerHTML);
+        const copy = node.cloneNode(true);
+        copy.textContent = node.textContent.replace(/[0-9]/g, '0');
+        key = key.replace(original, this._measurementHtmlWithoutAria(copy.outerHTML));
+      });
+    }
+    return key;
+  }
+
+  _findWrapRowSizeCache(globalKey) {
+    return [this._wrapRowSizeCache, this._previousWrapRowSizeCache]
+      .find(cache => cache?.globalKey === globalKey) || null;
+  }
+
+  _rememberWrapRowSizeCache(cache) {
+    if (this._wrapRowSizeCache?.globalKey !== cache.globalKey) {
+      this._previousWrapRowSizeCache = this._wrapRowSizeCache;
+    }
+    this._wrapRowSizeCache = cache;
   }
 
   _render() {
@@ -1818,22 +1851,28 @@ class ScriptNoteEditor {
         viewMode, editor.style.cssText, scroll.style.cssText,
         typeof _getZoom === 'function' ? _getZoom() : 1,
       ]);
-      const wrapSizeCache = this._wrapRowSizeCache?.globalKey === wrapSizeGlobalKey ? this._wrapRowSizeCache.map : null;
-      const wrapRowKeys = allRowEls.map(el => el.outerHTML);
-      const cachedRowSizes = wrapSizeCache && wrapRowKeys.every(key => wrapSizeCache.has(key))
-        ? wrapRowKeys.map(key => wrapSizeCache.get(key))
-        : null;
+      const selectedWrapSizeCache = this._findWrapRowSizeCache(wrapSizeGlobalKey);
+      const wrapSizeCache = selectedWrapSizeCache?.map || null;
+      const wrapRowKeys = allRowEls.map(el => this._wrapRowMeasurementKey(el, viewMode));
+      const cachedRowSizes = wrapRowKeys.map(key => wrapSizeCache?.get(key) ?? null);
+      const unmeasuredRowIndices = cachedRowSizes.flatMap((size, index) => size == null ? [index] : []);
       let lastFinalRowSizes = null;
+      let verticalWrapHeaderHeight = 0;
+      const cachedVerticalHeight = viewMode === 'vertical' && wrapSizeCache
+        ? Number(selectedWrapSizeCache.verticalHeight) : 0;
+      if (cachedVerticalHeight > 0) {
+        allRowEls.forEach(el => { el.style.height = cachedVerticalHeight + 'px'; });
+      }
       // 一旦仮レンダリングして行の高さ/幅を測定
       // 縦書き時は仮レンダリングでも縦書きレイアウトにする
-      if (!cachedRowSizes) {
+      if (unmeasuredRowIndices.length) {
         if (viewMode === 'vertical') {
           editor.style.display = 'flex';
           editor.style.flexDirection = 'row-reverse';
           editor.style.alignItems = 'flex-start';
           editor.style.width = 'max-content';
         }
-        allRowEls.forEach(el => editor.appendChild(el));
+        unmeasuredRowIndices.forEach(index => editor.appendChild(allRowEls[index]));
       }
       scroll.appendChild(editor);
       this.host.innerHTML = '';
@@ -1844,9 +1883,11 @@ class ScriptNoteEditor {
       // 問題を避けるため、getBoundingClientRect + _getZoom() で CSS ピクセルに
       // 正規化してから packing 計算する。
       const zPack = typeof _getZoom === 'function' ? _getZoom() : 1;
+      let lastWrapViewportRectSize = null;
       const measureWrapViewportSize = () => {
         const rect = scroll.getBoundingClientRect();
-        const rectSize = (viewMode === 'vertical' ? rect.width : rect.height) / zPack;
+        lastWrapViewportRectSize = viewMode === 'vertical' ? rect.width : rect.height;
+        const rectSize = lastWrapViewportRectSize / zPack;
         const clientSize = viewMode === 'vertical' ? scroll.clientWidth : scroll.clientHeight;
         if (Number.isFinite(clientSize) && clientSize > 0) return Math.min(rectSize, clientSize);
         return rectSize;
@@ -1854,7 +1895,7 @@ class ScriptNoteEditor {
       const wrapFitGuard = 2;
       const maxSize = measureWrapViewportSize();
       let verticalMeasureHeader = null;
-      if (viewMode === 'vertical' && !cachedRowSizes) {
+      if (viewMode === 'vertical' && unmeasuredRowIndices.length) {
         verticalMeasureHeader = buildHeader(false, 'measure');
         verticalMeasureHeader.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:0;top:0;';
         scroll.appendChild(verticalMeasureHeader);
@@ -1878,15 +1919,22 @@ class ScriptNoteEditor {
           const h = group.querySelector('.sn2-header');
           return h ? h.getBoundingClientRect().height / zV : null;
         });
+        verticalWrapHeaderHeight = headerHeights.find(height => height > 0) || 0;
         const groupRows = groups.map((group, index) => (headerHeights[index] == null ? [] : [...group.querySelectorAll('.sn2-row')]));
-        groupRows.forEach((rows, index) => rows.forEach(r => { r.style.height = headerHeights[index] + 'px'; }));
+        groupRows.forEach((rows, index) => rows.forEach(r => {
+          const height = headerHeights[index] + 'px';
+          // CSSの文字列表現やzoom除算の丸め差で、同じ高さを書き直さない。
+          const currentHeight = r.style.height || '';
+          if (!currentHeight.endsWith('px') || Math.abs(parseFloat(currentHeight) - headerHeights[index]) >= 0.001) r.style.height = height;
+        }));
         const widths = [];
         groupRows.forEach(rows => rows.forEach(r => {
           const txt = r.querySelector('.sn2-text');
           if (txt) widths.push([r, r.getBoundingClientRect().width / zV, txt.scrollWidth]);
         }));
         widths.forEach(([r, rowWidth, scrollW]) => {
-          if (scrollW > rowWidth) r.style.minWidth = Math.ceil(scrollW) + 'px';
+          const minWidth = Math.ceil(scrollW) + 'px';
+          if (scrollW > rowWidth && r.style.minWidth !== minWidth) r.style.minWidth = minWidth;
         });
       };
       const rebuildWrapColumns = (columnsToBuild) => {
@@ -1945,7 +1993,6 @@ class ScriptNoteEditor {
       };
       const repackVerticalWrapFromFinalWidths = () => {
         if (viewMode !== 'vertical') return false;
-        scroll.scrollLeft = 0;
         applyVerticalWrapSizing();
         return true;
       };
@@ -2004,11 +2051,11 @@ class ScriptNoteEditor {
         if (viewMode !== 'vertical') return;
         scroll.scrollLeft = 0;
       };
-      const settleWrapPacking = (forceFirstPass = false) => {
+      const settleWrapPacking = (forceFirstPass = false, resetPosition = true) => {
+        if (resetPosition) resetVerticalWrapHorizontalPosition();
         for (let pass = 0; pass < 4; pass += 1) {
           if (!repackWrapFromFinalSizes(forceFirstPass && pass === 0)) break;
         }
-        resetVerticalWrapHorizontalPosition();
       };
 
       // 各行のサイズを測定（CSS ピクセルに正規化）。
@@ -2041,7 +2088,9 @@ class ScriptNoteEditor {
         }
         return reads.map(read => Math.ceil(Math.max(read.size, 1)));
       };
-      const rowSizes = cachedRowSizes || measureAllWrapRowSizes(allRowEls);
+      const rowSizes = cachedRowSizes.slice();
+      const measuredMissingSizes = measureAllWrapRowSizes(unmeasuredRowIndices.map(index => allRowEls[index]));
+      unmeasuredRowIndices.forEach((index, measuredIndex) => { rowSizes[index] = measuredMissingSizes[measuredIndex]; });
 
       // 段に分割
       const columns = packWrapColumns(rowSizes, availSize);
@@ -2055,18 +2104,26 @@ class ScriptNoteEditor {
       editor.style.removeProperty('flex-direction');
       editor.style.removeProperty('align-items');
       editor.style.removeProperty('width');
-      settleWrapPacking(true);
-      this._repackWrapForResize = () => {
+      this._repackWrapForResize = (refreshRows = false) => {
         const top = scroll.scrollTop, left = scroll.scrollLeft;
+        if (refreshRows) {
+          const byId = new Map([...editor.querySelectorAll('.sn2-row')].map(row => [row.dataset.rowId, row]));
+          const current = this.doc.rows.map(row => byId.get(row.id));
+          if (current.some(row => !row)) return false;
+          allRowEls.splice(0, allRowEls.length, ...current);
+        }
         settleWrapPacking(true);
         scroll.scrollTop = top; scroll.scrollLeft = left;
+        return true;
       };
       this._bind();
       this._applyReadOnlyDom();
+      // 先に行の高さを決め、ルビ等の寸法が確定してから段を最終配置する。
+      // まだ寸法の変わる途中で全行を段組みすると、直後に同じ計測をやり直す。
+      if (viewMode === 'vertical') applyVerticalWrapSizing();
       this._adjustRubySpacing();
-      // 横書きでルビが無い場合は、この間に行寸法が変わらない。
-      // 同じ全行の計測と段組みを二重に行わず、入力直後の再レイアウトを抑える。
-      if (viewMode === 'vertical' || editor.querySelector('[data-ruby]')) settleWrapPacking(true);
+      // 新しく作った領域は未スクロール。以後の再配置では従来どおり起点へ戻して測る。
+      settleWrapPacking(true, false);
       if (lastFinalRowSizes?.length === wrapRowKeys.length) {
         // Undo/Redoで直前の本文へ戻る時も、その本文の実測寸法を再利用する。
         // 最終配置は上で毎回検査する。異なる表示設定はglobalKeyで分離し、
@@ -2078,10 +2135,11 @@ class ScriptNoteEditor {
         });
         const cacheLimit = Math.max(64, wrapRowKeys.length * 3);
         while (measuredSizes.size > cacheLimit) measuredSizes.delete(measuredSizes.keys().next().value);
-        this._wrapRowSizeCache = {
+        this._rememberWrapRowSizeCache({
           globalKey: wrapSizeGlobalKey,
           map: measuredSizes,
-        };
+          verticalHeight: verticalWrapHeaderHeight,
+        });
       }
       // 縦書き折り返し: 各段のヘッダー高さを測定し行に適用 + テキスト幅拡張
       if (viewMode === 'vertical') {
@@ -2091,14 +2149,13 @@ class ScriptNoteEditor {
       }
       this._setupPanSpacer(scroll, editor, viewMode);
       // スクロール位置を復元
-      scroll.scrollTop = savedScrollTop;
-      scroll.scrollLeft = viewMode === 'vertical' ? 0 : savedScrollLeft;
-      if (viewMode === 'vertical') resetVerticalWrapHorizontalPosition();
+      if (savedScrollTop) scroll.scrollTop = savedScrollTop;
+      if (viewMode !== 'vertical' && savedScrollLeft) scroll.scrollLeft = savedScrollLeft;
       // 折り返し表示でも行コメントバッジを通常表示と同じタイミングで再描画する
       if (this._path && typeof CommentBadges !== 'undefined') {
         try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
       }
-      this._setupWrapResizeObserver(scroll, viewMode, wrapMode);
+      this._setupWrapResizeObserver(scroll, viewMode, wrapMode, lastWrapViewportRectSize);
       return;
     }
 
@@ -2115,23 +2172,23 @@ class ScriptNoteEditor {
         if (!h) return;
         const zV = typeof _getZoom === 'function' ? _getZoom() : 1;
         const hH = h.getBoundingClientRect().height / zV;
-        scroll.querySelectorAll('.sn2-row').forEach(r => {
-          r.style.height = hH + 'px';
+        const rows = [...scroll.querySelectorAll('.sn2-row')];
+        rows.forEach(r => { r.style.height = hH + 'px'; });
+        const widths = rows.map(r => {
           const txt = r.querySelector('.sn2-text');
-          if (txt) {
-            const rW = r.getBoundingClientRect().width / zV;
-            const scrollW = txt.scrollWidth;
-            if (scrollW > rW) {
-              r.style.minWidth = scrollW + 'px';
-            }
-          }
+          return txt ? [r, r.getBoundingClientRect().width / zV, txt.scrollWidth] : null;
+        });
+        widths.forEach(measurement => {
+          if (!measurement) return;
+          const [row, width, textWidth] = measurement;
+          if (textWidth > width) row.style.minWidth = textWidth + 'px';
         });
       });
     }
     this._setupPanSpacer(scroll, editor, viewMode);
     // スクロール位置を復元
-    scroll.scrollTop = savedScrollTop;
-    scroll.scrollLeft = savedScrollLeft;
+    if (savedScrollTop) scroll.scrollTop = savedScrollTop;
+    if (savedScrollLeft) scroll.scrollLeft = savedScrollLeft;
     // Phase 2e-ii: 行コメントバッジを描画
     if (this._path && typeof CommentBadges !== 'undefined') {
       try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
@@ -4373,8 +4430,8 @@ class ScriptNoteEditor {
     }
     this.doc.rows.splice(idx + 1, 0, newRow);
     this._calcCache = null;
-    // 通常表示では変更した2行だけを差し替える。折り返し・絞り込み・まとめ表示など
-    // 全体配置が必要な状態だけ従来の全体再描画へ戻す。
+    // 横書きでは変更した2行だけを差し替える。縦書きの折返し・絞り込み・まとめ表示など
+    // 全体描画が必要な状態は従来の処理へ戻す。
     if (!this._renderSplitRowsIncrementally(row, idx, newRow)) this._render();
     this._markDirty({ skipUndo: true });
     // 新しい行にフォーカス。E2E/高速操作では rAF だけだと次操作が先行するため即時にも反映する。
@@ -4393,10 +4450,18 @@ class ScriptNoteEditor {
 
   _renderSplitRowsIncrementally(previousRowEl, rowIndex, newRow) {
     if (!previousRowEl?.isConnected || !this.host) return false;
-    if (this.doc.editor?.wrapMode || this.doc.editor?.mergeDisplay || this.doc.editor?.spreadBorder?.enabled) return false;
+    if (this.doc.editor?.mergeDisplay || this.doc.editor?.spreadBorder?.enabled) return false;
     if (this._filterRoles || this._filterStatuses
         || (this._hideRoles && this._hideRoles.size)
         || (this._hideStatuses && this._hideStatuses.size)) return false;
+    if (this.doc.editor?.wrapMode) {
+      if (this.doc.editor?.viewMode === 'vertical'
+          || !this.doc.rows[rowIndex] || this.doc.rows[rowIndex + 1] !== newRow) return false;
+      const previousRows = this.doc.rows.filter(row => row !== newRow);
+      // 分割前のセルも作り直す。それ以外の行の参照と画面部品は保持する。
+      previousRows[rowIndex] = { ...previousRows[rowIndex] };
+      return this._renderRowsIncrementally(previousRows);
+    }
     const editorEl = previousRowEl.parentElement;
     if (!editorEl?.classList?.contains('sn2-editor')) return false;
     const oldRow = this.doc.rows[rowIndex];
@@ -4437,6 +4502,58 @@ class ScriptNoteEditor {
     this._adjustRubySpacing();
     const scroll = this.host.querySelector('.sn2-scroll');
     if (scroll) this._setupPanSpacer(scroll, editorEl, this.doc.editor?.viewMode || 'horizontal');
+    if (this._path && typeof CommentBadges !== 'undefined') {
+      try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
+    }
+    return true;
+  }
+
+  // 本文だけの履歴復元と行の分割。書式・絞り込み・縦書きなどは従来の全体描画へ戻す。
+  _renderRowsIncrementally(previousRows) {
+    if (!this.host || this.doc.editor?.viewMode === 'vertical' || !this.doc.editor?.wrapMode
+        || this.doc.editor?.mergeDisplay || this.doc.editor?.spreadBorder?.enabled
+        || this._filterRoles || this._filterStatuses || this._hideRoles?.size || this._hideStatuses?.size
+        || typeof this._repackWrapForResize !== 'function') return false;
+    const editor = this.host.querySelector('.sn2-scroll.sn2-wrap .sn2-editor');
+    const group = editor?.querySelector('.sn2-column-group');
+    if (!group) return false;
+    const oldElements = new Map([...editor.querySelectorAll('.sn2-row')].map(row => [row.dataset.rowId, row]));
+    const oldModels = new Map(previousRows.map(row => [row.id, row]));
+    if (!this.doc.rows.some(row => oldModels.get(row.id) === row && oldElements.has(row.id))) return false;
+    const sample = oldElements.values().next().value;
+    const visibleColumns = [...sample.children].map(cell => cell.dataset?.colId).filter(Boolean).map(id => ({ id }));
+    const customColumns = this._getCustomColumns();
+    const calc = this._calcPagePanel();
+    const retainedIds = new Set();
+    this.doc.rows.forEach((row, index) => {
+      retainedIds.add(row.id);
+      const previous = oldElements.get(row.id);
+      if (previous && oldModels.get(row.id) === row) return;
+      const next = this._buildRowEl(row, index, calc[index], false,
+        index ? this.doc.rows[index - 1] : null, index ? calc[index - 1] : null, customColumns, visibleColumns);
+      if (previous) previous.replaceWith(next);
+      else group.appendChild(next);
+    });
+    for (const [id, element] of oldElements) if (!retainedIds.has(id)) element.remove();
+    this._updateGuttersFrom(0, { movedRowIds: [] });
+    const indices = new Map(this.doc.rows.map((row, index) => [row.id, index]));
+    const customById = new Map(customColumns.map(column => [column.id, column]));
+    editor.querySelectorAll('.sn2-row').forEach(element => {
+      const index = indices.get(element.dataset.rowId);
+      const row = this.doc.rows[index];
+      element.querySelector('.sn2-row-check')?.setAttribute('aria-label', `行を選択: ${index + 1}`);
+      element.querySelector('.sn2-text')?.setAttribute('aria-label', `本文、${index + 1}行、キャラ${row.character || '未設定'}、タイプ${row.role || '未設定'}`);
+      element.querySelectorAll('.sn2-custom-cell').forEach(cell => {
+        const column = customById.get(cell.dataset.colId);
+        const control = cell.querySelector('.sn2-custom-input, .sn2-custom-select, .sn2-custom-text');
+        if (column) control?.setAttribute('aria-label', `${column.label || column.id || '列'}列、${index + 1}行`);
+      });
+    });
+    if (!this._repackWrapForResize(true)) return false;
+    this._adjustRubySpacing();
+    if (editor.querySelector('[data-ruby]')) this._repackWrapForResize();
+    const scroll = editor.closest('.sn2-scroll');
+    this._setupPanSpacer(scroll, editor, 'horizontal');
     if (this._path && typeof CommentBadges !== 'undefined') {
       try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
     }
@@ -4741,61 +4858,82 @@ class ScriptNoteEditor {
   // 最終文字のルビが閉じ括弧等に被る不具合があった。占有幅を「動かせない境界」
   // (span:null, minExtent===extent) として同じ行のresolveRubyOverlapsに参加させる。
   _appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z) {
+    const targets = [];
     this.host.querySelectorAll('.sn2-text[data-after]:not(:empty)').forEach(textEl => {
       const rubySpans = textEl.querySelectorAll('[data-ruby]');
       if (!rubySpans.length) return;
       const info = spanToInfo.get(rubySpans[rubySpans.length - 1]);
       if (!info || info._lineKey === undefined) return;
-      const boundary = this._measureAfterTextRubyBoundary(textEl, isVertical, z);
-      if (boundary) rows.get(info._lineKey)?.push(boundary);
+      targets.push({ textEl, lineKey: info._lineKey });
+    });
+    const boundaries = this._measureAfterTextRubyBoundaries(targets.map(target => target.textEl), isVertical, z);
+    boundaries.forEach((boundary, index) => {
+      if (boundary) rows.get(targets[index].lineKey)?.push(boundary);
     });
   }
 
   // data-after の実際の描画幅は::afterのため直接測れない。同じフォント文脈の
   // 子要素として一時的に不可視計測し、直後に取り除く（DOM変更は無し扱い）。
   _measureAfterTextRubyBoundary(textEl, isVertical, z) {
-    const afterText = textEl.dataset.after || '';
-    const lastChild = textEl.lastChild;
-    if (!afterText || !lastChild) return null;
-    // 末尾がルビ等のinline-block要素だと、その直後に collapse したRangeの矩形が
-    // 0になるブラウザ実装があるため、要素なら要素自身の矩形を終端とする。
-    let endRect;
-    if (lastChild.nodeType === Node.TEXT_NODE) {
-      const endRange = document.createRange();
-      endRange.selectNodeContents(textEl);
-      endRange.collapse(false);
-      endRect = endRange.getBoundingClientRect();
-    } else {
-      endRect = lastChild.getBoundingClientRect();
+    return this._measureAfterTextRubyBoundaries([textEl], isVertical, z)[0];
+  }
+
+  _measureAfterTextRubyBoundaries(textEls, isVertical, z) {
+    // 終端位置を全て読んでから計測要素をまとめて追加し、寸法をまとめて読む。
+    // 行ごとの追加・読取・削除は、文書全体の配置計算を行数分繰り返してしまう。
+    const entries = textEls.map(textEl => {
+      const afterText = textEl.dataset.after || '';
+      const lastChild = textEl.lastChild;
+      if (!afterText || !lastChild) return null;
+      // 末尾がinline-block要素なら、要素自身の矩形を終端とする。
+      let endRect;
+      if (lastChild.nodeType === Node.TEXT_NODE) {
+        const endRange = document.createRange();
+        endRange.selectNodeContents(textEl);
+        endRange.collapse(false);
+        endRect = endRange.getBoundingClientRect();
+      } else {
+        endRect = lastChild.getBoundingClientRect();
+      }
+      const probe = document.createElement('span');
+      probe.textContent = afterText;
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;';
+      return { textEl, endRect, probe };
+    });
+    entries.forEach(entry => { if (entry) entry.textEl.appendChild(entry.probe); });
+    let measurements;
+    try {
+      measurements = entries.map(entry => entry ? entry.probe.getBoundingClientRect() : null);
+    } finally {
+      entries.forEach(entry => entry?.probe.remove());
     }
-    const probe = document.createElement('span');
-    probe.textContent = afterText;
-    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;';
-    textEl.appendChild(probe);
-    const probeRect = probe.getBoundingClientRect();
-    probe.remove();
-    const afterSize = (isVertical ? probeRect.height : probeRect.width) / z;
-    if (!(afterSize > 0)) return null;
-    const parentStart = (isVertical ? endRect.bottom : endRect.right) / z;
-    return {
-      parentStart,
-      parentEnd: parentStart + afterSize,
-      parentSpan: afterSize,
-      parentCenter: parentStart + afterSize / 2,
-      baseEm: 0,
-      rubyEm: 0,
-      count: 0,
-      text: '',
-      style: '',
-      align: 'start',
-      extent: afterSize,
-      minExtent: afterSize,
-      effectiveLetterSpacing: 0,
-      condense: 1,
-      gapPx: 0,
-      groupId: '__sn2-after-boundary__',
-      span: null,
-    };
+    return entries.map((entry, index) => {
+      if (!entry) return null;
+      const { endRect } = entry;
+      const probeRect = measurements[index];
+      const afterSize = (isVertical ? probeRect.height : probeRect.width) / z;
+      if (!(afterSize > 0)) return null;
+      const parentStart = (isVertical ? endRect.bottom : endRect.right) / z;
+      return {
+        parentStart,
+        parentEnd: parentStart + afterSize,
+        parentSpan: afterSize,
+        parentCenter: parentStart + afterSize / 2,
+        baseEm: 0,
+        rubyEm: 0,
+        count: 0,
+        text: '',
+        style: '',
+        align: 'start',
+        extent: afterSize,
+        minExtent: afterSize,
+        effectiveLetterSpacing: 0,
+        condense: 1,
+        gapPx: 0,
+        groupId: '__sn2-after-boundary__',
+        span: null,
+      };
+    });
   }
 
   // このシナリオの自動リンク・自動ルビの状態（ファイルの editor.autoLinks / editor.autoRuby）。
@@ -4965,6 +5103,7 @@ class ScriptNoteEditor {
   }
 
   _markDirty(options = {}) {
+    this._detailDataRevision = (this._detailDataRevision || 0) + 1;
     if (this._readOnly) {
       // 詳細パネル等の間接入口が先にモデルを書き換えても、ロック取得時の
       // スナップショットへ戻してdirty化・下書き・PUTを発生させない。
@@ -5362,6 +5501,19 @@ function _sn2FindRowFromNode(node) {
   return el?.closest?.('.sn2-row') || null;
 }
 
+function _sn2HistoryValueKey(value) {
+  return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+}
+
+function _sn2HistoryLayoutKey(doc) {
+  // 保存時の印や文書IDは履歴から戻さない。実際に復元する表示・書式だけを比較する。
+  const keys = ['fileType', 'version', 'title', 'layoutMode', 'templateId', 'templateVersion',
+    'templatePurpose', 'templateSourceRefs', 'pageSettings', 'editor', 'scenarioTypes', 'characters',
+    'characterDb', 'notes', 'rubyRules', 'rubyPresentation', 'source', 'views'];
+  return _sn2HistoryValueKey(Object.fromEntries(keys.map(key => [key, doc[key]])));
+}
+
 function _sn2CaptureSnapshotFocus(editor) {
   let focusRowId = null;
   let focusRowIdx = -1;
@@ -5551,43 +5703,57 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
       if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
       const data = createScriptNoteDoc(JSON.parse(snap));
-      this._rebindRoleFilters?.(
-        [...(this.doc.scenarioTypes || []), ...(this.doc.characters || [])],
-        [...data.scenarioTypes, ...data.characters],
-      );
-      this.doc.fileType = data.fileType;
-      this.doc.version = data.version;
-      this.doc.title = data.title;
-      this.doc.layoutMode = data.layoutMode;
-      // 版付きテンプレートと紙面設定も本文と同じ履歴単位で復元する。
-      // 欠けている旧文書へ戻す時は、現在値を残さず明示的に取り除く。
-      ['templateId', 'templateVersion', 'templatePurpose', 'templateSourceRefs', 'pageSettings'].forEach((key) => {
-        if (Object.prototype.hasOwnProperty.call(data, key)) this.doc[key] = data[key];
-        else delete this.doc[key];
-      });
-      this.doc.editor = data.editor;
-      this.doc.scenarioTypes = data.scenarioTypes;
-      this.doc.characters = data.characters;
-      this.doc.characterDb = data.characterDb;
-      this.doc.notes = data.notes;
-      this.doc.rubyRules = data.rubyRules || [];
-      this.doc.rubyPresentation = data.rubyPresentation;
-      this.doc.rows = data.rows;
-      this.doc.source = data.source;
+      const rowsOnly = _sn2HistoryLayoutKey(this.doc) === _sn2HistoryLayoutKey(data);
+      if (rowsOnly) {
+        // 残すセルのハンドラーが参照する行と書式も、現在の文書のオブジェクトに保つ。
+        const previousById = new Map(rowsBefore.map(row => [row.id, row]));
+        data.rows = data.rows.map(row => {
+          const previous = previousById.get(row.id);
+          return previous && _sn2HistoryValueKey(previous) === _sn2HistoryValueKey(row) ? previous : row;
+        });
+      }
+      if (!rowsOnly) {
+        this._rebindRoleFilters?.(
+          [...(this.doc.scenarioTypes || []), ...(this.doc.characters || [])],
+          [...data.scenarioTypes, ...data.characters],
+        );
+        this.doc.fileType = data.fileType;
+        this.doc.version = data.version;
+        this.doc.title = data.title;
+        this.doc.layoutMode = data.layoutMode;
+        // 版付きテンプレートと紙面設定も本文と同じ履歴単位で復元する。
+        // 欠けている旧文書へ戻す時は、現在値を残さず明示的に取り除く。
+        ['templateId', 'templateVersion', 'templatePurpose', 'templateSourceRefs', 'pageSettings'].forEach((key) => {
+          if (Object.prototype.hasOwnProperty.call(data, key)) this.doc[key] = data[key];
+          else delete this.doc[key];
+        });
+        this.doc.editor = data.editor;
+        this.doc.scenarioTypes = data.scenarioTypes;
+        this.doc.characters = data.characters;
+        this.doc.characterDb = data.characterDb;
+        this.doc.notes = data.notes;
+        this.doc.rubyRules = data.rubyRules || [];
+        this.doc.rubyPresentation = data.rubyPresentation;
+        this.doc.rows = data.rows;
+        this.doc.source = data.source;
+        // ビュー一覧は本文と同じ履歴単位で戻す。表示中のビューは戻さない（表示の切替は履歴に入れない）。
+        if (Array.isArray(data.views)) this.doc.views = data.views;
+        else delete this.doc.views;
+        if (typeof this._ensureScenarioViews === 'function') {
+          this._ensureScenarioViews();
+          this._applyScenarioViewFilter?.(this._activeScenarioView(), { render: false });
+          this._refreshScenarioViewTabs?.();
+        }
+      } else {
+        this.doc.rows = data.rows;
+        this._refreshScenarioViewTabs?.();
+      }
       // カーソルは、取り消し・やり直しで変わった行へ置く（変わった行が無ければ操作前の位置）。
       const changedFocus = _sn2ChangedRowFocus(rowsBefore, data.rows);
       if (changedFocus) Object.assign(focusState, changedFocus);
-      // ビュー一覧は本文と同じ履歴単位で戻す。表示中のビューは戻さない（表示の切替は履歴に入れない）。
-      if (Array.isArray(data.views)) this.doc.views = data.views;
-      else delete this.doc.views;
-      if (typeof this._ensureScenarioViews === 'function') {
-        this._ensureScenarioViews();
-        this._applyScenarioViewFilter?.(this._activeScenarioView(), { render: false });
-        this._refreshScenarioViewTabs?.();
-      }
-      this._ensureDefaultChara();
+      if (!rowsOnly) this._ensureDefaultChara();
       this._calcCache = null;
-      this._render();
+      if (!rowsOnly || !this._renderRowsIncrementally?.(rowsBefore)) this._render();
       this._syncAllFromDom();
       if (this._rowSelection instanceof Set) {
         const rowIds = createScriptNoteRowIdSet(this.doc);
@@ -10975,8 +11141,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     container.appendChild(root);
     // 表示領域の幅が決まってから列幅を収める（描画前の幅0では縮められないため）。
-    root.querySelectorAll('table[data-role-management-kind]').forEach(table => {
-      this._applyRoleManagementColumnWidths(table, table.dataset.roleManagementKind);
+    const tableWidths = [...root.querySelectorAll('table[data-role-management-kind]')]
+      .map(table => ({ table, width: table.parentElement?.clientWidth || 0 }));
+    tableWidths.forEach(({ table, width }) => {
+      this._applyRoleManagementColumnWidths(table, table.dataset.roleManagementKind, null, null, width);
     });
   },
 
@@ -11840,10 +12008,11 @@ Object.assign(ScriptNoteEditor.prototype, {
   // 可変列（既定値なし）は記憶した幅を使わず、常に残りの幅を受け持つ。表は表示領域の幅（100%）で描き、
   // 右端を表示領域の端へ揃える。表示領域が固定列の合計より狭い時は、直前に幅を変えた列以外の固定列を
   // 比率を保って縮めて収める（記憶する幅は変えない）。それでも収まらない時だけ横スクロールになる。
-  _applyRoleManagementColumnWidths(table, kind, overrides = null, pinnedKey = null) {
+  _applyRoleManagementColumnWidths(table, kind, overrides = null, pinnedKey = null, availableWidth = null) {
     const FLEX_MIN_WIDTH = 48;
     const MIN_WIDTH = 28;
     const saved = this._roleManagementColumnWidthStore();
+    const available = Math.floor(Number.isFinite(availableWidth) ? availableWidth : (table.parentElement?.clientWidth || 0));
     const cols = [...table.querySelectorAll(':scope > colgroup > col[data-role-col-key]')];
     const pinned = pinnedKey || table.dataset.rolePinnedKey || '';
     let hasFlexible = false;
@@ -11861,7 +12030,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       fixed.push({ col, key, width: Number.isFinite(stored) && stored > 0 ? stored : fallback });
     });
     const reserve = hasFlexible ? FLEX_MIN_WIDTH : 0;
-    const available = Math.floor(table.parentElement?.clientWidth || 0);
     let excess = available > 0 ? fixed.reduce((sum, entry) => sum + entry.width, 0) + reserve - available : 0;
     if (excess > 0) {
       const shrinkable = fixed.filter(entry => entry.key !== 'control' && entry.key !== pinned);
@@ -13159,7 +13327,30 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!container || !this.doc) return;
     const result = this._renderSeparatedRoleManagement(container);
     this._sn2EnsureStableControlIds?.(container, 'scriptnote-role-manage');
+    try {
+      this._lastRoleManagementRender = {
+        container, doc: this.doc, editor: this.doc.editor,
+        types: this.doc.scenarioTypes, characters: this.doc.characters,
+        revision: this._detailDataRevision || 0, readOnly: !!this._readOnly,
+        path: this._path || '', snapshot: JSON.stringify(this.doc),
+      };
+    } catch (_) {
+      this._lastRoleManagementRender = null;
+    }
     return result;
+  },
+
+  _canReuseRoleManagementPanel(container) {
+    const rendered = this._lastRoleManagementRender;
+    // 列幅は既存の監視が追随する。監視が使えない旧環境では従来の再描画へ戻す。
+    if (typeof ResizeObserver !== 'function' || !container?.isConnected || !rendered || rendered.container !== container
+      || rendered.doc !== this.doc || rendered.editor !== this.doc?.editor
+      || rendered.types !== this.doc?.scenarioTypes || rendered.characters !== this.doc?.characters
+      || rendered.revision !== (this._detailDataRevision || 0)
+      || rendered.readOnly !== !!this._readOnly || rendered.path !== (this._path || '')
+      || !container.querySelector('.sn2-role-management')) return false;
+    try { return rendered.snapshot === JSON.stringify(this.doc); }
+    catch (_) { return false; }
   },
 
   _renderLegacyDetailPanel(container) {

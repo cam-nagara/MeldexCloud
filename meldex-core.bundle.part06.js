@@ -1,3 +1,29 @@
+    '同期設定': 'calendarSync',
+    '新規リンクトピック: ノート': 'link2',
+    '新規リンクトピック: シート': 'link2',
+    '新規リンクトピック: ボード': 'link2',
+    '既存ファイルへのリンクトピック': 'link2',
+    'ツール': 'wrench',
+    '重複画像を検出': 'scanSearch',
+    'このフォルダで重複検出': 'scanSearch',
+    '画像インデックスを作成': 'fileSearch',
+    'このフォルダのインデックス作成': 'fileSearch',
+    'この階層を閉じる': 'chevronsDownUp',
+    'リネーム': 'pencil',
+    'パスを変更': 'folderPen',
+    'ワークスペースの管理': 'settings',
+    'システム保護': 'shield',
+    'プロパティ': 'info',
+    'チャットを開く': 'messageSquare',
+    '比較': 'columns',
+  });
+  // 色見本が先頭に付く行（色設定）は色見本をアイコンとして扱う。読み込み中の一時表示は付けない。
+  const ICONLESS = Object.freeze(new Set(['(なし)', '（なし）', '設定する', '解除する', 'OS メニュー 読み込み中']));
+
+  function normalizeLabel(label) {
+    let text = String(label ?? '').replace(/\s+/g, ' ').trim();
+    text = text.replace(/^[✓✔]\s*/, '');
+    text = text.replace(/(?:\.\.\.|…)$/, '').trim();
     text = text.replace(/\s*[（(][^（）()]*(?:件|枚)[）)]$/, '').trim();
     return text;
   }

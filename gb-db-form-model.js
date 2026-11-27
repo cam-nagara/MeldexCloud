@@ -112,7 +112,7 @@
   function validatePublicFields(doc, fields, types) {
     if (Object.values(fields).some(value => typeof value !== 'string')) return '回答の値は文字列で指定してください';
     const layout = doc.layout, config = layout ? forLayout(layout, doc.formConfig) : normalize(doc.formConfig, doc.formConfig?.fields || Object.keys(types));
-    const hidden = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation', 'formula', 'rollup', 'button', 'chat']);
+    const hidden = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation', 'common-tags', 'formula', 'rollup', 'button', 'chat']);
     const allowed = config.fields.filter(name => !hidden.has(types[name]?.type));
     if (Object.keys(fields).some(name => !allowed.includes(name))) return '公開していない項目への回答です';
     for (const name of allowed) {

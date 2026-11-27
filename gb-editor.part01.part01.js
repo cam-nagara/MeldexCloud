@@ -424,7 +424,14 @@ function _noteSavePayload(pc, md, extra) {
 // single-flight/coalesceへ合流させ、同じ内容の2本目のPUTを発生させない
 // （計画書§5工程1-2・5・6）。
 // 保存完了より新しい入力は、同期済みの下書きとして削除しない。
-async function _syncNoteDraftAfterSave(pc, path, savedMd) {
+async function _syncNoteDraftAfterSave(pc, path, savedMd, sentMd = savedMd) {
+  // 新規文書へサーバーが付けた識別情報だけは、送信本文も保存済みである。
+  // 別の本文や利用者の属性へ置き換わった応答では、元の下書きを削除しない。
+  if (sentMd !== savedMd) {
+    const prefix = !/^---\r?\n/.test(sentMd) && savedMd.endsWith(sentMd)
+      ? savedMd.slice(0, savedMd.length - sentMd.length) : '';
+    if (!/^---\r?\nmeldex:\r?\n(?:[ \t]+(?:metadata_version|document_id):[^\r\n]*\r?\n)+---\r?\n?$/.test(prefix)) sentMd = savedMd;
+  }
   const live = () => {
     const coordinator = window.MeldexDocumentSaveCoordinator;
     const hosts = [pc, ...(coordinator?.getParticipants?.(coordinator.documentKeyForPath(path)) || [])];
@@ -440,10 +447,13 @@ async function _syncNoteDraftAfterSave(pc, path, savedMd) {
     return found ? savedMd : null;
   };
   const current = live();
-  if (current === savedMd || current === null) await window.MeldexDraftRecovery?.markSynced?.(path, savedMd);
+  if (current === savedMd || current === sentMd || current === null) {
+    await window.MeldexDraftRecovery?.markSynced?.(path, sentMd);
+    if (sentMd !== savedMd) await window.MeldexDraftRecovery?.markSynced?.(path, savedMd);
+  }
   // IndexedDBの削除待ちの間にも入力できるので、完了後にもう一度照合する。
   const latest = live();
-  if (latest !== null && latest !== savedMd) {
+  if (latest !== null && latest !== savedMd && latest !== sentMd) {
     window.MeldexDraftRecovery?.queueDraft?.(path, latest, savedMd);
     await window.MeldexDraftRecovery?.saveDraft?.(path, latest, savedMd);
   }
@@ -525,7 +535,7 @@ async function _runNoteAutoSave(pc, expectedPath) {
       pc.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
       pc.dataset.lastSavedEtag = (res && res.etag) || '';
     }
-    await _syncNoteDraftAfterSave(pc, currentPath, res?.savedMd ?? md);
+    await _syncNoteDraftAfterSave(pc, currentPath, res?.savedMd ?? md, md);
     if (!res?.joined && !skipHistory) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(_prevSavedForDiff, md)
@@ -1304,7 +1314,7 @@ async function openPage(label, path, opts) {
         this.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
         this.dataset.lastSavedEtag = (res && res.etag) || '';
       }
-      await _syncNoteDraftAfterSave(this, currentPath, res?.savedMd ?? md);
+      await _syncNoteDraftAfterSave(this, currentPath, res?.savedMd ?? md, md);
       showStatus('ノートを保存しました', false, { passiveSave: true });
       if (!res?.joined) {
         const detail = typeof summarizeHistoryTextChange === 'function'

@@ -793,7 +793,10 @@
     if (!desktop()) return null;
     if (catalog && !refresh) return catalog;
     if (!loading || refresh) {
-      loading = apiFetch('/archive/tools' + (refresh ? '?refresh=true' : ''), { silentError: true })
+      const path = '/archive/tools' + (refresh ? '?refresh=true' : '');
+      loading = (typeof runBackgroundQuery === 'function'
+        ? runBackgroundQuery(path, { label: '圧縮形式の確認', operationProgress: false, cancellable: false })
+        : apiFetch(path, { silentError: true }))
         .then(data => {
           data.settings.tools = data.settings.tools.map(tool => {
             const current = data.detected.find(row => row.id === tool.id);

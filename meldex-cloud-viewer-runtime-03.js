@@ -9226,10 +9226,15 @@ window.LUCIDE_FULL = {"a-arrow-down":"<path d=\"m14 12 4 4 4-4\" /><path d=\"M18
   async function prepareNativeInitialTarget() {
     const openPath = params.get('open') || params.get('path') || '';
     if (window.MeldexStandaloneNative) {
-      // This lightweight endpoint does not resolve main-app source roots/tags.
-      const response = await fetch(API + '/standalone/config', { cache: 'no-store' });
-      if (!response.ok) throw new Error('ファイルの起動情報を読み込めませんでした');
-      const config = await response.json();
+      // 単独版はページの先頭で起動情報の問い合わせを先に出している（届いていれば、起動時の重い処理より前に
+      // 画像を取りに行ける）。無い時はここで問い合わせる。This lightweight endpoint does not resolve main-app source roots/tags.
+      const early = window.__meldexNativeInitialConfig;
+      window.__meldexNativeInitialConfig = null;
+      const config = early ? await early : await (async () => {
+        const response = await fetch(API + '/standalone/config', { cache: 'no-store' });
+        if (!response.ok) throw new Error('ファイルの起動情報を読み込めませんでした');
+        return response.json();
+      })();
       nativeRoot = String(config.root || '');
       if (applyInitialOpenPath(openPath || config.initialPath)) return;
     }

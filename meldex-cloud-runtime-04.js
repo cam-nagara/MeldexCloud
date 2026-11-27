@@ -29662,19 +29662,9 @@
     return { path, content, etag, parsed, legacy_etag: legacyEtag };
   }
 
-  async function _quickMemoFile(provider, rawPath, method, body) {
-    const scope = await _quickMemoScope(provider);
-    const { path, folder, frontmatter: sheet } = await _quickMemoFolder(provider, rawPath, true);
-    if (method !== 'GET') {
-      await _requireUnlocked(provider, folder, { action: 'quick-memo-save' });
-      await _requireUnlocked(provider, path, { action: 'quick-memo-save' });
-    }
-    const store = await _readSheetStoreMaybe(provider, folder);
-    const current = await _quickMemoRecord(provider, path, store);
-    if (method === 'GET') {
-      if (!current) throw Object.assign(new Error('not_found'), { status: 404 });
-      return { path, content: current.content, etag: current.etag, legacy_etag: current.legacy_etag };
-    }
+  // 1件のメモの書き込み内容を確かめる（版の一致・識別情報・読み取り専用の列）。1件ずつの保存と
+  // まとめた保存で同じ判定を使う。
+  function _quickMemoPlannedWrite(current, body, sheet) {
     if ((body.create_only && current) || (current && body.if_match_etag !== current.etag)
       || (!current && !body.create_only)) {
       throw Object.assign(new Error('クイックメモが別の画面で変更されています。入力を保持して再読み込みしてください'), { status: 409 });
@@ -29694,6 +29684,122 @@
     if (changedProperties.some(key => sheet.property_types?.[key]?.source)) {
       throw Object.assign(new Error('この列は自動取得のため直接編集できません'), { status: 403, code: 'IMPORT_PROPERTY_READONLY' });
     }
+    return { parsed, fm };
+  }
+
+  // 送信待ちのクイックメモをまとめて扱う（2026-11-26）。1件ずつ送ると、保存先の確認・
+  // ロックの取得と解除・シートの保管ファイルの読み書きを件数ぶん繰り返し、スマホでは
+  // 1件数十秒〜1分かかっていた。まとめた保存は、保管ファイルを1回読んで1回で書く。
+  // 編集ロックの確認はメモごとに行い、変更履歴もメモごとに残す。書き込めないメモ
+  // （版の不一致など）はそのメモだけ失敗として返し、他のメモは保存する。
+  // 保管ファイルへの書き込み自体が失敗した時は、どのメモも保存しない（全部が送信待ちに残る）。
+  function _quickMemoBatchPaths(folder, rawPaths) {
+    const paths = (Array.isArray(rawPaths) ? rawPaths : []).map(path => _normalizeFolderPath(path));
+    if (!paths.length || paths.length > 50 || new Set(paths).size !== paths.length
+      || paths.some(path => !path || _dirname(path) !== folder)) {
+      throw Object.assign(new Error('まとめて送るクイックメモの保存先が不正です'), { status: 400 });
+    }
+    return paths;
+  }
+
+  // 同じフォルダの2件目以降は、保存先の確認（登録済みの場所・シートの印）を1件目と共有し、
+  // 名前の規則だけを確かめる（_quickMemoFolder と同じ規則）。
+  function _quickMemoBatchAssertNames(paths, sheetName) {
+    for (const path of paths) {
+      const base = _basename(path);
+      if (!/\.md$/i.test(path) || base === sheetName + '.md' || /^[._]/.test(base)
+        || String(path).split('/').some(part => part === '..' || part === '.')) {
+        throw Object.assign(new Error('クイックメモの保存先が不正です'), { status: 400 });
+      }
+    }
+  }
+
+  async function _quickMemoBatchRead(provider, rawFolder, rawPaths) {
+    let requested = [];
+    try { requested = JSON.parse(String(rawPaths || '[]')); } catch {}
+    const folderPath = _normalizeFolderPath(rawFolder);
+    const paths = _quickMemoBatchPaths(folderPath, requested);
+    const { folder, name } = await _quickMemoFolder(provider, paths[0], true);
+    _quickMemoBatchAssertNames(paths, name);
+    const store = await _readSheetStoreMaybe(provider, folder);
+    const items = [];
+    for (const path of paths) {
+      try {
+        const current = await _quickMemoRecord(provider, path, store);
+        items.push(current ? { path, content: current.content, etag: current.etag, legacy_etag: current.legacy_etag } : { path, missing: true });
+      } catch (error) {
+        items.push({ path, error: String(error?.message || error), status: Number(error?.status || 0) || 409 });
+      }
+    }
+    return { ok: true, folder, items };
+  }
+
+  async function _quickMemoBatchWrite(provider, rawFolder, body) {
+    const scope = await _quickMemoScope(provider);
+    const requested = Array.isArray(body?.items) ? body.items : [];
+    const folderPath = _normalizeFolderPath(rawFolder);
+    const paths = _quickMemoBatchPaths(folderPath, requested.map(item => item?.path));
+    const { folder, name, frontmatter: sheet } = await _quickMemoFolder(provider, paths[0], true);
+    _quickMemoBatchAssertNames(paths, name);
+    await _requireUnlocked(provider, folder, { action: 'quick-memo-save' });
+    for (const path of paths) await _requireUnlocked(provider, path, { action: 'quick-memo-save' });
+    const store = await _readSheetStoreMaybe(provider, folder);
+    const next = store || _emptySheetStore(folder);
+    if (!store) await _assertSheetStoreMissing(provider, folder);
+    const results = [], accepted = [];
+    for (const [index, path] of paths.entries()) {
+      const item = requested[index] || {};
+      try {
+        const current = await _quickMemoRecord(provider, path, store);
+        accepted.push({ path, current, ..._quickMemoPlannedWrite(current, item, sheet) });
+      } catch (error) {
+        results.push({ path, ok: false, status: Number(error?.status || 0) || 409, code: String(error?.code || ''), error: String(error?.message || error) });
+      }
+    }
+    if (!accepted.length) return { ok: true, results };
+    const history = _sharedEditHistory();
+    const prepared = [];
+    try {
+      for (const entry of accepted) {
+        if (history?.prepare) {
+          prepared.push(await history.prepare(provider, entry.path,
+            entry.current ? _sharedHistoryContent(history, entry.current.parsed) : '',
+            { frontmatter: entry.fm, body: entry.parsed.body }, history.actor?.(null, body) || {}, '', !!entry.current,
+            { snapshotPath: folder, snapshotKind: 'folder', fileKind: 'settings-entry' }));
+        }
+        next.rows[_basename(entry.path)] = {
+          file_name: _basename(entry.path), name: _sheetStoreEntityName(entry.path), path: entry.path,
+          frontmatter: entry.fm, body: entry.parsed.body, updated: _nowIso(),
+        };
+      }
+      if (await _quickMemoScope(provider) !== scope) throw new Error('Dropboxアカウントが変わったため保存を中止しました。入力を保持しています');
+      await _writeSheetStore(provider, folder, next, { changedFileNames: accepted.map(entry => _basename(entry.path)) });
+    } catch (error) {
+      for (const entry of prepared) await history?.abort?.(entry)?.catch?.(() => {});
+      throw error;
+    }
+    for (const entry of prepared) history?.commit?.(entry, '');
+    for (const entry of accepted) {
+      const saved = await _quickMemoRecord(provider, entry.path, next);
+      results.push({ path: entry.path, ok: true, etag: saved.etag });
+    }
+    return { ok: true, results };
+  }
+
+  async function _quickMemoFile(provider, rawPath, method, body) {
+    const scope = await _quickMemoScope(provider);
+    const { path, folder, frontmatter: sheet } = await _quickMemoFolder(provider, rawPath, true);
+    if (method !== 'GET') {
+      await _requireUnlocked(provider, folder, { action: 'quick-memo-save' });
+      await _requireUnlocked(provider, path, { action: 'quick-memo-save' });
+    }
+    const store = await _readSheetStoreMaybe(provider, folder);
+    const current = await _quickMemoRecord(provider, path, store);
+    if (method === 'GET') {
+      if (!current) throw Object.assign(new Error('not_found'), { status: 404 });
+      return { path, content: current.content, etag: current.etag, legacy_etag: current.legacy_etag };
+    }
+    const { parsed, fm } = _quickMemoPlannedWrite(current, body, sheet);
     // 物理.mdを別途作らず、本体が読む既存シート保管ファイルへ同じ行として保存する。
     const next = store || _emptySheetStore(folder);
     if (!store) await _assertSheetStoreMissing(provider, folder);
@@ -34097,6 +34203,12 @@
 
     if (pathname === '/quick-memo/config' && method === 'GET') return _quickMemoTarget(await _requirePwaProvider('read'));
     if (pathname === '/quick-memo/files' && method === 'GET') return _quickMemoFiles(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    if (pathname === '/quick-memo/batch' && method === 'GET') return _quickMemoBatchRead(
+      await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('paths') || '[]',
+    );
+    if (pathname === '/quick-memo/batch' && method === 'POST') return _quickMemoBatchWrite(
+      await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {},
+    );
     if (pathname === '/quick-memo/file' && ['GET', 'POST', 'PUT'].includes(method)) return _quickMemoFile(
       await _requirePwaProvider(method === 'GET' ? 'read' : 'readwrite'), url.searchParams.get('path') || '', method, body || {},
     );
@@ -53429,6 +53541,8 @@ function showSaveDialog(message, options = {}) {
 }
 
 let _mobileStatusToastTimer = 0;
+let _mobileStatusToastFrame = 0;
+let _mobileStatusToastPending = null;
 function _isMobileStatusToastNeeded() {
   const status = document.getElementById('status-bar');
   if (!status) return false;
@@ -53444,8 +53558,29 @@ function _isMobileStatusToastNeeded() {
   }
 }
 
-function _showMobileStatusToast(text, isError) {
+function _showMobileStatusToast(text, isError, atPaint = false) {
   if (!document.body) return;
+  // デスクトップでは表示判定のスタイル読取を描画前の1回へまとめる。
+  // 通知本文（ステータスバー）は呼出元ですでに更新済み。電話幅は即時表示する。
+  const phoneWidth = typeof window !== 'undefined' && (typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 768px)').matches : window.innerWidth > 0 && window.innerWidth <= 768);
+  if (text && !atPaint && !phoneWidth && typeof requestAnimationFrame === 'function') {
+    _mobileStatusToastPending = { text, isError };
+    if (!_mobileStatusToastFrame) {
+      _mobileStatusToastFrame = requestAnimationFrame(() => {
+        _mobileStatusToastFrame = 0;
+        const pending = _mobileStatusToastPending;
+        _mobileStatusToastPending = null;
+        if (pending) _showMobileStatusToast(pending.text, pending.isError, true);
+      });
+    }
+    return;
+  }
+  if (!atPaint && typeof _mobileStatusToastFrame !== 'undefined' && _mobileStatusToastFrame) {
+    cancelAnimationFrame(_mobileStatusToastFrame);
+    _mobileStatusToastFrame = 0;
+    _mobileStatusToastPending = null;
+  }
   let toast = document.getElementById('gb-mobile-status-toast');
   if (!text || !_isMobileStatusToastNeeded()) {
     clearTimeout(_mobileStatusToastTimer);
@@ -54153,6 +54288,9 @@ function replaceIcons(root) {
 
 // 親ウィンドウ（Meldex）からテーマを継承
 function inheritParentTheme() {
+  // 親の画面が無い（単独アプリ・本体そのもの）時は受け継ぐものが無い。自分の見た目を全部計算させて
+  // 自分へ書き戻すだけになり、単独ビューワーの起動で最初の画像を約20ms遅らせていた（2026-11-27 計測）。
+  if (window.parent === window) return;
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
     // --theme-native-os-accent / --ui-accent: 「OSアクセント」の色は本体だけがOSから読むため、ここで渡さないと
@@ -58625,7 +58763,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.replaceChildren(header);
       el.hidden = false;
       _watchTrayLayout();
-      _syncTrayPosition();
+      _scheduleTrayPosition();
       if (toggleFocused) toggle.focus({ preventScroll: true });
       return;
     }
@@ -58642,8 +58780,8 @@ document.addEventListener('DOMContentLoaded', () => {
     el.replaceChildren(header, list);
     el.hidden = false;
     _watchTrayLayout();
-    _syncTrayPosition();
-    list.scrollTop = previousScroll;
+    _scheduleTrayPosition();
+    if (previousScroll) list.scrollTop = previousScroll;
     if (toggleFocused) toggle.focus({ preventScroll: true });
     if (focusedAction) {
       const row = Array.from(list.children).find(function (node) { return node.dataset.operationId === focusedId; });
@@ -93533,8 +93671,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
       const crossSize = (isVertical ? rect.width : rect.height) / z;
       baseEdges.push([span, ((crossSize + baseEm) * 0.5) + 'px']);
     });
-    baseEdges.forEach(([span, value]) => span.style.setProperty(prefix + '-base-edge', value));
     if (typeof options.beforeResolve === 'function') options.beforeResolve(rows, spanToInfo);
+    baseEdges.forEach(([span, value]) => span.style.setProperty(prefix + '-base-edge', value));
     rows.forEach(infos => {
       resolveRubyOverlaps(infos).forEach(info => {
         if (!info.span) return;

@@ -1,3 +1,29 @@
+    _ann.path = [[pt.x, pt.y]]; _ann.pressures = [e.pressure || 0.5];
+    svg.setPointerCapture(e.pointerId);
+  });
+
+  svg.addEventListener('pointermove', (e) => {
+    if (!_ann.drawing) return;
+    const pt = _toCoords(e.clientX, e.clientY);
+    _ann.path.push([pt.x, pt.y]); _ann.pressures.push(e.pressure || 0.5);
+    let preview = layer.querySelector('.ann-preview');
+    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    if (!preview || preview.tagName.toLowerCase() !== previewTag) { preview?.remove(); preview = document.createElementNS(_svgNS, previewTag); preview.classList.add('ann-preview'); layer.appendChild(preview); }
+    if (_ann.tool === 'rect') {
+      _saApplyRect(preview, _saRectData(_ann.path), _ann.color, _ann.opacity, true);
+    } else if (_ann.tool === 'lasso') {
+      preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
+      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
+      preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-width', '1'); preview.setAttribute('stroke-dasharray', '4,4');
+    } else {
+      preview.setAttribute('d', _pathD(_ann.path)); preview.setAttribute('fill', 'none'); preview.setAttribute('stroke', _ann.color);
+      preview.setAttribute('stroke-width', _ann.tool === 'pen' ? '3' : '12');
+      preview.setAttribute('stroke-opacity', _ann.tool === 'marker' ? String(_saNormalizeOpacity(_ann.opacity, 1) * 0.5) : String(_saNormalizeOpacity(_ann.opacity, 1))); preview.setAttribute('stroke-linecap', 'round');
+    }
+  });
+
+  svg.addEventListener('pointerup', async () => {
+    if (!_ann.drawing) return;
     _ann.drawing = false;
     layer.querySelector('.ann-preview')?.remove();
     if (_ann.path.length < 2) {
@@ -872,29 +898,3 @@ document.addEventListener('DOMContentLoaded', () => {
     '公開設定': 'globe',
     '公開を更新': 'refreshCw',
     '新規イベント': 'calendarPlus',
-    '同期設定': 'calendarSync',
-    '新規リンクトピック: ノート': 'link2',
-    '新規リンクトピック: シート': 'link2',
-    '新規リンクトピック: ボード': 'link2',
-    '既存ファイルへのリンクトピック': 'link2',
-    'ツール': 'wrench',
-    '重複画像を検出': 'scanSearch',
-    'このフォルダで重複検出': 'scanSearch',
-    '画像インデックスを作成': 'fileSearch',
-    'このフォルダのインデックス作成': 'fileSearch',
-    'この階層を閉じる': 'chevronsDownUp',
-    'リネーム': 'pencil',
-    'パスを変更': 'folderPen',
-    'ワークスペースの管理': 'settings',
-    'システム保護': 'shield',
-    'プロパティ': 'info',
-    'チャットを開く': 'messageSquare',
-    '比較': 'columns',
-  });
-  // 色見本が先頭に付く行（色設定）は色見本をアイコンとして扱う。読み込み中の一時表示は付けない。
-  const ICONLESS = Object.freeze(new Set(['(なし)', '（なし）', '設定する', '解除する', 'OS メニュー 読み込み中']));
-
-  function normalizeLabel(label) {
-    let text = String(label ?? '').replace(/\s+/g, ' ').trim();
-    text = text.replace(/^[✓✔]\s*/, '');
-    text = text.replace(/(?:\.\.\.|…)$/, '').trim();

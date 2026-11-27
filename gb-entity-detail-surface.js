@@ -8,6 +8,37 @@
     return String(path || '').replace(/\\/g, '/').replace(/\/[^/]+$/, '');
   }
 
+  // トピックの場所が今の保存先ではない時（タブや参照が、トピックのIDや表示名のファイルを指したまま残っている）に、
+  // そのシート、またはそのシートのリレーション先のシートから、IDか表示名が同じトピックの今の保存先を探す
+  // （2026-11-27 起動時に戻したサブパネルのタブが ent_xxx.md を指して404になっていた）。
+  async function findStoredEntityPath(path) {
+    const normalized = String(path || '').replace(/\\/g, '/');
+    const parent = parentDir(normalized);
+    const key = normalized.split('/').pop()?.replace(/\.md$/i, '') || '';
+    if (!parent || !key) return null;
+    const probe = { silentError: true, skipBrowseCache: true, headers: { 'X-Meldex-Relation-Probe': 'true' } };
+    const lookIn = async sheet => {
+      const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(sheet), probe).catch(() => null);
+      if (!pivot || pivot.relation_target_unavailable) return null;
+      for (const [name, entity] of Object.entries(pivot.entities || {})) {
+        const stored = String(entity?._entry_path || '').replace(/\\/g, '/');
+        if (!stored || stored === normalized) continue;
+        if ((entity?._id || entity?.entry_id) === key || name === key) return { path: stored, name };
+      }
+      return null;
+    };
+    const direct = await lookIn(parent);
+    if (direct) return direct;
+    const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(parent), probe).catch(() => null);
+    const relationSheets = [...new Set(Object.values(meta?.property_types || {})
+      .map(type => String(type?.relationDb || '').trim()).filter(Boolean))].slice(0, 8);
+    for (const sheet of relationSheets) {
+      const found = await lookIn(sheet);
+      if (found) return found;
+    }
+    return null;
+  }
+
   function entityName(data, path) {
     return data?.entity || String(path || '').split(/[\\/]/).pop()?.replace(/\.md$/i, '') || '';
   }
@@ -366,9 +397,34 @@
       loading.textContent = 'トピックを読み込み中...';
       root.appendChild(loading);
 
+      if (!state.data) {
+        // 場所が今の保存先ではない時は、今の保存先を探して開き直す。本当に無い時は「見つかりません」とだけ出す
+        // （エラーの知らせは出さない）。それ以外の失敗は今までどおり知らせる。
+        try {
+          state.data = await apiFetch('/entity?path=' + encodeURIComponent(state.path), { silentError: true });
+        } catch (error) {
+          if (Number(error?.status) !== 404) {
+            if (typeof showStatus === 'function') showStatus('トピックを読み込めませんでした: ' + (error?.userMessage || error?.message || error), true);
+            throw error;
+          }
+          const found = await findStoredEntityPath(state.path);
+          if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
+          if (!found) {
+            const missing = new Error('トピックが見つかりません');
+            missing.entityNotFound = true;
+            throw missing;
+          }
+          const previousPath = state.path;
+          state.path = found.path;
+          root.dataset.path = state.path;
+          state.data = await apiFetch('/entity?path=' + encodeURIComponent(state.path));
+          try { options.onPathResolved?.(found.path, found.name, previousPath); } catch (_) {}
+        }
+        if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
+      }
       const parent = parentDir(state.path);
       const [data, meta, access] = await Promise.all([
-        state.data || apiFetch('/entity?path=' + encodeURIComponent(state.path)),
+        state.data,
         parent ? apiFetch('/db-metadata?include_form=true&path=' + encodeURIComponent(parent), { silentError: true }).catch(() => null) : null,
         resolveReadOnly(state.path, options.readOnly),
       ]);
@@ -861,12 +917,19 @@
     }).catch(error => {
       if (!state.disposed) {
         root.replaceChildren();
-        root.dataset.loadFailed = '1';
         const message = document.createElement('div');
         message.className = 'meldex-entity-detail-loading';
-        message.textContent = 'トピックを読み込めませんでした';
+        if (error?.entityNotFound) {
+          // 移動・削除されたトピック。読み込みの失敗としては扱わない（エラーの知らせ・再読み込みの画面を出さない）。
+          message.dataset.e2eId = 'entity-detail-not-found';
+          message.textContent = 'トピックが見つかりません（移動または削除された可能性があります）';
+        } else {
+          root.dataset.loadFailed = '1';
+          message.textContent = 'トピックを読み込めませんでした';
+        }
         root.appendChild(message);
       }
+      if (error?.entityNotFound) return false;
       console.error('[entity-detail] render failed', error);
       return false;
     });

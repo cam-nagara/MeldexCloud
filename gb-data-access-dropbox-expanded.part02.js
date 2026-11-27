@@ -2011,6 +2011,12 @@
 
     if (pathname === '/quick-memo/config' && method === 'GET') return _quickMemoTarget(await _requirePwaProvider('read'));
     if (pathname === '/quick-memo/files' && method === 'GET') return _quickMemoFiles(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
+    if (pathname === '/quick-memo/batch' && method === 'GET') return _quickMemoBatchRead(
+      await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('paths') || '[]',
+    );
+    if (pathname === '/quick-memo/batch' && method === 'POST') return _quickMemoBatchWrite(
+      await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {},
+    );
     if (pathname === '/quick-memo/file' && ['GET', 'POST', 'PUT'].includes(method)) return _quickMemoFile(
       await _requirePwaProvider(method === 'GET' ? 'read' : 'readwrite'), url.searchParams.get('path') || '', method, body || {},
     );

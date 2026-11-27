@@ -12367,7 +12367,7 @@ table.mfe-table { border-collapse: collapse; width: 100%; font-size: 12px; }
   }
 
   function writePreference(key, value) {
-    try { global.localStorage?.setItem(key, JSON.stringify(value)); } catch (_) {}
+    try { global.localStorage?.setItem(key, JSON.stringify(value)); return true; } catch (_) { return false; }
   }
 
   function itemDate(item, kind) {
@@ -12630,8 +12630,14 @@ table.mfe-table { border-collapse: collapse; width: 100%; font-size: 12px; }
         favorite.setAttribute('aria-pressed', favorites.has(item.id) ? 'true' : 'false');
         favorite.addEventListener('click', event => {
           event.stopPropagation();
-          if (favorites.has(item.id)) favorites.delete(item.id); else favorites.add(item.id);
-          writePreference(favoritesKey, [...favorites]);
+          const next = new Set(favorites);
+          if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+          if (!writePreference(favoritesKey, [...next])) {
+            ctx.setStatus('お気に入りを保存できません。もう一度お試しください。', true);
+            return;
+          }
+          favorites = next;
+          ctx.setStatus('');
           render();
         });
         wrap.append(card, favorite);
@@ -12684,8 +12690,14 @@ table.mfe-table { border-collapse: collapse; width: 100%; font-size: 12px; }
 
     search.addEventListener('input', () => { query = search.value.trim(); renderGrid(); renderPreview(); });
     sort.addEventListener('change', () => {
-      sortMode = sort.value;
-      writePreference(sortKey, sortMode);
+      const next = sort.value;
+      if (!writePreference(sortKey, next)) {
+        sort.value = sortMode;
+        ctx.setStatus('並び順を保存できません。もう一度お試しください。', true);
+        return;
+      }
+      sortMode = next;
+      ctx.setStatus('');
       renderGrid(); renderPreview();
     });
     grid.addEventListener('keydown', event => {
@@ -66084,6 +66096,37 @@ function _sn2StopSep() {
     return String(path || '').replace(/\\/g, '/').replace(/\/[^/]+$/, '');
   }
 
+  // トピックの場所が今の保存先ではない時（タブや参照が、トピックのIDや表示名のファイルを指したまま残っている）に、
+  // そのシート、またはそのシートのリレーション先のシートから、IDか表示名が同じトピックの今の保存先を探す
+  // （2026-11-27 起動時に戻したサブパネルのタブが ent_xxx.md を指して404になっていた）。
+  async function findStoredEntityPath(path) {
+    const normalized = String(path || '').replace(/\\/g, '/');
+    const parent = parentDir(normalized);
+    const key = normalized.split('/').pop()?.replace(/\.md$/i, '') || '';
+    if (!parent || !key) return null;
+    const probe = { silentError: true, skipBrowseCache: true, headers: { 'X-Meldex-Relation-Probe': 'true' } };
+    const lookIn = async sheet => {
+      const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(sheet), probe).catch(() => null);
+      if (!pivot || pivot.relation_target_unavailable) return null;
+      for (const [name, entity] of Object.entries(pivot.entities || {})) {
+        const stored = String(entity?._entry_path || '').replace(/\\/g, '/');
+        if (!stored || stored === normalized) continue;
+        if ((entity?._id || entity?.entry_id) === key || name === key) return { path: stored, name };
+      }
+      return null;
+    };
+    const direct = await lookIn(parent);
+    if (direct) return direct;
+    const meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(parent), probe).catch(() => null);
+    const relationSheets = [...new Set(Object.values(meta?.property_types || {})
+      .map(type => String(type?.relationDb || '').trim()).filter(Boolean))].slice(0, 8);
+    for (const sheet of relationSheets) {
+      const found = await lookIn(sheet);
+      if (found) return found;
+    }
+    return null;
+  }
+
   function entityName(data, path) {
     return data?.entity || String(path || '').split(/[\\/]/).pop()?.replace(/\.md$/i, '') || '';
   }
@@ -66442,9 +66485,34 @@ function _sn2StopSep() {
       loading.textContent = 'トピックを読み込み中...';
       root.appendChild(loading);
 
+      if (!state.data) {
+        // 場所が今の保存先ではない時は、今の保存先を探して開き直す。本当に無い時は「見つかりません」とだけ出す
+        // （エラーの知らせは出さない）。それ以外の失敗は今までどおり知らせる。
+        try {
+          state.data = await apiFetch('/entity?path=' + encodeURIComponent(state.path), { silentError: true });
+        } catch (error) {
+          if (Number(error?.status) !== 404) {
+            if (typeof showStatus === 'function') showStatus('トピックを読み込めませんでした: ' + (error?.userMessage || error?.message || error), true);
+            throw error;
+          }
+          const found = await findStoredEntityPath(state.path);
+          if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
+          if (!found) {
+            const missing = new Error('トピックが見つかりません');
+            missing.entityNotFound = true;
+            throw missing;
+          }
+          const previousPath = state.path;
+          state.path = found.path;
+          root.dataset.path = state.path;
+          state.data = await apiFetch('/entity?path=' + encodeURIComponent(state.path));
+          try { options.onPathResolved?.(found.path, found.name, previousPath); } catch (_) {}
+        }
+        if (state.disposed || root.dataset.meldexEntityDetail !== id) return false;
+      }
       const parent = parentDir(state.path);
       const [data, meta, access] = await Promise.all([
-        state.data || apiFetch('/entity?path=' + encodeURIComponent(state.path)),
+        state.data,
         parent ? apiFetch('/db-metadata?include_form=true&path=' + encodeURIComponent(parent), { silentError: true }).catch(() => null) : null,
         resolveReadOnly(state.path, options.readOnly),
       ]);
@@ -66937,12 +67005,19 @@ function _sn2StopSep() {
     }).catch(error => {
       if (!state.disposed) {
         root.replaceChildren();
-        root.dataset.loadFailed = '1';
         const message = document.createElement('div');
         message.className = 'meldex-entity-detail-loading';
-        message.textContent = 'トピックを読み込めませんでした';
+        if (error?.entityNotFound) {
+          // 移動・削除されたトピック。読み込みの失敗としては扱わない（エラーの知らせ・再読み込みの画面を出さない）。
+          message.dataset.e2eId = 'entity-detail-not-found';
+          message.textContent = 'トピックが見つかりません（移動または削除された可能性があります）';
+        } else {
+          root.dataset.loadFailed = '1';
+          message.textContent = 'トピックを読み込めませんでした';
+        }
         root.appendChild(message);
       }
+      if (error?.entityNotFound) return false;
       console.error('[entity-detail] render failed', error);
       return false;
     });
@@ -67378,7 +67453,9 @@ function _sn2StopSep() {
       // 本文受信自体に時間がかかるため、必要なら開始POSTの待ち時間を延ばせるようにする。
       const startOpts = { silentError: true };
       if (options.startTimeoutMs) startOpts.timeoutMs = options.startTimeoutMs;
-      started = await apiPost(startPath, body || {}, startOpts);
+      started = options.startMethod === 'GET'
+        ? await apiFetch(startPath, { ...(options.startOptions || {}), ...startOpts })
+        : await apiPost(startPath, body || {}, startOpts);
       jobId = String(started?.job_id || '');
     }
     if (!jobId) {
@@ -67682,6 +67759,14 @@ function _sn2StopSep() {
     return (value / 86400).toFixed(1) + '日';
   }
 
+  async function runBackgroundQuery(path, options) {
+    const opts = options || {};
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return apiFetch(path, opts.startOptions);
+    const startPath = String(path) + (String(path).includes('?') ? '&' : '?') + 'background=true';
+    return runBackgroundJob(startPath, null, { ...opts, startMethod: 'GET' });
+  }
+
+  window.runBackgroundQuery = runBackgroundQuery;
   window.describeImportResult = describeImportResult;
   window.describeJobFailure = describeJobFailure;
   window.importAttentionValues = importAttentionValues;
@@ -76617,7 +76702,7 @@ class ScriptNoteComponent extends ToolComponent {
       this._renderEmptyState();
     }
     // 詳細パネルをシナリオエディタ用に切り替え（非アクティブペインではスキップ）
-    if (this._skipDetailSync !== true && this._editor) this._syncDetailPanel();
+    if (this._skipDetailSync !== true && this._editor) this._syncDetailPanel({ reuseCurrent: true });
   }
 
   deactivate() {
@@ -76752,8 +76837,22 @@ class ScriptNoteComponent extends ToolComponent {
       </div>`;
   }
 
-  _syncDetailPanel() {
+  _syncDetailPanel(options = {}) {
     const scenarioPath = this._editor?._path || this.state.scenarioPath || '';
+    // 別パネルを開くための再配置で、同じ対象の表示中の詳細を作り直さない。
+    // 明示の更新、対象・内容・ロック・表示タブが変わった時は従来どおり同期する。
+    if (options?.reuseCurrent === true && this._editor
+      && window._detailScriptNoteTabId === this.tabId
+      && (this._editor._detailActiveTab || 'roles') === 'roles') {
+      const current = document.getElementById('detail-tab-sn2-main');
+      const panel = current?.querySelector('.sn2-detail-wrap');
+      const targets = window.GBOptionTargetContext?.get?.()?.targets;
+      const sameTarget = !window.GBOptionTargetContext?.get || (targets?.length === 1
+        && targets[0].path === scenarioPath && targets[0].kind === 'scriptnote');
+      if (sameTarget && current && !current.hidden && current.style.display !== 'none'
+        && panel && !panel.hidden && panel.style.display !== 'none'
+        && this._editor._canReuseRoleManagementPanel?.(panel)) return;
+    }
     if (this._editor) window._detailScriptNoteTabId = this.tabId;
     if (scenarioPath) {
       const revision = window.GBOptionTargetContext?.set({ path: scenarioPath, kind: 'scriptnote' }, 'scriptnote-open');
@@ -91150,16 +91249,39 @@ function _renderDefaultAppAssociations(data) {
   }
   const order = ['viewer'];
   const apps = data.apps || {};
-  const lines = [];
+  const rows = [];
   order.forEach(appId => {
     const app = apps[appId] || {};
     const label = app.label || _defaultAppAssociationLabel(appId);
     const target = app.target_exists ? '単独アプリあり' : '単独アプリが見つかりません';
     const summary = _formatDefaultAppExtensions(app) || '未確認';
     const note = app.note ? ` / ${app.note}` : '';
-    lines.push(`${label}: ${summary}（${target}）${note}`);
+    const row = document.createElement('div');
+    row.textContent = `${label}: ${summary}（${target}）${note}`;
+    // 関連付けで開くアプリが本体と違う版・消えた場所を指す時は、短い印と補足のツールチップで知らせる。
+    if (app.version_mismatch || app.registered_missing) {
+      const opened = app.registered_path ? (app.registered_version || '不明') : (app.target_version || '不明');
+      const tip = app.registered_missing
+        ? `関連付けの開き先が見つかりません: ${app.registered_path}`
+        : `本体 v${app.main_version} / 開くアプリ v${opened}（${app.registered_path || app.target_display || ''}）。ローカルのexe更新と関連付けの付け替えで揃います`;
+      const mark = document.createElement('span');
+      mark.className = 'gb-default-app-version-warning';
+      mark.dataset.e2eId = 'settings-default-app-version-mismatch';
+      mark.tabIndex = 0;
+      mark.setAttribute('role', 'img');
+      mark.setAttribute('data-gb-tooltip', tip);
+      mark.setAttribute('aria-label', tip);
+      mark.style.cssText = 'color:var(--orange,#d97706);white-space:nowrap;margin-left:6px;display:inline-flex;align-items:center;gap:3px;vertical-align:middle;';
+      const icon = document.createElement('span');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.style.display = 'inline-flex';
+      if (typeof lucide === 'function') icon.innerHTML = lucide('alertTriangle', 13);
+      mark.append(icon, document.createTextNode(app.registered_missing ? '開き先なし' : '版が違います'));
+      row.append(mark);
+    }
+    rows.push(row);
   });
-  el.textContent = lines.join('\n');
+  el.replaceChildren(...rows);
   el.style.whiteSpace = 'pre-wrap';
   el.style.color = 'var(--fg2)';
 }
@@ -103178,6 +103300,64 @@ async function resetLayoutToDefault() {
     return refreshed;
   }
 
+  // --- 他の端末・スマホ（Cloud版）からのシート更新の見張り（デスクトップ版のみ） ---------
+  // スマホのクイックメモ等は、シートの保管ファイル（_meldex_sheet.cloud.json）へ直接届く。
+  // 取り込みはシートを読む時にだけ走るので、開いたままのシートには出なかった（2026-11-26）。
+  // 開いているシートの保管ファイルが取り込み後に変わったかを数秒おきに（画面に戻った時も）
+  // 確かめ、変わったシートだけを外部の変更の読み直しへ回す。入力中のセルがあれば入力を
+  // 終えるまで待ち、保存待ちの入力は先に保存する（reloadOpenFilesAfterExternalMutation）。
+  const sheetCloudWatch = { timer: null, busy: false };
+
+  function _sheetCloudWatchInterval() {
+    const override = Number(window.__MELDEX_SHEET_CLOUD_WATCH_MS__);
+    return override > 0 ? override : 10000;
+  }
+
+  function _sheetCloudWatchEnabled() {
+    if (document.body?.dataset?.cloudMode === 'dropbox') return false;
+    try { if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return false; } catch {}
+    return typeof apiFetch === 'function';
+  }
+
+  function _openSheetPaths() {
+    const paths = new Set();
+    for (const pane of document.querySelectorAll('.gb-pane[data-pane-id]')) {
+      const tab = _tabFromPaneId(pane.dataset.paneId);
+      if (!tab || !DB_VIEW_TYPES.has(tab.type || '')) continue;
+      const path = String(_tabPath(tab) || '').trim();
+      if (path) paths.add(path);
+    }
+    return [...paths];
+  }
+
+  async function checkOpenSheetsForCloudChanges() {
+    if (sheetCloudWatch.busy || document.visibilityState === 'hidden' || !_sheetCloudWatchEnabled()) return 0;
+    const paths = _openSheetPaths();
+    if (!paths.length) return 0;
+    sheetCloudWatch.busy = true;
+    try {
+      const result = await apiFetch('/sheet-cloud-changes?paths=' + encodeURIComponent(JSON.stringify(paths)), { silentError: true });
+      const changed = Array.isArray(result?.changed) ? result.changed.filter(path => paths.includes(path)) : [];
+      return changed.length ? await reloadOpenFilesAfterExternalMutation(changed) : 0;
+    } catch {
+      return 0;
+    } finally {
+      sheetCloudWatch.busy = false;
+    }
+  }
+
+  function restartSheetCloudWatch() {
+    if (sheetCloudWatch.timer) clearInterval(sheetCloudWatch.timer);
+    sheetCloudWatch.timer = setInterval(checkOpenSheetsForCloudChanges, _sheetCloudWatchInterval());
+  }
+
+  restartSheetCloudWatch();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkOpenSheetsForCloudChanges();
+  });
+  window.addEventListener('focus', () => { checkOpenSheetsForCloudChanges(); });
+
+  window.MeldexSheetCloudWatch = { check: checkOpenSheetsForCloudChanges, restart: restartSheetCloudWatch };
   window.reloadCurrentOpenFile = reloadCurrentOpenFile;
   window.reloadOpenFilesAfterExternalMutation = reloadOpenFilesAfterExternalMutation;
 })();
@@ -115737,7 +115917,14 @@ function _noteSavePayload(pc, md, extra) {
 // single-flight/coalesceへ合流させ、同じ内容の2本目のPUTを発生させない
 // （計画書§5工程1-2・5・6）。
 // 保存完了より新しい入力は、同期済みの下書きとして削除しない。
-async function _syncNoteDraftAfterSave(pc, path, savedMd) {
+async function _syncNoteDraftAfterSave(pc, path, savedMd, sentMd = savedMd) {
+  // 新規文書へサーバーが付けた識別情報だけは、送信本文も保存済みである。
+  // 別の本文や利用者の属性へ置き換わった応答では、元の下書きを削除しない。
+  if (sentMd !== savedMd) {
+    const prefix = !/^---\r?\n/.test(sentMd) && savedMd.endsWith(sentMd)
+      ? savedMd.slice(0, savedMd.length - sentMd.length) : '';
+    if (!/^---\r?\nmeldex:\r?\n(?:[ \t]+(?:metadata_version|document_id):[^\r\n]*\r?\n)+---\r?\n?$/.test(prefix)) sentMd = savedMd;
+  }
   const live = () => {
     const coordinator = window.MeldexDocumentSaveCoordinator;
     const hosts = [pc, ...(coordinator?.getParticipants?.(coordinator.documentKeyForPath(path)) || [])];
@@ -115753,10 +115940,13 @@ async function _syncNoteDraftAfterSave(pc, path, savedMd) {
     return found ? savedMd : null;
   };
   const current = live();
-  if (current === savedMd || current === null) await window.MeldexDraftRecovery?.markSynced?.(path, savedMd);
+  if (current === savedMd || current === sentMd || current === null) {
+    await window.MeldexDraftRecovery?.markSynced?.(path, sentMd);
+    if (sentMd !== savedMd) await window.MeldexDraftRecovery?.markSynced?.(path, savedMd);
+  }
   // IndexedDBの削除待ちの間にも入力できるので、完了後にもう一度照合する。
   const latest = live();
-  if (latest !== null && latest !== savedMd) {
+  if (latest !== null && latest !== savedMd && latest !== sentMd) {
     window.MeldexDraftRecovery?.queueDraft?.(path, latest, savedMd);
     await window.MeldexDraftRecovery?.saveDraft?.(path, latest, savedMd);
   }
@@ -115838,7 +116028,7 @@ async function _runNoteAutoSave(pc, expectedPath) {
       pc.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
       pc.dataset.lastSavedEtag = (res && res.etag) || '';
     }
-    await _syncNoteDraftAfterSave(pc, currentPath, res?.savedMd ?? md);
+    await _syncNoteDraftAfterSave(pc, currentPath, res?.savedMd ?? md, md);
     if (!res?.joined && !skipHistory) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(_prevSavedForDiff, md)
@@ -116617,7 +116807,7 @@ async function openPage(label, path, opts) {
         this.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
         this.dataset.lastSavedEtag = (res && res.etag) || '';
       }
-      await _syncNoteDraftAfterSave(this, currentPath, res?.savedMd ?? md);
+      await _syncNoteDraftAfterSave(this, currentPath, res?.savedMd ?? md, md);
       showStatus('ノートを保存しました', false, { passiveSave: true });
       if (!res?.joined) {
         const detail = typeof summarizeHistoryTextChange === 'function'
@@ -118279,12 +118469,15 @@ function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTy
         entityData: data.properties,
         propTypes,
         viewType: options.viewType,
+        dbPath: options.dbPath, ctx: options.ctx,
         historyScope: options.historyScope,
         onHistoryChanged: options.onHistoryChanged,
         readOnly: options.readOnly === true,
       });
     } else if (typeof createValueElement === 'function') {
-      valEl = createValueElement(val, entityPath, propName, undefined, { readOnly: options.readOnly === true });
+      valEl = createValueElement(val, entityPath, propName, undefined, {
+        readOnly: options.readOnly === true, dbPath: options.dbPath, ctx: options.ctx,
+      });
     }
     if (valEl) valuesEl.appendChild(valEl);
     if (val.relations && val.relations.length > 0) {
@@ -122368,7 +122561,7 @@ async function _commitFileSearchReplacement(editable) {
     }
     // 応答待ち中の追加入力・別表示面の編集をドラフトから消さない。
     // 切替済みの旧文書は、次の読込でサーバー本文と照合する。
-    await _syncNoteDraftAfterSave(editable, path, res?.savedMd ?? md);
+    await _syncNoteDraftAfterSave(editable, path, res?.savedMd ?? md, md);
     if (!res?.joined) {
       const detail = typeof summarizeHistoryTextChange === 'function'
         ? summarizeHistoryTextChange(previousMd, md)
@@ -161237,7 +161430,10 @@ function hideBoardNoteTab() {
     const bottom = vv
       ? Math.max(0, Math.round((window.innerHeight || state.innerHeight || vv.height) - vv.height - (vv.offsetTop || 0)))
       : 0;
-    document.documentElement.style.setProperty('--cloud-mobile-editbar-bottom', `${bottom}px`);
+    const value = `${bottom}px`;
+    if (document.documentElement.style.getPropertyValue('--cloud-mobile-editbar-bottom') !== value) {
+      document.documentElement.style.setProperty('--cloud-mobile-editbar-bottom', value);
+    }
   }
 
   // 同じ値の再設定も変更通知になり、ツールバーのあふれ判定を起こしてしまう。
@@ -161260,12 +161456,12 @@ function hideBoardNoteTab() {
     // パネル幅の変更や大きなシートの描画のたびに走り、境界線ドラッグを重くしていた（2026-11-11）。
     const modalOpen = enabled && _hasBlockingModal();
     const keyboardOpen = document.body.dataset.cloudMobileKeyboard === '1';
-    const annotationTextInput = _annotationTextInputFromNode(document.activeElement);
-    const annotationActive = _isAnnotationActive();
+    const annotationTextInput = enabled ? _annotationTextInputFromNode(document.activeElement) : null;
+    const annotationActive = enabled && _isAnnotationActive();
     const annotationRequested = document.body.dataset.cloudMobileAnnotationRequested === '1';
-    const editable = _getActiveEditable();
-    const chatInput = _getActiveChatInput();
-    const plainInput = _getActivePlainInput();
+    const editable = enabled ? _getActiveEditable() : null;
+    const chatInput = enabled ? _getActiveChatInput() : null;
+    const plainInput = enabled ? _getActivePlainInput() : null;
     const showEditBar = enabled && !modalOpen && keyboardOpen && !!editable && !annotationTextInput;
     const showChatBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !!chatInput;
     const showInputBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !showChatBar && !!plainInput;
@@ -161273,8 +161469,8 @@ function hideBoardNoteTab() {
     const showBoardBar = enabled && !modalOpen && !showEditBar && !showChatBar && !showInputBar && !showAnnotationBar && !keyboardOpen && _isBoardActive();
     const treeOpen = document.body.classList.contains('cloud-mobile-tree-screen-active')
       || document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');
-    const inlineMenuAvailable = _hasVisibleInlineMobileMenu();
-    const chatPaneActive = typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined'
+    const inlineMenuAvailable = enabled && _hasVisibleInlineMobileMenu();
+    const chatPaneActive = enabled && typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined'
       && GBTabs.getActiveTab?.(GBLayout.activePane)?.type === 'chat';
     _activeEditable = editable || _activeEditable;
     _activeChatInput = chatInput || (_activeChatInput?.isConnected ? _activeChatInput : null);
@@ -161286,7 +161482,7 @@ function hideBoardNoteTab() {
     _ensureChatBar();
     _ensureBoardBar();
     _ensureAnnotationBar();
-    _syncAnnotationBarState();
+    if (enabled) _syncAnnotationBarState();
     _setHidden(_mainButton, !enabled || modalOpen || treeOpen || inlineMenuAvailable || chatPaneActive || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
     _setHidden(_editBar, !showEditBar);
     _setHidden(_chatBar, !showChatBar);
@@ -161342,17 +161538,20 @@ function hideBoardNoteTab() {
       _scheduleRefresh();
     });
     document.addEventListener('selectionchange', () => {
+      if (!_isEnabled()) return;
       _saveSelection();
       _scheduleRefresh();
     });
     document.addEventListener('focusin', () => {
+      if (!_isEnabled()) return;
       _saveSelection();
       _scheduleRefresh();
       setTimeout(_scheduleRefresh, 180);
       setTimeout(_scheduleRefresh, 420);
     });
-    document.addEventListener('focusout', () => setTimeout(_scheduleRefresh, 80));
+    document.addEventListener('focusout', () => { if (_isEnabled()) setTimeout(_scheduleRefresh, 80); });
     document.addEventListener('input', (event) => {
+      if (!_isEnabled()) return;
       if (_editableFromNode(event.target)) _saveSelection();
       if (_chatInputFromNode(event.target)) _activeChatInput = event.target;
       if (_plainInputFromNode(event.target)) _activePlainInput = event.target;
@@ -165849,14 +166048,16 @@ async function waitForPendingDbValueMutations(dbPath) {
 
 // セルの値変更は、保存の完了順ではなく確定の順で取り消せるよう、確定時に共通履歴の枠を先に取る。
 // 枠の履歴スコープは、保存後に履歴を登録する _dbUndoValue と同じ求め方にそろえる。
-function _dbReserveValueHistory(label, valueRef, dbPathFallback) {
+function _dbReserveValueHistory(label, valueRef, dbPathFallback, options = {}) {
   if (typeof historyReserve !== 'function') return null;
   let dbPath = '';
   try {
-    if (valueRef && typeof _dbResolveUndoDbPath === 'function') dbPath = _dbResolveUndoDbPath(valueRef, {});
+    if (valueRef && typeof _dbResolveUndoDbPath === 'function') dbPath = _dbResolveUndoDbPath(valueRef, options);
   } catch {}
   dbPath = dbPath || dbPathFallback || '';
-  const scope = typeof _dbScope === 'function' ? _dbScope(dbPath)
+  const scope = typeof options.historyScope === 'function' ? options.historyScope()
+    : typeof options.historyScope === 'string' ? options.historyScope
+    : typeof _dbScope === 'function' ? _dbScope(dbPath)
     : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : '');
   if (!scope) return null;
   return historyReserve(label, scope);
@@ -167070,6 +167271,11 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
   async function performDelete(queue, item) {
     const ref = { entry_id: item.entryId, entry_path: item.path };
     return queueMutation(ref, item.path, queue.dbPath, async latestPath => {
+      if (item.authorize) {
+        const confirmation = await item.authorize(latestPath || item.path);
+        if (!confirmation?.confirmed) throw Object.assign(new Error('削除の参照確認に失敗しました。行は保持しています'), { code: 'DELETE_AUTHORIZATION_FAILED' });
+        item.confirmationPayload = window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmation) || {};
+      }
       const body = {
         path: latestPath || item.path,
         expected_entry_id: item.entryId || undefined,
@@ -167301,6 +167507,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
             ...entry,
             ctx: options?.ctx || null,
             operationId: operationId('entry-delete'),
+            authorize: typeof options?.authorize === 'function' ? options.authorize : null,
             confirmationPayload: window.MeldexDeleteImpactWarning?.confirmationPayload?.(options?.confirmation) || {},
             subscribers: [],
           };
@@ -169378,12 +169585,11 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
       action: async () => {
       if (batch) return _bulkDeleteEntities(targets.ids.slice(), ctx);
       const assetId = String(entityData?.asset_id || entityData?.assetId || '');
-      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      const authorize = async latestPath => typeof MeldexDeleteImpactWarning !== 'undefined'
         ? await MeldexDeleteImpactWarning.authorizeReversibleDelete([
-            { path: ep, kind: 'file', ...(assetId ? { assetId } : {}) },
+            { path: latestPath || ep, kind: 'file', ...(assetId ? { assetId } : {}) },
           ])
         : { confirmed: true, operation: 'trash' };
-      if (!confirmed) return;
       const entryId = String(
         entityData?._id
         || (state.currentDbPath === targetDbPath ? state.pivotData?.entities?.[entityName]?._id : '')
@@ -169395,7 +169601,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName, menuOptions = {}
           ctx,
           entries: [{ name: entityName, path: ep, entryId }],
           source: 'context-menu',
-          confirmation: confirmed,
+          authorize,
         });
         const response = result.responses[0];
         const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
@@ -184841,6 +185047,8 @@ function setColWidth(colIndex, width, table) {
       cell.style.maxWidth = nextWidth + 'px';
     }
   });
+  // スクロールで後から描く行も同じ幅にする（gb-db-table.part03.js）。
+  if (typeof _dbUpdateRowRenderWidth === 'function') _dbUpdateRowRenderWidth(table, colIndex, nextWidth);
 }
 
 function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
@@ -185713,7 +185921,7 @@ function _ensureCellValueDragDelegate() {
   globalThis.__gbCellValueDragInstalled = true;
 }
 
-function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt) {
+function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt, options = {}) {
   const accepts = e => !e.dataTransfer.files.length
     && !e.dataTransfer.types.includes('application/x-meldex-node')
     && !e.dataTransfer.types.includes('application/x-meldex-board-nodes')
@@ -185729,7 +185937,7 @@ function _cellUiBindTextDrop(txt, val, entityPath, propName, dropTarget = txt) {
     try { text = JSON.parse(e.dataTransfer.getData('application/x-meldex-text')).text ?? text; } catch {}
     if (typeof text !== 'string' || !text) return;
     // 通常のセル編集を通すことで列ロック、保存失敗の復旧、Undoを維持する。
-    startInlineEdit(txt, val, entityPath, propName);
+    startInlineEdit(txt, val, entityPath, propName, options);
     const editor = txt.querySelector('[contenteditable="true"]');
     if (!editor) return;
     editor.focus();
@@ -185744,7 +185952,7 @@ function _cellUiShouldRenderMultiSelectTags(propName, valueText) {
   return propName.startsWith('タグ') || propName === 'tags' || (text.includes(',') && text.split(',').every(s => s.trim().length < 30));
 }
 
-function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
+function _cellUiRenderMultiSelectTags(container, val, entityPath, propName, options = {}) {
   if (!container) return false;
   const rawText = _cellUiValueToString(val?.value);
   if (!_cellUiShouldRenderMultiSelectTags(propName, rawText)) return false;
@@ -185760,12 +185968,12 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
       tag.addEventListener('click', (e) => {
         e.stopPropagation();
         if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
-        startInlineEdit(container, val, entityPath, propName);
+        startInlineEdit(container, val, entityPath, propName, options);
       });
     } else {
       tag.addEventListener('click', (e) => {
         e.stopPropagation();
-        startInlineEdit(container, val, entityPath, propName);
+        startInlineEdit(container, val, entityPath, propName, options);
       });
     }
     container.appendChild(tag);
@@ -185773,7 +185981,7 @@ function _cellUiRenderMultiSelectTags(container, val, entityPath, propName) {
   container.addEventListener('click', (e) => {
     if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
     e.stopPropagation();
-    startInlineEdit(container, val, entityPath, propName);
+    startInlineEdit(container, val, entityPath, propName, options);
   });
   return true;
 }
@@ -185845,7 +186053,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
       span.className = 'value-text';
       span.textContent = v;
       link.replaceWith(span);
-      startInlineEdit(span, val, entityPath, propName);
+      startInlineEdit(span, val, entityPath, propName, { ...options, dbPath });
     });
     row.appendChild(link);
     return row;
@@ -185894,7 +186102,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   // マルチセレクト判定（カンマ区切り値）
   if (_cellUiShouldRenderMultiSelectTags(propName, v)) {
     const tagContainer = document.createElement('div');
-    if (_cellUiRenderMultiSelectTags(tagContainer, val, entityPath, propName)) {
+    if (_cellUiRenderMultiSelectTags(tagContainer, val, entityPath, propName, { ...options, dbPath })) {
       row.appendChild(tagContainer);
       return row;
     }
@@ -185903,7 +186111,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   // 通常テキスト（カスタム数値単位対応）
   const txt = document.createElement('span');
   txt.className = 'value-text';
-  _cellUiBindTextDrop(txt, val, entityPath, propName, row);
+  _cellUiBindTextDrop(txt, val, entityPath, propName, row, { ...options, dbPath });
   const richHtml = _dbRichHtmlForValue(val);
   if (richHtml) {
     txt.classList.add('value-text--rich');
@@ -185916,10 +186124,10 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     // auto-link がある場合はクリックハンドラを分岐
     txt.addEventListener('click', (e) => {
       if (_cellUiHandleAutoLinkClick(e, entityPath)) return;
-      startInlineEdit(txt, val, entityPath, propName);
+      startInlineEdit(txt, val, entityPath, propName, { ...options, dbPath });
     });
   } else {
-    txt.addEventListener('click', () => startInlineEdit(txt, val, entityPath, propName));
+    txt.addEventListener('click', () => startInlineEdit(txt, val, entityPath, propName, { ...options, dbPath }));
   }
   row.appendChild(txt);
 
@@ -186060,6 +186268,19 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
         const sub = document.createElement('div');
         sub.className = 'gb-context-menu gb-context-submenu';
         sub.style.display = 'none';
+        // リンク先のトピックの今の保存先（シートが持つ保存先）。表示名から組み立てると、表示名とファイル名が違う
+        // トピック（索引で持つシートの「無題_4.md」など）で、存在しない場所を開いてしまう（2026-11-27）。
+        const resolveRelationTarget = async () => {
+          let name = idOrName;
+          if (typeof _resolveRelationName === 'function' && relDb) name = (await _resolveRelationName(idOrName, relDb)) || idOrName;
+          let path = '';
+          if (relDb && typeof _getRelationMap === 'function' && typeof _relationEntityPathFromMap === 'function') {
+            const map = await _getRelationMap(relDb).catch(() => null);
+            if (map?.entities?.[name]) path = _relationEntityPathFromMap(relDb, name, map);
+          }
+          if (!path && typeof _entityPath === 'function') path = _entityPath(relDb, name);
+          return { name, path };
+        };
         const openItem = document.createElement('div');
         openItem.className = 'gb-context-menu-item';
         openItem.innerHTML = lucide('externalLink', 14) + ' リンク先を開く';
@@ -186077,11 +186298,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
         copyItem.innerHTML = lucide('copy', 14) + ' パスをコピー';
         copyItem.addEventListener('click', async () => {
           menu.remove();
-          let name = idOrName;
-          if (typeof _resolveRelationName === 'function' && relDb) {
-            name = await _resolveRelationName(idOrName, relDb);
-          }
-          const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+          const { name, path } = await resolveRelationTarget();
           const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
           const copied = await window.GBPathUtils?.copyToClipboard?.(path, basePath);
           if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
@@ -186092,11 +186309,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
         rightItem.innerHTML = lucide('panelRight', 14) + ' サブパネルで開く';
         rightItem.addEventListener('click', async () => {
           menu.remove();
-          let name = idOrName;
-          if (typeof _resolveRelationName === 'function' && relDb) {
-            name = await _resolveRelationName(idOrName, relDb);
-          }
-          const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+          const { name, path } = await resolveRelationTarget();
           if (path && typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(path, name || idOrName, { linkType: 'entity', sourcePaneId });
           else navigateToEntity(name || idOrName, relDb, currentCtx);
         });
@@ -186107,11 +186320,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
           revealItem.innerHTML = lucide('folderTree', 14) + ' フォルダツリーに表示';
           revealItem.addEventListener('click', async () => {
             menu.remove();
-            let name = idOrName;
-            if (typeof _resolveRelationName === 'function' && relDb) {
-              name = await _resolveRelationName(idOrName, relDb);
-            }
-            const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+            const { path } = await resolveRelationTarget();
             if (path) window.revealPathInFolderTree(path);
           });
           sub.appendChild(revealItem);
@@ -186384,19 +186593,22 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
 /* ==============================
    インライン編集
    ============================== */
-function startInlineEdit(span, val, entityPath, propName) {
-  const dbPath = _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
-  const ctx = typeof _dbPaneContextFromEvent === 'function'
+function startInlineEdit(span, val, entityPath, propName, options = {}) {
+  const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
+  const ctx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(span, { dbPath })
-    : null;
+    : null);
+  const historyOptions = { dbPath, ctx,
+    historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+    onHistoryChanged: options.onHistoryChanged };
   // 列ロックチェック
-  const lockMsg = checkColumnEditable(dbPath, propName);
+  const lockMsg = checkColumnEditable(dbPath, propName, ctx);
   if (lockMsg) { showStatus(lockMsg); return; }
   if (span.querySelector('input,textarea,[contenteditable="true"]')) return;
   // user / multi-user 型: クリックでドロップダウンを表示
   const ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc && (ptc.type === 'user' || ptc.type === 'multi-user')) {
-    _showUserDropdown(span, val, entityPath, propName, _cellUiValueToString(val.value), ptc.type === 'multi-user', { dbPath, ctx });
+    _showUserDropdown(span, val, entityPath, propName, _cellUiValueToString(val.value), ptc.type === 'multi-user', { ...options, ...historyOptions });
     return;
   }
   const old = _cellUiValueToString(val.value);
@@ -186406,7 +186618,7 @@ function startInlineEdit(span, val, entityPath, propName) {
   if (editedTd) editedTd._dbInlineEditorSession = editorSession;
   const ownsEditor = () => span.isConnected !== false
     && (!editedTd || (editedTd.isConnected !== false && editedTd._dbInlineEditorSession === editorSession));
-  const editedPos = typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
+  const editedPos = editedTd && typeof _cellPos === 'function' ? _cellPos(editedTd) : null;
   const editedFocusSeq = Number(editedPos?.__sourceSeq || editedTd?.dataset?.dbActiveSeq || 0);
   const editedRoot = editedTd?.closest?.('.gb-pane') || editedTd?.closest?.('.gb-pane-content') || document;
   // 表示中のセル高を編集面へ引き継ぐ。contenteditable の既定 min-height や
@@ -186449,7 +186661,7 @@ function startInlineEdit(span, val, entityPath, propName) {
 
   const restoreOldDisplay = () => {
     span.textContent = '';
-    if (span.classList?.contains('multi-select-tags') && _cellUiRenderMultiSelectTags(span, { ...val, value: old }, entityPath, propName)) return;
+    if (span.classList?.contains('multi-select-tags') && _cellUiRenderMultiSelectTags(span, { ...val, value: old }, entityPath, propName, options)) return;
     if (oldRichHtml) span.innerHTML = oldRichHtml;
     else {
       span.textContent = old;
@@ -186497,6 +186709,29 @@ function startInlineEdit(span, val, entityPath, propName) {
   // その間に次のセルの入力が確定しても取り消しの順番が逆転しないよう、確定の予定が立った時点で
   // 履歴の枠を取っておく（確定しなかった・変更が無かった時は取り除く）。
   let earlyHistorySlot = null;
+  let failedDraft = null;
+  let editorGeneration = 0;
+  const refreshValueHistory = async () => {
+    if (typeof historyOptions.onHistoryChanged === 'function') await historyOptions.onHistoryChanged();
+    else if (dbPath) await selectDatabase(dbPath, ctx || undefined, { silent: true });
+  };
+  const retainRejectedInput = error => {
+    if (!ownsEditor() || editedTd) return false;
+    editorGeneration++;
+    done = false;
+    span.textContent = '';
+    span.appendChild(input);
+    const message = GBUI.createInlineError({
+      message: propName + 'を保存できません。入力した値は保持しています。' + (error?.message || error),
+      onRetry: () => finish(),
+    });
+    message.addEventListener('click', event => event.stopPropagation());
+    message.addEventListener('pointerdown', event => event.stopPropagation());
+    span.appendChild(message);
+    document.addEventListener('pointerdown', outsidePointerDown, true);
+    showStatus('保存に失敗: ' + (error?.message || error), true);
+    return true;
+  };
   const reserveEarlyHistorySlot = () => {
     if (done || canceled || earlyHistorySlot || typeof _dbReserveValueHistory !== 'function') return;
     // 変更の無い確定で枠を取ると、やり直しの記録まで消えてしまうため、変更がある時だけ取る。
@@ -186504,7 +186739,7 @@ function startInlineEdit(span, val, entityPath, propName) {
     const richNow = _dbRichSanitizeHtml(input.innerHTML);
     const nextRichNow = _dbRichHtmlHasFormatting(richNow) ? richNow : '';
     if (nvNow ? (nvNow === old && nextRichNow === oldRichHtml) : !old) return;
-    earlyHistorySlot = _dbReserveValueHistory(propName + ': ' + old, val, dbPath);
+    earlyHistorySlot = _dbReserveValueHistory(propName + ': ' + old, val, dbPath, historyOptions);
   };
   const releaseEarlyHistorySlot = () => {
     const slot = earlyHistorySlot;
@@ -186533,9 +186768,20 @@ function startInlineEdit(span, val, entityPath, propName) {
       // 入力要素を即座に消して見た目をクリア
       span.textContent = '';
       const deleteSlot = earlySlot || (typeof _dbReserveValueHistory === 'function'
-        ? _dbReserveValueHistory('値削除: ' + propName + '=' + old, val, dbPath) : null);
+        ? _dbReserveValueHistory('値削除: ' + propName + '=' + old, val, dbPath, historyOptions) : null);
       try {
-        await _apiPutValue(val, { _delete: true });
+        const candidates = options.entityData?.[propName];
+        // Restoring an atomic snapshot keeps the same candidate ID. A new POST
+        // would give it another ID and invalidate earlier edits in the history.
+        const canRestoreIdentity = val.candidate_id && val.entry_id && Array.isArray(candidates)
+          && typeof _dbPersistAtomicCellCandidates === 'function';
+        if (canRestoreIdentity && candidates.filter(candidate => candidate.candidate_id === val.candidate_id).length !== 1) {
+          throw new Error('候補が変更されています。再読込してから削除してください。');
+        }
+        const atomic = canRestoreIdentity ? await _dbPersistAtomicCellCandidates(entityPath, propName,
+            candidates.filter(candidate => candidate.candidate_id !== val.candidate_id), ctx, val.entry_id)
+          : null;
+        if (!atomic) await _apiPutValue(val, { _delete: true });
         showStatus('削除しました');
         // 値削除の Undo: _dbUndoValue は _apiPutValue で書き戻すが、削除済みファイルへの
         // PUT は失敗するため、専用の undo (再作成) / redo (再削除) を組む
@@ -186547,6 +186793,11 @@ function startInlineEdit(span, val, entityPath, propName) {
         const pushDeleteHistory = () => {
           historyPush('値削除: ' + propName + '=' + old,
             async () => {
+              if (atomic) {
+                await _dbPersistAtomicCellCandidates(entityPath, propName, atomic.previous_candidates, ctx, val.entry_id, true);
+                await refreshValueHistory();
+                return;
+              }
               const result = await _apiPostValue(entityPath, propName, old, savedStatus, savedNote, savedRichHtml);
               if (result) {
                 currentVal = {
@@ -186560,13 +186811,14 @@ function startInlineEdit(span, val, entityPath, propName) {
                 };
                 if (savedRichHtml) currentVal.rich_html = savedRichHtml;
               }
-              if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+              await refreshValueHistory();
             },
             async () => {
-              await _apiPutValue(currentVal, { _delete: true });
-              if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
+              if (atomic) await _dbPersistAtomicCellCandidates(entityPath, propName, atomic.candidates, ctx, val.entry_id, true);
+              else await _apiPutValue(currentVal, { _delete: true });
+              await refreshValueHistory();
             },
-            _dbScope(dbPath)
+            typeof historyOptions.historyScope === 'string' ? historyOptions.historyScope : _dbScope(dbPath)
           );
         };
         if (typeof historyPush === 'function') {
@@ -186574,6 +186826,10 @@ function startInlineEdit(span, val, entityPath, propName) {
           else pushDeleteHistory();
         }
         deleteSlot?.cancel();
+        window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
+          candidateIndex: val.candidate_index, value: '', operation: 'delete' });
+        if (failedDraft) window.MeldexSheetCellRecovery?.clear(failedDraft);
+        failedDraft = null;
         // Step 3: 部分更新化 (空文字列 delete) — 削除済み val をローカル pivotData から除去
         if (typeof _removeLocalPivotValue === 'function') _removeLocalPivotValue(val, entityPath, propName);
         if (ownsEditor()) {
@@ -186584,8 +186840,9 @@ function startInlineEdit(span, val, entityPath, propName) {
       } catch (e) {
         deleteSlot?.cancel();
         if (ownsEditor()) span.textContent = old;
-        window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+        failedDraft = window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
           candidateIndex: val.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: '', operation: 'delete' });
+        if (retainRejectedInput(e)) return;
         restoreEditedCellSelection(true);
         await _cellUiRecoverMutationFailure(dbPath, ctx, e, '削除');
       }
@@ -186601,7 +186858,7 @@ function startInlineEdit(span, val, entityPath, propName) {
       else delete val.rich_html;
       // 取り消しの順番は保存の完了順ではなく確定の順にする。確定時に履歴の枠だけ先に取る。
       const historySlot = earlySlot || (typeof _dbReserveValueHistory === 'function'
-        ? _dbReserveValueHistory(propName + ': ' + old + ' → ' + nv, val, dbPath) : null);
+        ? _dbReserveValueHistory(propName + ': ' + old + ' → ' + nv, val, dbPath, historyOptions) : null);
       // 描画後に送る保存も、送るまでの間から保存待ちとして数える（再読込・取り消しが追い越さないように）。
       let releaseScheduled = null;
       const scheduled = new Promise(resolve => { releaseScheduled = resolve; });
@@ -186613,13 +186870,15 @@ function startInlineEdit(span, val, entityPath, propName) {
           if (typeof _syncValueRefAfterSave === 'function') _syncValueRefAfterSave(saveRef, val);
           else if (saveRef.file) val.file = saveRef.file;
           const pushUndo = () => {
-            _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml);
+            _dbUndoValue(propName + ': ' + old + ' → ' + nv, val, old, nv, oldRichHtml, nextRichHtml, historyOptions);
           };
           if (historySlot) historySlot.capture(pushUndo);
           else pushUndo();
           showStatus('保存しました', false, { passiveSave: true });
           window.MeldexSheetCellRecovery?.clear({ entryPath: entityPath, property: propName,
             candidateIndex: val.candidate_index, value: nv });
+          if (failedDraft) window.MeldexSheetCellRecovery?.clear(failedDraft);
+          failedDraft = null;
           if (ownsEditor()) {
             if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(span, entityPath, propName);
             else if (dbPath) selectDatabase(dbPath, ctx || undefined, { silent: true });
@@ -186628,13 +186887,14 @@ function startInlineEdit(span, val, entityPath, propName) {
         } catch (e) {
           releaseScheduled();
           historySlot?.cancel();
-          window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
+          failedDraft = window.MeldexSheetCellRecovery?.keep({ dbPath, entryPath: entityPath, property: propName,
             candidateIndex: saveRef.candidate_index, before: old, beforeRichHtml: oldRichHtml, value: nv, richHtml: nextRichHtml });
           if (val.value === nv) {
             val.value = old;
             if (oldRichHtml) val.rich_html = oldRichHtml;
             else delete val.rich_html;
           }
+          if (retainRejectedInput(e)) return;
           if (ownsEditor()) restoreOldDisplay();
           restoreEditedCellSelection(true);
           await _cellUiRecoverMutationFailure(dbPath, ctx, e, '保存');
@@ -186661,8 +186921,9 @@ function startInlineEdit(span, val, entityPath, propName) {
       return;
     }
     reserveEarlyHistorySlot();
+    const generation = editorGeneration;
     setTimeout(() => {
-      if (done) return;
+      if (done || generation !== editorGeneration) return;
       const active = document.activeElement;
       if (active === input || input.contains(active) || isFormatSurface(active)) { releaseEarlyHistorySlot(); return; }
       finish();
@@ -186676,7 +186937,8 @@ function startInlineEdit(span, val, entityPath, propName) {
       return;
     }
     reserveEarlyHistorySlot();
-    setTimeout(finish, 0);
+    const generation = editorGeneration;
+    setTimeout(() => { if (generation === editorGeneration) finish(); }, 0);
   };
   document.addEventListener('pointerdown', outsidePointerDown, true);
   input.addEventListener('blur', scheduleBlurFinish);
@@ -187327,6 +187589,7 @@ function _multiSelectValueTokens(value) {
 }
 
 function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,options={}){
+  if(anchor._multiSelectSaving)return;
   const dbPath=options.dbPath||_valueEditorDbPath(entityPath,anchor);
   const ctx=options.ctx||_valueEditorContext(entityPath,anchor,dbPath);
   const blocked=options.readOnly?'読み取り専用です':_valueEditorLockMessage(dbPath,propName,ctx);
@@ -187334,7 +187597,8 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   closeAllDropdowns(ctx||anchor);
   const historyOptions={dbPath,ctx,historyScope:typeof options.historyScope==='function'?options.historyScope():options.historyScope,
     onHistoryChanged:options.onHistoryChanged};
-  const selected=new Set(_multiSelectValueTokens(val.value||''));
+  const draft=anchor._formMultiSelectDraft;
+  const selected=new Set(draft?.values||_multiSelectValueTokens(val.value||''));
   const entity=options.entityData||{};
   const dynamic=window.MeldexDbDynamicOptions?.resolve?.(config,entity);
   const columnValues=!dynamic&&typeof collectDbColumnValues==='function'?collectDbColumnValues(ctx?.pivotData,propName,{splitCsv:true}):[];
@@ -187348,6 +187612,8 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   const search=document.createElement('input');search.type='search';search.className='gb-input';
   search.placeholder='検索...';search.setAttribute('aria-label',propName+'の選択肢を検索');
   const list=document.createElement('div'),error=document.createElement('div');
+  const preview=document.createElement('output');preview.className='gb-input gb-value-save-preview';preview.hidden=true;
+  preview.setAttribute('aria-label','保存中の値');
   let busy=false,closed=false,pointerCloser=null;
   function close(restoreFocus=false){
     if(closed)return;closed=true;
@@ -187373,7 +187639,8 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   }
   const footer=document.createElement('div');footer.style.cssText='display:flex;gap:4px;flex-wrap:wrap;';
   const button=(label,handler)=>{const element=document.createElement('button');element.type='button';element.className='gb-btn gb-btn-xs status-dropdown-item';element.textContent=label;element.addEventListener('click',handler);return element;};
-  const cancel=button('キャンセル',()=>{if(!busy)close(true);});
+  const discardDraft=()=>{delete anchor._formMultiSelectDraft;delete anchor.dataset.formDirty;};
+  const cancel=button('キャンセル',()=>{if(!busy){discardDraft();close(true);}});
   const clear=button('選択を解除',()=>{if(busy)return;selected.clear();render();void commit();});
   const apply=button('確定',()=>void commit());apply.classList.add('gb-btn-primary');
   footer.append(clear,cancel,apply);
@@ -187381,32 +187648,46 @@ function showMultiSelectValueDropdown(anchor,val,entityPath,propName,config,opti
   async function commit(){
     if(busy||closed)return;
     const next=[...selected].join(', '),before=String(val.value||'');
-    if(next===before){close(true);return;}
+    if(next===before){discardDraft();close(true);return;}
     const lock=options.readOnly?'読み取り専用です':_valueEditorLockMessage(dbPath,propName,ctx);
     if(lock){error.replaceChildren(GBUI.createInlineError({message:lock}));return;}
     const ref={...val,entry_path:entityPath,property:propName};
     setBusy(true);error.replaceChildren();
+    preview.textContent=next||'選択なし';preview.hidden=false;
+    anchor._multiSelectSaving=true;anchor.dataset.formHasPending='true';anchor.setAttribute('aria-busy','true');
+    options.onPreview?.(next);
+    const pending=Promise.resolve().then(()=>_apiPutValue(ref,{new_value:next}));
+    if(!anchor._formPendingSaves)anchor._formPendingSaves=new Set();
+    anchor._formPendingSaves.add(pending);
     let saved=false;
     try{
-      await _apiPutValue(ref,{new_value:next});
+      await pending;
       saved=true;
     }catch(failure){
-      if(popup.isConnected)error.replaceChildren(GBUI.createInlineError({message:propName+'を保存できません。選択は保持しています。'+(failure?.userMessage||failure?.message||failure),onRetry:commit}));
-    }finally{setBusy(false);}
+      const message=propName+'を保存できません。選択は保持しています。'+(failure?.userMessage||failure?.message||failure);
+      anchor._formMultiSelectDraft={values:[...selected],message};anchor.dataset.formDirty='true';
+      if(anchor.isConnected)options.onSaved?.(before);
+      if(popup.isConnected)error.replaceChildren(GBUI.createInlineError({message,onRetry:commit}));
+    }finally{
+      anchor._formPendingSaves.delete(pending);delete anchor.dataset.formHasPending;
+      anchor._multiSelectSaving=false;anchor.setAttribute('aria-busy','false');preview.hidden=true;setBusy(false);
+    }
     if(!saved)return;
+    discardDraft();
     val.value=next;
     if(typeof _syncValueRefAfterSave==='function')_syncValueRefAfterSave(ref,val);
     _dbUndoValue(propName+': '+before+' → '+next,val,before,next,undefined,undefined,historyOptions);
     if(anchor.isConnected)options.onSaved?.(next);
     close(true);
   }
-  popup.addEventListener('db-dropdown-cancel',()=>close());
+  popup.addEventListener('db-dropdown-cancel',()=>close(true));
   popup.addEventListener('keydown',event=>{
     if(event.isComposing)return;
     if(event.key==='Escape'){event.preventDefault();event.stopPropagation();if(!busy)close(true);}
     else if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();event.stopPropagation();void commit();}
   });
-  search.addEventListener('input',render);render();popup.append(search,list,error,footer);
+  search.addEventListener('input',render);render();popup.append(search,list,preview,error,footer);
+  if(draft?.message)error.appendChild(GBUI.createInlineError({message:draft.message,onRetry:commit}));
   _positionCellDropdown(popup,anchor,{gap:2,minWidth:180});
   if(typeof _enableDropdownKeyNav==='function')_enableDropdownKeyNav(popup,'.dd-nav-item');
   search.focus({preventScroll:true});
@@ -187697,12 +187978,14 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     const swatch = document.createElement('span');
     swatch.className = 'cell-color-swatch value-text';
     const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-    const applyColor = (hex) => {
-      const ok = HEX.test(String(hex || '').trim());
-      swatch.style.background = ok ? hex.trim() : '';
+    const normalizeColor = color => typeof _normalizeCustomColor === 'function'
+      ? _normalizeCustomColor(color) : HEX.test(String(color || '').trim()) ? String(color).trim() : '';
+    const applyColor = color => {
+      const value = normalizeColor(color), ok = !!value;
+      swatch.style.background = value;
       swatch.classList.toggle('is-empty', !ok);
       swatch.textContent = ok ? '' : '色を設定';
-      if (ok) swatch.title = hex.trim(); else swatch.removeAttribute('title');
+      if (ok) swatch.title = value; else swatch.removeAttribute('title');
     };
     applyColor(v);
     swatch.addEventListener('click', (e) => {
@@ -187719,14 +188002,17 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
           }
           const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
           if (lockMsg) { applyColor(val.value || ''); showStatus(lockMsg, true); return; }
-          const nv = HEX.test(String(color || '').trim()) ? color.trim() : '';
+          const nv = normalizeColor(color);
           const oldColor = val.value || '';
           if (nv === oldColor) return;
           try {
             const hasExisting = val?.file && val.candidate_index != null;
             if (hasExisting) {
               await _apiPutValue(val, { new_value: nv });
-              _dbUndoValue(propName + ': ' + oldColor + ' → ' + nv, val, oldColor, nv);
+              _dbUndoValue(propName + ': ' + oldColor + ' → ' + nv, val, oldColor, nv, undefined, undefined, {
+                dbPath, ctx: valueCtx, historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+                onHistoryChanged: options.onHistoryChanged,
+              });
             } else {
               const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
               val.file = result?.path || entityPath;
@@ -187935,7 +188221,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       }
       const latestConfig = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, valueCtx)?.[propName] : null;
       showMultiSelectValueDropdown(tagContainer, val, entityPath, propName, latestConfig || propTypeConfig,
-        { ...options, dbPath, ctx: valueCtx, onSaved: renderTags });
+        { ...options, dbPath, ctx: valueCtx, onPreview: renderTags, onSaved: renderTags });
     });
     {
       tagContainer.tabIndex = 0;
@@ -187960,17 +188246,13 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     const span = document.createElement('span');
     span.className = 'cell-user-val';
     span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;cursor:pointer;';
-    if (v) {
-      span.innerHTML = _userAvatarSmall(v) + ' ' + esc(v);
-    } else {
-      span.textContent = '—';
-      span.style.color = 'var(--fg2)';
-    }
+    _renderUserValueControl(span, v, false);
     span.addEventListener('click', (e) => {
       e.stopPropagation();
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      _showUserDropdown(span, val, entityPath, propName, v, false, { dbPath, ctx: valueCtx });
+      _showUserDropdown(span, val, entityPath, propName, String(val.value ?? ''), false, { ...options, dbPath, ctx: valueCtx,
+        onValueSaved(value) { if (span.isConnected) _renderUserValueControl(span, value, false); options.onValueSaved?.(value); } });
     });
     row.appendChild(span);
     return row;
@@ -187980,25 +188262,13 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     const container = document.createElement('div');
     container.className = 'multi-user-tags';
     container.style.cssText = 'display:flex;flex-wrap:wrap;gap:2px;cursor:pointer;';
-    const users = v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
-    if (users.length === 0) {
-      container.textContent = '—';
-      container.style.color = 'var(--fg2)';
-      container.style.fontSize = '12px';
-      container.style.padding = '2px';
-    }
-    users.forEach(u => {
-      const tag = document.createElement('span');
-      tag.className = 'multi-user-tag';
-      tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;';
-      tag.innerHTML = _userAvatarSmall(u) + ' ' + esc(u);
-      container.appendChild(tag);
-    });
+    _renderUserValueControl(container, v, true);
     container.addEventListener('click', (e) => {
       e.stopPropagation();
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      _showUserDropdown(container, val, entityPath, propName, v, true, { dbPath, ctx: valueCtx });
+      _showUserDropdown(container, val, entityPath, propName, String(val.value ?? ''), true, { ...options, dbPath, ctx: valueCtx,
+        onValueSaved(value) { if (container.isConnected) _renderUserValueControl(container, value, true); options.onValueSaved?.(value); } });
     });
     row.appendChild(container);
     return row;
@@ -188716,6 +188986,24 @@ window.openEntityChatForPath = async function openEntityChatForPath(entityPath) 
 window.openEntityAiChat = window.openEntityChatForPath;
 
 // ユーザープロパティ: 小型アバター
+function _renderUserValueControl(control, value, multi) {
+  const text = String(value ?? '');
+  const names = multi ? text.split(',').map(name => name.trim()).filter(Boolean) : text ? [text] : [];
+  control.replaceChildren();
+  control.style.color = names.length ? '' : 'var(--fg2)';
+  if (multi) {
+    control.style.fontSize = names.length ? '' : '12px';
+    control.style.padding = names.length ? '' : '2px';
+  }
+  if (!names.length) { control.textContent = '—'; return; }
+  if (!multi) { control.innerHTML = _userAvatarSmall(String(value)) + ' ' + esc(String(value)); return; }
+  names.forEach(name => {
+    const tag = document.createElement('span'); tag.className = 'multi-user-tag';
+    tag.style.cssText = 'display:inline-flex;align-items:center;gap:3px;';
+    tag.innerHTML = _userAvatarSmall(name) + ' ' + esc(name); control.appendChild(tag);
+  });
+}
+
 function _userAvatarSmall(username) {
   // avatar URL は属性だけに入れ、onerror 内にユーザー由来文字列を埋め込まない。
   const teamAvatar = window.MeldexDataAccess?.team?.avatarUrl?.(username || 'anonymous', {}) || ('/api/team/avatar/' + encodeURIComponent(username));
@@ -188738,6 +189026,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
   const users = window.MeldexUserPicker
     ? await window.MeldexUserPicker.getCandidates()
     : [];
+  if (anchor?.isConnected === false || dropdownOptions.ctx?.destroyed) return;
 
   const dd = document.createElement('div');
   dd.className = 'cell-inline-dd user-dropdown';
@@ -188854,8 +189143,10 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
 }
 async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, options) {
   const saveOptions = options || {};
+  const historyOptions = { ...saveOptions, historyScope: typeof saveOptions.historyScope === "function" ? saveOptions.historyScope() : saveOptions.historyScope };
   const dbPath = saveOptions.dbPath || (typeof _valueEditorDbPath === 'function' ? _valueEditorDbPath(entityPath, anchorEl) : state.currentDbPath);
   const ctx = saveOptions.ctx || (typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, anchorEl, dbPath) : null);
+  const refresh = () => typeof historyOptions.onHistoryChanged === "function" ? historyOptions.onHistoryChanged() : _valueEditorReload(dbPath, ctx);
   // 同じ空セルの保存待ち中に再選択した場合も、その候補を更新する。
   if (!val && typeof _getPivotEntityData === 'function') {
     const values = _getPivotEntityData(entityPath, ctx)?.[propName] || [];
@@ -188894,7 +189185,7 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
         && typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, val, nextValue, null, ctx);
       }
-      if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, val, oldValue, nextValue);
+      if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, val, oldValue, nextValue, undefined, undefined, { ...historyOptions, dbPath, ctx });
     } else {
       const result = await _apiPostValue(entityPath, propName, nextValue, status, '');
       const filePath = result?.path || '';
@@ -188913,8 +189204,8 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
         };
         historyPush('値追加: ' + propName + '=' + nextValue,
           currentRef.candidate_index != null
-            ? async () => { await _apiPutValue(currentRef, { _delete: true }); await _valueEditorReload(dbPath, ctx); }
-            : async () => { await apiPost('/outliner/delete', { path: currentRef.file }); await _valueEditorReload(dbPath, ctx); },
+            ? async () => { await _apiPutValue(currentRef, { _delete: true }); await refresh(); }
+            : async () => { await apiPost('/outliner/delete', { path: currentRef.file }); await refresh(); },
           async () => {
             const redo = await _apiPostValue(entityPath, propName, nextValue, status, '');
             currentRef = {
@@ -188923,12 +189214,15 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
               property: redo?.property || propName,
               candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
             };
-            await _valueEditorReload(dbPath, ctx);
+            await refresh();
           },
-          typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath)
+          typeof historyOptions.historyScope === 'string' ? historyOptions.historyScope : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
         );
       }
     }
+    // Refresh only this control. Rebuilding the parent form can discard input
+    // entered into another field while this save was waiting.
+    if ((!val || val.value === nextValue) && typeof saveOptions.onValueSaved === 'function') saveOptions.onValueSaved(nextValue);
     _refreshAfterCellEdit(anchorEl, entityPath, propName);
     return true;
   } catch (e) {
@@ -191253,7 +191547,7 @@ if (typeof window !== 'undefined') {
   function validatePublicFields(doc, fields, types) {
     if (Object.values(fields).some(value => typeof value !== 'string')) return '回答の値は文字列で指定してください';
     const layout = doc.layout, config = layout ? forLayout(layout, doc.formConfig) : normalize(doc.formConfig, doc.formConfig?.fields || Object.keys(types));
-    const hidden = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation', 'formula', 'rollup', 'button', 'chat']);
+    const hidden = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation', 'common-tags', 'formula', 'rollup', 'button', 'chat']);
     const allowed = config.fields.filter(name => !hidden.has(types[name]?.type));
     if (Object.keys(fields).some(name => !allowed.includes(name))) return '公開していない項目への回答です';
     for (const name of allowed) {
@@ -191334,7 +191628,7 @@ if (typeof window !== 'undefined') {
       noteRevision(ctx, result);
       candidate.value = value;
       if (typeof historyPush === 'function' && old !== value) {
-        const restore = async next => { noteRevision(ctx, await _apiPutValue(candidate, { new_value: next })); candidate.value = next; ctx.rerender(); };
+        const restore = async next => { noteRevision(ctx, await _apiPutValue(candidate, { new_value: next })); candidate.value = next; ctx.rerender(prop); };
         historyPush('フォーム: ' + prop + 'を変更', () => restore(old), () => restore(value), historyScope(ctx), prop);
       }
       return candidate;
@@ -191349,12 +191643,12 @@ if (typeof window !== 'undefined') {
     if (typeof historyPush === 'function') {
       historyPush('フォーム: 項目を入力 ' + prop, async () => {
         noteRevision(ctx, await _apiPutValue(created, { _delete: true }));
-        ctx.data.properties[prop] = ctx.data.properties[prop].filter(item => item !== created); ctx.rerender();
+        ctx.data.properties[prop] = ctx.data.properties[prop].filter(item => item !== created); ctx.rerender(prop);
       }, async () => {
         const next = await _apiPostValue(path, prop, value, '採用', '');
         noteRevision(ctx, next);
         Object.assign(created, { candidate_id: next?.candidate_id, entry_id: next?.entry_id, candidate_index: next.candidate_index, entry_revision: next.revision, file: next.path || path });
-        ctx.data.properties[prop].push(created); ctx.rerender();
+        ctx.data.properties[prop].push(created); ctx.rerender(prop);
       }, historyScope(ctx), prop);
     }
     return created;
@@ -191444,7 +191738,9 @@ if (typeof window !== 'undefined') {
     if (candidates.length > 1) {
       const more = document.createElement('details'), summary = document.createElement('summary'); summary.textContent = '候補一覧（' + candidates.length + '件）'; more.appendChild(summary);
       const list = document.createElement('div');
-      renderEntityPropValuesInto(list, prop, ctx.data, ctx.entityPath, ctx.propTypes, { readOnly: true, viewType: 'form' });
+      renderEntityPropValuesInto(list, prop, ctx.data, ctx.entityPath, ctx.propTypes, {
+        readOnly: true, viewType: 'form', dbPath: ctx.options?.ctx?.dbPath || ctx.dbPath, ctx: ctx.options?.ctx,
+      });
       more.appendChild(list); body.appendChild(more);
     }
     return true;
@@ -191567,6 +191863,50 @@ if (typeof window !== 'undefined') {
     await Promise.allSettled(hosts.flatMap(host => [...(host._formPendingSaves || [])]));
     return !root.querySelector('[data-form-dirty="true"]') || await cfConfirm('保存できていない入力を破棄して切り替えますか？');
   }
+  function beginSubmissionPreview(form, cfg, {nav, fresh, previous, next}) {
+    const preview = document.createElement('section');
+    preview.className = 'gb-form-pending-response';
+    preview.dataset.formHasPending = 'true'; preview.setAttribute('aria-busy', 'true');
+    preview.setAttribute('aria-label', '保存中の回答');
+    const title = document.createElement('h3'); title.textContent = '保存中の回答'; preview.appendChild(title);
+    const status = document.createElement('p'); status.className = 'gb-form-description'; status.setAttribute('role', 'status');
+    status.textContent = '内容を保存しています。保存が確定すると編集できます。'; preview.appendChild(status);
+    for (const prop of cfg.fields || []) {
+      const input = Array.from(form.elements).find(control => control.name === prop);
+      if (!input || input.disabled) continue;
+      const row = document.createElement('div'); row.className = 'gb-form-input-row';
+      const label = document.createElement('span'); label.className = 'gb-form-input-label'; label.textContent = cfg.labels?.[prop] || prop;
+      const output = document.createElement(input.type === 'checkbox' ? 'input' : 'output');
+      output.dataset.formPendingProp = prop;
+      output.dataset.e2eId = _dbFormControlIdentity(cfg, prop, 'pending-value');
+      output.setAttribute('aria-label', label.textContent);
+      if (input.type === 'checkbox') { output.type = 'checkbox'; output.checked = input.checked; output.disabled = true; }
+      else {
+        output.className = 'gb-input gb-form-pending-value';
+        output.textContent = input.type === 'file' ? Array.from(input.files || []).map(file => file.name).join(', ') : input.value;
+      }
+      row.append(label, output); preview.appendChild(row);
+    }
+    const controls = Array.from(nav.querySelectorAll('button,select,input')).map(control => [control, control.disabled]);
+    const focused = document.activeElement, hidden = form.hidden, freshLabel = fresh.textContent;
+    const caret = typeof focused?.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+    controls.forEach(([control]) => { control.disabled = true; }); fresh.textContent = '新しい回答（保存中）';
+    form.hidden = true; form.after(preview);
+    let finished = false;
+    return { finish(confirmed) {
+      if (finished) return; finished = true;
+      const active = document.activeElement;
+      const ownsFocus = active === document.body || preview.contains(active) || form.contains(active);
+      preview.remove(); form.hidden = hidden; fresh.textContent = freshLabel;
+      for (const [control, disabled] of controls) {
+        if (!confirmed || control !== previous && control !== next) control.disabled = disabled;
+      }
+      if (!confirmed && ownsFocus && focused?.isConnected && form.contains(focused) && form.getClientRects().length) {
+        focused.focus({preventScroll:true});
+        if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
+      }
+    }};
+  }
   function renderView(root, dbPath, cfg, propTypes, ctx) {
     const owner = ctx?.containerEl || root;
     let session = viewSessions.get(owner);
@@ -191636,6 +191976,7 @@ if (typeof window !== 'undefined') {
               ownerApp.ctx.pivotData = updated; renderDbFormView(ownerApp.ctx);
             }
           },
+          onSubmitting: form => beginSubmissionPreview(form, effective, {nav, fresh, previous, next}),
           canWrite: () => canWrite(panel, dbPath, dbPath, ctx), async onCreated(result) {
           if (typeof _elInvalidatePivotData === 'function') _elInvalidatePivotData(dbPath);
           const name = result.name || result.entity || (result.path || '').split(/[\\/]/).at(-1)?.replace(/\.md$/, '') || 'トピック';
@@ -192040,11 +192381,44 @@ if (typeof window !== 'undefined') {
         const layout = { formConfig: { fields: cfg.fields }, cells: cfg.fields.map(prop => ({ type: 'field', prop })) };
         const childCtx = { grid: host, data, entityPath: path, dbPath: cfg.dbPath, propTypes: types, layout,
           editMode: false, readOnly: access.readOnly, options: { readOnly: access.readOnly,
-            beforeWrite: () => !ctx.readOnly && api().canWrite(ctx.grid, ctx.dbPath, ctx.entityPath, ctx.options?.ctx) }, rerender() {} };
+            historyScope: () => api().historyScope(ctx),
+            beforeWrite: () => !ctx.readOnly && api().canWrite(ctx.grid, ctx.dbPath, ctx.entityPath, ctx.options?.ctx) },
+          rerender(changedProp) {
+              if (!host.isConnected) {
+                // History may outlive this dialog. Refresh the currently open
+                // editor of the same row without rebuilding its inputs.
+                document.querySelectorAll('.gb-form-subform-editor').forEach(panel => {
+                  if (panel._formRowPath === path && panel._formRowScope === api().historyScope(ctx)) panel._refreshFormRow?.(data, changedProp);
+                });
+                return;
+              }
+              cfg.fields.filter(prop => !changedProp || prop === changedProp).forEach(prop => {
+              const values = data.properties?.[prop] || [];
+              const candidate = (typeof filterValues === 'function' ? filterValues(values) : values)[0] || null;
+              const raw = String(candidate?.value ?? ''), type = types[prop]?.type;
+              const value = type === 'checkbox' ? String(['true','1'].includes(raw))
+                : type === 'date' && typeof _toInputDateValue === 'function' ? _toInputDateValue(raw, types[prop]?.withTime) : raw;
+              host.querySelectorAll('.gb-form-layout-field').forEach(row => row._refreshFormField?.(prop, value, candidate));
+            });
+          } };
+
+          opened.panel._formRowPath = path;
+          opened.panel._formRowScope = api().historyScope(ctx);
+          opened.panel._refreshFormRow = (fresh, prop) => {
+            if (!host.isConnected) return;
+            if (prop) data.properties[prop] = fresh.properties?.[prop] || [];
+            else data.properties = fresh.properties;
+            data.revision = fresh.revision;
+            childCtx.rerender(prop);
+          };
+
         cfg.fields.forEach(prop => {
           const field = document.createElement('div'); field.className = 'gb-form-subform-row-field';
           const label = document.createElement('strong'); label.textContent = prop; field.appendChild(label);
-          if (!api().renderField(field, { prop }, childCtx)) renderEntityPropValuesInto(field, prop, data, path, types, { readOnly: access.readOnly });
+          if (!api().renderField(field, { prop }, childCtx)) renderEntityPropValuesInto(field, prop, data, path, types, {
+            readOnly: access.readOnly, dbPath: cfg.dbPath,
+            historyScope: () => api().historyScope(ctx), onHistoryChanged: () => childCtx.rerender(),
+          });
           host.appendChild(field);
         });
       } catch (error) { if (host.isConnected) host.textContent = '読み込めません: ' + (error.message || error); }
@@ -203088,6 +203462,7 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, 
     } else if (typeof setColWidth === 'function') {
       setColWidth(colIndex, nextWidth);
     }
+    if (table) _dbUpdateRowRenderWidth(table, colIndex, nextWidth);
     if (dbPath && propName && typeof setColWidthPersist === 'function') {
       setColWidthPersist(dbPath, propName, nextWidth, {
         ctx,
@@ -203114,6 +203489,30 @@ function _setupDbColumnResizeHandleA11y(handle, th, colIndex, propName, dbPath, 
     applyWidth(current + (e.key === 'ArrowRight' ? step : -step));
   });
   handle.addEventListener('focus', syncValue);
+}
+
+// 列幅を画面の上で変えた時（境界のドラッグ・キーボード）、後から描く行の設定の幅も同じにする。
+// 長いシートはスクロールで見えてきた行をその時に描くため、設定が古い幅のままだと、新しい行だけ元の幅になり、
+// スワイプ中にトピック名列などの幅が変更前と変更後で行き来していた（2026-11-26 スマホの報告）。
+function _dbUpdateRowRenderWidth(table, colIndex, width) {
+  const opts = table?._dbEntityRowOpts;
+  if (!opts) return;
+  const header = table.querySelector('thead tr')?.children?.[colIndex];
+  if (!header) return;
+  const nextWidth = Math.max(60, Math.round(Number(width) || 60));
+  if (header.classList.contains('col-entity-header')) {
+    opts._entityW = nextWidth;
+  } else {
+    const prop = header.dataset.prop || header.dataset.propName || '';
+    if (!prop) return;
+    // 表示設定の中の値そのものは書き換えない（保存は呼び出し元が行う）。
+    opts.savedWidths = { ...(opts.savedWidths || {}), [prop]: nextWidth };
+  }
+  if (typeof _dbPinnedColumnOffsets === 'function' && opts.renderedCols) {
+    const rowControlsWidth = typeof _dbRowControlsWidth === 'function' ? _dbRowControlsWidth(table) : 56;
+    opts.pinnedOffsets = _dbPinnedColumnOffsets(opts.renderedCols, opts.pinnedCols, opts.entityColumnPinned,
+      opts.savedWidths, opts._entityW, rowControlsWidth);
+  }
 }
 
 function _dbReflowPinnedColumnOffsets(table) {
@@ -204069,6 +204468,9 @@ function renderPivot(ctx) {
     selectedCols, _entityW, _tbl, _tblId, entityColumnPinned,
     cellDisplayByCol, renderedCols, pinnedOffsets, cellImageThumbCount,
   };
+  // 後から描く行（スクロールで現れる行・分けて描く残りの行）は、この設定の列幅で作る。境界のドラッグなどで
+  // 幅を変えた時に、ここも書き換える（_dbUpdateRowRenderWidth）。
+  if (tblEl) tblEl._dbEntityRowOpts = entityRowOpts;
 
   // 行生成タスクをフラット化 (グループヘッダー + エントリ行を順序通りに並べる)
   // チャンク分割レンダリングで使用 (Step2)
@@ -211102,7 +211504,7 @@ function autoFitTimelineColumn(ctx, dbPath, col) {
 /* シート フォームビュー */
 
 const DB_FORM_UNSUPPORTED_TYPES = new Set(['formula', 'rollup', 'button', 'chat']);
-const DB_FORM_PUBLIC_HIDDEN_TYPES = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation']);
+const DB_FORM_PUBLIC_HIDDEN_TYPES = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation', 'common-tags']);
 
 function _dbFormIsAutomaticColumn(config) {
   return config?.type === 'multi-source-relation' && config.mode === 'auto';
@@ -211646,6 +212048,31 @@ function _buildFormInputRow(prop, cfg, ptc) {
   return row;
 }
 
+async function _dbFormCommonTagIds(raw, dbPath) {
+  const tokens = String(raw || '').split(',').map(value => value.trim()).filter(Boolean);
+  if (!tokens.length) return '';
+  const tagsApi = window.MeldexGlobalTags;
+  if (!dbPath || typeof tagsApi?.loadTagsCached !== 'function'
+      || typeof window.MeldexAutoTagSourceFolder !== 'function') {
+    throw new Error('共通タグの辞書を読み込めません。入力は保持しています。');
+  }
+  const catalog = await tagsApi.loadTagsCached(window.MeldexAutoTagSourceFolder(dbPath));
+  const tags = Array.isArray(catalog?.tags) ? catalog.tags : [];
+  const ids = [];
+  for (const token of tokens) {
+    let tag = tags.find(item => String(item.id) === token);
+    if (!tag) {
+      const matches = tags.filter(item => String(item.name || '').trim().toLowerCase() === token.toLowerCase());
+      if (matches.length > 1) throw new Error('同じ名前の共通タグが複数あります。タグIDで指定してください: ' + token);
+      if (!matches.length) throw new Error('共通タグが辞書に見つかりません。入力は保持しています: ' + token);
+      tag = matches[0];
+    }
+    const id = String(tag.id);
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids.join(', ');
+}
+
 async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
   const fields = Object.assign(Object.create(null), options.fixedFields || {});
   for (const prop of cfg.fields) {
@@ -211655,6 +212082,8 @@ async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
     const type = propTypes[prop]?.type || 'text';
     if (type === 'checkbox') {
       fields[prop] = input.checked ? 'true' : 'false';
+    } else if (type === 'common-tags') {
+      fields[prop] = await _dbFormCommonTagIds(input.value, options.dbPath);
     } else if (type === 'image') {
       if (options.previewOnly) {
         fields[prop] = Array.from(input.files || []).map(file => file.name).join(', ');
@@ -211784,8 +212213,15 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
   const wasDisabled = submitButton?.disabled;
   if (submitButton) submitButton.disabled = true;
   const msg = form.querySelector('.gb-form-submit-message');
+  let submissionUi = null;
+  const finishSubmissionUi = confirmed => {
+    const pending = submissionUi; submissionUi = null;
+    try { pending?.finish?.(confirmed); }
+    catch (error) { console.warn('回答の表示を更新できません:', error); }
+  };
   try {
-    if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
+    const earlyPermission = options.previewOnly || cfg.betaFeedbackRelay || cfg.customInstructionsRelay;
+    if (earlyPermission && options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
     // Validate before image upload as well, so invalid sibling fields create no attachments.
     if (globalThis.MeldexDbFormModel) {
       for (const prop of cfg.fields || []) {
@@ -211800,6 +212236,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       }
     }
     const reliableCreate = !cfg.betaFeedbackRelay && !cfg.customInstructionsRelay && !options.previewOnly;
+    if (reliableCreate && !_isBetaFeedbackFormConfig(cfg) && options.onSubmitting) submissionUi = options.onSubmitting(form);
     const controls = Array.from(form.elements || []);
     const fingerprint = JSON.stringify((cfg.fields || []).map(prop => {
       const input = controls.find(item => item.name === prop);
@@ -211821,6 +212258,11 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     if (pending && (pending.fingerprint !== fingerprint || !sameFiles)) {
       throw new Error('前の送信結果が未確認です。入力を元に戻して再試行してください。変更中の入力は保持しています。');
     }
+    // Upload and record creation are separate mutations. Ordinary scalar fields
+    // need the current check just before creation, not a duplicate remote check.
+    if (!earlyPermission && !pending && files.length && options.canWrite && !await options.canWrite()) {
+      throw new Error('このフォームは読み取り専用です');
+    }
     // Reuse already-uploaded attachments while an acknowledgement is uncertain.
     const fields = pending ? JSON.parse(JSON.stringify(pending.fields))
       : await _collectDbFormFields(form, cfg, propTypes, { ...options, previewOnly: !!options.previewOnly, dbPath });
@@ -211828,8 +212270,11 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       const sheetRules = typeof getValidationRules === 'function' ? getValidationRules(dbPath) : [];
       for (const prop of cfg.fields || []) {
         const rule = MeldexDbFormModel.ruleFor(cfg, prop, sheetRules);
-        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, fields[prop], propTypes[prop]?.type || 'text', rule);
+        const entered = controls.find(input => input.name === prop);
+        const value = propTypes[prop]?.type === 'common-tags' && entered ? entered.value : fields[prop];
+        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, value, propTypes[prop]?.type || 'text', rule);
         if (error) {
+          finishSubmissionUi(false);
           const input = [...form.elements].find(item => item.name === prop);
           if (input) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); input.reportValidity(); }
           throw new Error(error);
@@ -211859,7 +212304,8 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       }
     }
     const nameProp = cfg.entityNameProp || '';
-    const proposedName = (nameProp && fields[nameProp]) ? fields[nameProp] : 'フォーム送信 ' + new Date().toLocaleString('ja-JP') + ' ' + Math.random().toString(36).slice(2, 7);
+    const nameValue = propTypes[nameProp]?.type === 'common-tags' ? controls.find(input => input.name === nameProp)?.value : fields[nameProp];
+    const proposedName = (nameProp && nameValue) ? nameValue : 'フォーム送信 ' + new Date().toLocaleString('ja-JP') + ' ' + Math.random().toString(36).slice(2, 7);
     const name = form._dbFormPendingName || proposedName;
     if (options.previewOnly) {
       if (msg) msg.textContent = '回答プレビューです。実データは作成されません。';
@@ -211881,6 +212327,9 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       createRequest.operation_id = form._dbFormCreateOperation;
     }
     const createResult = await apiPost('/entity/create', createRequest);
+    if (reliableCreate && !_isBetaFeedbackFormConfig(cfg) && (!createResult?.entry_id || !createResult?.path)) {
+      throw new Error('保存結果を確認できません。入力は保持しています。再試行してください');
+    }
     if (!cfg.betaFeedbackRelay && !cfg.customInstructionsRelay) _recordFormCreatedResponse(form, dbPath, createResult, options);
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
@@ -211909,6 +212358,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     delete form._dbFormCreateOperation;
     delete form._dbFormCreateRequest;
     form._dbFormSubmitting = false;
+    finishSubmissionUi(true);
     if (options.onCreated) await options.onCreated(createResult);
     else if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });
     return createResult;
@@ -211916,6 +212366,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     if (msg) msg.textContent = err?.message || '送信に失敗しました';
     showStatus(err?.message || 'フォーム送信に失敗しました', true);
   } finally {
+    finishSubmissionUi(false);
     form._dbFormSubmitting = false;
     if (submitButton) submitButton.disabled = !!wasDisabled;
   }
@@ -220411,6 +220862,44 @@ function _elPropIconHtml(propName, propTypes, size) {
   return '';
 }
 
+async function _elRefreshFormValueHistory(ctx, propName) {
+  const runtime = globalThis.MeldexDbFormRuntime;
+  if (typeof runtime?.historyScope !== 'function') return ctx.rerender?.();
+  const normalize = path => String(path || '').replace(/\\/g, '/');
+  const entryId = data => String(data?.entry_id || data?.id || Object.values(data?.properties || {})
+    .flatMap(values => Array.isArray(values) ? values : []).find(value => value?.entry_id)?.entry_id || '');
+  const ownValues = data => Object.prototype.hasOwnProperty.call(data?.properties || {}, propName) ? data.properties[propName] : undefined;
+  const scope = runtime.historyScope(ctx), id = entryId(ctx.data);
+  const matches = live => {
+    if (!live || live.editMode || runtime.historyScope(live) !== scope) return false;
+    if (!scope && normalize(live.dbPath) !== normalize(ctx.dbPath)) return false;
+    const currentId = entryId(live.data);
+    return id && currentId ? id === currentId : normalize(live.entityPath) === normalize(ctx.entityPath);
+  };
+  for (const canvas of document.querySelectorAll('.el-canvas')) {
+    const live = canvas._elContext;
+    if (!canvas.isConnected || !live?.grid?.isConnected || !matches(live)) continue;
+    const before = JSON.stringify(ownValues(live.data));
+    const fresh = await apiFetch('/entity?path=' + encodeURIComponent(live.entityPath), { silentError: true, skipBrowseCache: true, cache: 'no-store' });
+    if (!canvas.isConnected || !live.grid.isConnected || !matches(live) || JSON.stringify(ownValues(live.data)) !== before) continue;
+    if (!live.data.properties) live.data.properties = {};
+    Object.defineProperty(live.data.properties, propName, { value: Array.isArray(ownValues(fresh)) ? ownValues(fresh) : [], enumerable: true, writable: true, configurable: true });
+    if (fresh.revision != null) { live.data.revision = fresh.revision; live.options?.onRevision?.(fresh.revision); }
+    for (const cell of live.layout.cells.filter(cell => cell.type === 'field' && cell.prop === propName)) {
+      const body = canvas.querySelector('.el-cell[data-cell-id="' + CSS.escape(cell.id) + '"] .el-cell-body');
+      if (!body || body.querySelector('[data-form-dirty="true"],.value-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,[contenteditable="true"]')) continue;
+      const replacement = _elBuildFieldCellContent(cell, live).querySelector('.el-cell-body');
+      if (replacement) {
+        body.replaceChildren(...replacement.childNodes);
+        if (typeof _elAutoFitCellText === 'function') {
+          const element = body.closest('.el-cell'); if (element) _elAutoFitCellText(element, cell);
+        }
+      }
+    }
+    if (typeof _elRefreshLayoutCharts === 'function') _elRefreshLayoutCharts(live);
+  }
+}
+
 /* field セル: 列キャプション + 値エディタ。値の描画は列一覧（renderEntityPropsGridInto）と
    同じ共通ヘルパー renderEntityPropValuesInto を使い、見た目と編集挙動を揃える。 */
 function _elBuildFieldCellContent(cell, ctx) {
@@ -220437,8 +220926,13 @@ function _elBuildFieldCellContent(cell, ctx) {
     if (globalThis.MeldexDbFormRuntime?.renderField(body, cell, ctx)) {
       // Both form views and topic layouts use the same rule-aware input controls.
     } else if (typeof renderEntityPropValuesInto === 'function') {
-      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes,
-        { readOnly: ctx.readOnly === true || !!formConfig && !formConfig.fields.includes(propName) });
+      renderEntityPropValuesInto(body, propName, ctx.data, ctx.entityPath, ctx.propTypes, {
+        readOnly: ctx.readOnly === true || !!formConfig && !formConfig.fields.includes(propName),
+        dbPath: ctx.options?.ctx?.dbPath || ctx.dbPath, ctx: ctx.options?.ctx,
+        historyScope: formConfig && typeof globalThis.MeldexDbFormRuntime?.historyScope === 'function'
+          ? () => globalThis.MeldexDbFormRuntime.historyScope(ctx) : ctx.options?.historyScope,
+        onHistoryChanged: ctx.options?.onHistoryChanged || (formConfig ? () => _elRefreshFormValueHistory(ctx, propName) : undefined),
+      });
     } else {
       const values = Array.isArray(ctx.data.properties[propName]) ? ctx.data.properties[propName] : [];
       values.forEach(val => {
@@ -264802,7 +265296,10 @@ async function fetchShellVerbs(path) {
   if (_shellVerbInflight.has(cacheKey)) return _shellVerbInflight.get(cacheKey);
   const request = (async () => {
     try {
-      const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path), { silentError: true });
+      const query = '/shell-verbs?path=' + encodeURIComponent(path);
+      const verbs = typeof runBackgroundQuery === 'function'
+        ? await runBackgroundQuery(query, { label: 'メニューの準備', operationProgress: false, cancellable: false })
+        : await apiFetch(query, { silentError: true });
       if (Array.isArray(verbs) && verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
       else if (Array.isArray(verbs)) _shellVerbEmptyAt.set(cacheKey, Date.now());
       return Array.isArray(verbs) ? verbs : [];
@@ -276077,13 +276574,36 @@ function _selectedSearchFolderPath() {
   return slash >= 0 ? path.slice(0, slash) : '';
 }
 
+let _vaultSearchRequestSeq = 0;
+
+function _vaultSearchConditionKey(includeReplacement = false) {
+  const query = document.getElementById('sp-query');
+  const caseOption = document.getElementById('sp-case');
+  const regexOption = document.getElementById('sp-regex');
+  const folderOption = document.getElementById('sp-folder-only');
+  const replacement = document.getElementById('sp-replace');
+  if (!query || !caseOption || !regexOption || !folderOption || (includeReplacement && !replacement)) return null;
+  return JSON.stringify([query.value, caseOption.checked, regexOption.checked,
+    folderOption.checked, folderOption.checked ? _selectedSearchFolderPath() : '',
+    includeReplacement ? replacement.value : null]);
+}
+
+async function fetchVaultSearch(params, options) {
+  const path = '/search?' + String(params);
+  return typeof runBackgroundQuery === 'function'
+    ? runBackgroundQuery(path, { label: '検索', cancellable: false, startOptions: options })
+    : apiFetch(path, options);
+}
+
 async function doVaultSearch() {
+  const seq = ++_vaultSearchRequestSeq;
   const q = document.getElementById('sp-query').value;
   if (!q) return;
   const caseSensitive = document.getElementById('sp-case').checked;
   const useRegex = document.getElementById('sp-regex').checked;
   const folderOnly = document.getElementById('sp-folder-only').checked;
   const searchPath = folderOnly ? _selectedSearchFolderPath() : '';
+  const conditionKey = _vaultSearchConditionKey();
 
   document.getElementById('sp-status').textContent = '検索中...';
   document.getElementById('sp-results').innerHTML = '';
@@ -276091,7 +276611,8 @@ async function doVaultSearch() {
   try {
     const params = new URLSearchParams({ q, case: caseSensitive, regex: useRegex });
     if (searchPath) params.set('path', searchPath);
-    const data = await apiFetch('/search?' + params.toString());
+    const data = await fetchVaultSearch(params);
+    if (seq !== _vaultSearchRequestSeq || conditionKey !== _vaultSearchConditionKey()) return;
     if (data.error) {
       const container = document.getElementById('sp-results');
       renderEmptyState(container, 'search', data.error, '検索語を確認してください');
@@ -276100,6 +276621,7 @@ async function doVaultSearch() {
     }
     renderSearchResults(data, q, caseSensitive, useRegex);
   } catch (e) {
+    if (seq !== _vaultSearchRequestSeq || conditionKey !== _vaultSearchConditionKey()) return;
     document.getElementById('sp-status').textContent = '検索エラー';
   }
 }
@@ -276382,11 +276904,21 @@ async function doVaultReplace(all) {
   const useRegex = document.getElementById('sp-regex').checked;
   const folderOnly = document.getElementById('sp-folder-only').checked;
   const searchPath = folderOnly ? _selectedSearchFolderPath() : '';
+  const conditionKey = _vaultSearchConditionKey(true);
+  const requireCurrentConditions = () => {
+    if (conditionKey === _vaultSearchConditionKey(true)) return true;
+    const message = '検索条件が変わったため、置換を中止しました。もう一度検索してください';
+    showStatus(message, true);
+    const status = document.getElementById('sp-status');
+    if (status) status.textContent = message;
+    return false;
+  };
 
   // まず検索して対象ファイルを取得
   const params = new URLSearchParams({ q, case: caseSensitive, regex: useRegex, full_scan: '1' });
   if (searchPath) params.set('path', searchPath);
-  const data = await apiFetch('/search?' + params.toString());
+  const data = await fetchVaultSearch(params);
+  if (!requireCurrentConditions()) return;
   if (data.error) {
     document.getElementById('sp-status').textContent = data.error;
     showStatus(data.error, true);
@@ -276406,11 +276938,13 @@ async function doVaultReplace(all) {
     return;
   }
   if (!await cfConfirm(`${targets.length}ファイルの${all ? '全一致箇所' : '各ファイルの最初の一致箇所'}を一括置換しますか？\n途中で失敗した場合は全ファイルを元に戻します。\n\n「${q}」→「${r}」`)) return;
+  if (!requireCurrentConditions()) return;
 
   let result;
   let scriptnotes;
   try {
     scriptnotes = await _prepareVaultReplaceScriptnotes(targets);
+    if (!requireCurrentConditions()) return;
     // flushで保存した場合は検索時の版が古くなるため、確定後の版で条件付き保存する。
     for (const { editor, path } of scriptnotes) {
       const target = targets.find(item => item.path === path);
@@ -286802,6 +287336,13 @@ const GBSubPanel = (() => {
           entry.label = name;
           _navHistory.forEach(item => { if (item.path === entry.path) item.label = name; });
           _onEntryLabelChanged?.();
+        }, onPathResolved: (path, name, previousPath) => {
+          // タブが今の保存先ではない場所を指していた（トピックのIDや表示名のファイル）。今の保存先へ付け替え、
+          // 次に起動した時もそこから開く（2026-11-27）。
+          entry.path = path;
+          if (name) entry.label = name;
+          _navHistory.forEach(item => { if (item.path === previousPath) { item.path = path; if (name) item.label = name; } });
+          _onEntryLabelChanged?.();
         } });
       return true;
     }
@@ -292650,8 +293191,11 @@ apiFetch = async function(path, opts) {
       lockRejectedOrder = split.order;
     }
   }
-  const deferredCommittedUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
-    && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, ''));
+  const formCreate = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/entity/create'
+    && _apiLockJsonBody(opts).source === 'form';
+  const deferredCommittedUnlock = formCreate || (String(opts.method || 'GET').toUpperCase() === 'POST'
+    && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '')));
   let mutationSucceeded = false;
   try {
     if (activeLocks?.beforeApiFetch) {
@@ -292668,7 +293212,7 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
     let result = await _origApiFetch(path, opts);
-    mutationSucceeded = true;
+    mutationSucceeded = !formCreate || !!(result?.entry_id && result?.path);
     if (lockRejectedOrder) result = _apiMergeLockRejectedResults(result, lockRejectedOrder);
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
@@ -294077,11 +294621,16 @@ async function handleXlsxImportToOutliner(e) {
 
   try {
     const data = await _readFileAsDataUrl(file);
-    const res = await apiPost('/import-xlsx-scriptnote', {
+    const body = {
       filename: file.name,
       title: baseName,
       data,
-    });
+    };
+    const res = typeof runBackgroundJob === 'function'
+      ? await runBackgroundJob('/import-xlsx-scriptnote', { ...body, background: true }, {
+        label: 'Excelからシナリオを取り込み', cancellable: false,
+      })
+      : await apiPost('/import-xlsx-scriptnote', body);
     const scriptnotePath = res.path || res.node?.path;
     const label = res.label || baseName;
     if (!scriptnotePath) throw new Error('取り込んだシナリオの保存先を確認できませんでした');
@@ -296281,7 +296830,12 @@ const MeldexExportHtml = (() => {
     const usage = collectFontUsage(rootEl);
     if (!usage.requests.length) return null;
     try {
-      const result = await apiPost('/export/font-subset', { fonts: usage.requests, text: usage.text }, { silentError: true, timeoutMs: 180000 });
+      const body = { fonts: usage.requests, text: usage.text };
+      const result = typeof runBackgroundJob === 'function'
+        ? await runBackgroundJob('/export/font-subset', { ...body, background: true }, {
+          label: '書き出し用フォントの準備', cancellable: false, startTimeoutMs: 180000,
+        })
+        : await apiPost('/export/font-subset', body, { silentError: true, timeoutMs: 180000 });
       if (!result || typeof result.css !== 'string' || !result.css) return null;
       return result;
     } catch {

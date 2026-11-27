@@ -57,7 +57,9 @@
       // 本文受信自体に時間がかかるため、必要なら開始POSTの待ち時間を延ばせるようにする。
       const startOpts = { silentError: true };
       if (options.startTimeoutMs) startOpts.timeoutMs = options.startTimeoutMs;
-      started = await apiPost(startPath, body || {}, startOpts);
+      started = options.startMethod === 'GET'
+        ? await apiFetch(startPath, { ...(options.startOptions || {}), ...startOpts })
+        : await apiPost(startPath, body || {}, startOpts);
       jobId = String(started?.job_id || '');
     }
     if (!jobId) {
@@ -361,6 +363,14 @@
     return (value / 86400).toFixed(1) + '日';
   }
 
+  async function runBackgroundQuery(path, options) {
+    const opts = options || {};
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return apiFetch(path, opts.startOptions);
+    const startPath = String(path) + (String(path).includes('?') ? '&' : '?') + 'background=true';
+    return runBackgroundJob(startPath, null, { ...opts, startMethod: 'GET' });
+  }
+
+  window.runBackgroundQuery = runBackgroundQuery;
   window.describeImportResult = describeImportResult;
   window.describeJobFailure = describeJobFailure;
   window.importAttentionValues = importAttentionValues;

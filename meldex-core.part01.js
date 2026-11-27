@@ -862,6 +862,8 @@ function showSaveDialog(message, options = {}) {
 }
 
 let _mobileStatusToastTimer = 0;
+let _mobileStatusToastFrame = 0;
+let _mobileStatusToastPending = null;
 function _isMobileStatusToastNeeded() {
   const status = document.getElementById('status-bar');
   if (!status) return false;
@@ -877,8 +879,29 @@ function _isMobileStatusToastNeeded() {
   }
 }
 
-function _showMobileStatusToast(text, isError) {
+function _showMobileStatusToast(text, isError, atPaint = false) {
   if (!document.body) return;
+  // デスクトップでは表示判定のスタイル読取を描画前の1回へまとめる。
+  // 通知本文（ステータスバー）は呼出元ですでに更新済み。電話幅は即時表示する。
+  const phoneWidth = typeof window !== 'undefined' && (typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 768px)').matches : window.innerWidth > 0 && window.innerWidth <= 768);
+  if (text && !atPaint && !phoneWidth && typeof requestAnimationFrame === 'function') {
+    _mobileStatusToastPending = { text, isError };
+    if (!_mobileStatusToastFrame) {
+      _mobileStatusToastFrame = requestAnimationFrame(() => {
+        _mobileStatusToastFrame = 0;
+        const pending = _mobileStatusToastPending;
+        _mobileStatusToastPending = null;
+        if (pending) _showMobileStatusToast(pending.text, pending.isError, true);
+      });
+    }
+    return;
+  }
+  if (!atPaint && typeof _mobileStatusToastFrame !== 'undefined' && _mobileStatusToastFrame) {
+    cancelAnimationFrame(_mobileStatusToastFrame);
+    _mobileStatusToastFrame = 0;
+    _mobileStatusToastPending = null;
+  }
   let toast = document.getElementById('gb-mobile-status-toast');
   if (!text || !_isMobileStatusToastNeeded()) {
     clearTimeout(_mobileStatusToastTimer);
@@ -1586,6 +1609,9 @@ function replaceIcons(root) {
 
 // 親ウィンドウ（Meldex）からテーマを継承
 function inheritParentTheme() {
+  // 親の画面が無い（単独アプリ・本体そのもの）時は受け継ぐものが無い。自分の見た目を全部計算させて
+  // 自分へ書き戻すだけになり、単独ビューワーの起動で最初の画像を約20ms遅らせていた（2026-11-27 計測）。
+  if (window.parent === window) return;
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
     // --theme-native-os-accent / --ui-accent: 「OSアクセント」の色は本体だけがOSから読むため、ここで渡さないと

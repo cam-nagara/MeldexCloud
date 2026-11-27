@@ -668,8 +668,11 @@ apiFetch = async function(path, opts) {
       lockRejectedOrder = split.order;
     }
   }
-  const deferredCommittedUnlock = String(opts.method || 'GET').toUpperCase() === 'POST'
-    && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, ''));
+  const formCreate = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/entity/create'
+    && _apiLockJsonBody(opts).source === 'form';
+  const deferredCommittedUnlock = formCreate || (String(opts.method || 'GET').toUpperCase() === 'POST'
+    && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '')));
   let mutationSucceeded = false;
   try {
     if (activeLocks?.beforeApiFetch) {
@@ -686,7 +689,7 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
     let result = await _origApiFetch(path, opts);
-    mutationSucceeded = true;
+    mutationSucceeded = !formCreate || !!(result?.entry_id && result?.path);
     if (lockRejectedOrder) result = _apiMergeLockRejectedResults(result, lockRejectedOrder);
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
@@ -895,6 +898,3 @@ async function _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown) {
   const label = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
   await openFolder(label, homeRes.path, {
     fromExplorer: true,
-    skipAutoAppLayout: true,
-    skipSaveLastView: true,
-  });

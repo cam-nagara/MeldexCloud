@@ -9,6 +9,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
   const users = window.MeldexUserPicker
     ? await window.MeldexUserPicker.getCandidates()
     : [];
+  if (anchor?.isConnected === false || dropdownOptions.ctx?.destroyed) return;
 
   const dd = document.createElement('div');
   dd.className = 'cell-inline-dd user-dropdown';
@@ -125,8 +126,10 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
 }
 async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, options) {
   const saveOptions = options || {};
+  const historyOptions = { ...saveOptions, historyScope: typeof saveOptions.historyScope === "function" ? saveOptions.historyScope() : saveOptions.historyScope };
   const dbPath = saveOptions.dbPath || (typeof _valueEditorDbPath === 'function' ? _valueEditorDbPath(entityPath, anchorEl) : state.currentDbPath);
   const ctx = saveOptions.ctx || (typeof _valueEditorContext === 'function' ? _valueEditorContext(entityPath, anchorEl, dbPath) : null);
+  const refresh = () => typeof historyOptions.onHistoryChanged === "function" ? historyOptions.onHistoryChanged() : _valueEditorReload(dbPath, ctx);
   // 同じ空セルの保存待ち中に再選択した場合も、その候補を更新する。
   if (!val && typeof _getPivotEntityData === 'function') {
     const values = _getPivotEntityData(entityPath, ctx)?.[propName] || [];
@@ -165,7 +168,7 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
         && typeof _upsertLocalPivotValue === 'function') {
         _upsertLocalPivotValue(entityPath, propName, val, nextValue, null, ctx);
       }
-      if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, val, oldValue, nextValue);
+      if (typeof _dbUndoValue === 'function') _dbUndoValue(propName + ': ' + oldValue + ' → ' + nextValue, val, oldValue, nextValue, undefined, undefined, { ...historyOptions, dbPath, ctx });
     } else {
       const result = await _apiPostValue(entityPath, propName, nextValue, status, '');
       const filePath = result?.path || '';
@@ -184,8 +187,8 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
         };
         historyPush('値追加: ' + propName + '=' + nextValue,
           currentRef.candidate_index != null
-            ? async () => { await _apiPutValue(currentRef, { _delete: true }); await _valueEditorReload(dbPath, ctx); }
-            : async () => { await apiPost('/outliner/delete', { path: currentRef.file }); await _valueEditorReload(dbPath, ctx); },
+            ? async () => { await _apiPutValue(currentRef, { _delete: true }); await refresh(); }
+            : async () => { await apiPost('/outliner/delete', { path: currentRef.file }); await refresh(); },
           async () => {
             const redo = await _apiPostValue(entityPath, propName, nextValue, status, '');
             currentRef = {
@@ -194,12 +197,15 @@ async function _saveUserValue(val, entityPath, propName, newValue, anchorEl, opt
               property: redo?.property || propName,
               candidate_id: redo?.candidate_id, entry_id: redo?.entry_id, candidate_index: redo?.candidate_index,
             };
-            await _valueEditorReload(dbPath, ctx);
+            await refresh();
           },
-          typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath)
+          typeof historyOptions.historyScope === 'string' ? historyOptions.historyScope : (typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : _dbScope(dbPath))
         );
       }
     }
+    // Refresh only this control. Rebuilding the parent form can discard input
+    // entered into another field while this save was waiting.
+    if ((!val || val.value === nextValue) && typeof saveOptions.onValueSaved === 'function') saveOptions.onValueSaved(nextValue);
     _refreshAfterCellEdit(anchorEl, entityPath, propName);
     return true;
   } catch (e) {

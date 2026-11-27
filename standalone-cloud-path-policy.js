@@ -202,11 +202,12 @@
     const QUICK_MEMO_HOME_FOLDERS = ['MeldexHome/クイックメモ', 'クイックメモ'];
     function quickMemoHomePath(endpoint, queryPath) {
       if (options.getAppSpec()?.id !== 'quick-memo') return '';
-      if (endpoint !== '/quick-memo/files' && endpoint !== '/quick-memo/file') return '';
+      if (endpoint !== '/quick-memo/files' && endpoint !== '/quick-memo/file' && endpoint !== '/quick-memo/batch') return '';
       const folder = QUICK_MEMO_HOME_FOLDERS.find((base) => queryPath === base || queryPath.startsWith(base + '/'));
       if (!folder) return '';
       const relative = queryPath.slice(folder.length + 1);
-      if (endpoint === '/quick-memo/files') return relative ? '' : queryPath;
+      // まとめて送る入口は、シートのフォルダを指定する（各メモは本文側で同じ規則を確かめる）。
+      if (endpoint === '/quick-memo/files' || endpoint === '/quick-memo/batch') return relative ? '' : queryPath;
       if (!relative || relative.includes('/') || relative.startsWith('.') || relative.startsWith('_')
         || !/\.md$/i.test(relative)) return '';
       return queryPath;
@@ -218,7 +219,28 @@
       // Only the authorized memo and its parent sheet; never bypass the locks.
       if (request?.endpoint === '/quick-memo/file' && memo
           && (normalized === memo || normalized === dirname(memo))) return normalized;
+      if (request?.endpoint === '/quick-memo/batch' && memo
+          && (normalized === memo || quickMemoHomePath('/quick-memo/file', normalized) && dirname(normalized) === memo)) return normalized;
       return assertInside(normalized, { allowRoot: true, action: 'ファイル保護を確認' }).path;
+    }
+
+    // まとめて送る入口: フォルダ（シート）と、本文の各メモが同じフォルダ直下の .md であること。
+    // 読み取り（GET）のメモの一覧はデータ層が同じフォルダ直下かを確かめる。
+    function authorizeQuickMemoBatch(method, queryPath, body) {
+      if (options.getAppSpec()?.id !== 'quick-memo') _deny('クイックメモをまとめて保存', queryPath, 'not_quick_memo_app');
+      const home = quickMemoHomePath('/quick-memo/batch', queryPath);
+      const folder = home || assertFolder(queryPath, 'クイックメモをまとめて保存');
+      if (method === 'GET') return folder;
+      const items = Array.isArray(body?.items) ? body.items : [];
+      if (!items.length) _deny('クイックメモをまとめて保存', queryPath, 'empty_batch');
+      for (const item of items) {
+        const path = normalizePath(item?.path || '');
+        if (dirname(path) !== folder) _deny('クイックメモをまとめて保存', path, 'outside_batch_folder');
+        if (home ? !quickMemoHomePath('/quick-memo/file', path) : !assertFile(path, { action: 'クイックメモを保存', extensions: ['.md'] })) {
+          _deny('クイックメモをまとめて保存', path, 'invalid_memo_path');
+        }
+      }
+      return folder;
     }
 
     function authorizeRequest(request) {
@@ -226,6 +248,7 @@
       const method = String(request?.method || 'GET').toUpperCase();
       const body = request?.body && typeof request.body === 'object' ? request.body : {};
       const queryPath = normalizePath(request?.queryPath || '');
+      if (endpoint === '/quick-memo/batch') return authorizeQuickMemoBatch(method, queryPath, body);
       const homeQuickMemo = quickMemoHomePath(endpoint, queryPath);
       if (homeQuickMemo) return homeQuickMemo;
       if (endpoint === '/browse' && method === 'GET') return assertFolder(queryPath, 'フォルダを表示');

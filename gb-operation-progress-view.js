@@ -592,7 +592,7 @@
       el.replaceChildren(header);
       el.hidden = false;
       _watchTrayLayout();
-      _syncTrayPosition();
+      _scheduleTrayPosition();
       if (toggleFocused) toggle.focus({ preventScroll: true });
       return;
     }
@@ -609,8 +609,8 @@
     el.replaceChildren(header, list);
     el.hidden = false;
     _watchTrayLayout();
-    _syncTrayPosition();
-    list.scrollTop = previousScroll;
+    _scheduleTrayPosition();
+    if (previousScroll) list.scrollTop = previousScroll;
     if (toggleFocused) toggle.focus({ preventScroll: true });
     if (focusedAction) {
       const row = Array.from(list.children).find(function (node) { return node.dataset.operationId === focusedId; });

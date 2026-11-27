@@ -146,7 +146,10 @@ async function fetchShellVerbs(path) {
   if (_shellVerbInflight.has(cacheKey)) return _shellVerbInflight.get(cacheKey);
   const request = (async () => {
     try {
-      const verbs = await apiFetch('/shell-verbs?path=' + encodeURIComponent(path), { silentError: true });
+      const query = '/shell-verbs?path=' + encodeURIComponent(path);
+      const verbs = typeof runBackgroundQuery === 'function'
+        ? await runBackgroundQuery(query, { label: 'メニューの準備', operationProgress: false, cancellable: false })
+        : await apiFetch(query, { silentError: true });
       if (Array.isArray(verbs) && verbs.length > 0) _shellVerbCache[cacheKey] = verbs;
       else if (Array.isArray(verbs)) _shellVerbEmptyAt.set(cacheKey, Date.now());
       return Array.isArray(verbs) ? verbs : [];

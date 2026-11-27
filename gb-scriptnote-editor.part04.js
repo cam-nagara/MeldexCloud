@@ -75,8 +75,8 @@
     }
     this.doc.rows.splice(idx + 1, 0, newRow);
     this._calcCache = null;
-    // 通常表示では変更した2行だけを差し替える。折り返し・絞り込み・まとめ表示など
-    // 全体配置が必要な状態だけ従来の全体再描画へ戻す。
+    // 横書きでは変更した2行だけを差し替える。縦書きの折返し・絞り込み・まとめ表示など
+    // 全体描画が必要な状態は従来の処理へ戻す。
     if (!this._renderSplitRowsIncrementally(row, idx, newRow)) this._render();
     this._markDirty({ skipUndo: true });
     // 新しい行にフォーカス。E2E/高速操作では rAF だけだと次操作が先行するため即時にも反映する。
@@ -95,10 +95,18 @@
 
   _renderSplitRowsIncrementally(previousRowEl, rowIndex, newRow) {
     if (!previousRowEl?.isConnected || !this.host) return false;
-    if (this.doc.editor?.wrapMode || this.doc.editor?.mergeDisplay || this.doc.editor?.spreadBorder?.enabled) return false;
+    if (this.doc.editor?.mergeDisplay || this.doc.editor?.spreadBorder?.enabled) return false;
     if (this._filterRoles || this._filterStatuses
         || (this._hideRoles && this._hideRoles.size)
         || (this._hideStatuses && this._hideStatuses.size)) return false;
+    if (this.doc.editor?.wrapMode) {
+      if (this.doc.editor?.viewMode === 'vertical'
+          || !this.doc.rows[rowIndex] || this.doc.rows[rowIndex + 1] !== newRow) return false;
+      const previousRows = this.doc.rows.filter(row => row !== newRow);
+      // 分割前のセルも作り直す。それ以外の行の参照と画面部品は保持する。
+      previousRows[rowIndex] = { ...previousRows[rowIndex] };
+      return this._renderRowsIncrementally(previousRows);
+    }
     const editorEl = previousRowEl.parentElement;
     if (!editorEl?.classList?.contains('sn2-editor')) return false;
     const oldRow = this.doc.rows[rowIndex];
@@ -139,6 +147,58 @@
     this._adjustRubySpacing();
     const scroll = this.host.querySelector('.sn2-scroll');
     if (scroll) this._setupPanSpacer(scroll, editorEl, this.doc.editor?.viewMode || 'horizontal');
+    if (this._path && typeof CommentBadges !== 'undefined') {
+      try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
+    }
+    return true;
+  }
+
+  // 本文だけの履歴復元と行の分割。書式・絞り込み・縦書きなどは従来の全体描画へ戻す。
+  _renderRowsIncrementally(previousRows) {
+    if (!this.host || this.doc.editor?.viewMode === 'vertical' || !this.doc.editor?.wrapMode
+        || this.doc.editor?.mergeDisplay || this.doc.editor?.spreadBorder?.enabled
+        || this._filterRoles || this._filterStatuses || this._hideRoles?.size || this._hideStatuses?.size
+        || typeof this._repackWrapForResize !== 'function') return false;
+    const editor = this.host.querySelector('.sn2-scroll.sn2-wrap .sn2-editor');
+    const group = editor?.querySelector('.sn2-column-group');
+    if (!group) return false;
+    const oldElements = new Map([...editor.querySelectorAll('.sn2-row')].map(row => [row.dataset.rowId, row]));
+    const oldModels = new Map(previousRows.map(row => [row.id, row]));
+    if (!this.doc.rows.some(row => oldModels.get(row.id) === row && oldElements.has(row.id))) return false;
+    const sample = oldElements.values().next().value;
+    const visibleColumns = [...sample.children].map(cell => cell.dataset?.colId).filter(Boolean).map(id => ({ id }));
+    const customColumns = this._getCustomColumns();
+    const calc = this._calcPagePanel();
+    const retainedIds = new Set();
+    this.doc.rows.forEach((row, index) => {
+      retainedIds.add(row.id);
+      const previous = oldElements.get(row.id);
+      if (previous && oldModels.get(row.id) === row) return;
+      const next = this._buildRowEl(row, index, calc[index], false,
+        index ? this.doc.rows[index - 1] : null, index ? calc[index - 1] : null, customColumns, visibleColumns);
+      if (previous) previous.replaceWith(next);
+      else group.appendChild(next);
+    });
+    for (const [id, element] of oldElements) if (!retainedIds.has(id)) element.remove();
+    this._updateGuttersFrom(0, { movedRowIds: [] });
+    const indices = new Map(this.doc.rows.map((row, index) => [row.id, index]));
+    const customById = new Map(customColumns.map(column => [column.id, column]));
+    editor.querySelectorAll('.sn2-row').forEach(element => {
+      const index = indices.get(element.dataset.rowId);
+      const row = this.doc.rows[index];
+      element.querySelector('.sn2-row-check')?.setAttribute('aria-label', `行を選択: ${index + 1}`);
+      element.querySelector('.sn2-text')?.setAttribute('aria-label', `本文、${index + 1}行、キャラ${row.character || '未設定'}、タイプ${row.role || '未設定'}`);
+      element.querySelectorAll('.sn2-custom-cell').forEach(cell => {
+        const column = customById.get(cell.dataset.colId);
+        const control = cell.querySelector('.sn2-custom-input, .sn2-custom-select, .sn2-custom-text');
+        if (column) control?.setAttribute('aria-label', `${column.label || column.id || '列'}列、${index + 1}行`);
+      });
+    });
+    if (!this._repackWrapForResize(true)) return false;
+    this._adjustRubySpacing();
+    if (editor.querySelector('[data-ruby]')) this._repackWrapForResize();
+    const scroll = editor.closest('.sn2-scroll');
+    this._setupPanSpacer(scroll, editor, 'horizontal');
     if (this._path && typeof CommentBadges !== 'undefined') {
       try { CommentBadges.refreshScriptnote(this._path, this.host); } catch {}
     }
@@ -443,61 +503,82 @@
   // 最終文字のルビが閉じ括弧等に被る不具合があった。占有幅を「動かせない境界」
   // (span:null, minExtent===extent) として同じ行のresolveRubyOverlapsに参加させる。
   _appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z) {
+    const targets = [];
     this.host.querySelectorAll('.sn2-text[data-after]:not(:empty)').forEach(textEl => {
       const rubySpans = textEl.querySelectorAll('[data-ruby]');
       if (!rubySpans.length) return;
       const info = spanToInfo.get(rubySpans[rubySpans.length - 1]);
       if (!info || info._lineKey === undefined) return;
-      const boundary = this._measureAfterTextRubyBoundary(textEl, isVertical, z);
-      if (boundary) rows.get(info._lineKey)?.push(boundary);
+      targets.push({ textEl, lineKey: info._lineKey });
+    });
+    const boundaries = this._measureAfterTextRubyBoundaries(targets.map(target => target.textEl), isVertical, z);
+    boundaries.forEach((boundary, index) => {
+      if (boundary) rows.get(targets[index].lineKey)?.push(boundary);
     });
   }
 
   // data-after の実際の描画幅は::afterのため直接測れない。同じフォント文脈の
   // 子要素として一時的に不可視計測し、直後に取り除く（DOM変更は無し扱い）。
   _measureAfterTextRubyBoundary(textEl, isVertical, z) {
-    const afterText = textEl.dataset.after || '';
-    const lastChild = textEl.lastChild;
-    if (!afterText || !lastChild) return null;
-    // 末尾がルビ等のinline-block要素だと、その直後に collapse したRangeの矩形が
-    // 0になるブラウザ実装があるため、要素なら要素自身の矩形を終端とする。
-    let endRect;
-    if (lastChild.nodeType === Node.TEXT_NODE) {
-      const endRange = document.createRange();
-      endRange.selectNodeContents(textEl);
-      endRange.collapse(false);
-      endRect = endRange.getBoundingClientRect();
-    } else {
-      endRect = lastChild.getBoundingClientRect();
+    return this._measureAfterTextRubyBoundaries([textEl], isVertical, z)[0];
+  }
+
+  _measureAfterTextRubyBoundaries(textEls, isVertical, z) {
+    // 終端位置を全て読んでから計測要素をまとめて追加し、寸法をまとめて読む。
+    // 行ごとの追加・読取・削除は、文書全体の配置計算を行数分繰り返してしまう。
+    const entries = textEls.map(textEl => {
+      const afterText = textEl.dataset.after || '';
+      const lastChild = textEl.lastChild;
+      if (!afterText || !lastChild) return null;
+      // 末尾がinline-block要素なら、要素自身の矩形を終端とする。
+      let endRect;
+      if (lastChild.nodeType === Node.TEXT_NODE) {
+        const endRange = document.createRange();
+        endRange.selectNodeContents(textEl);
+        endRange.collapse(false);
+        endRect = endRange.getBoundingClientRect();
+      } else {
+        endRect = lastChild.getBoundingClientRect();
+      }
+      const probe = document.createElement('span');
+      probe.textContent = afterText;
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;';
+      return { textEl, endRect, probe };
+    });
+    entries.forEach(entry => { if (entry) entry.textEl.appendChild(entry.probe); });
+    let measurements;
+    try {
+      measurements = entries.map(entry => entry ? entry.probe.getBoundingClientRect() : null);
+    } finally {
+      entries.forEach(entry => entry?.probe.remove());
     }
-    const probe = document.createElement('span');
-    probe.textContent = afterText;
-    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;';
-    textEl.appendChild(probe);
-    const probeRect = probe.getBoundingClientRect();
-    probe.remove();
-    const afterSize = (isVertical ? probeRect.height : probeRect.width) / z;
-    if (!(afterSize > 0)) return null;
-    const parentStart = (isVertical ? endRect.bottom : endRect.right) / z;
-    return {
-      parentStart,
-      parentEnd: parentStart + afterSize,
-      parentSpan: afterSize,
-      parentCenter: parentStart + afterSize / 2,
-      baseEm: 0,
-      rubyEm: 0,
-      count: 0,
-      text: '',
-      style: '',
-      align: 'start',
-      extent: afterSize,
-      minExtent: afterSize,
-      effectiveLetterSpacing: 0,
-      condense: 1,
-      gapPx: 0,
-      groupId: '__sn2-after-boundary__',
-      span: null,
-    };
+    return entries.map((entry, index) => {
+      if (!entry) return null;
+      const { endRect } = entry;
+      const probeRect = measurements[index];
+      const afterSize = (isVertical ? probeRect.height : probeRect.width) / z;
+      if (!(afterSize > 0)) return null;
+      const parentStart = (isVertical ? endRect.bottom : endRect.right) / z;
+      return {
+        parentStart,
+        parentEnd: parentStart + afterSize,
+        parentSpan: afterSize,
+        parentCenter: parentStart + afterSize / 2,
+        baseEm: 0,
+        rubyEm: 0,
+        count: 0,
+        text: '',
+        style: '',
+        align: 'start',
+        extent: afterSize,
+        minExtent: afterSize,
+        effectiveLetterSpacing: 0,
+        condense: 1,
+        gapPx: 0,
+        groupId: '__sn2-after-boundary__',
+        span: null,
+      };
+    });
   }
 
   // このシナリオの自動リンク・自動ルビの状態（ファイルの editor.autoLinks / editor.autoRuby）。
@@ -667,6 +748,7 @@
   }
 
   _markDirty(options = {}) {
+    this._detailDataRevision = (this._detailDataRevision || 0) + 1;
     if (this._readOnly) {
       // 詳細パネル等の間接入口が先にモデルを書き換えても、ロック取得時の
       // スナップショットへ戻してdirty化・下書き・PUTを発生させない。

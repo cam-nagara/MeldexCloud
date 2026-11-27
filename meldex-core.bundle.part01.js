@@ -866,6 +866,8 @@ function showSaveDialog(message, options = {}) {
 }
 
 let _mobileStatusToastTimer = 0;
+let _mobileStatusToastFrame = 0;
+let _mobileStatusToastPending = null;
 function _isMobileStatusToastNeeded() {
   const status = document.getElementById('status-bar');
   if (!status) return false;
@@ -881,20 +883,18 @@ function _isMobileStatusToastNeeded() {
   }
 }
 
-function _showMobileStatusToast(text, isError) {
+function _showMobileStatusToast(text, isError, atPaint = false) {
   if (!document.body) return;
-  let toast = document.getElementById('gb-mobile-status-toast');
-  if (!text || !_isMobileStatusToastNeeded()) {
-    clearTimeout(_mobileStatusToastTimer);
-    toast?.classList.remove('is-visible');
-    return;
-  }
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'gb-mobile-status-toast';
-    toast.setAttribute('aria-atomic', 'true');
-    document.body.appendChild(toast);
-  }
-  toast.textContent = text;
-  toast.dataset.statusKind = isError ? 'error' : 'success';
-  toast.setAttribute('role', isError ? 'alert' : 'status');
+  // デスクトップでは表示判定のスタイル読取を描画前の1回へまとめる。
+  // 通知本文（ステータスバー）は呼出元ですでに更新済み。電話幅は即時表示する。
+  const phoneWidth = typeof window !== 'undefined' && (typeof window.matchMedia === 'function'
+    ? window.matchMedia('(max-width: 768px)').matches : window.innerWidth > 0 && window.innerWidth <= 768);
+  if (text && !atPaint && !phoneWidth && typeof requestAnimationFrame === 'function') {
+    _mobileStatusToastPending = { text, isError };
+    if (!_mobileStatusToastFrame) {
+      _mobileStatusToastFrame = requestAnimationFrame(() => {
+        _mobileStatusToastFrame = 0;
+        const pending = _mobileStatusToastPending;
+        _mobileStatusToastPending = null;
+        if (pending) _showMobileStatusToast(pending.text, pending.isError, true);
+      });

@@ -2132,3 +2132,9 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
 @media (pointer: coarse), (max-width: 640px) { .pt-option-drag-handle, .kanban-column-header[role="button"] { min-width: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); } }
 
 .pt-tag-option-row { display: flex; align-items: center; gap: var(--ui-space-4); }
+
+.db-multi-select-value-popup .gb-value-save-preview {
+  display: block; height: auto; width: calc(100% - 16px); margin: 4px 8px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.db-multi-select-value-popup .gb-value-save-preview[hidden] { display: none; }

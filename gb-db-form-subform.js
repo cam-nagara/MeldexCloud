@@ -192,11 +192,44 @@
         const layout = { formConfig: { fields: cfg.fields }, cells: cfg.fields.map(prop => ({ type: 'field', prop })) };
         const childCtx = { grid: host, data, entityPath: path, dbPath: cfg.dbPath, propTypes: types, layout,
           editMode: false, readOnly: access.readOnly, options: { readOnly: access.readOnly,
-            beforeWrite: () => !ctx.readOnly && api().canWrite(ctx.grid, ctx.dbPath, ctx.entityPath, ctx.options?.ctx) }, rerender() {} };
+            historyScope: () => api().historyScope(ctx),
+            beforeWrite: () => !ctx.readOnly && api().canWrite(ctx.grid, ctx.dbPath, ctx.entityPath, ctx.options?.ctx) },
+          rerender(changedProp) {
+              if (!host.isConnected) {
+                // History may outlive this dialog. Refresh the currently open
+                // editor of the same row without rebuilding its inputs.
+                document.querySelectorAll('.gb-form-subform-editor').forEach(panel => {
+                  if (panel._formRowPath === path && panel._formRowScope === api().historyScope(ctx)) panel._refreshFormRow?.(data, changedProp);
+                });
+                return;
+              }
+              cfg.fields.filter(prop => !changedProp || prop === changedProp).forEach(prop => {
+              const values = data.properties?.[prop] || [];
+              const candidate = (typeof filterValues === 'function' ? filterValues(values) : values)[0] || null;
+              const raw = String(candidate?.value ?? ''), type = types[prop]?.type;
+              const value = type === 'checkbox' ? String(['true','1'].includes(raw))
+                : type === 'date' && typeof _toInputDateValue === 'function' ? _toInputDateValue(raw, types[prop]?.withTime) : raw;
+              host.querySelectorAll('.gb-form-layout-field').forEach(row => row._refreshFormField?.(prop, value, candidate));
+            });
+          } };
+
+          opened.panel._formRowPath = path;
+          opened.panel._formRowScope = api().historyScope(ctx);
+          opened.panel._refreshFormRow = (fresh, prop) => {
+            if (!host.isConnected) return;
+            if (prop) data.properties[prop] = fresh.properties?.[prop] || [];
+            else data.properties = fresh.properties;
+            data.revision = fresh.revision;
+            childCtx.rerender(prop);
+          };
+
         cfg.fields.forEach(prop => {
           const field = document.createElement('div'); field.className = 'gb-form-subform-row-field';
           const label = document.createElement('strong'); label.textContent = prop; field.appendChild(label);
-          if (!api().renderField(field, { prop }, childCtx)) renderEntityPropValuesInto(field, prop, data, path, types, { readOnly: access.readOnly });
+          if (!api().renderField(field, { prop }, childCtx)) renderEntityPropValuesInto(field, prop, data, path, types, {
+            readOnly: access.readOnly, dbPath: cfg.dbPath,
+            historyScope: () => api().historyScope(ctx), onHistoryChanged: () => childCtx.rerender(),
+          });
           host.appendChild(field);
         });
       } catch (error) { if (host.isConnected) host.textContent = '読み込めません: ' + (error.message || error); }

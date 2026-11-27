@@ -1,3 +1,11 @@
+    if (showOpenLoading) {
+      hideLoading(loading);
+    }
+  }
+}
+
+function openMedia(label, path, type, opts) {
+  const openOpts = opts || {};
   // 音声は共有の #media-content へ直接描くため、ここでも表示の世代を進める（gb-folder.part02.js の _gbOpenViewerIframe 参照）。
   window.GBViewerOpenGeneration = (Number(window.GBViewerOpenGeneration) || 0) + 1;
   // 画像/PDF/動画はビューワー（html-view の #html-iframe）で表示するため、media-view を

@@ -1,7 +1,7 @@
 /* シート フォームビュー */
 
 const DB_FORM_UNSUPPORTED_TYPES = new Set(['formula', 'rollup', 'button', 'chat']);
-const DB_FORM_PUBLIC_HIDDEN_TYPES = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation']);
+const DB_FORM_PUBLIC_HIDDEN_TYPES = new Set(['relation', 'multi-relation', 'user', 'multi-user', 'multi-source-relation', 'common-tags']);
 
 function _dbFormIsAutomaticColumn(config) {
   return config?.type === 'multi-source-relation' && config.mode === 'auto';
@@ -545,6 +545,31 @@ function _buildFormInputRow(prop, cfg, ptc) {
   return row;
 }
 
+async function _dbFormCommonTagIds(raw, dbPath) {
+  const tokens = String(raw || '').split(',').map(value => value.trim()).filter(Boolean);
+  if (!tokens.length) return '';
+  const tagsApi = window.MeldexGlobalTags;
+  if (!dbPath || typeof tagsApi?.loadTagsCached !== 'function'
+      || typeof window.MeldexAutoTagSourceFolder !== 'function') {
+    throw new Error('共通タグの辞書を読み込めません。入力は保持しています。');
+  }
+  const catalog = await tagsApi.loadTagsCached(window.MeldexAutoTagSourceFolder(dbPath));
+  const tags = Array.isArray(catalog?.tags) ? catalog.tags : [];
+  const ids = [];
+  for (const token of tokens) {
+    let tag = tags.find(item => String(item.id) === token);
+    if (!tag) {
+      const matches = tags.filter(item => String(item.name || '').trim().toLowerCase() === token.toLowerCase());
+      if (matches.length > 1) throw new Error('同じ名前の共通タグが複数あります。タグIDで指定してください: ' + token);
+      if (!matches.length) throw new Error('共通タグが辞書に見つかりません。入力は保持しています: ' + token);
+      tag = matches[0];
+    }
+    const id = String(tag.id);
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids.join(', ');
+}
+
 async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
   const fields = Object.assign(Object.create(null), options.fixedFields || {});
   for (const prop of cfg.fields) {
@@ -554,6 +579,8 @@ async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
     const type = propTypes[prop]?.type || 'text';
     if (type === 'checkbox') {
       fields[prop] = input.checked ? 'true' : 'false';
+    } else if (type === 'common-tags') {
+      fields[prop] = await _dbFormCommonTagIds(input.value, options.dbPath);
     } else if (type === 'image') {
       if (options.previewOnly) {
         fields[prop] = Array.from(input.files || []).map(file => file.name).join(', ');
@@ -683,8 +710,15 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
   const wasDisabled = submitButton?.disabled;
   if (submitButton) submitButton.disabled = true;
   const msg = form.querySelector('.gb-form-submit-message');
+  let submissionUi = null;
+  const finishSubmissionUi = confirmed => {
+    const pending = submissionUi; submissionUi = null;
+    try { pending?.finish?.(confirmed); }
+    catch (error) { console.warn('回答の表示を更新できません:', error); }
+  };
   try {
-    if (options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
+    const earlyPermission = options.previewOnly || cfg.betaFeedbackRelay || cfg.customInstructionsRelay;
+    if (earlyPermission && options.canWrite && !await options.canWrite()) throw new Error('このフォームは読み取り専用です');
     // Validate before image upload as well, so invalid sibling fields create no attachments.
     if (globalThis.MeldexDbFormModel) {
       for (const prop of cfg.fields || []) {
@@ -699,6 +733,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       }
     }
     const reliableCreate = !cfg.betaFeedbackRelay && !cfg.customInstructionsRelay && !options.previewOnly;
+    if (reliableCreate && !_isBetaFeedbackFormConfig(cfg) && options.onSubmitting) submissionUi = options.onSubmitting(form);
     const controls = Array.from(form.elements || []);
     const fingerprint = JSON.stringify((cfg.fields || []).map(prop => {
       const input = controls.find(item => item.name === prop);
@@ -720,6 +755,11 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     if (pending && (pending.fingerprint !== fingerprint || !sameFiles)) {
       throw new Error('前の送信結果が未確認です。入力を元に戻して再試行してください。変更中の入力は保持しています。');
     }
+    // Upload and record creation are separate mutations. Ordinary scalar fields
+    // need the current check just before creation, not a duplicate remote check.
+    if (!earlyPermission && !pending && files.length && options.canWrite && !await options.canWrite()) {
+      throw new Error('このフォームは読み取り専用です');
+    }
     // Reuse already-uploaded attachments while an acknowledgement is uncertain.
     const fields = pending ? JSON.parse(JSON.stringify(pending.fields))
       : await _collectDbFormFields(form, cfg, propTypes, { ...options, previewOnly: !!options.previewOnly, dbPath });
@@ -727,8 +767,11 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       const sheetRules = typeof getValidationRules === 'function' ? getValidationRules(dbPath) : [];
       for (const prop of cfg.fields || []) {
         const rule = MeldexDbFormModel.ruleFor(cfg, prop, sheetRules);
-        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, fields[prop], propTypes[prop]?.type || 'text', rule);
+        const entered = controls.find(input => input.name === prop);
+        const value = propTypes[prop]?.type === 'common-tags' && entered ? entered.value : fields[prop];
+        const error = MeldexDbFormModel.validate(cfg.labels?.[prop] || prop, value, propTypes[prop]?.type || 'text', rule);
         if (error) {
+          finishSubmissionUi(false);
           const input = [...form.elements].find(item => item.name === prop);
           if (input) { input.setCustomValidity(error); input.setAttribute('aria-invalid', 'true'); input.reportValidity(); }
           throw new Error(error);
@@ -758,7 +801,8 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       }
     }
     const nameProp = cfg.entityNameProp || '';
-    const proposedName = (nameProp && fields[nameProp]) ? fields[nameProp] : 'フォーム送信 ' + new Date().toLocaleString('ja-JP') + ' ' + Math.random().toString(36).slice(2, 7);
+    const nameValue = propTypes[nameProp]?.type === 'common-tags' ? controls.find(input => input.name === nameProp)?.value : fields[nameProp];
+    const proposedName = (nameProp && nameValue) ? nameValue : 'フォーム送信 ' + new Date().toLocaleString('ja-JP') + ' ' + Math.random().toString(36).slice(2, 7);
     const name = form._dbFormPendingName || proposedName;
     if (options.previewOnly) {
       if (msg) msg.textContent = '回答プレビューです。実データは作成されません。';
@@ -780,6 +824,9 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       createRequest.operation_id = form._dbFormCreateOperation;
     }
     const createResult = await apiPost('/entity/create', createRequest);
+    if (reliableCreate && !_isBetaFeedbackFormConfig(cfg) && (!createResult?.entry_id || !createResult?.path)) {
+      throw new Error('保存結果を確認できません。入力は保持しています。再試行してください');
+    }
     if (!cfg.betaFeedbackRelay && !cfg.customInstructionsRelay) _recordFormCreatedResponse(form, dbPath, createResult, options);
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
@@ -808,6 +855,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     delete form._dbFormCreateOperation;
     delete form._dbFormCreateRequest;
     form._dbFormSubmitting = false;
+    finishSubmissionUi(true);
     if (options.onCreated) await options.onCreated(createResult);
     else if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });
     return createResult;
@@ -815,6 +863,7 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     if (msg) msg.textContent = err?.message || '送信に失敗しました';
     showStatus(err?.message || 'フォーム送信に失敗しました', true);
   } finally {
+    finishSubmissionUi(false);
     form._dbFormSubmitting = false;
     if (submitButton) submitButton.disabled = !!wasDisabled;
   }

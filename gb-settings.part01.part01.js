@@ -1567,16 +1567,39 @@ function _renderDefaultAppAssociations(data) {
   }
   const order = ['viewer'];
   const apps = data.apps || {};
-  const lines = [];
+  const rows = [];
   order.forEach(appId => {
     const app = apps[appId] || {};
     const label = app.label || _defaultAppAssociationLabel(appId);
     const target = app.target_exists ? '単独アプリあり' : '単独アプリが見つかりません';
     const summary = _formatDefaultAppExtensions(app) || '未確認';
     const note = app.note ? ` / ${app.note}` : '';
-    lines.push(`${label}: ${summary}（${target}）${note}`);
+    const row = document.createElement('div');
+    row.textContent = `${label}: ${summary}（${target}）${note}`;
+    // 関連付けで開くアプリが本体と違う版・消えた場所を指す時は、短い印と補足のツールチップで知らせる。
+    if (app.version_mismatch || app.registered_missing) {
+      const opened = app.registered_path ? (app.registered_version || '不明') : (app.target_version || '不明');
+      const tip = app.registered_missing
+        ? `関連付けの開き先が見つかりません: ${app.registered_path}`
+        : `本体 v${app.main_version} / 開くアプリ v${opened}（${app.registered_path || app.target_display || ''}）。ローカルのexe更新と関連付けの付け替えで揃います`;
+      const mark = document.createElement('span');
+      mark.className = 'gb-default-app-version-warning';
+      mark.dataset.e2eId = 'settings-default-app-version-mismatch';
+      mark.tabIndex = 0;
+      mark.setAttribute('role', 'img');
+      mark.setAttribute('data-gb-tooltip', tip);
+      mark.setAttribute('aria-label', tip);
+      mark.style.cssText = 'color:var(--orange,#d97706);white-space:nowrap;margin-left:6px;display:inline-flex;align-items:center;gap:3px;vertical-align:middle;';
+      const icon = document.createElement('span');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.style.display = 'inline-flex';
+      if (typeof lucide === 'function') icon.innerHTML = lucide('alertTriangle', 13);
+      mark.append(icon, document.createTextNode(app.registered_missing ? '開き先なし' : '版が違います'));
+      row.append(mark);
+    }
+    rows.push(row);
   });
-  el.textContent = lines.join('\n');
+  el.replaceChildren(...rows);
   el.style.whiteSpace = 'pre-wrap';
   el.style.color = 'var(--fg2)';
 }

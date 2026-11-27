@@ -1,3 +1,6 @@
+}
+
+// 短い問いかけ用の .gb-confirm 表示を保ちつつ、生成・閉鎖・フォーカス・
 // モバイル変換を GBUI.createModal へ統一する。
 // - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
 // - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
@@ -295,11 +298,16 @@ async function handleXlsxImportToOutliner(e) {
 
   try {
     const data = await _readFileAsDataUrl(file);
-    const res = await apiPost('/import-xlsx-scriptnote', {
+    const body = {
       filename: file.name,
       title: baseName,
       data,
-    });
+    };
+    const res = typeof runBackgroundJob === 'function'
+      ? await runBackgroundJob('/import-xlsx-scriptnote', { ...body, background: true }, {
+        label: 'Excelからシナリオを取り込み', cancellable: false,
+      })
+      : await apiPost('/import-xlsx-scriptnote', body);
     const scriptnotePath = res.path || res.node?.path;
     const label = res.label || baseName;
     if (!scriptnotePath) throw new Error('取り込んだシナリオの保存先を確認できませんでした');
@@ -890,11 +898,3 @@ async function openBoard(label, path, opts) {
     showStatus('ボード読み込みエラー: ' + (err.message || err), true);
     return false;
   } finally {
-    if (showOpenLoading) {
-      hideLoading(loading);
-    }
-  }
-}
-
-function openMedia(label, path, type, opts) {
-  const openOpts = opts || {};

@@ -478,7 +478,7 @@ class ScriptNoteComponent extends ToolComponent {
       this._renderEmptyState();
     }
     // 詳細パネルをシナリオエディタ用に切り替え（非アクティブペインではスキップ）
-    if (this._skipDetailSync !== true && this._editor) this._syncDetailPanel();
+    if (this._skipDetailSync !== true && this._editor) this._syncDetailPanel({ reuseCurrent: true });
   }
 
   deactivate() {
@@ -613,8 +613,22 @@ class ScriptNoteComponent extends ToolComponent {
       </div>`;
   }
 
-  _syncDetailPanel() {
+  _syncDetailPanel(options = {}) {
     const scenarioPath = this._editor?._path || this.state.scenarioPath || '';
+    // 別パネルを開くための再配置で、同じ対象の表示中の詳細を作り直さない。
+    // 明示の更新、対象・内容・ロック・表示タブが変わった時は従来どおり同期する。
+    if (options?.reuseCurrent === true && this._editor
+      && window._detailScriptNoteTabId === this.tabId
+      && (this._editor._detailActiveTab || 'roles') === 'roles') {
+      const current = document.getElementById('detail-tab-sn2-main');
+      const panel = current?.querySelector('.sn2-detail-wrap');
+      const targets = window.GBOptionTargetContext?.get?.()?.targets;
+      const sameTarget = !window.GBOptionTargetContext?.get || (targets?.length === 1
+        && targets[0].path === scenarioPath && targets[0].kind === 'scriptnote');
+      if (sameTarget && current && !current.hidden && current.style.display !== 'none'
+        && panel && !panel.hidden && panel.style.display !== 'none'
+        && this._editor._canReuseRoleManagementPanel?.(panel)) return;
+    }
     if (this._editor) window._detailScriptNoteTabId = this.tabId;
     if (scenarioPath) {
       const revision = window.GBOptionTargetContext?.set({ path: scenarioPath, kind: 'scriptnote' }, 'scriptnote-open');

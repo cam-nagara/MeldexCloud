@@ -192,7 +192,10 @@
     const bottom = vv
       ? Math.max(0, Math.round((window.innerHeight || state.innerHeight || vv.height) - vv.height - (vv.offsetTop || 0)))
       : 0;
-    document.documentElement.style.setProperty('--cloud-mobile-editbar-bottom', `${bottom}px`);
+    const value = `${bottom}px`;
+    if (document.documentElement.style.getPropertyValue('--cloud-mobile-editbar-bottom') !== value) {
+      document.documentElement.style.setProperty('--cloud-mobile-editbar-bottom', value);
+    }
   }
 
   // 同じ値の再設定も変更通知になり、ツールバーのあふれ判定を起こしてしまう。
@@ -215,12 +218,12 @@
     // パネル幅の変更や大きなシートの描画のたびに走り、境界線ドラッグを重くしていた（2026-11-11）。
     const modalOpen = enabled && _hasBlockingModal();
     const keyboardOpen = document.body.dataset.cloudMobileKeyboard === '1';
-    const annotationTextInput = _annotationTextInputFromNode(document.activeElement);
-    const annotationActive = _isAnnotationActive();
+    const annotationTextInput = enabled ? _annotationTextInputFromNode(document.activeElement) : null;
+    const annotationActive = enabled && _isAnnotationActive();
     const annotationRequested = document.body.dataset.cloudMobileAnnotationRequested === '1';
-    const editable = _getActiveEditable();
-    const chatInput = _getActiveChatInput();
-    const plainInput = _getActivePlainInput();
+    const editable = enabled ? _getActiveEditable() : null;
+    const chatInput = enabled ? _getActiveChatInput() : null;
+    const plainInput = enabled ? _getActivePlainInput() : null;
     const showEditBar = enabled && !modalOpen && keyboardOpen && !!editable && !annotationTextInput;
     const showChatBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !!chatInput;
     const showInputBar = enabled && !modalOpen && keyboardOpen && !showEditBar && !showChatBar && !!plainInput;
@@ -228,8 +231,8 @@
     const showBoardBar = enabled && !modalOpen && !showEditBar && !showChatBar && !showInputBar && !showAnnotationBar && !keyboardOpen && _isBoardActive();
     const treeOpen = document.body.classList.contains('cloud-mobile-tree-screen-active')
       || document.getElementById('sidebar')?.classList?.contains('cloud-mobile-tree-screen-open');
-    const inlineMenuAvailable = _hasVisibleInlineMobileMenu();
-    const chatPaneActive = typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined'
+    const inlineMenuAvailable = enabled && _hasVisibleInlineMobileMenu();
+    const chatPaneActive = enabled && typeof GBLayout !== 'undefined' && typeof GBTabs !== 'undefined'
       && GBTabs.getActiveTab?.(GBLayout.activePane)?.type === 'chat';
     _activeEditable = editable || _activeEditable;
     _activeChatInput = chatInput || (_activeChatInput?.isConnected ? _activeChatInput : null);
@@ -241,7 +244,7 @@
     _ensureChatBar();
     _ensureBoardBar();
     _ensureAnnotationBar();
-    _syncAnnotationBarState();
+    if (enabled) _syncAnnotationBarState();
     _setHidden(_mainButton, !enabled || modalOpen || treeOpen || inlineMenuAvailable || chatPaneActive || keyboardOpen || showChatBar || showInputBar || showBoardBar || showAnnotationBar);
     _setHidden(_editBar, !showEditBar);
     _setHidden(_chatBar, !showChatBar);
@@ -297,17 +300,20 @@
       _scheduleRefresh();
     });
     document.addEventListener('selectionchange', () => {
+      if (!_isEnabled()) return;
       _saveSelection();
       _scheduleRefresh();
     });
     document.addEventListener('focusin', () => {
+      if (!_isEnabled()) return;
       _saveSelection();
       _scheduleRefresh();
       setTimeout(_scheduleRefresh, 180);
       setTimeout(_scheduleRefresh, 420);
     });
-    document.addEventListener('focusout', () => setTimeout(_scheduleRefresh, 80));
+    document.addEventListener('focusout', () => { if (_isEnabled()) setTimeout(_scheduleRefresh, 80); });
     document.addEventListener('input', (event) => {
+      if (!_isEnabled()) return;
       if (_editableFromNode(event.target)) _saveSelection();
       if (_chatInputFromNode(event.target)) _activeChatInput = event.target;
       if (_plainInputFromNode(event.target)) _activePlainInput = event.target;

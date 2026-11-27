@@ -1351,7 +1351,7 @@ class ScriptNoteEditor {
     this._wrapResizeLastSize = 0;
   }
 
-  _setupWrapResizeObserver(scroll, viewMode, wrapMode) {
+  _setupWrapResizeObserver(scroll, viewMode, wrapMode, measuredSize = null) {
     this._teardownWrapResizeObserver();
     if (!scroll || !wrapMode) return;
     const isVertical = viewMode === 'vertical';
@@ -1361,7 +1361,8 @@ class ScriptNoteEditor {
       const size = isVertical ? rect.width : rect.height;
       return Number.isFinite(size) ? Math.round(size) : 0;
     };
-    let lastSize = readSize();
+    // 段組みで直前に読んだ実寸を使う。監視コールバックでは毎回実測し、以後の変更も検出する。
+    let lastSize = Number.isFinite(measuredSize) && measuredSize > 0 ? Math.round(measuredSize) : readSize();
     this._wrapResizeLastSize = lastSize;
     const scheduleRender = () => {
       if (this._wrapResizeTimer != null) return;
@@ -1425,6 +1426,38 @@ class ScriptNoteEditor {
       return 0;
     });
     return handle ? ['_handle', ...rest] : rest;
+  }
+
+  _measurementHtmlWithoutAria(html) {
+    // 本文やコメントに含まれる文字列は保持し、HTMLタグ内の補助ラベルだけを除く。
+    return html.replace(/<!--[\s\S]*?-->|<(?:[^>"']|"[^"]*"|'[^']*')*>/g,
+      tag => tag.startsWith('<!--') ? tag : tag.replace(/\saria-label="[^"]*"/g, ''));
+  }
+
+  _wrapRowMeasurementKey(el, viewMode) {
+    let key = this._measurementHtmlWithoutAria(el.outerHTML);
+    if (viewMode === 'horizontal') {
+      el.querySelectorAll('.sn2-gutter[data-overflow="overflow"]').forEach(node => {
+        if (node.children.length) return;
+        const original = this._measurementHtmlWithoutAria(node.outerHTML);
+        const copy = node.cloneNode(true);
+        copy.textContent = node.textContent.replace(/[0-9]/g, '0');
+        key = key.replace(original, this._measurementHtmlWithoutAria(copy.outerHTML));
+      });
+    }
+    return key;
+  }
+
+  _findWrapRowSizeCache(globalKey) {
+    return [this._wrapRowSizeCache, this._previousWrapRowSizeCache]
+      .find(cache => cache?.globalKey === globalKey) || null;
+  }
+
+  _rememberWrapRowSizeCache(cache) {
+    if (this._wrapRowSizeCache?.globalKey !== cache.globalKey) {
+      this._previousWrapRowSizeCache = this._wrapRowSizeCache;
+    }
+    this._wrapRowSizeCache = cache;
   }
 
   _render() {
