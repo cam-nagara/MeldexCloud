@@ -26,6 +26,9 @@
 .viewer-page-item.viewer-page-drop-vertical::after { content: ''; position: absolute; top: var(--ui-tab-drop-indicator-overhang, -2px); bottom: var(--ui-tab-drop-indicator-overhang, -2px); width: var(--ui-tab-drop-indicator-width, 3px); background: var(--ui-tab-drop-indicator-color, var(--accent)); border-radius: var(--ui-tab-drop-indicator-radius, 2px); pointer-events: none; }
 .viewer-page-item.viewer-page-drop-vertical.viewer-page-drop-before::after { left: calc(var(--ui-tab-drop-indicator-offset, -1px) - 2px); }
 .viewer-page-item.viewer-page-drop-vertical.viewer-page-drop-after::after { right: calc(var(--ui-tab-drop-indicator-offset, -1px) - 2px); }
+/* EPUBの目次（1行ずつ。字下げは階層） */
+.viewer-page-row.viewer-epub-toc-row { height: 30px; padding-block: 1px; grid-template-columns: minmax(0, 1fr); }
+#viewer-pages-scroll .viewer-epub-toc-item { height: 28px; display: block; text-align: start; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .viewer-page-preview { height: 112px; display: flex; justify-content: center; align-items: center; overflow: hidden; }
 .viewer-page-preview img, .viewer-page-preview canvas { max-width: 100%; max-height: 108px; object-fit: contain; }
 .viewer-page-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px; }

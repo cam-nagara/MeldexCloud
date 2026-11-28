@@ -1,3 +1,36 @@
+    } else {
+      _paletteObserver = new MutationObserver(handlePaletteDomMutations);
+      _paletteObserver.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  function paletteMutationTouchesTargets(mutations) {
+    for (const mutation of mutations || []) {
+      const nodes = [...(mutation.addedNodes || []), ...(mutation.removedNodes || [])];
+      if (nodes.some(paletteNodeTouchesTarget)) return true;
+    }
+    return false;
+  }
+
+  function paletteInvalidationPending() {
+    return !_paletteTargetCache && (!!_paletteBindRaf || !_activeThemeColorSet);
+  }
+
+  // 対象の選択子を1つにまとめ、要素1つあたりの検索を1回にする（選択子ごとに
+  // 部分木を検索すると、大きな画面の作り直しで数十回の全体検索になる）。
+  const PALETTE_TARGET_SELECTOR = PALETTE_TARGET_SPECS.map(([selector]) => selector).join(', ');
+
+  function paletteNodeTouchesTarget(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (paletteNodeIsBoardRenderMutation(node)) return false;
+    try {
+      return !!(node.matches?.(PALETTE_TARGET_SELECTOR) || node.querySelector?.(PALETTE_TARGET_SELECTOR));
+    } catch {
+      return PALETTE_TARGET_SPECS.some(([selector]) => {
+        try {
+          return node.matches?.(selector) || !!node.querySelector?.(selector);
+        } catch {
+          return true;
         }
       });
     }
@@ -865,36 +898,3 @@
         if (hasFileVar(key)) return;
         const normalized = typeof global.normalizeFontFamilyValue === 'function'
           ? global.normalizeFontFamilyValue(value)
-          : String(value || '').trim();
-        if (!normalized) return;
-        canvas.style.setProperty('--bd-theme-font-family', normalized);
-        if (world) world.style.setProperty('--bd-theme-font-family', normalized);
-        nextKeys.add('--bd-theme-font-family');
-        return;
-      }
-      if (hasFileVar(key)) return;
-      canvas.style.setProperty(key, String(value));
-      nextKeys.add(key);
-    });
-    canvas.__meldexBoardThemeVarKeys = nextKeys;
-  }
-
-  function applyBoardThemeRuntime(board, canvasEl, worldEl) {
-    const themeDef = getActiveBoardTheme(board);
-    const canvas = canvasEl || document.getElementById('bd-canvas');
-    const world = worldEl || document.getElementById('bd-world');
-    applyBoardThemeCssVars(board, canvas, world, themeDef);
-    if (canvas) {
-      const fileStyle = board?._fileStyle && typeof board._fileStyle === 'object' ? board._fileStyle : {};
-      const fileStyleBg = String(fileStyle['--bd-bg'] || '').trim();
-      const documentBg = typeof global.getCssVar === 'function' ? (global.getCssVar('--bd-bg') || '').trim() : '';
-      const bg = fileStyleBg || (boardUsesDocumentTheme(board)
-        ? (documentBg || themeDef?.board?.backgroundColor || '')
-        : (themeDef?.ui?.cssVars?.['--bd-bg'] || themeDef?.board?.backgroundColor || ''));
-      if (typeof global.bdApplyCanvasBackground === 'function') {
-        global.bdApplyCanvasBackground(canvas, bg);
-      } else {
-        canvas.style.background = board?._bgColor || bg;
-      }
-      canvas.style.setProperty('--bd-theme-line-color', themeDef?.board?.lineColor || '');
-    }

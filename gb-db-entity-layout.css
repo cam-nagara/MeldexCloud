@@ -242,6 +242,9 @@
   color: var(--red);
 }
 .el-cell-add-column { margin-top: 6px; max-width: 100%; }
+.el-image-upload-preview { display: block; max-width: 100%; object-fit: contain; margin: 4px auto; }
+.el-image-upload-preview[hidden] { display: none; }
+.el-image-popup .el-cell-missing { white-space: normal; overflow-wrap: anywhere; }
 .el-cell.el-editable .el-cell-add-column { pointer-events: auto; }
 .el-cell-placeholder {
   align-items: center;

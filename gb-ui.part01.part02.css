@@ -175,8 +175,8 @@
   width: 280px !important;
   max-width: 100%;
   min-width: 0;
-  /* 行内入力の標準幅（320px）の伸縮基準より、列幅の指定を優先する。 */
-  flex: 0 1 280px !important;
+  /* 横並びでは指定幅を使い、縦並びでは高さへ280pxを持ち込まない。 */
+  flex: 0 1 auto !important;
 }
 .gb-select-short,
 .gb-modal .gb-select.gb-select-short,

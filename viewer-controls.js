@@ -28,8 +28,14 @@
   // ここでのビューワー固有の直接描画は不要（撤去）。
 
   // コントロール
-  document.getElementById('nav-prev-area').addEventListener('click', () => { Scene.pause(); Scene.prevGroup(); });
-  document.getElementById('nav-next-area').addEventListener('click', () => { Scene.pause(); Scene.nextGroup(); });
+  // 左右の端のページ送り領域は、矢印キーと同じく進む方向に従う（「左へ」なら左端で次へ）。
+  const edgeTurn = side => {
+    Scene.pause();
+    const step = window.MeldexViewerPageState?.edgeStep?.(side, Scene.getDirection?.()) || (side === 'left' ? 'prev' : 'next');
+    if (step === 'next') Scene.nextGroup(); else Scene.prevGroup();
+  };
+  document.getElementById('nav-prev-area').addEventListener('click', () => edgeTurn('left'));
+  document.getElementById('nav-next-area').addEventListener('click', () => edgeTurn('right'));
   document.getElementById('btn-prev').onclick = () => { Scene.pause(); Scene.prevGroup(); };
   document.getElementById('btn-next').onclick = () => { Scene.pause(); Scene.nextGroup(); };
   document.getElementById('btn-shift-back').onclick = () => { Scene.pause(); Scene.shiftBackward(); };
@@ -42,6 +48,7 @@
   }
   window.MeldexViewerControls = Object.assign(window.MeldexViewerControls || {}, { releaseViewSelect });
   document.getElementById('sel-mode').onchange = function() { Scene.setMode(this.value); releaseViewSelect(this); };
+  document.getElementById('sel-direction').onchange = function() { Scene.setDirection(this.value); releaseViewSelect(this); };
   document.getElementById('speed').oninput = function() { Scene.setSpeed(this.value); };
   document.getElementById('btn-bg').onclick = Scene.toggleBg;
   document.getElementById('btn-fullscreen').onclick = Scene.toggleFullscreen;
@@ -74,18 +81,81 @@
   document.getElementById('btn-prev-folder').innerHTML = Scene.icon('skipBack');
   document.getElementById('btn-next-folder').innerHTML = Scene.icon('skipForward');
 
+  // 進む方向ごとの矢印キー（2026-11-27 利用者の依頼）。ページ送りは進む方向の軸、フォルダ移動は
+  // それと直交する軸に置き、同じキーを2つの操作が取り合わないようにする。
+  //   右へ: → 次 / ← 前、↓ 次のフォルダ / ↑ 前のフォルダ（従来どおり）
+  //   左へ: ← 次 / → 前、↓ 次のフォルダ / ↑ 前のフォルダ
+  //   下へ: ↓ 次 / ↑ 前、→ 次のフォルダ / ← 前のフォルダ
+  //   上へ: ↑ 次 / ↓ 前、→ 次のフォルダ / ← 前のフォルダ
+  // 割り当ては共通のショートカットレジストリの既定値として登録し直すため、利用者が変えたキーは保たれ、
+  // 右クリックメニュー・ツールチップ・右サイドバーの一覧の表記も同じ値を使う。
+  const DIRECTION_KEYS = {
+    right: { forward: 'arrowright', backward: 'arrowleft', folderForward: 'arrowdown', folderBackward: 'arrowup' },
+    left: { forward: 'arrowleft', backward: 'arrowright', folderForward: 'arrowdown', folderBackward: 'arrowup' },
+    down: { forward: 'arrowdown', backward: 'arrowup', folderForward: 'arrowright', folderBackward: 'arrowleft' },
+    up: { forward: 'arrowup', backward: 'arrowdown', folderForward: 'arrowright', folderBackward: 'arrowleft' },
+  };
+  // 進む・戻るのアイコン（chevron＝ページ送り、arrow＝1枚ずらし／ツールバーの前へ・次へ）。
+  const DIRECTION_ICONS = {
+    right: { forward: 'Right', backward: 'Left' }, left: { forward: 'Left', backward: 'Right' },
+    down: { forward: 'Down', backward: 'Up' }, up: { forward: 'Up', backward: 'Down' },
+  };
+  function currentDirection() {
+    const value = Scene.getDirection?.();
+    return DIRECTION_KEYS[value] ? value : 'right';
+  }
+  function directionalShortcuts(direction) {
+    const keys = DIRECTION_KEYS[direction] || DIRECTION_KEYS.right;
+    return {
+      'viewer.prevFolder':   { key: keys.folderBackward,          label: '前のフォルダ',    scope: 'viewer' },
+      'viewer.nextFolder':   { key: keys.folderForward,           label: '次のフォルダ',    scope: 'viewer' },
+      'viewer.shiftForward': { key: 'shift+' + keys.forward,      label: '1枚ずらして進む', scope: 'viewer' },
+      'viewer.shiftBackward':{ key: 'shift+' + keys.backward,     label: '1枚ずらして戻る', scope: 'viewer' },
+      'viewer.next':         { key: keys.forward,                 label: '次へ',            scope: 'viewer' },
+      'viewer.prev':         { key: keys.backward,                label: '前へ',            scope: 'viewer' },
+    };
+  }
+  function directionIcons(direction = currentDirection()) {
+    const icons = DIRECTION_ICONS[direction] || DIRECTION_ICONS.right;
+    return {
+      next: 'chevron' + icons.forward, prev: 'chevron' + icons.backward,
+      shiftForward: 'arrow' + icons.forward, shiftBackward: 'arrow' + icons.backward,
+    };
+  }
+  function shortcutText(id) {
+    const registry = window.MeldexShortcutRegistry;
+    const key = registry?.keyFor?.(id) || '';
+    return key && registry?.formatKey ? registry.formatKey(key) : '';
+  }
+  function titleWithKey(label, id) {
+    const text = shortcutText(id);
+    return text ? label + ' (' + text + ')' : label;
+  }
+  function applyDirection() {
+    const direction = currentDirection();
+    window.MeldexShortcutRegistry?.registerLocal(directionalShortcuts(direction));
+    const icons = directionIcons(direction);
+    const prev = document.getElementById('btn-prev');
+    const next = document.getElementById('btn-next');
+    if (prev) { prev.innerHTML = Scene.icon(icons.shiftBackward); prev.title = titleWithKey('前へ', 'viewer.prev'); }
+    if (next) { next.innerHTML = Scene.icon(icons.shiftForward); next.title = titleWithKey('次へ', 'viewer.next'); }
+    const prevFolder = document.getElementById('btn-prev-folder');
+    const nextFolder = document.getElementById('btn-next-folder');
+    if (prevFolder) prevFolder.title = titleWithKey('前のフォルダ', 'viewer.prevFolder');
+    if (nextFolder) nextFolder.title = titleWithKey('次のフォルダ', 'viewer.nextFolder');
+    document.documentElement.dataset.viewerDirection = direction;
+    window.dispatchEvent(new CustomEvent('meldex-viewer-shortcuts-changed', { detail: { direction } }));
+  }
+  window.MeldexViewerControls = Object.assign(window.MeldexViewerControls || {}, { directionIcons, applyDirection });
+
   // キーボード（Eagle互換）
   // キーは共通のショートカットレジストリ（gb-shortcut-registry.js）へ登録し、
   // 右サイドバーの「ショートカットキー」タブから確認・変更できるようにする。
   // preventDefault の有無は従来どおり操作ごとに保つ（矢印・Space・ズームのみ抑止）。
   const VIEWER_SHORTCUTS = {
     'viewer.playPause':    { key: 'space',            label: '再生 / 一時停止',   scope: 'viewer' },
-    'viewer.prevFolder':   { key: 'arrowup',          label: '前のフォルダ',       scope: 'viewer' },
-    'viewer.nextFolder':   { key: 'arrowdown',        label: '次のフォルダ',       scope: 'viewer' },
-    'viewer.shiftForward': { key: 'shift+arrowright', label: '1枚ずらして進む',    scope: 'viewer' },
-    'viewer.shiftBackward':{ key: 'shift+arrowleft',  label: '1枚ずらして戻る',    scope: 'viewer' },
-    'viewer.next':         { key: 'arrowright',       label: '次へ',               scope: 'viewer' },
-    'viewer.prev':         { key: 'arrowleft',        label: '前へ',               scope: 'viewer' },
+    // 前後のページ・1枚ずらし・フォルダ移動のキーは進む方向で決まる（directionalShortcuts）。
+    ...directionalShortcuts(currentDirection()),
     'viewer.toggleHud':    { key: 'h',                label: '情報表示の切替',     scope: 'viewer' },
     'viewer.fullscreen':   { key: 'f',                label: '全画面表示',         scope: 'viewer' },
     'viewer.reversePlay':  { key: 'r',                label: '逆再生の切替',       scope: 'viewer' },
@@ -103,20 +173,20 @@
     VIEWER_SHORTCUTS['viewer.annotation'] = { key: 'a', label: 'アノテートの切替', scope: 'viewer' };
   }
   window.MeldexShortcutRegistry?.registerLocal(VIEWER_SHORTCUTS);
-
-  const leftward = () => Scene.getMode?.() === 'manga';
+  applyDirection();
+  window.addEventListener('viewer-direction-change', applyDirection);
   // [実行内容, 既定動作を抑止するか]
   const VIEWER_ACTIONS = {
     'viewer.playPause':     [() => Scene.togglePlay(), true],
     'viewer.prevFolder':    [() => Scene.prevFolder(), true],
     'viewer.nextFolder':    [() => Scene.nextFolder(), true],
-    'viewer.shiftForward':  [() => (leftward() ? Scene.shiftBackward : Scene.shiftForward)(), true],
-    'viewer.shiftBackward': [() => (leftward() ? Scene.shiftForward : Scene.shiftBackward)(), true],
-    // 見開き_左へ（右から左へめくる）では、矢印キーの左右を入れ替える（左＝次、右＝前。2026-11-26 利用者判断）。
-    // 単ページ・見開き_右へ は 右＝次、左＝前。再生中は手動送りに合わせてスライドショーの
-    // 次送りタイマーを起点からやり直す（元コードの `if (playing) scheduleNext()` を維持）。
-    'viewer.next':          [() => { (leftward() ? Scene.prevGroup : Scene.nextGroup)(); Scene.rescheduleSlideshow(); }, false],
-    'viewer.prev':          [() => { (leftward() ? Scene.nextGroup : Scene.prevGroup)(); Scene.rescheduleSlideshow(); }, false],
+    // キーの割り当ては進む方向で変わる（directionalShortcuts）。ここでは操作の意味だけを持つ。
+    // 再生中は手動送りに合わせてスライドショーの次送りタイマーを起点からやり直す。
+    // 上下の矢印キーにもなるため、ページ全体のスクロールは止める。
+    'viewer.shiftForward':  [() => Scene.shiftForward(), true],
+    'viewer.shiftBackward': [() => Scene.shiftBackward(), true],
+    'viewer.next':          [() => { Scene.nextGroup(); Scene.rescheduleSlideshow(); }, true],
+    'viewer.prev':          [() => { Scene.prevGroup(); Scene.rescheduleSlideshow(); }, true],
     'viewer.toggleHud':     [() => Scene.toggleHud(), false],
     'viewer.fullscreen':    [() => Scene.toggleFullscreen(), false],
     'viewer.reversePlay':   [() => Scene.toggleReversePlay(), false],
@@ -139,7 +209,7 @@
   // ツールバーのボタンにフォーカスが残っていても（再生ボタンを押した直後など）矢印キー等の
   // ビューワー操作は効かせ、Space/Enter だけはボタン自身の押下に任せる。シークバーでは
   // 矢印キー等をスライダー操作に任せる（値の変更がそのまま前後移動になる）。
-  const VIEW_SELECTS = '#sel-mode, #viewer-pages-mode, #viewer-pages-first';
+  const VIEW_SELECTS = '#sel-mode, #sel-direction, #viewer-pages-mode, #viewer-pages-first';
   const RANGE_NATIVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
   function shouldLeaveKeyToFocusedControl(e) {
     const target = e.target;
@@ -149,7 +219,7 @@
     const nativeMedia = target.closest('video[controls], audio[controls]');
     if (nativeMedia?.closest('.layer.show')) return true;
     // 表示の選択欄にフォーカスが残っていても、左右の矢印キーはページ送りにする（選択欄の値を変えない）。
-    if (target.closest('#sel-mode, #viewer-pages-mode, #viewer-pages-first') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey) return false;
+    if (target.closest(VIEW_SELECTS) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey) return false;
     if (target.closest('textarea, select')) return true;
     const input = target.closest('input');
     if (input) return String(input.type || '').toLowerCase() !== 'range' || RANGE_NATIVE_KEYS.has(e.key);

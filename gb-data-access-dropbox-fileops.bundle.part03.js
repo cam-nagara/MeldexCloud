@@ -1,3 +1,39 @@
+function _annotationUnavailable(error, operation) {
+  if (error?.status === 409 || error?.status === 410 || error?.status === 503) return error;
+  const wrapped = new Error(`アノテートSystemStorageの${operation}に失敗しました`);
+  wrapped.status = 503; wrapped.code = 'annotation_storage_unavailable'; wrapped.cause = error;
+  return wrapped;
+}
+
+function _annotationDeleted(record) {
+  return record?.deleted === true || record?.tombstone === true
+    || String(record?.state || '') === 'deleted' || String(record?.status || '') === 'tombstoned';
+}
+
+async function _findAnnotationRecordsById(provider, docId) {
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  let scopes;
+  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
+  const matches = [];
+  for (const scope of scopes) {
+    let stored;
+    try { stored = await scope.adapter.load(kind, docId); } catch (error) { throw _annotationUnavailable(error, '読込'); }
+    if (stored) matches.push({ scope, stored });
+  }
+  if (matches.length > 1) {
+    const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
+    error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
+  }
+  return matches;
+}
+
+async function _readAnnotationRecord(provider, id, targetPathHint) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  const hint = _normalizeFolderPath(targetPathHint || '');
+  if (hint) {
+    let scope; let stored;
+    try { scope = await window.MeldexDropboxManagementRootResolver.resolveManagementScopeForPath(provider, hint); }
     catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
     try { stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId); }
     catch (error) { throw _annotationUnavailable(error, '読込'); }
@@ -46,6 +82,7 @@ async function _writeAnnotationRecord(provider, record, options = {}) {
   await adapter.save(kind, docId, record, saveOptions);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return migrated.record?.payload || record;
 }
 
 // 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
@@ -211,10 +248,19 @@ async function _listAnnotationRecords(provider, query) {
     }
     for (const item of stored) {
       let payload = item?.payload;
+      // This typed record remains authoritative over its old path even if it
+      // is deleted between the index read and target resolution below.
+      if (payload && typeof payload === 'object' && payload.id) seenIds.add(String(payload.id));
       if (_annotationDeleted(payload)) continue;
       if (payload && typeof payload === 'object' && payload.id) {
-        const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id));
-        payload = migrated.record?.payload || payload;
+        let migrated;
+        try { migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id)); }
+        catch (error) {
+          if (error?.status === 410 && error?.meldexCode === 'annotation_record_deleted') continue;
+          throw error;
+        }
+        payload = migrated.record?.payload;
+        if (!payload || _annotationDeleted(payload)) continue;
       }
       if (payload && typeof payload === 'object' && payload.id) {
         const id = String(payload.id);
@@ -679,8 +725,8 @@ function _signPendingEditRecordsInBackground(provider, adapter, path, records) {
 }
 
 async function _listSharedEditRecords(provider, path, recursive, options = {}) {
-  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
+  await _awaitPendingEditFinalizations(options.skipIntegrity && !recursive ? {provider, path:normalized} : undefined);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = options.records || await adapter.listDocuments(kind,
@@ -734,8 +780,8 @@ function _editRecordPrefix(path) {
 }
 
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
-  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
+  await _awaitPendingEditFinalizations({provider, path:normalized});
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = await adapter.listDocuments(kind, { documentIdPrefix: _editRecordPrefix(normalized) });
@@ -846,55 +892,9 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
 // _awaitPendingEditFinalizations で先に完了を待つので、順序は従来と変わらない。
 // 確定できなかった場合は従来どおり、次回の保存時に内容の一致で回収される。
 const _pendingEditFinalizations = new Set();
+const _pendingEditFinalizationScopes = new WeakMap();
 
 const PENDING_EDIT_FINALIZATION_WAIT_MS = 45000;
 
-async function _awaitPendingEditFinalizations() {
-  const deadline = Date.now() + PENDING_EDIT_FINALIZATION_WAIT_MS;
-  while (_pendingEditFinalizations.size) {
-    const remaining = deadline - Date.now();
-    // 通信が返らず確定が終わらない場合でも、以後の保存や履歴表示を止め続けない。
-    // 待ちきれなかった記録は未確定のまま残り、次回の保存時に内容の一致で回収される。
-    if (remaining <= 0) return;
-    const settled = Promise.allSettled([..._pendingEditFinalizations]);
-    await (typeof setTimeout === 'function'
-      ? Promise.race([settled, new Promise(resolve => setTimeout(resolve, remaining))])
-      : settled);
-  }
-}
-
-// 確定が終わる前に画面を閉じようとしたら、ブラウザの離脱確認を出す。
-try {
-  window.addEventListener?.('beforeunload', (event) => {
-    if (!_pendingEditFinalizations.size) return;
-    event.preventDefault();
-    event.returnValue = '';
-  });
-} catch {}
-
-function _commitCloudFileEdit(prepared, committedRevision) {
-  if (!prepared || prepared.skipped) return Promise.resolve(false);
-  const finalization = _finalizeCloudFileEdit(prepared, committedRevision).then((pending) => {
-    if (pending && typeof showStatus === 'function') {
-      showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
-    }
-    return pending;
-  }).catch(() => true).finally(() => {
-    _pendingEditFinalizations.delete(finalization);
-  });
-  _pendingEditFinalizations.add(finalization);
-  return Promise.resolve(false);
-}
-
-async function _finalizeCloudFileEdit(prepared, committedRevision) {
-  if (!prepared || prepared.skipped) return false;
-  try {
-    await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
-    const saved = await prepared.adapter.save(prepared.kind, prepared.documentId, {
-      ...prepared.payload, committed: true, committed_at: _nowIso(),
-      committed_revision: String(committedRevision || ''),
-    }, { expectedRevision: prepared.intentRevision || undefined });
-    await _protectSharedEditRevision(prepared.provider, prepared.adapter, saved);
-    return false;
-  } catch {
-    return true;
+async function _awaitPendingEditFinalizations(target) {
+  const normalized = target?.path ? _normalizeFolderPath(target.path) : '';

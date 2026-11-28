@@ -72,7 +72,7 @@
     { label: 'ボード', icon: 'presentation', type: 'board' },
     { label: 'カレンダー', icon: 'calendarPlus', type: 'calendar' },
   ];
-  const DESKTOP_BACKED_TOOL_TYPES = new Set(['page', 'database', 'board', 'calendar', 'csv']);
+  const DESKTOP_BACKED_TOOL_TYPES = new Set(['page', 'database', 'board', 'calendar', 'csv', 'scriptnote']);
   const EDITBAR_ITEMS = [
     { id: 'bold', label: '太字', icon: 'bold', action: () => _execTextCommand('bold') },
     { id: 'italic', label: '斜体', icon: 'italic', action: () => _execTextCommand('italic') },
@@ -119,7 +119,8 @@
     { id: 'filters', label: '表示フィルタ', icon: 'filter', action: () => _boardOpenFilters() },
   ];
   const ANNOTATION_ITEMS = [
-    { id: 'stroke', label: 'ストローク', icon: 'pencil', group: 'stroke' },
+    // マーカーを撤去し、ストロークはペンだけになったので直接ペンを選ぶ（2026-11-27）。ハイライトは長押しメニューから
+    { id: 'stroke', label: 'ペン', icon: 'pencil', tool: 'pen' },
     // 初期アイコンは本体側 _ANN_TOOL_GROUPS.line[0] と同じ activity（折れ線）に揃える。
     // _ensureAnnotationBar() 直後の _syncAnnotationBarState() で選択中ツールに追従する。
     { id: 'line', label: 'ライン', icon: 'activity', group: 'line' },
@@ -132,6 +133,7 @@
     { id: 'color', label: '色', icon: 'palette', action: () => _openAnnotationColor() },
     { id: 'visibility', label: '表示', icon: 'eye', action: () => _toggleAnnotationVisibility() },
     { id: 'list', label: '一覧', icon: 'squarePen', action: () => _openToolPanel('annotation') },
+    { id: 'clear', label: '全削除', icon: 'trash2', action: event => _clearAnnotationSurface(event) },
     { id: 'close', label: '閉じる', icon: 'x', action: () => _closeAnnotationToolbar() },
   ];
   // 本体（gb-annotations）の _ANN_TOOL_GROUPS と同じ内容のフォールバック。本体側が
@@ -139,7 +141,7 @@
   // 追従させるため、本体側と同じアイコン名を持たせる（アノテートフロートパレット改修計画
   // 2026-08-13 §1-2）。
   const ANNOTATION_GROUP_FALLBACK = {
-    stroke: [{ tool: 'pen', label: 'ペン', icon: 'pencil' }, { tool: 'marker', label: 'マーカー', icon: 'highlighter' }],
+    stroke: [{ tool: 'pen', label: 'ペン', icon: 'pencil' }],
     line: [{ tool: 'polyline', label: '折れ線', icon: 'activity' }, { tool: 'ellipse-line', label: '円形', icon: 'circle' }, { tool: 'rect-line', label: '矩形', icon: 'square' }],
     fill: [{ tool: 'lasso', label: '囲い塗り', icon: 'lasso' }, { tool: 'ellipse-fill', label: '円形塗り', icon: 'circle' }, { tool: 'rect', label: '矩形塗り', icon: 'square' }],
   };
@@ -283,7 +285,7 @@
   }
 
   function _openToolPanel(type) {
-    if (type === 'annotation' && typeof window.openRightPanelTab === 'function') return _callGlobal('openRightPanelTab', type, document.getElementById('cloud-mobile-main-button'));
+    if ((type === 'annotation' || type === 'history') && typeof window.openRightPanelTab === 'function') return _callGlobal('openRightPanelTab', type, document.getElementById('cloud-mobile-main-button'));
     if (_openPaneTool(type)) return true;
     return _callGlobal('openRightPanelTab', type);
   }
@@ -530,7 +532,7 @@
       ];
     }
     if (toolType === 'scriptnote') {
-      return [
+      const toolbarItems = [
         { id: 'reveal-in-folder-tree', label: 'フォルダツリーで表示', icon: 'folderTree', action: () => _callGlobal('revealCurrentInFolderTree', 'scriptnote', null) },
         { id: 'duplicate-file', label: 'ファイルを複製', icon: 'copy', action: () => _callGlobal('_duplicateCurrentFile', 'scriptnote') },
         { id: 'open', label: '開く', icon: 'folderOpen', action: () => _callGlobal('showScriptNoteOpenModal') },
@@ -556,6 +558,15 @@
         { id: 'save-template', label: 'テンプレートを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveTemplate') },
         { id: 'manage-templates', label: 'テンプレートを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageTemplates') },
       ];
+      // 電話用のツールバー操作に、通常幅と同じ共通メニュー・子メニューも残す。
+      const desktopItems = _desktopToolMenuItemsForMobile(toolType);
+      const labelKey = item => String(item?.label || '').replace(/[.…]+$/, '').trim();
+      const controls = toolbarItems.map(item => {
+        const canonical = desktopItems.find(other => labelKey(other) === labelKey(item));
+        // 電話用の並びと識別名を保ち、同名操作の処理・表示名・権限は共通メニューへ合わせる。
+        return canonical ? { ...canonical, id: item.id } : item;
+      });
+      return _withoutDuplicateMenuLabels(controls, desktopItems);
     }
     const desktopItems = _desktopToolMenuItemsForMobile(toolType);
     // ノートのツールバーもスマホでは隠れる。読込と目次を同じ処理へ接続する。
@@ -974,6 +985,23 @@
     document.getElementById('btn-overlay-toggle')?.click?.();
     _syncAnnotationBarState();
     return true;
+  }
+
+  async function _clearAnnotationSurface(event) {
+    const button = event?.currentTarget;
+    if (button?.disabled) return false;
+    if (typeof window.annClear !== 'function') {
+      if (typeof showStatus === 'function') showStatus('アノテートを削除できませんでした', true);
+      return false;
+    }
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    try { return await window.annClear(); }
+    catch {
+      if (typeof showStatus === 'function') showStatus('アノテートを削除できませんでした', true);
+      return false;
+    } finally {
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    }
   }
 
   function _closeAnnotationToolbar() {

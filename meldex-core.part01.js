@@ -263,6 +263,8 @@ async function _meldexCorePrepareFileWrite(path, body) {
 
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
+  if (options.backgroundFileWrite === true && String(path).split('?')[0] === '/file'
+    && typeof window.runFileWriteJob === 'function') return window.runFileWriteJob(path, guardedBody, options);
   const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -1490,10 +1492,11 @@ function replaceIcons(root) {
     else if (cls.includes('ico-pencil')) name = 'pencil';
     else if (cls.includes('ico-highlighter')) name = 'highlighter';
     else if (cls.includes('ico-lasso')) name = 'lasso';
+    // ico-squarePen を先に見る（ico-square が前方一致で拾い、アノテートのボタンが四角になっていた。2026-11-27）
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
-    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';

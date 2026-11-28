@@ -345,7 +345,7 @@ async function saveCurrentScriptNoteAs(path, options = {}) {
   const rawSaveResult = await apiPut('/file?path=' + encodeURIComponent(targetPath), {
     content: prepared.text,
     ...(targetExists ? { force_overwrite: true } : { create_only: true }),
-  });
+  }, { backgroundFileWrite: true });
   const documentId = rawSaveResult?.document_id || prepared.documentId || '';
   const saveResult = documentId ? { ...(rawSaveResult || {}), document_id: documentId } : (rawSaveResult || {});
   if (prepared.independentCopy && editor.doc) {

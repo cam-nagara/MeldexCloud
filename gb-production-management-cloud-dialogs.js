@@ -153,7 +153,7 @@
     }
     // デスクトップ付箋の小窓でも自動送信タイマーが動くと、付箋の枚数だけ外部カレンダーへの
     // 自動送信が並走する。実行中フラグはウィンドウ単位なので窓をまたいだ二重送信は防げない。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && !_pmCloudCanExportAttendance()) return;
     if (window.__meldexProductionExternalSyncTimer) return;
     const startupTimer = setTimeout(() => _pmAutoProductionExternalSync().catch(() => {}), 15000);

@@ -476,7 +476,6 @@ function bdApplyStylePresetMigration() {
 }
 
 function bdNormalizeCardStyles(styles) {
-  const defaults = _bdBuiltinCardStylesForBoard();
   const base = Array.isArray(styles) && styles.length
     ? styles.map(style => {
         const n = {
@@ -516,7 +515,7 @@ function bdNormalizeCardStyles(styles) {
         if (style._default && typeof style._default === 'object') n._default = _bdClone(style._default);
         return n;
       })
-    : _bdClone(defaults);
+    : _bdClone(_bdBuiltinCardStylesForBoard());
   _bdEnsureUniqueStyleIds(base, 'card-style');
   return base;
 }
@@ -525,33 +524,35 @@ function bdNormalizeLineStyles(styles) {
   // 保存値に欠けているキーがあれば、id 一致する BD_DEFAULT_LINE_STYLES から補完する。
   // （古い保存ファイルで pathType 等が抜けている場合、定数 'curve' に補完されると
   //  リセット後の BD_DEFAULT 値（'straight' 等）と差が出る問題への対策）
-  const defaults = _bdBuiltinLineStylesForBoard();
+  let defaults;
+  const readDefaults = () => defaults || (defaults = _bdBuiltinLineStylesForBoard());
   const base = Array.isArray(styles) && styles.length
     ? styles.map(style => {
-        const def = (defaults || []).find(d => d && d.id === style.id);
-        const fallbackArrow = def?.arrow ?? 'end';
-        const fallbackPath = def?.pathType ?? 'curve';
+        let foundDefault;
+        const def = () => foundDefault || (foundDefault = (readDefaults() || []).find(d => d && d.id === style.id));
+        const fallbackArrow = () => def()?.arrow ?? 'end';
+        const fallbackPath = () => def()?.pathType ?? 'curve';
         const n = {
           id: style.id || '',
-          name: style.name || def?.name || 'ライン',
-          color: style.color || def?.color || '',
-          colorOpacity: _bdNormalizeStyleOpacity(style.colorOpacity, _bdNormalizeStyleOpacity(def?.colorOpacity, 1)),
+          name: style.name || def()?.name || 'ライン',
+          color: style.color || def()?.color || '',
+          colorOpacity: Number.isFinite(Number(style.colorOpacity)) ? _bdNormalizeStyleOpacity(style.colorOpacity) : _bdNormalizeStyleOpacity(def()?.colorOpacity, 1),
           width: typeof _bdNormalizeLineWidth === 'function'
-            ? _bdNormalizeLineWidth(style.width, Number.isFinite(+def?.width) ? +def.width : 0)
-            : (Number.isFinite(+style.width) ? Math.max(0, Math.min(200, +style.width)) : (Number.isFinite(+def?.width) ? +def.width : 0)),
+            ? _bdNormalizeLineWidth(style.width, Number.isFinite(Number(style.width)) ? 0 : (Number.isFinite(+def()?.width) ? +def().width : 0))
+            : (Number.isFinite(+style.width) ? Math.max(0, Math.min(200, +style.width)) : (Number.isFinite(+def()?.width) ? +def().width : 0)),
           style: style.style === 'dashed'
             ? 'dashed'
-            : (style.style === '' ? '' : (def?.style ?? '')),
+            : (style.style === '' ? '' : (def()?.style ?? '')),
           arrow: ['end', 'start', 'both', ''].includes(style.arrow)
             ? style.arrow
-            : fallbackArrow,
+            : fallbackArrow(),
           pathType: style.pathType === 'free-bezier'
             ? 'curve'
             : style.pathType === 'orthogonal' || style.pathType === 'orthogonal-curve'
               ? 'orthogonal'
               : (style.pathType === 'straight' || style.straight)
                 ? 'straight'
-                : (style.pathType === 'curve' ? 'curve' : (fallbackPath === 'free-bezier' ? 'curve' : fallbackPath === 'orthogonal-curve' ? 'orthogonal' : fallbackPath)),
+                : (style.pathType === 'curve' ? 'curve' : (fallbackPath() === 'free-bezier' ? 'curve' : fallbackPath() === 'orthogonal-curve' ? 'orthogonal' : fallbackPath())),
           // 選択色はボード全体の bd.selectionColor に移行したため、lineStyle からは削除
         };
         // ラベル系 / テキスト系フィールドをスタイルに保持する (bdRenderStyleManager で編集可能なため、
@@ -575,7 +576,7 @@ function bdNormalizeLineStyles(styles) {
         if (style._default && typeof style._default === 'object') n._default = _bdClone(style._default);
         return n;
       })
-    : _bdClone(defaults);
+    : _bdClone(readDefaults());
   _bdEnsureUniqueStyleIds(base, 'line-style');
   return base;
 }
@@ -585,13 +586,37 @@ function bdNormalizeDisplayFilters(filters) {
 }
 
 let _bdUiStateReadDepth = 0;
+// Cloudの結合スクリプトでは、下の関数がこの初期化より先に呼ばれる。
+// その間は未設定として通常の読取りへ戻せるよう、宣言を先に利用可能にする。
+var _bdUiCssVarReads = null;
+
+function bdReadRenderCssVar(name) {
+  if (typeof getCssVar !== 'function') return '';
+  const root = typeof document !== 'undefined' ? document.documentElement : null;
+  if (!_bdUiCssVarReads || !root?.getAttributeNames || !root?.getAttribute) return getCssVar(name);
+  const stamp = root.getAttributeNames().map(key => `${key}=${root.getAttribute(key)}`).join('\n');
+  if (_bdUiCssVarReads.root !== root || _bdUiCssVarReads.stamp !== stamp) {
+    _bdUiCssVarReads.root = root; _bdUiCssVarReads.stamp = stamp; _bdUiCssVarReads.values.clear();
+  }
+  if (!_bdUiCssVarReads.values.has(name)) _bdUiCssVarReads.values.set(name, getCssVar(name));
+  return _bdUiCssVarReads.values.get(name);
+}
+
 // 同期の表示更新内では正規化を共有し、次の操作へ状態を持ち越さない。
 function bdWithNormalizedBoardUiState(refresh) {
   if (_bdUiStateReadDepth > 0) return refresh();
-  bdEnsureBoardUiState();
-  _bdUiStateReadDepth++;
-  try { return refresh(); }
-  finally { _bdUiStateReadDepth--; }
+  const previousReads = _bdUiCssVarReads;
+  _bdUiCssVarReads = { root: null, stamp: '', values: new Map() };
+  const update = () => {
+    bdEnsureBoardUiState();
+    _bdUiStateReadDepth++;
+    try { return refresh(); }
+    finally { _bdUiStateReadDepth--; }
+  };
+  try {
+    if (typeof bdWithBoardThemeColorSnapshot === 'function') return bdWithBoardThemeColorSnapshot(update);
+    return update();
+  } finally { _bdUiCssVarReads = previousReads; }
 }
 
 function bdEnsureBoardUiState() {

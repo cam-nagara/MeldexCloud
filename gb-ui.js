@@ -664,7 +664,7 @@
   // opts: { title, body: Node|Node[], footer: Node|Node[], variant,
   //         initialFocus, returnFocus, closeButton, closeOnEsc, closeOnOverlay, resizable,
   //         geometryKey, onBeforeClose, onClose, minWidth, extraClass }
-  // 戻り値: { overlay, modal, header, body, footer, open(), close(reason) }
+  // 戻り値: { overlay, modal, header, body, footer, open(), close(reason, { animate }) }
   function createModal(opts) {
     opts = opts || {};
     const variant = MODAL_VARIANTS.has(opts.variant) ? opts.variant : 'standard';
@@ -765,10 +765,11 @@
       return document.activeElement === target;
     }
 
-    function _finishClose(reason) {
+    function _finishClose(reason, closeOptions = {}) {
       if (closed) return false;
       closed = true;
       document.removeEventListener('keydown', onEscKey, true);
+      if (closeOptions?.animate === false) overlay.dataset.mobileDialogCloseAnimation = 'off';
       if (overlay.parentNode) overlay.remove();
       const focusGeneration = modalFocusGeneration;
       let interactionClaimed = false;
@@ -830,7 +831,7 @@
       return true;
     }
 
-    function close(reasonValue) {
+    function close(reasonValue, closeOptions = {}) {
       const reason = _modalCloseReason(reasonValue);
       if (closed || closeCheckPending) return false;
       let allowed = true;
@@ -844,14 +845,14 @@
         closeCheckPending = true;
         return Promise.resolve(allowed).then(result => {
           closeCheckPending = false;
-          return result === false ? false : _finishClose(reason);
+          return result === false ? false : _finishClose(reason, closeOptions);
         }, error => {
           closeCheckPending = false;
           console.error('ダイアログを閉じる前の確認に失敗しました:', error);
           return false;
         });
       }
-      return allowed === false ? false : _finishClose(reason);
+      return allowed === false ? false : _finishClose(reason, closeOptions);
     }
 
     function _activate() {

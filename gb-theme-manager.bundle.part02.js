@@ -61,7 +61,16 @@
   function _encodeThemeUiApplications(cfg) {
     // Metadata travels with the settings through history, import and sync.
     // Normalization ignores it, so older clients can still read the targets.
-    return JSON.stringify({ ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION });
+    // 自動の合わせ直しで残した「控え」（_previousDefaults）は、後の保存でも消さずに引き継ぐ
+    // （以前は保存のたびに控えが落ち、元の見た目へ戻す手がかりが失われていた。2026-11-27）。
+    const next = { ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION };
+    if (next._previousDefaults == null) {
+      try {
+        const current = JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null');
+        if (current && current._previousDefaults != null) next._previousDefaults = current._previousDefaults;
+      } catch {}
+    }
+    return JSON.stringify(next);
   }
 
   function saveThemeUiApplications(cfg, options = {}) {
@@ -686,6 +695,18 @@
   // ボードはトピックの色を決めるたびにテーマを探し、そのたびに全テーマを複製・整形していた
   // （2026-11-25 応答時間検査: ボードの長い処理の約4分の1）。
   let _builtInThemeJsonCache = null;
+  // 組み込みテーマごとの「選択中のタブを塗っていた頃」の形（保存値の合わせ直し専用）。
+  const _filledTabsBuiltInSelected = new Map();
+  // v0.7.899〜v0.7.926 の標準（下線が自動＝タブごとに順番の色）の形（同じく合わせ直し専用）。
+  const _sequentialTabsBuiltInSelected = new Map();
+  function _filledTabsSelectedForBuiltIn(themeId) {
+    _builtInThemeJsonList();
+    return _filledTabsBuiltInSelected.get(String(themeId || '')) || null;
+  }
+  function _sequentialTabsSelectedForBuiltIn(themeId) {
+    _builtInThemeJsonList();
+    return _sequentialTabsBuiltInSelected.get(String(themeId || '')) || null;
+  }
   function _builtInThemeJsonList() {
     if (!_builtInThemeJsonCache) {
       _builtInThemeJsonCache = _buildBuiltInThemes().map(theme => [theme.id, JSON.stringify(theme)]);
@@ -725,10 +746,22 @@
         }
         if (theme.ui.themeUiApplications['style-calendar']?.selected) theme.ui.themeUiApplications['style-calendar'].selected.fg = 'color:' + theme.ui.cssVars['--accent'];
       }
+      // 選択中のタブ: v0.7.621〜v0.7.895 はアクセント色で塗っていた。利用者の判断（2026-11-27）で塗らない形へ戻す。
+      // 下線はアクセント色一色（2026-11-28）。v0.7.899〜v0.7.926 は下線を「自動」にしていたが、
+      // 自動はタブごとに順番の色になり、初期搭載のダークの見た目ではなかった。
+      // 明るいテーマは白文字と組の塗りを従来どおり保つ。
+      // 過去の標準の形は、保存値の合わせ直し（その形と完全に一致する時だけ）に使うため控える。
+      const filledTabs = {};
+      const sequentialTabs = {};
       for (const id of ['panel-tab', 'inner-tab']) {
         const selected = theme.ui.themeUiApplications[id]?.selected;
-        if (selected) selected.bg = 'var:--ui-accent';
+        if (!selected) continue;
+        filledTabs[id] = { ...selected, bg: 'var:--ui-accent' };
+        sequentialTabs[id] = { ...selected, fg: THEME_UI_VALUE_NONE, bg: THEME_UI_VALUE_NONE, underline: THEME_UI_VALUE_AUTO };
+        if (!isThemeLight(theme)) Object.assign(selected, { bg: THEME_UI_VALUE_NONE, underline: 'var:--ui-accent' });
       }
+      _filledTabsBuiltInSelected.set(theme.id, filledTabs);
+      _sequentialTabsBuiltInSelected.set(theme.id, isThemeLight(theme) ? {} : sequentialTabs);
       // The starter rail uses white icons. Shade only its shipped background;
       // saved custom themes keep their explicit foreground and background.
       const railAccent = normalizeThemeColor(theme.ui.cssVars['--accent'])
@@ -865,36 +898,3 @@
         callback: handlePaletteDomMutations,
         throttle: 50,
       });
-    } else {
-      _paletteObserver = new MutationObserver(handlePaletteDomMutations);
-      _paletteObserver.observe(document.body, { childList: true, subtree: true });
-    }
-  }
-
-  function paletteMutationTouchesTargets(mutations) {
-    for (const mutation of mutations || []) {
-      const nodes = [...(mutation.addedNodes || []), ...(mutation.removedNodes || [])];
-      if (nodes.some(paletteNodeTouchesTarget)) return true;
-    }
-    return false;
-  }
-
-  function paletteInvalidationPending() {
-    return !_paletteTargetCache && (!!_paletteBindRaf || !_activeThemeColorSet);
-  }
-
-  // 対象の選択子を1つにまとめ、要素1つあたりの検索を1回にする（選択子ごとに
-  // 部分木を検索すると、大きな画面の作り直しで数十回の全体検索になる）。
-  const PALETTE_TARGET_SELECTOR = PALETTE_TARGET_SPECS.map(([selector]) => selector).join(', ');
-
-  function paletteNodeTouchesTarget(node) {
-    if (!node || node.nodeType !== 1) return false;
-    if (paletteNodeIsBoardRenderMutation(node)) return false;
-    try {
-      return !!(node.matches?.(PALETTE_TARGET_SELECTOR) || node.querySelector?.(PALETTE_TARGET_SELECTOR));
-    } catch {
-      return PALETTE_TARGET_SPECS.some(([selector]) => {
-        try {
-          return node.matches?.(selector) || !!node.querySelector?.(selector);
-        } catch {
-          return true;

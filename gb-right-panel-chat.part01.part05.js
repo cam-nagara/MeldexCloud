@@ -19,12 +19,57 @@
   }
 }
 
+function _chatApplyAcknowledgedBoardTextPatch(result) {
+  if (typeof bd === 'undefined' || !bd || bd.dirty || bd.editing
+      || !Array.isArray(result.text_updates) || !result.revision || !result.previous_revision
+      || typeof bdRefreshNodesPartial !== 'function' || typeof bdPushUndo !== 'function') return false;
+  const normalize = path => String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (normalize(bd.path) !== normalize(result.path)) return false;
+  if (bd.lastSavedEtag === result.revision && result.text_updates.every(update =>
+    typeof update.after === 'string' && bd.nodes.some(node => node.id === update.id && node.text === update.after))) return true;
+  if (bd.lastSavedEtag !== result.previous_revision) return false;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const key = coordinator?.documentKeyForPath?.(bd.path);
+  if (key && (coordinator.isSaving?.(key) || coordinator.getConflict?.(key))) return false;
+  if (typeof GBLayout === 'undefined' || !GBLayout.getAllPanes) return false;
+  const copies = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || [])
+    .filter(tab => tab.type === 'board' && normalize(tab.path || tab.state?.boardPath) === normalize(bd.path));
+  if (copies.length !== 1) return false;
+  const changes = [];
+  for (const update of result.text_updates) {
+    const node = bd.nodes.find(item => item.id === update.id);
+    if (!node || typeof update.before !== 'string' || typeof update.after !== 'string' || node.text !== update.before
+        || node._topicCanonicalOnly || node._topicReadOnly
+        || (node.topicRef && !['local-vault', 'source'].includes(node.topicRef.sourceId))) return false;
+    changes.push({node, text:update.after});
+  }
+  if (changes.length) bdPushUndo('AIの変更');
+  changes.forEach(({node,text}) => { node.text = text; });
+  bd.lastSavedEtag = result.revision;
+  bd.lastSavedTransportRevision = coordinator
+    ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), result.revision) : result.revision;
+  bd._topicSaveVersion = Number(bd._topicSaveVersion || 0) + 1;
+  bdRefreshNodesPartial(changes.map(({node}) => node.id), 'acknowledged-ai-text', {detailPanel:true});
+  if (typeof bdFlushBoardUpdates === 'function') bdFlushBoardUpdates();
+  return true;
+}
+
 let _chatPendingMutationPaths = [];
 function _handleChatToolWorkspaceEffect(name, result) {
   const toolName = String(name || '');
   const parsed = _parseChatToolResult(result);
   if (!CHAT_WORKSPACE_REFRESH_TOOLS.has(toolName) || !_chatToolResultSucceeded(parsed)) return;
   const mutationPaths = _chatToolMutationPaths(parsed);
+  // Patching an existing board changes neither the source tree nor folder
+  // membership. Refresh only its open views; a whole-workspace refresh delays
+  // the acknowledged edit and needlessly reloads unrelated folder panels.
+  if (toolName === 'board_mutate' && parsed.operation === 'board.patch'
+      && typeof window.reloadOpenFilesAfterExternalMutation === 'function') {
+    if (_chatApplyAcknowledgedBoardTextPatch(parsed)) return;
+    return window.reloadOpenFilesAfterExternalMutation(mutationPaths).catch(error => {
+      if (typeof showStatus === 'function') showStatus('AIの変更を画面に反映できませんでした: ' + (error?.message || error), true);
+    });
+  }
   _chatPendingMutationPaths.push(...mutationPaths);
   if (/rename/.test(toolName) && typeof renameAppPathReferences === 'function') {
     const changes = Array.isArray(parsed.changes) ? parsed.changes : [];

@@ -1,3 +1,34 @@
+    if (_ann.tool === 'eraser') {
+      const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
+      for (const el of els) {
+        if (el.classList.contains('ann-preview')) continue;
+        if (_saElementHit(el, pt.x, pt.y, 10)) {
+          try {
+            if (el.dataset.annId) await _saDeleteAnnotation(el.dataset.annId);
+            el.remove();
+          } catch (error) {
+            _saReportSaveFailure(error, 'アノテートを削除できませんでした');
+          }
+          break;
+        }
+      }
+      for (const n of container.querySelectorAll('.sa-note')) {
+        const r = n.getBoundingClientRect(); const cr = container.getBoundingClientRect();
+        const nx = r.left - cr.left, ny = r.top - cr.top;
+        if (pt.x >= nx - 5 && pt.x <= nx + r.width + 5 && pt.y >= ny - 5 && pt.y <= ny + r.height + 5) {
+          await _saDeleteNoteElement(n);
+          break;
+        }
+      }
+      return;
+    }
+    const targetPath = _saCurrentTargetPath();
+    if (!targetPath) {
+      _saReportSaveFailure(new Error('missing target path'), 'アノテートの保存先を確認できませんでした');
+      return;
+    }
+    _ann.drawing = true;
+    _ann.targetPath = targetPath;
     _ann.path = [[pt.x, pt.y]]; _ann.pressures = [e.pressure || 0.5];
     svg.setPointerCapture(e.pointerId);
   });
@@ -356,7 +387,7 @@ function createMarkupToolbar(markup, parentEl) {
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
   };
-  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'marker',icon:'highlighter',title:'マーカー' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
+  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'sa-tb-btn' + (t.name === 'pen' ? ' active' : '');
@@ -867,34 +898,3 @@ document.addEventListener('DOMContentLoaded', () => {
     'Excelとして保存': 'download',
     'HTMLとして保存': 'download',
     'Markdownとして保存': 'download',
-    'Wordとして保存': 'download',
-    'シナリオ形式として保存': 'download',
-    '勤怠CSVとして保存': 'download',
-    '辞書ファイルを出力': 'download',
-    'シフト、実績、作業予定を書き出す': 'download',
-    'PNG画像として保存': 'image',
-    '画像（PNG）として保存': 'image',
-    'SVG画像として保存': 'image',
-    'B-MANGAへ送信': 'send',
-    'CLIP STUDIO PAINTへ送信': 'send',
-    'アーカイブ管理': 'archive',
-    'シートに変換': 'db',
-    'シートから一括読込': 'db',
-    'テンプレート': 'layoutTemplate',
-    'シートテンプレート': 'layoutTemplate',
-    'ノートテンプレート': 'layoutTemplate',
-    '新規トピックのノートテンプレート': 'layoutTemplate',
-    'テンプレートに登録': 'bookmarkPlus',
-    '現在のノートからテンプレートを作成': 'layoutTemplate',
-    '現在のシナリオからテンプレートを作成': 'layoutTemplate',
-    '現在のシートからテンプレートを作成': 'layoutTemplate',
-    '現在のボードからテンプレートを作成': 'layoutTemplate',
-    'シート横断検索': 'databaseSearch',
-    '整合性検証': 'shieldCheck',
-    '検証ルール管理': 'listChecks',
-    '列の表示と順序': 'columns',
-    '列を追加': 'columns',
-    '行を追加': 'rows3',
-    '公開設定': 'globe',
-    '公開を更新': 'refreshCw',
-    '新規イベント': 'calendarPlus',

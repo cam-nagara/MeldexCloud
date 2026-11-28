@@ -21,6 +21,9 @@
   min-width: 80px;
   text-align: center;
   border: 1px solid var(--ui-border);
+  /* 見本の文字（タイトル・見出し等）は縦書きのように折らない（共通ルール）。行の幅までは縮めない。 */
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 .cs-row-preview--clickable {
   cursor: pointer;

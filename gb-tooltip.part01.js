@@ -96,7 +96,11 @@
     '.db-picker-popup',
     '.value-input',
     '.cell-inline-input',
-    '.cell-date-editor'
+    '.cell-date-editor',
+    // 数式の入力欄は真下に引数の並びと結果を出す。入力中に見出しのツールチップを重ねない（2026-11-27）。
+    '.pt-formula-textarea',
+    '.pt-formula-picker-body .meldex-search-field-input',
+    '.meldex-input-suggest'
   ];
   const TARGET_SELECTORS = [
     '[' + ATTR_PRIMARY + ']',

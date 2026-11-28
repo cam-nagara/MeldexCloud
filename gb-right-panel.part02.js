@@ -44,7 +44,7 @@ async function _deleteComment(c) {
     showStatus('アノテートの削除はソースフォルダの管理者だけが行えます', true);
     return;
   }
-  if (!await cfConfirm('このコメントを削除しますか？')) return;
+  if (typeof _pushAnnotationHistory !== 'function' && !await cfConfirm('このコメントを削除しますか？')) return;
   try {
     const before = typeof _fetchAnnotationHistoryRow === 'function'
       ? await _fetchAnnotationHistoryRow(c.id).catch(() => null)
@@ -104,7 +104,7 @@ function _rpCommentTargetKind(c) {
 
 function _rpCommentNavType(c, file) {
   const kind = _rpCommentTargetKind(c);
-  if (kind === 'sheet_cell' || kind === 'sheet_col') return 'pivot';
+  if (kind === 'sheet_cell' || kind === 'sheet_col' || kind === 'sheet_entry') return 'pivot';
   if (/\.board\.md$/i.test(file)) return 'board';
   if (/\.(?:scriptnote|scenario)\.json$/i.test(file)) return 'scriptnote';
   if (/\.calendar\.json$/i.test(file)) return 'calendar';
@@ -161,6 +161,8 @@ function _jumpToCommentTarget(c) {
     } else if (c.target_kind === 'sheet_cell' && ref.entryId && ref.colId) {
       const row = document.querySelector(`tr[data-entity-name="${_rpEscSel(ref.entryId)}"]`);
       target = row?.querySelector(`td[data-prop-name="${_rpEscSel(ref.colId)}"]`) || row;
+    } else if (c.target_kind === 'sheet_entry' && ref.entryId) {
+      target = document.querySelector(`tr[data-entity-name="${_rpEscSel(ref.entryId)}"]`);
     }
     if (!target) return;
     _flashRpCommentTarget(target);
@@ -286,7 +288,7 @@ function openCalendar() {
       const group = (id, label, icon, ids) => {
         const fields = document.createElement('div'); fields.className = 'gb-search-filter-fields';
         for (const name of ids) {
-          const field = document.getElementById('rp-ann-' + name);
+          const field = document.getElementById('rp-ann-' + name) || storage.querySelector('#rp-ann-' + name);
           if (!field) continue;
           const wrap = document.createElement('label'); wrap.textContent = field.getAttribute('aria-label') || field.title;
           field.className = field.tagName === 'SELECT' ? 'gb-select' : 'gb-input'; field.removeAttribute('style');
@@ -295,11 +297,23 @@ function openCalendar() {
         storage.append(fields);
         return { id, label, icon, content: () => fields, onClose: () => storage.append(fields) };
       };
+      // 文字の向き（縦書きの書籍のスクリーンショットを読みやすくする）。HTMLに無い画面でも同じ欄を作る。
+      if (!document.getElementById('rp-ann-writing')) {
+        const writing = document.createElement('select');
+        writing.id = 'rp-ann-writing';
+        writing.title = '文字の向き';
+        writing.setAttribute('aria-label', '文字の向き');
+        writing.append(new Option('横書き', 'horizontal'), new Option('縦書き', 'vertical'));
+        storage.append(writing);
+      }
       const shared = MeldexSearchFilterRow.create({ label: 'アノテートを検索', onChange: () => shared.input.dispatchEvent(new Event('change')),
         filters: [
-          group('display', 'アノテートの表示と並び順', 'slidersHorizontal', ['view', 'sort']),
-          group('filter', 'アノテートの絞り込み', 'filter', ['type', 'scope', 'status', 'user', 'date-from', 'date-to']),
+          group('display', 'アノテートの表示と並び順', 'slidersHorizontal', ['view', 'sort', 'writing']),
+          // タイプはタブで切り替える（#rp-ann-type は値の保持だけに使う）
+          group('filter', 'アノテートの絞り込み', 'filter', ['scope', 'status', 'user', 'date-from', 'date-to']),
         ] });
+      const typeField = document.getElementById('rp-ann-type');
+      if (typeField) { typeField.hidden = true; storage.append(typeField); }
       shared.input.id = old.id;
       shared.input.value = old.value;
       Object.assign(shared.input.dataset, old.dataset);
@@ -320,8 +334,17 @@ function openCalendar() {
     const user = document.getElementById('rp-ann-user');
     const dateFrom = document.getElementById('rp-ann-date-from');
     const dateTo = document.getElementById('rp-ann-date-to');
+    const writing = document.getElementById('rp-ann-writing');
     if (!search || search.dataset.rpBound) return;
     search.dataset.rpBound = '1';
+    if (typeof _installRpAnnotationTypeTabs === 'function') _installRpAnnotationTypeTabs();
+    if (writing) {
+      writing.value = typeof _rpAnnotationWritingMode === 'function' ? _rpAnnotationWritingMode() : 'horizontal';
+      writing.addEventListener('change', () => {
+        try { localStorage.setItem('rp-ann-writing-mode', writing.value === 'vertical' ? 'vertical' : 'horizontal'); } catch {}
+        if (typeof _applyRpAnnotationWritingMode === 'function') _applyRpAnnotationWritingMode(writing.value);
+      });
+    }
     if (view) view.value = localStorage.getItem('rp-ann-view-mode') || 'preview';
     if (sort) sort.value = localStorage.getItem('rp-ann-sort-mode') || 'modified-desc';
     if (dateFrom) dateFrom.value = localStorage.getItem('rp-ann-date-from') || '';

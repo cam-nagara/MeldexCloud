@@ -32,8 +32,14 @@
   // ここでのビューワー固有の直接描画は不要（撤去）。
 
   // コントロール
-  document.getElementById('nav-prev-area').addEventListener('click', () => { Scene.pause(); Scene.prevGroup(); });
-  document.getElementById('nav-next-area').addEventListener('click', () => { Scene.pause(); Scene.nextGroup(); });
+  // 左右の端のページ送り領域は、矢印キーと同じく進む方向に従う（「左へ」なら左端で次へ）。
+  const edgeTurn = side => {
+    Scene.pause();
+    const step = window.MeldexViewerPageState?.edgeStep?.(side, Scene.getDirection?.()) || (side === 'left' ? 'prev' : 'next');
+    if (step === 'next') Scene.nextGroup(); else Scene.prevGroup();
+  };
+  document.getElementById('nav-prev-area').addEventListener('click', () => edgeTurn('left'));
+  document.getElementById('nav-next-area').addEventListener('click', () => edgeTurn('right'));
   document.getElementById('btn-prev').onclick = () => { Scene.pause(); Scene.prevGroup(); };
   document.getElementById('btn-next').onclick = () => { Scene.pause(); Scene.nextGroup(); };
   document.getElementById('btn-shift-back').onclick = () => { Scene.pause(); Scene.shiftBackward(); };
@@ -46,6 +52,7 @@
   }
   window.MeldexViewerControls = Object.assign(window.MeldexViewerControls || {}, { releaseViewSelect });
   document.getElementById('sel-mode').onchange = function() { Scene.setMode(this.value); releaseViewSelect(this); };
+  document.getElementById('sel-direction').onchange = function() { Scene.setDirection(this.value); releaseViewSelect(this); };
   document.getElementById('speed').oninput = function() { Scene.setSpeed(this.value); };
   document.getElementById('btn-bg').onclick = Scene.toggleBg;
   document.getElementById('btn-fullscreen').onclick = Scene.toggleFullscreen;
@@ -78,18 +85,81 @@
   document.getElementById('btn-prev-folder').innerHTML = Scene.icon('skipBack');
   document.getElementById('btn-next-folder').innerHTML = Scene.icon('skipForward');
 
+  // 進む方向ごとの矢印キー（2026-11-27 利用者の依頼）。ページ送りは進む方向の軸、フォルダ移動は
+  // それと直交する軸に置き、同じキーを2つの操作が取り合わないようにする。
+  //   右へ: → 次 / ← 前、↓ 次のフォルダ / ↑ 前のフォルダ（従来どおり）
+  //   左へ: ← 次 / → 前、↓ 次のフォルダ / ↑ 前のフォルダ
+  //   下へ: ↓ 次 / ↑ 前、→ 次のフォルダ / ← 前のフォルダ
+  //   上へ: ↑ 次 / ↓ 前、→ 次のフォルダ / ← 前のフォルダ
+  // 割り当ては共通のショートカットレジストリの既定値として登録し直すため、利用者が変えたキーは保たれ、
+  // 右クリックメニュー・ツールチップ・右サイドバーの一覧の表記も同じ値を使う。
+  const DIRECTION_KEYS = {
+    right: { forward: 'arrowright', backward: 'arrowleft', folderForward: 'arrowdown', folderBackward: 'arrowup' },
+    left: { forward: 'arrowleft', backward: 'arrowright', folderForward: 'arrowdown', folderBackward: 'arrowup' },
+    down: { forward: 'arrowdown', backward: 'arrowup', folderForward: 'arrowright', folderBackward: 'arrowleft' },
+    up: { forward: 'arrowup', backward: 'arrowdown', folderForward: 'arrowright', folderBackward: 'arrowleft' },
+  };
+  // 進む・戻るのアイコン（chevron＝ページ送り、arrow＝1枚ずらし／ツールバーの前へ・次へ）。
+  const DIRECTION_ICONS = {
+    right: { forward: 'Right', backward: 'Left' }, left: { forward: 'Left', backward: 'Right' },
+    down: { forward: 'Down', backward: 'Up' }, up: { forward: 'Up', backward: 'Down' },
+  };
+  function currentDirection() {
+    const value = Scene.getDirection?.();
+    return DIRECTION_KEYS[value] ? value : 'right';
+  }
+  function directionalShortcuts(direction) {
+    const keys = DIRECTION_KEYS[direction] || DIRECTION_KEYS.right;
+    return {
+      'viewer.prevFolder':   { key: keys.folderBackward,          label: '前のフォルダ',    scope: 'viewer' },
+      'viewer.nextFolder':   { key: keys.folderForward,           label: '次のフォルダ',    scope: 'viewer' },
+      'viewer.shiftForward': { key: 'shift+' + keys.forward,      label: '1枚ずらして進む', scope: 'viewer' },
+      'viewer.shiftBackward':{ key: 'shift+' + keys.backward,     label: '1枚ずらして戻る', scope: 'viewer' },
+      'viewer.next':         { key: keys.forward,                 label: '次へ',            scope: 'viewer' },
+      'viewer.prev':         { key: keys.backward,                label: '前へ',            scope: 'viewer' },
+    };
+  }
+  function directionIcons(direction = currentDirection()) {
+    const icons = DIRECTION_ICONS[direction] || DIRECTION_ICONS.right;
+    return {
+      next: 'chevron' + icons.forward, prev: 'chevron' + icons.backward,
+      shiftForward: 'arrow' + icons.forward, shiftBackward: 'arrow' + icons.backward,
+    };
+  }
+  function shortcutText(id) {
+    const registry = window.MeldexShortcutRegistry;
+    const key = registry?.keyFor?.(id) || '';
+    return key && registry?.formatKey ? registry.formatKey(key) : '';
+  }
+  function titleWithKey(label, id) {
+    const text = shortcutText(id);
+    return text ? label + ' (' + text + ')' : label;
+  }
+  function applyDirection() {
+    const direction = currentDirection();
+    window.MeldexShortcutRegistry?.registerLocal(directionalShortcuts(direction));
+    const icons = directionIcons(direction);
+    const prev = document.getElementById('btn-prev');
+    const next = document.getElementById('btn-next');
+    if (prev) { prev.innerHTML = Scene.icon(icons.shiftBackward); prev.title = titleWithKey('前へ', 'viewer.prev'); }
+    if (next) { next.innerHTML = Scene.icon(icons.shiftForward); next.title = titleWithKey('次へ', 'viewer.next'); }
+    const prevFolder = document.getElementById('btn-prev-folder');
+    const nextFolder = document.getElementById('btn-next-folder');
+    if (prevFolder) prevFolder.title = titleWithKey('前のフォルダ', 'viewer.prevFolder');
+    if (nextFolder) nextFolder.title = titleWithKey('次のフォルダ', 'viewer.nextFolder');
+    document.documentElement.dataset.viewerDirection = direction;
+    window.dispatchEvent(new CustomEvent('meldex-viewer-shortcuts-changed', { detail: { direction } }));
+  }
+  window.MeldexViewerControls = Object.assign(window.MeldexViewerControls || {}, { directionIcons, applyDirection });
+
   // キーボード（Eagle互換）
   // キーは共通のショートカットレジストリ（gb-shortcut-registry.js）へ登録し、
   // 右サイドバーの「ショートカットキー」タブから確認・変更できるようにする。
   // preventDefault の有無は従来どおり操作ごとに保つ（矢印・Space・ズームのみ抑止）。
   const VIEWER_SHORTCUTS = {
     'viewer.playPause':    { key: 'space',            label: '再生 / 一時停止',   scope: 'viewer' },
-    'viewer.prevFolder':   { key: 'arrowup',          label: '前のフォルダ',       scope: 'viewer' },
-    'viewer.nextFolder':   { key: 'arrowdown',        label: '次のフォルダ',       scope: 'viewer' },
-    'viewer.shiftForward': { key: 'shift+arrowright', label: '1枚ずらして進む',    scope: 'viewer' },
-    'viewer.shiftBackward':{ key: 'shift+arrowleft',  label: '1枚ずらして戻る',    scope: 'viewer' },
-    'viewer.next':         { key: 'arrowright',       label: '次へ',               scope: 'viewer' },
-    'viewer.prev':         { key: 'arrowleft',        label: '前へ',               scope: 'viewer' },
+    // 前後のページ・1枚ずらし・フォルダ移動のキーは進む方向で決まる（directionalShortcuts）。
+    ...directionalShortcuts(currentDirection()),
     'viewer.toggleHud':    { key: 'h',                label: '情報表示の切替',     scope: 'viewer' },
     'viewer.fullscreen':   { key: 'f',                label: '全画面表示',         scope: 'viewer' },
     'viewer.reversePlay':  { key: 'r',                label: '逆再生の切替',       scope: 'viewer' },
@@ -107,20 +177,20 @@
     VIEWER_SHORTCUTS['viewer.annotation'] = { key: 'a', label: 'アノテートの切替', scope: 'viewer' };
   }
   window.MeldexShortcutRegistry?.registerLocal(VIEWER_SHORTCUTS);
-
-  const leftward = () => Scene.getMode?.() === 'manga';
+  applyDirection();
+  window.addEventListener('viewer-direction-change', applyDirection);
   // [実行内容, 既定動作を抑止するか]
   const VIEWER_ACTIONS = {
     'viewer.playPause':     [() => Scene.togglePlay(), true],
     'viewer.prevFolder':    [() => Scene.prevFolder(), true],
     'viewer.nextFolder':    [() => Scene.nextFolder(), true],
-    'viewer.shiftForward':  [() => (leftward() ? Scene.shiftBackward : Scene.shiftForward)(), true],
-    'viewer.shiftBackward': [() => (leftward() ? Scene.shiftForward : Scene.shiftBackward)(), true],
-    // 見開き_左へ（右から左へめくる）では、矢印キーの左右を入れ替える（左＝次、右＝前。2026-11-26 利用者判断）。
-    // 単ページ・見開き_右へ は 右＝次、左＝前。再生中は手動送りに合わせてスライドショーの
-    // 次送りタイマーを起点からやり直す（元コードの `if (playing) scheduleNext()` を維持）。
-    'viewer.next':          [() => { (leftward() ? Scene.prevGroup : Scene.nextGroup)(); Scene.rescheduleSlideshow(); }, false],
-    'viewer.prev':          [() => { (leftward() ? Scene.nextGroup : Scene.prevGroup)(); Scene.rescheduleSlideshow(); }, false],
+    // キーの割り当ては進む方向で変わる（directionalShortcuts）。ここでは操作の意味だけを持つ。
+    // 再生中は手動送りに合わせてスライドショーの次送りタイマーを起点からやり直す。
+    // 上下の矢印キーにもなるため、ページ全体のスクロールは止める。
+    'viewer.shiftForward':  [() => Scene.shiftForward(), true],
+    'viewer.shiftBackward': [() => Scene.shiftBackward(), true],
+    'viewer.next':          [() => { Scene.nextGroup(); Scene.rescheduleSlideshow(); }, true],
+    'viewer.prev':          [() => { Scene.prevGroup(); Scene.rescheduleSlideshow(); }, true],
     'viewer.toggleHud':     [() => Scene.toggleHud(), false],
     'viewer.fullscreen':    [() => Scene.toggleFullscreen(), false],
     'viewer.reversePlay':   [() => Scene.toggleReversePlay(), false],
@@ -143,7 +213,7 @@
   // ツールバーのボタンにフォーカスが残っていても（再生ボタンを押した直後など）矢印キー等の
   // ビューワー操作は効かせ、Space/Enter だけはボタン自身の押下に任せる。シークバーでは
   // 矢印キー等をスライダー操作に任せる（値の変更がそのまま前後移動になる）。
-  const VIEW_SELECTS = '#sel-mode, #viewer-pages-mode, #viewer-pages-first';
+  const VIEW_SELECTS = '#sel-mode, #sel-direction, #viewer-pages-mode, #viewer-pages-first';
   const RANGE_NATIVE_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
   function shouldLeaveKeyToFocusedControl(e) {
     const target = e.target;
@@ -153,7 +223,7 @@
     const nativeMedia = target.closest('video[controls], audio[controls]');
     if (nativeMedia?.closest('.layer.show')) return true;
     // 表示の選択欄にフォーカスが残っていても、左右の矢印キーはページ送りにする（選択欄の値を変えない）。
-    if (target.closest('#sel-mode, #viewer-pages-mode, #viewer-pages-first') && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey) return false;
+    if (target.closest(VIEW_SELECTS) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey) return false;
     if (target.closest('textarea, select')) return true;
     const input = target.closest('input');
     if (input) return String(input.type || '').toLowerCase() !== 'range' || RANGE_NATIVE_KEYS.has(e.key);
@@ -417,7 +487,56 @@
   const status = document.getElementById('viewer-pages-status');
   const folderStatus = document.getElementById('viewer-pages-load-status');
   const narrow = () => document.documentElement.dataset.toolbarDensity !== 'desktop' && matchMedia('(max-width: 820px)').matches;
-  const rowHeight = 152;
+  const PAGE_ROW_HEIGHT = 152;
+  // EPUBは縮小画像ではなく本の目次（nav / NCX、無ければ章の一覧）を1行ずつ出す（viewer-epub.js）。
+  const EPUB_ROW_HEIGHT = 30;
+  let rowHeight = PAGE_ROW_HEIGHT;
+  const isEpub = () => !!Scene.isEpub?.() && !!window.MeldexViewerEpub?.isReady?.();
+  const heading = pane.querySelector('.viewer-pages-header strong');
+  function epubEntries() {
+    const toc = window.MeldexViewerEpub.toc();
+    const items = Scene.getItems();
+    if (toc.length) return toc.map(entry => ({ ...entry, spine: window.MeldexViewerEpub.spineIndexOf(entry.href) }));
+    return items.map((item, index) => ({ label: item.name || ('章 ' + (index + 1)), href: '', fragment: '', depth: 0, spine: index }));
+  }
+  function epubCurrentRow(entries) {
+    const current = Scene.getIndex();
+    let row = 0;
+    entries.forEach((entry, index) => { if (entry.spine >= 0 && entry.spine <= current) row = index; });
+    return row;
+  }
+  function syncEpub(reveal) {
+    const entries = source && signature.startsWith('epub:') && !reveal && source.length ? source : epubEntries();
+    const nextSignature = 'epub:' + entries.length + ':' + Scene.getIndex();
+    rowHeight = EPUB_ROW_HEIGHT;
+    if (heading) heading.textContent = '目次';
+    if (source !== entries || signature !== nextSignature) {
+      source = entries; signature = nextSignature;
+      groups = entries.map((_, index) => [index]);
+      indexRows = [];
+      rowsHost.style.height = groups.length * rowHeight + 'px';
+      version++;
+    }
+    const top = epubCurrentRow(entries) * rowHeight;
+    if (reveal || top < scroll.scrollTop || top + rowHeight > scroll.scrollTop + scroll.clientHeight) scroll.scrollTop = Math.max(0, top - rowHeight * 2);
+    schedule();
+  }
+  function makeEpubCell(index) {
+    const entry = source[index];
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'note-toc-item viewer-page-item viewer-epub-toc-item';
+    button.dataset.index = index;
+    button.style.paddingInlineStart = (8 + Math.min(6, entry.depth || 0) * 12) + 'px';
+    button.setAttribute('aria-current', epubCurrentRow(source) === index ? 'page' : 'false');
+    button.title = entry.label; button.textContent = entry.label;
+    button.onclick = () => {
+      Scene.pause();
+      if (entry.href) window.MeldexViewerEpub.goToHref(entry.href + (entry.fragment ? '#' + entry.fragment : ''));
+      else window.MeldexViewerEpub.goToChapter(entry.spine);
+      if (narrow()) setVisible(false);
+    };
+    return button;
+  }
   let identity = '', source = null, signature = '', groups = [], indexRows = [];
   let visible = false, width = 200, frame = 0, version = 0, rendering = false;
   let documentRef = null;
@@ -494,10 +613,13 @@
       source = null;
       return;
     }
+    if (isEpub()) { syncEpub(reveal); return; }
+    if (rowHeight !== PAGE_ROW_HEIGHT) { rowHeight = PAGE_ROW_HEIGHT; source = null; signature = ''; }
+    if (heading && heading.textContent !== 'ページ一覧') heading.textContent = 'ページ一覧';
     const items = Scene.getItems();
     const names = new Set(items.map(item => item.name));
     extraEntries = folderEntries.filter(entry => !names.has(entry.name));
-    const nextSignature = mode.value + ':' + first.value + ':' + Scene.getIndex() + ':' + items.map(item => item.w + 'x' + item.h).join(',') + ':' + extraEntries.length;
+    const nextSignature = mode.value + ':' + (Scene.getDirection?.() || '') + ':' + first.value + ':' + Scene.getIndex() + ':' + items.map(item => item.w + 'x' + item.h).join(',') + ':' + extraEntries.length;
     if (source !== items || signature !== nextSignature) {
       source = items; signature = nextSignature;
       groups = []; indexRows = [];
@@ -581,11 +703,19 @@
     const fragment = document.createDocumentFragment();
     for (let i = begin; i < end; i++) {
       const row = document.createElement('div'); row.className = 'viewer-page-row'; row.style.top = i * rowHeight + 'px';
+      if (signature.startsWith('epub:')) {
+        row.classList.add('viewer-epub-toc-row');
+        row.appendChild(makeEpubCell(i));
+        fragment.appendChild(row);
+        continue;
+      }
       const group = groups[i];
-      const order = mode.value === 'manga' ? [...group].reverse() : group;
+      // 見開き＋左へ（右から左へめくる）は、本文と同じく最初のページを右に置く。
+      const rightToLeft = mode.value !== 'single' && Scene.getDirection?.() === 'left';
+      const order = rightToLeft ? [...group].reverse() : group;
       if (mode.value !== 'single') {
         row.classList.add('viewer-page-spread');
-        if (group.length === 1 && group[0] < source.length) row.dataset.firstSide = group[0] === 0 ? first.value : (mode.value === 'manga' ? 'right' : 'left');
+        if (group.length === 1 && group[0] < source.length) row.dataset.firstSide = group[0] === 0 ? first.value : (rightToLeft ? 'right' : 'left');
       }
       order.forEach(n => row.appendChild(makeCell(n)));
       fragment.appendChild(row);
@@ -593,6 +723,9 @@
     rowsHost.replaceChildren(fragment);
     pump();
   }
+  // 本文のページを描き始めたら、描いている途中のサムネイルを止めて手を譲る（viewer-scene.js が知らせる）。
+  let activeThumbnailTask = null;
+  window.addEventListener('viewer-pdf-busy', () => { try { activeThumbnailTask?.cancel(); } catch (_) {} });
   async function pump() {
     if (rendering || !visible || !documentRef) return;
     rendering = true;
@@ -600,6 +733,10 @@
       while (visible) {
         const cell = rowsHost.querySelector('[data-pending="true"]');
         if (!cell) break;
+        // 本文のページを描いている間は待つ。サムネイルもページ全体の画像を読み解くため、
+        // 先に描くと、まだ見ていないページへ移った時の表示が遅れていた（2026-11-27）。
+        await Scene.whenPdfIdle?.();
+        if (!visible || cell.dataset.pending !== 'true' || !cell.isConnected) continue;
         cell.dataset.pending = 'working';
         const index = Number(cell.dataset.index), stamp = version, doc = documentRef;
         try {
@@ -609,7 +746,17 @@
           const viewport = page.getViewport({ scale: Math.min(108 / natural.width, 108 / natural.height) });
           const canvas = document.createElement('canvas');
           canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
-          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          const task = page.render({ canvasContext: canvas.getContext('2d'), viewport });
+          activeThumbnailTask = task;
+          try {
+            await task.promise;
+          } catch (error) {
+            // 本文の描画を優先して取り消した時は、後で描き直す（失敗の表示にしない）。
+            if (error?.name === 'RenderingCancelledException') { cell.dataset.pending = 'true'; continue; }
+            throw error;
+          } finally {
+            if (activeThumbnailTask === task) activeThumbnailTask = null;
+          }
           if (stamp !== version || !visible) continue;
           cache.set(index, canvas);
           if (cache.size > 64) cache.delete(cache.keys().next().value);
@@ -672,6 +819,208 @@
 
 ;
 
+/* === gb-crop-box.js === */
+;
+/* gb-crop-box.js — 範囲の切り抜き（トリミング）枠の共通部品（UI共通ルール 4.0「範囲を切り抜く枠」）。
+ *
+ * 対象の領域（画面上の矩形）の上に、大きさを変えられる枠を出す。範囲は対象の幅・高さに対する
+ * 割合 [左, 上, 右, 下]（0〜1）で受け渡す。保存は呼び出し側が持つ。
+ * - 枠の中のドラッグで移動、辺と四隅の8つのつまみで大きさを変える、枠の外のドラッグで描き直す
+ * - 矢印キーで移動（Shift で大きく）、Alt＋矢印キーで右辺・下辺を動かして大きさを変える
+ * - Enter で最初の主ボタン、Esc で取り消し。開いている間は下の画面の拡大・パンを受け付けない
+ * 見た目は gb-crop-box.css（共通トークン --ui-crop-box-*）。
+ */
+(function () {
+  'use strict';
+  const EDGES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const round = v => Math.round(v * 10000) / 10000;
+
+  function open(options = {}) {
+    const minSize = Number(options.minSize) > 0 ? Number(options.minSize) : 0.02;
+    let box = normalize(options.box || [0, 0, 1, 1]);
+    let closed = false;
+    const overlay = document.createElement('div');
+    overlay.className = 'gb-crop-box-overlay';
+    overlay.tabIndex = -1;
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-label', options.label || 'トリミングの範囲');
+    const page = document.createElement('div');
+    page.className = 'gb-crop-box-page';
+    const rect = document.createElement('div');
+    rect.className = 'gb-crop-box-rect';
+    rect.tabIndex = 0;
+    rect.setAttribute('role', 'group');
+    rect.setAttribute('aria-label', (options.label || 'トリミングの範囲') + '（矢印キーで移動、Alt＋矢印キーで大きさを変更、Enterで確定、Escで取り消し）');
+    EDGES.forEach(edge => {
+      const handle = document.createElement('span');
+      handle.className = 'gb-crop-box-handle';
+      handle.dataset.edge = edge;
+      rect.appendChild(handle);
+    });
+    const bar = document.createElement('div');
+    bar.className = 'gb-crop-box-bar';
+    if (options.title) {
+      const title = document.createElement('span');
+      title.className = 'gb-crop-box-title';
+      title.textContent = options.title;
+      bar.appendChild(title);
+    }
+    if (options.extra instanceof Element) bar.appendChild(options.extra);
+    const buttons = new Map();
+    (options.actions || []).forEach(action => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-btn' + (action.primary ? ' gb-btn-primary' : '');
+      button.dataset.cropAction = action.id;
+      button.textContent = action.label;
+      if (action.title) button.title = action.title;
+      button.addEventListener('click', () => { void run(action.id); });
+      buttons.set(action.id, button);
+      bar.appendChild(button);
+    });
+    overlay.append(page, rect, bar);
+    (options.host || document.body).appendChild(overlay);
+
+    function normalize(value) {
+      const [l, t, r, b] = (Array.isArray(value) ? value : [0, 0, 1, 1]).map(Number);
+      const left = clamp(Math.min(l, r), 0, 1), right = clamp(Math.max(l, r), 0, 1);
+      const top = clamp(Math.min(t, b), 0, 1), bottom = clamp(Math.max(t, b), 0, 1);
+      return [left, top, Math.max(right, Math.min(1, left + minSize)), Math.max(bottom, Math.min(1, top + minSize))];
+    }
+    function area() {
+      const r = typeof options.target === 'function' ? options.target() : options.target?.getBoundingClientRect?.();
+      return r && r.width > 0 && r.height > 0 ? r : null;
+    }
+    function layout() {
+      if (closed) return;
+      const a = area();
+      if (!a) { rect.hidden = true; page.hidden = true; return; }
+      const host = overlay.getBoundingClientRect();
+      rect.hidden = false; page.hidden = false;
+      Object.assign(page.style, { left: (a.left - host.left) + 'px', top: (a.top - host.top) + 'px', width: a.width + 'px', height: a.height + 'px' });
+      Object.assign(rect.style, {
+        left: (a.left - host.left + box[0] * a.width) + 'px', top: (a.top - host.top + box[1] * a.height) + 'px',
+        width: ((box[2] - box[0]) * a.width) + 'px', height: ((box[3] - box[1]) * a.height) + 'px',
+      });
+      rect.dataset.box = box.map(round).join(',');
+      options.onChange?.(getBox());
+    }
+    function getBox() { return box.map(round); }
+    function setBox(value) { box = normalize(value); layout(); }
+
+    async function run(id) {
+      if (closed) return;
+      buttons.forEach(button => { button.disabled = true; });
+      try {
+        const keep = await options.onAction?.(id, getBox());
+        if (keep === false || closed) return;
+        close();
+      } finally {
+        if (!closed) buttons.forEach(button => { button.disabled = false; });
+      }
+    }
+    function close() {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', layout);
+      resizeObserver?.disconnect();
+      overlay.remove();
+      options.onClose?.();
+    }
+
+    // ---- ポインター: 移動・大きさの変更・描き直し ----
+    let drag = null;
+    overlay.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || bar.contains(event.target)) return;
+      const a = area();
+      if (!a) return;
+      event.preventDefault();
+      const handle = event.target.closest?.('.gb-crop-box-handle');
+      const x = (event.clientX - a.left) / a.width, y = (event.clientY - a.top) / a.height;
+      if (handle) drag = { kind: 'edge', edge: handle.dataset.edge, start: box.slice(), x, y };
+      else if (rect.contains(event.target)) drag = { kind: 'move', start: box.slice(), x, y };
+      else drag = { kind: 'draw', x: clamp(x, 0, 1), y: clamp(y, 0, 1) };
+      overlay.setPointerCapture?.(event.pointerId);
+      rect.focus({ preventScroll: true });
+    });
+    overlay.addEventListener('pointermove', event => {
+      if (!drag) return;
+      const a = area();
+      if (!a) return;
+      const x = (event.clientX - a.left) / a.width, y = (event.clientY - a.top) / a.height;
+      if (drag.kind === 'move') {
+        const [l, t, r, b] = drag.start, w = r - l, h = b - t;
+        const left = clamp(l + x - drag.x, 0, 1 - w), top = clamp(t + y - drag.y, 0, 1 - h);
+        box = [left, top, left + w, top + h];
+      } else if (drag.kind === 'edge') {
+        let [l, t, r, b] = drag.start;
+        const dx = x - drag.x, dy = y - drag.y;
+        if (drag.edge.includes('w')) l = clamp(l + dx, 0, r - minSize);
+        if (drag.edge.includes('e')) r = clamp(r + dx, l + minSize, 1);
+        if (drag.edge.includes('n')) t = clamp(t + dy, 0, b - minSize);
+        if (drag.edge.includes('s')) b = clamp(b + dy, t + minSize, 1);
+        box = [l, t, r, b];
+      } else {
+        box = normalize([drag.x, drag.y, clamp(x, 0, 1), clamp(y, 0, 1)]);
+      }
+      layout();
+    });
+    const endDrag = () => { drag = null; };
+    overlay.addEventListener('pointerup', endDrag);
+    overlay.addEventListener('pointercancel', endDrag);
+    // 下の画面の拡大・パン・右クリックを受け付けない
+    overlay.addEventListener('wheel', event => { event.preventDefault(); event.stopPropagation(); }, { passive: false });
+    overlay.addEventListener('contextmenu', event => { event.preventDefault(); event.stopPropagation(); });
+
+    // ---- キーボード ----
+    // 開いている間のキー操作は枠が受ける（フォーカスがまだ枠へ移っていなくても、下の画面のページ送り等へ渡さない）
+    const onKey = event => {
+      if (closed || event.defaultPrevented) return;
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation();
+        const cancel = (options.actions || []).find(action => action.cancel);
+        if (cancel) void run(cancel.id); else close();
+        return;
+      }
+      if (event.key === 'Enter' && !event.target.closest?.('button,input,select,textarea')) {
+        event.preventDefault(); event.stopPropagation();
+        const primary = (options.actions || []).find(action => action.primary);
+        if (primary) void run(primary.id);
+        return;
+      }
+      const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+      if (!dir || event.target.closest?.('input,select,textarea')) return;
+      event.preventDefault(); event.stopPropagation();
+      const step = event.shiftKey ? 0.1 : 0.01;
+      let [l, t, r, b] = box;
+      if (event.altKey) {
+        r = clamp(r + dir[0] * step, l + minSize, 1);
+        b = clamp(b + dir[1] * step, t + minSize, 1);
+      } else {
+        const w = r - l, h = b - t;
+        l = clamp(l + dir[0] * step, 0, 1 - w); t = clamp(t + dir[1] * step, 0, 1 - h);
+        r = l + w; b = t + h;
+      }
+      box = [l, t, r, b];
+      layout();
+    };
+    document.addEventListener('keydown', onKey, true);
+
+    window.addEventListener('resize', layout);
+    const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => layout()) : null;
+    resizeObserver?.observe(overlay);
+    layout();
+    requestAnimationFrame(() => { if (!closed) { layout(); rect.focus({ preventScroll: true }); } });
+    return Object.freeze({ getBox, setBox, close, layout, element: overlay, isOpen: () => !closed });
+  }
+
+  window.MeldexCropBox = Object.freeze({ open });
+})();
+
+;
+
 /* === viewer-page-edit.js === */
 ;
 /* viewer-page-edit.js — ビューワーの目次でのPDFのページ編集（PDFだけが対象）。
@@ -682,13 +1031,18 @@
  *   エクスプローラー・ブラウザから画像ファイルを落とすと、その位置へページとして貼り付ける
  * - 保存は本体／単独版の /api/pdf-pages/edit（版を残してから原子的に書く）。取り消し・やり直しは
  *   編集前の版へ戻す。本体では共通の履歴、単独版ではビューワーの履歴へ積む
+ * - 右クリックの「複製」で選んだページそれぞれの直後へ写しを置く（中身は共有、PDFの注釈は写さない）
+ * - 「トリミング...」で本文の上に範囲の枠（共通部品 MeldexCropBox）を出し、ページの表示範囲（CropBox）を
+ *   変える（中身は消さない。「トリミングを解除」で元に戻す）。選んだ全ページへ同じ割合で当てられる
+ * - アノテートはページの番号と、ページの表示範囲の中の位置で保存している。番号や位置がずれる複製・
+ *   トリミング（その取り消し・やり直しも）は、該当するページにアノテートがある時は行わない
  * - 画像フォルダの目次では編集しない（説明だけ出す）
  */
 (function () {
   'use strict';
   const Scene = window.MeldexViewerScene;
   const DRAG_TYPE = 'application/x-meldex-pdf-pages';
-  const PDF_ONLY_NOTE = 'ページの編集（並べ替え・回転・反転・削除・貼り付け）はPDFだけが対象です';
+  const PDF_ONLY_NOTE = 'ページの編集（並べ替え・複製・トリミング・回転・反転・削除・貼り付け）はPDFだけが対象です';
   const windowId = Math.random().toString(36).slice(2);
   // 送信待ち（オフラインの送り直し）に入れず、本体が書き終えた応答を待つ。届かない時は失敗として知らせる
   // （送信待ちは「成功したこと」にして返すため、PDFの編集では保存できたかを確かめられない）。
@@ -697,8 +1051,11 @@
   let anchor = -1;
   let etag = '';
   let etagPath = '';
+  let etagGeneration = 0;
   let busy = false;
   let dropTarget = null;
+  let cropped = new Set();   // Meldexでトリミングしたページ（「トリミングを解除」の出し分け）
+  let cropSession = null;
 
   const isPdf = () => !!Scene?.isPdf?.() && !!Scene.getPdfPath?.();
   const pdfPath = () => String(Scene?.getPdfPath?.() || '');
@@ -717,9 +1074,52 @@
   async function ensureEtag(force = false) {
     const path = pdfPath();
     if (!force && etag && etagPath === path) return etag;
+    const generation = etagGeneration;
     const state = await window.apiFetch('/pdf-pages/state?path=' + encodeURIComponent(path), { silentError: true, requireRemoteCommit: true });
+    if (generation !== etagGeneration || path !== pdfPath()) return ensureEtag(true);
     etag = String(state?.etag || ''); etagPath = path;
+    rememberCropped(state);
     return etag;
+  }
+  function rememberCropped(result) {
+    if (Array.isArray(result?.cropped_pages)) cropped = new Set(result.cropped_pages.map(Number));
+  }
+
+  // ---------- アノテートの保護 ----------
+  // アノテートはページの番号（#page=N）と、表示範囲の中の位置で保存している。ページの番号がずれる複製と、
+  // 表示範囲が変わるトリミングは、該当するページにアノテートがあれば行わない（アノテートを別のページ・位置へ
+  // ずらさない）。確かめられない時も行わない。
+  async function annotatedPages(path) {
+    if (document.documentElement.dataset.viewerAnnotationCapability === 'disabled') return [];
+    const rows = await window.apiFetch('/annotations?target=' + encodeURIComponent(path) + '&pages=1&limit=10000', { silentError: true });
+    const found = new Set();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const match = /#page=(\d+)$/i.exec(String(row?.target_path || ''));
+      let index = match ? Number(match[1]) - 1 : NaN;
+      if (!Number.isInteger(index)) {
+        let data = row?.data;
+        if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { data = null; } }
+        if (data?.pageIndex != null) index = Number(data.pageIndex);
+      }
+      if (Number.isInteger(index) && index >= 0) found.add(index);
+    }
+    return [...found].sort((a, b) => a - b);
+  }
+  const pageList = pages => pages.slice(0, 5).map(p => p + 1).join('・') + (pages.length > 5 ? ' ほか' : '');
+  // 戻り値: 止める理由（行ってよければ空文字）
+  async function annotationBlock(path, affected, verb) {
+    let annotated;
+    try { annotated = await annotatedPages(path); }
+    catch (error) { return 'アノテートの有無を確かめられないため、' + verb + 'しませんでした（ファイルは変更していません）。もう一度操作してください: ' + errorText(error); }
+    const hit = annotated.filter(affected);
+    return hit.length ? 'ページ ' + pageList(hit) + ' のアノテートの位置がずれるため、' + verb + 'しませんでした（ファイルは変更していません）' : '';
+  }
+  function guardFor(path, verb, undoAffected, redoAffected) {
+    const check = async (affected, what) => {
+      const reason = await annotationBlock(path, affected, what);
+      if (reason) { status(reason, 8000); throw new Error(reason); }
+    };
+    return { undo: () => check(undoAffected, verb + 'の取り消しを'), redo: () => check(redoAffected, verb + 'のやり直しを') };
   }
 
   let prefetching = '';
@@ -759,22 +1159,25 @@
   function selection() { return [...selected].filter(i => i >= 0 && i < pageCount()).sort((a, b) => a - b); }
 
   // ---------- 保存と履歴 ----------
-  function pushHistory(label, beforeVersion) {
+  function pushHistory(label, beforeVersion, guard) {
     const path = pdfPath();
     let undoVersion = beforeVersion;
     let redoVersion = '';
     const restore = async (version, nextIndex) => {
       const current = await ensureEtag(true);
       const result = await window.apiPost('/pdf-pages/restore', { path, version, if_match_etag: current }, REMOTE);
+      etagGeneration++;
       etag = String(result?.etag || ''); etagPath = path;
+      rememberCropped(result);
       // 書き込みが終わった時点で履歴の操作は完了にする（続けて取り消し・やり直しを押しても受け付ける）。
       // 表示の読み直しはその後で進める。
-      void Scene.reloadPdfDocument(Math.min(nextIndex ?? Scene.getIndex(), Math.max(0, (result?.page_count || 1) - 1)))
+      void Scene.reloadPdfDocument(Math.min(nextIndex ?? Scene.getIndex(), Math.max(0, (result?.page_count || 1) - 1)), { preserveEditRevision: true })
         .then(() => window.MeldexViewerPageList?.redraw?.());
       return result;
     };
-    const undo = async () => { const r = await restore(undoVersion); redoVersion = String(r?.before_version || ''); };
-    const redo = async () => { const r = await restore(redoVersion); undoVersion = String(r?.before_version || ''); };
+    // 複製・トリミングは、戻す前にアノテートがずれないかを確かめる（ずれる時は戻さず、理由を知らせる）
+    const undo = async () => { await guard?.undo?.(); const r = await restore(undoVersion); redoVersion = String(r?.before_version || ''); };
+    const redo = async () => { await guard?.redo?.(); const r = await restore(redoVersion); undoVersion = String(r?.before_version || ''); };
     const parentHistory = window.parent !== window ? window.parent.historyPush : null;
     if (typeof parentHistory === 'function') {
       // 本体では、この画面の取り消し（Ctrl+Z）が向かう文書単位の履歴へ積む（ページを移っても取り消せる）
@@ -789,7 +1192,7 @@
     return window.MeldexViewerHistory?.push?.(label, undo, redo);
   }
 
-  async function edit(label, operations, { sources, images, moveFrom, focusIndex, select } = {}) {
+  async function edit(label, operations, { sources, images, moveFrom, focusIndex, select, guard, done } = {}) {
     if (!isPdf()) { status(PDF_ONLY_NOTE); return false; }
     if (busy) { status('ページの編集を保存しています。終わってからもう一度操作してください'); return false; }
     busy = true;
@@ -801,23 +1204,137 @@
       if (images) body.images = images;
       if (moveFrom) body.move_from = moveFrom;
       const result = await window.apiPost('/pdf-pages/edit', body, REMOTE);
+      etagGeneration++;
       etag = String(result?.etag || ''); etagPath = path;
-      pushHistory(label, String(result?.before_version || ''));
+      rememberCropped(result);
+      pushHistory(label, String(result?.before_version || ''), guard);
       selected = new Set(select || []);
       // 書き込みが終わったら次の操作を受け付ける。表示の読み直しは後から進める（新しい読み直しが古いものを置き換える）
-      void Scene.reloadPdfDocument(focusIndex ?? Scene.getIndex()).then(() => window.MeldexViewerPageList?.redraw?.());
+      void Scene.reloadPdfDocument(focusIndex ?? Scene.getIndex(), { preserveEditRevision: true }).then(() => window.MeldexViewerPageList?.redraw?.());
       if (result?.move_source_error) status(result.move_source_error, 8000);
-      else status(label + 'しました', 2500);
+      else status(done || label + 'しました', 2500);
       window.dispatchEvent(new CustomEvent('meldex-viewer-pdf-pages-edited', { detail: { path, operations, result } }));
       return result;
     } catch (error) {
       // 競合・ロック・保存の失敗。ファイルは変わっていない（版の印を取り直して、同じ操作で再試行できる）。
       etag = '';
+      etagGeneration++;
       status('ページを編集できませんでした（ファイルは変更していません）: ' + errorText(error), 8000);
       return false;
     } finally {
       busy = false;
     }
+  }
+
+  // ---------- 複製 ----------
+  async function duplicate(pages) {
+    if (!isPdf()) { status(PDF_ONLY_NOTE); return false; }
+    if (busy) { status('ページの編集を保存しています。終わってからもう一度操作してください'); return false; }
+    const path = pdfPath();
+    const first = pages[0];
+    // 写しを最初のページの直後へ入れるので、それより後ろのページの番号がずれる
+    const blocked = await annotationBlock(path, i => i > first, '複製');
+    if (blocked) { status(blocked, 8000); return false; }
+    const copies = pages.map((p, k) => p + k + 1);
+    return edit('ページの複製', [{ op: 'duplicate', pages }], {
+      focusIndex: copies[0], select: copies, done: 'ページを複製しました',
+      // 取り消すと写しが消えて、最初の写しから後ろの番号が戻る。やり直しは複製と同じ
+      guard: guardFor(path, '複製', i => i >= first + 1, i => i > first),
+    });
+  }
+
+  // ---------- トリミング ----------
+  function pageCanvas(index) {
+    const layer = document.getElementById('layer' + Scene.getActiveLayerId?.());
+    return [...(layer || document).querySelectorAll('canvas.page-canvas')].find(canvas => canvas._viewerPageNum === index + 1 && canvas.width > 0) || null;
+  }
+  async function waitForCanvas(index, timeout = 8000) {
+    const deadline = performance.now() + timeout;
+    while (performance.now() < deadline) {
+      const canvas = pageCanvas(index);
+      if (canvas && canvas.getBoundingClientRect().width > 0) return canvas;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return null;
+  }
+  function closeCrop() { cropSession?.box?.close?.(); cropSession = null; }
+
+  async function startCrop(pages, index) {
+    if (!isPdf()) { status(PDF_ONLY_NOTE); return false; }
+    if (!window.MeldexCropBox) { status('トリミングの枠を読み込めませんでした。画面を開き直してください', 6000); return false; }
+    if (busy) { status('ページの編集を保存しています。終わってからもう一度操作してください'); return false; }
+    if (Number(Scene.getRotateDeg?.() || 0) % 360 || Scene.getFlipH?.() || Scene.getFlipV?.()) {
+      status('表示の回転・反転を元に戻してからトリミングしてください（ページの回転・反転はそのままで使えます）', 6000);
+      return false;
+    }
+    closeCrop();
+    const path = pdfPath();
+    const blocked = await annotationBlock(path, i => pages.includes(i), 'トリミング');
+    if (blocked) { status(blocked, 8000); return false; }
+    // 本文にそのページを出す（スマホ幅では目次を閉じて、ページの上で枠を動かせるようにする）
+    Scene.pause?.();
+    if (!Scene.getGroup?.(Scene.getIndex())?.includes(index)) Scene.goToIndex(index);
+    if (window.MeldexViewerPageList?.isVisible?.() && matchMedia('(max-width: 820px)').matches && document.documentElement.dataset.toolbarDensity !== 'desktop') {
+      document.getElementById('viewer-pages-close')?.click();
+    }
+    if (!await waitForCanvas(index)) { status('ページを表示できないため、トリミングを始められませんでした。もう一度操作してください', 6000); return false; }
+    let all = null;
+    let extra = null;
+    if (pages.length > 1) {
+      extra = document.createElement('label');
+      all = document.createElement('input');
+      all.type = 'checkbox'; all.className = 'gb-check'; all.checked = true;
+      all.dataset.cropAll = 'true';
+      extra.append(all, document.createTextNode('選んだ ' + pages.length + ' ページすべてに当てる'));
+      extra.title = '同じ割合の範囲を、選んだページすべてに当てます';
+    }
+    const session = { path, index, pages };
+    cropSession = session;
+    session.box = window.MeldexCropBox.open({
+      target: () => pageCanvas(index)?.getBoundingClientRect() || null,
+      box: [0, 0, 1, 1],
+      label: 'ページ ' + (index + 1) + ' のトリミングの範囲',
+      title: 'ページ ' + (index + 1) + ' をトリミング',
+      extra,
+      actions: [
+        { id: 'apply', label: 'トリミング', primary: true },
+        { id: 'cancel', label: 'キャンセル', cancel: true },
+      ],
+      onAction: async (id, box) => {
+        if (id !== 'apply') return true;
+        if (box[0] <= 0 && box[1] <= 0 && box[2] >= 1 && box[3] >= 1) {
+          status('範囲がページ全体です。枠の辺や四隅をドラッグして範囲を狭めてください', 5000);
+          return false;
+        }
+        const targets = all?.checked ? pages : [index];
+        if (targets.length > 1 || targets[0] !== index) {
+          const reason = await annotationBlock(path, i => targets.includes(i), 'トリミング');
+          if (reason) { status(reason, 8000); return false; }
+        }
+        // 失敗した時は枠を開いたままにして、同じ範囲で再試行できるようにする
+        const result = await edit('ページのトリミング', [{ op: 'crop', pages: targets, box }], {
+          focusIndex: index, select: targets, done: 'ページをトリミングしました',
+          guard: guardFor(path, 'トリミング', i => targets.includes(i), i => targets.includes(i)),
+        });
+        return result ? true : false;
+      },
+      onClose: () => { if (cropSession === session) cropSession = null; },
+    });
+    return true;
+  }
+
+  async function uncrop(pages) {
+    if (!isPdf()) { status(PDF_ONLY_NOTE); return false; }
+    if (busy) { status('ページの編集を保存しています。終わってからもう一度操作してください'); return false; }
+    const targets = pages.filter(p => cropped.has(p));
+    if (!targets.length) { status('トリミングしたページがありません'); return false; }
+    const path = pdfPath();
+    const blocked = await annotationBlock(path, i => targets.includes(i), 'トリミングの解除');
+    if (blocked) { status(blocked, 8000); return false; }
+    return edit('トリミングの解除', [{ op: 'uncrop', pages: targets }], {
+      focusIndex: targets[0], select: pages, done: 'トリミングを解除しました',
+      guard: guardFor(path, 'トリミングの解除', i => targets.includes(i), i => targets.includes(i)),
+    });
   }
 
   // ---------- 右クリックメニュー ----------
@@ -829,7 +1346,16 @@
     const label = count > 1 ? count + 'ページ' : 'ページ ' + (pages[0] + 1);
     const side = Scene.getFirstSide?.();
     const spread = Scene.getMode?.() !== 'single';
+    const anyCropped = pages.some(p => cropped.has(p));
     const items = [
+      { label: label + 'を複製', icon: 'copy', title: '選んだページそれぞれの直後へ写しを置きます',
+        action: () => duplicate(pages) },
+      { label: 'トリミング...', icon: 'crop', title: 'ページの上に範囲の枠を出して、表示する範囲を決めます（中身は消えず、解除で元に戻せます）',
+        action: () => startCrop(pages, index) },
+      { label: 'トリミングを解除', icon: 'maximize2', disabled: !anyCropped,
+        title: anyCropped ? 'トリミングする前の範囲に戻します' : 'トリミングしたページを選ぶと使えます',
+        action: () => uncrop(pages) },
+      { type: 'separator' },
       { label: '選んだ2ページを入れ替え', icon: 'arrowLeftRight', disabled: count !== 2,
         action: () => edit('ページの入れ替え', [{ op: 'swap', pages }], { focusIndex: pages[0], select: pages }) },
       { label: '前へ移動', icon: 'arrowUp', disabled: pages[0] <= 0,
@@ -1015,13 +1541,21 @@
       void edit('ページの削除', [{ op: 'delete', pages }], { focusIndex: Math.min(pages[0], pageCount() - pages.length - 1), select: [] });
     });
     // 別のファイルを開いたら選択と版の印を捨てる
+    window.addEventListener('viewer-pdf-document-reloaded', event => {
+      if (event.detail?.path === pdfPath()) { etagGeneration++; etag = ''; etagPath = ''; }
+    });
     window.addEventListener('viewer-page-state', () => {
-      if (etagPath && etagPath !== pdfPath()) { etag = ''; etagPath = ''; selected = new Set(); anchor = -1; }
+      if (etagPath && etagPath !== pdfPath()) { etagGeneration++; etag = ''; etagPath = ''; selected = new Set(); anchor = -1; cropped = new Set(); }
+      // 別のファイルへ移ったら、トリミングの枠を閉じる（前のファイルのページへ当てない）
+      if (cropSession && cropSession.path !== pdfPath()) closeCrop();
     });
   }
 
   window.MeldexViewerPageEdit = Object.freeze({
     decorateCell, edit, selection, PDF_ONLY_NOTE, DRAG_TYPE,
+    duplicate, startCrop, uncrop,
+    croppedPages: () => [...cropped].sort((a, b) => a - b),
+    isCropping: () => !!cropSession?.box?.isOpen?.(),
     isBusy: () => busy,
     setSelection(pages) { selected = new Set(pages); paint(); },
   });
@@ -1399,7 +1933,7 @@ function saveCustomColor(color) {
 }
 function removeCustomColor(color) {
   const target = _normalizeCustomColor(color).toLowerCase();
-  _saveCustomColors(
+  return _saveCustomColors(
     getCustomColors().filter(c => c.toLowerCase() !== target),
     { label: '設定: カスタムカラー削除', detail: target }
   );
@@ -1858,9 +2392,15 @@ let _gbPalettePopup = null;
 let _gbPaletteOutsideHandler = null;
 let _gbPaletteKeyHandler = null;
 let _gbPaletteAnchor = null;
+// 閉じた時の通知（options.onClose）。色の変更を閉じた時にまとめて保存する呼び出し元が使う。
+let _gbPaletteOnClose = null;
+let _gbPaletteRemovalObserver = null;
 
 function closeColorPalette({ restoreFocus = false } = {}) {
   const anchor = _gbPaletteAnchor;
+  const onClose = _gbPaletteOnClose;
+  _gbPaletteOnClose = null;
+  _gbPaletteRemovalObserver?.disconnect(); _gbPaletteRemovalObserver = null;
   if (_gbPalettePopup) { _gbPalettePopup.remove(); _gbPalettePopup = null; }
   _gbPaletteAnchor = null;
   document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => {
@@ -1869,6 +2409,7 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   });
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
+  if (typeof onClose === 'function') { try { onClose(); } catch (error) { console.warn('[color-palette] onClose failed', error); } }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
     // 狭い画面で起点のボタンがツールバーの「▼」にしまわれている時は、その「▼」へ戻す
     // （見えないボタンへは戻せず、フォーカスが画面全体へ外れていた）。
@@ -1891,12 +2432,21 @@ function _constrainColorPaletteToViewport(palette) {
 function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
   closeColorPalette();
   _gbPaletteAnchor = anchorEl;
+  _gbPaletteOnClose = typeof options.onClose === 'function' ? options.onClose : null;
   const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }), options);
   palette.classList.add('gb-palette-popup');
   palette.setAttribute('role', 'dialog');
   palette.setAttribute('aria-label', '色を選択');
   document.body.appendChild(palette);
   _gbPalettePopup = palette;
+  // 他の処理がパレットの要素だけを取り除いた時（設定の取り消しによる作り直し等）も、閉じた時と同じ後片付けと
+  // 閉じた時の通知（onClose）を行う。通知が無いと、選んだ色を閉じた時に保存する呼び出し元が保存しそこなう。
+  if (typeof MutationObserver === 'function' && palette.parentNode) {
+    _gbPaletteRemovalObserver = new MutationObserver(() => {
+      if (_gbPalettePopup === palette && !palette.isConnected) closeColorPalette();
+    });
+    _gbPaletteRemovalObserver.observe(palette.parentNode, { childList: true });
+  }
   if (typeof positionPopup === 'function') positionPopup(palette, anchorEl.getBoundingClientRect());
   else { const rect = anchorEl.getBoundingClientRect(); const z = (typeof _getZoom === 'function') ? _getZoom() : 1; palette.style.left = (rect.left / z) + 'px'; palette.style.top = (rect.bottom / z + 4) + 'px'; }
   // positionPopup() は計測前に maxHeight を初期化するため、UI拡大率を含む
@@ -2265,7 +2815,10 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         del.textContent = '削除';
         del.addEventListener('click', () => {
           closeMenu();
-          removeCustomColor(c);
+          if (removeCustomColor(c) === false) {
+            swatch.focus?.({ preventScroll: true });
+            return;
+          }
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
           renderCustomGrid(); updateSwatchHighlights();
@@ -2323,7 +2876,10 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         let insertAt = e.clientX < swatch.getBoundingClientRect().left + swatch.getBoundingClientRect().width / 2 ? i : i + 1;
         if (dragIdx < i) insertAt--;
         colors.splice(insertAt, 0, item);
-        _saveCustomColors(colors);
+        if (_saveCustomColors(colors) === false) {
+          dragIdx = -1;
+          return;
+        }
         if (selectedCustomIdx === dragIdx) selectedCustomIdx = insertAt;
         else if (selectedColor) selectedCustomIdx = colors.indexOf(selectedColor);
         dragIdx = -1; renderCustomGrid(); updateSwatchHighlights();
@@ -2687,6 +3243,14 @@ function _adoptPersonalColorsRecord(record, options) {
 // GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS 以内の呼び出しは即座に諦めて
 // 連続リトライ（無限ループ）を避ける。明確な404だけは恒久フォールバックとする。
 function _ensurePersonalColorsInit() {
+  // Browser data mode has no PC-wide personal-color endpoint. Its durable
+  // palette is the browser store; do not turn a successful import into a
+  // desktop synchronization failure or retry loop.
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    _personalColorsApiAvailable = false;
+    _personalColorsApiPermanentlyUnavailable = true;
+    return Promise.resolve();
+  }
   if (_personalColorsApiPermanentlyUnavailable) return Promise.resolve();
   if (_personalColorsInitPromise) return _personalColorsInitPromise;
   if (_personalColorsApiAvailable === false
@@ -3052,19 +3616,23 @@ async function _applyImportedCustomColors(rawColors, mode) {
       });
       if (res && Array.isArray(res.colors)) {
         _personalColorsRevision = res.revision == null ? null : res.revision;
-        _saveCustomColors(res.colors, { label, skipServerSync: true });
+        if (!_saveCustomColors(res.colors, { label, skipServerSync: true })) return false;
         if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${res.colors.length}色）`);
-        return;
+        return true;
       }
+      throw new Error('読み込み結果を確認できませんでした');
     } catch (e) {
-      console.warn('[gb-color-palette] import via API failed, falling back to local merge:', e);
+      console.warn('[gb-color-palette] import via API failed:', e);
+      if (typeof showStatus === 'function') showStatus('カスタムカラーを読み込めませんでした（保存先に書けません）', true);
+      return false;
     }
   }
   const finalColors = mode === 'replace'
     ? normalized
     : _personalColorsNormalizeList([...getCustomColors(), ...normalized]);
-  _saveCustomColors(finalColors, { label });
+  if (!_saveCustomColors(finalColors, { label })) return false;
   if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${finalColors.length}色）`);
+  return true;
 }
 
 ;
@@ -3089,12 +3657,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   const WIDTH_TOOLS = [
     { tool: 'pen', label: 'ペンの太さ', min: 1, max: 16, value: 3 },
-    { tool: 'marker', label: 'マーカーの太さ', min: 4, max: 40, value: 12 },
     { tool: 'eraser', label: '消しゴムの太さ', min: 4, max: 48, value: 14 },
   ];
   const TOOLS = [
     { name: 'pen', icon: 'pencil', title: 'ペン' },
-    { name: 'marker', icon: 'highlighter', title: 'マーカー' },
     { name: 'lasso', icon: 'lasso', title: '投げ縄塗り' },
     { name: 'rect', icon: 'square', title: '矩形塗り' },
     { name: 'eraser', icon: 'eraser', title: '消しゴム' },
@@ -3257,6 +3823,22 @@ async function _applyImportedCustomColors(rawColors, mode) {
       if (width) toolbar.appendChild(widthControl(width, controller));
     });
 
+    // ハイライト: 選んでいる文字に付ける（描画ツールではない）。文字を選んでいない時は理由つきで押せない。
+    // アイコンは以前のマーカーのもの（2026-11-27）。
+    const highlight = document.createElement('button');
+    highlight.type = 'button';
+    highlight.id = 'ann-highlight-selection';
+    highlight.className = 'ann-tool';
+    highlight.dataset.annAction = 'highlight-selection';
+    highlight.setAttribute('aria-label', 'ハイライト');
+    highlight.innerHTML = icon('highlighter', 16);
+    highlight.addEventListener('pointerdown', event => event.preventDefault()); // 選択を外さない
+    highlight.addEventListener('click', () => {
+      if (highlight.getAttribute('aria-disabled') === 'true') return;
+      controller.highlightSelection?.();
+    });
+    toolbar.appendChild(highlight);
+
     toolbar.appendChild(separator());
     const swatch = document.createElement('button');
     swatch.type = 'button';
@@ -3359,6 +3941,18 @@ async function _applyImportedCustomColors(rawColors, mode) {
       }
     }
 
+    function syncHighlightButton() {
+      const button = toolbar.querySelector('#ann-highlight-selection');
+      if (!button) return;
+      const ready = !!controller.hasTextSelection?.();
+      button.setAttribute('aria-disabled', ready ? 'false' : 'true');
+      button.classList.toggle('disabled', !ready);
+      button.title = ready ? 'ハイライト — 選んだ文字にハイライトを付けます' : (controller.noTextReason?.() || 'ハイライト — 文字を選ぶと使えます');
+    }
+    let highlightTimer = 0;
+    document.addEventListener('selectionchange', () => { clearTimeout(highlightTimer); highlightTimer = setTimeout(syncHighlightButton, 60); });
+    syncHighlightButton();
+
     function setVisible(visible, anchor) {
       if (!visible) {
         toolbar.classList.remove('visible');
@@ -3383,7 +3977,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     // 幅が伸びると、電話幅では右側（色ボタン等）が画面外へ出ていた。
     if (typeof ResizeObserver === 'function') new ResizeObserver(reclamp).observe(toolbar);
 
-    return { element: toolbar, setVisible, syncFromState };
+    return { element: toolbar, setVisible, syncFromState, syncHighlightButton };
   }
 
   window.MeldexViewerAnnotationToolbar = { create };
@@ -3629,6 +4223,14 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
   }
 
+  // 塗りの透け具合。新しい塗り（data.opacityModel）は色の不透明度だけ、以前の塗りは従来どおり半透明で描く。
+  const OPACITY_MODEL = 'color-alpha-v1';
+  function _fillOpacity(data, opacity, preview) {
+    if (typeof window._annotationFillOpacity === 'function') return window._annotationFillOpacity(data, opacity, preview);
+    const o = _normalizeOpacity(opacity, 1);
+    return data?.opacityModel === OPACITY_MODEL ? o : o * (preview ? 0.2 : 0.4);
+  }
+
   function _applyRectEl(el, data, color, opacity, preview) {
     const o = _normalizeOpacity(opacity, 1);
     el.setAttribute('x', Number(data?.x) || 0);
@@ -3636,7 +4238,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     el.setAttribute('width', Math.max(0.01, Number(data?.width) || 0));
     el.setAttribute('height', Math.max(0.01, Number(data?.height) || 0));
     el.setAttribute('fill', color);
-    el.setAttribute('fill-opacity', String(o * (preview ? 0.2 : 0.4)));
+    el.setAttribute('fill-opacity', String(_fillOpacity(data, o, preview)));
     el.setAttribute('stroke', color);
     el.setAttribute('stroke-width', '1');
     el.setAttribute('stroke-opacity', String(o));
@@ -3644,13 +4246,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return el;
   }
 
-  function renderStroke(scene, type, points, color, opacity, annId, widthMedia) {
+  function renderStroke(scene, type, points, color, opacity, annId, widthMedia, data) {
     const o = _normalizeOpacity(opacity, 1);
     let el;
     if (type === 'lasso') {
       el = document.createElementNS(NS, 'polygon');
       el.setAttribute('points', points.map(p => p[0] + ',' + p[1]).join(' '));
-      el.setAttribute('fill', color); el.setAttribute('fill-opacity', String(o * 0.4));
+      el.setAttribute('fill', color); el.setAttribute('fill-opacity', String(_fillOpacity(data, o, false)));
       el.setAttribute('stroke', color); el.setAttribute('stroke-width', String(_drawWidth(type, widthMedia, 1)));
     } else {
       el = document.createElementNS(NS, 'path');
@@ -3672,8 +4274,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
   function renderRect(scene, data, color, opacity, annId) {
     const el = document.createElementNS(NS, Array.isArray(data.boxes) && data.boxes.length ? 'g' : 'rect');
+    // 新しいハイライトは下の文字が読めるよう、色を乗算で重ねる（色の不透明度が100%でも文字が隠れない）
+    if (data?.highlight && data.opacityModel === OPACITY_MODEL) el.style.mixBlendMode = 'multiply';
     if (el.tagName.toLowerCase() === 'g') {
-      for (const box of data.boxes) el.appendChild(_applyRectEl(document.createElementNS(NS, 'rect'), box, color, opacity, false));
+      for (const box of data.boxes) el.appendChild(_applyRectEl(document.createElementNS(NS, 'rect'), { ...box, opacityModel: data.opacityModel }, color, opacity, false));
     } else _applyRectEl(el, data, color, opacity, false);
     // renderStroke同様、pointer-eventsは親svgからの継承に一本化する（個別指定禁止）。
     if (annId) el.dataset.annId = annId;
@@ -3695,7 +4299,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     }
     const o = _normalizeOpacity(opacity, 1);
     el.setAttribute('fill', outlined ? 'none' : color);
-    el.setAttribute('fill-opacity', outlined ? '0' : String(o * (preview ? .2 : .4)));
+    el.setAttribute('fill-opacity', outlined ? '0' : String(_fillOpacity(data, o, preview)));
     el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(o));
     el.setAttribute('stroke-width', String(_drawWidth(type, data?.lineWidth, 1)));
     if (preview) el.setAttribute('stroke-dasharray', '4,4');
@@ -3735,6 +4339,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
       if (ellipseTool || rectTool) {
         const data = ellipseTool ? _ellipseData(active.path) : _rectData(active.path);
         data.lineWidth = active.widthMedia;
+        data.opacityModel = OPACITY_MODEL;
         const replacement = renderShape(active.scene, active.tool, data, _ann.color, _ann.opacity, null, true);
         active.previewEl.remove();
         active.previewEl = replacement;
@@ -3742,7 +4347,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
         active.previewEl.style.pointerEvents = 'none';
       } else if (active.tool === 'lasso') {
         active.previewEl.setAttribute('points', active.path.map(p => p[0] + ',' + p[1]).join(' '));
-        active.previewEl.setAttribute('fill', _ann.color); active.previewEl.setAttribute('fill-opacity', '0.2');
+        active.previewEl.setAttribute('fill', _ann.color); active.previewEl.setAttribute('fill-opacity', String(_normalizeOpacity(_ann.opacity, 1)));
         active.previewEl.setAttribute('stroke', _ann.color); active.previewEl.setAttribute('stroke-dasharray', String(active.widthMedia) + ',' + String(active.widthMedia));
       } else {
         active.previewEl.setAttribute('d', _pathD(active.path));
@@ -3763,11 +4368,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
       const type = shapeTypes.has(tool) ? tool : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : (tool === 'polyline' ? 'polyline' : 'stroke')));
       const data = type.startsWith('ellipse') ? _ellipseData(path) : (shapeTypes.has(type) ? _rectData(path) : { points: path, width: widthMedia });
       if (shapeTypes.has(type)) data.lineWidth = widthMedia;
+      // 新しい塗りは色の不透明度だけで描く（半透明を強制しない）
+      if (['lasso', 'rect', 'ellipse-fill'].includes(type)) data.opacityModel = OPACITY_MODEL;
       data.coordinateSpace = COORD_SPACE;
       data.mediaWidth = scene.mediaWidth;
       data.mediaHeight = scene.mediaHeight;
       if (scene.isPdf && scene.pageIndex != null) data.pageIndex = scene.pageIndex;
-      const el = shapeTypes.has(type) ? renderShape(scene, type, data, _ann.color, _ann.opacity, null, false) : renderStroke(scene, type, path, _ann.color, _ann.opacity, null, widthMedia);
+      const el = shapeTypes.has(type) ? renderShape(scene, type, data, _ann.color, _ann.opacity, null, false) : renderStroke(scene, type, path, _ann.color, _ann.opacity, null, widthMedia, data);
       try {
         const row = {
           target_path: scene.path, type, data, color: _ann.color, opacity: _ann.opacity, user: viewerAnnotationUser(),
@@ -3903,7 +4510,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
           const element = renderShape(sceneEntry, item.type, data, item.color, item.opacity, item.id, false);
           element._viewerAnnotationHistoryRow = { ...item, data: { ...data } };
         } else if (data.points) {
-          const element = renderStroke(sceneEntry, item.type, data.points, item.color, item.opacity, item.id, data.width);
+          const element = renderStroke(sceneEntry, item.type, data.points, item.color, item.opacity, item.id, data.width, data);
           element._viewerAnnotationHistoryRow = { ...item, data: { ...data } };
         }
       });
@@ -3933,7 +4540,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
     return next;
   }
   function setTool(tool) {
-    _ann.tool = tool;
+    // 以前のマーカー（保存したツールの状態・古い常駐パレット）はペンとして扱う
+    _ann.tool = tool === 'marker' || tool === 'highlight' ? 'pen' : tool;
+    tool = _ann.tool;
     _scenes.forEach(scene => {
       if (_ann.active) scene.svg.style.cursor = annotationCursor(tool);
     });
@@ -3994,6 +4603,58 @@ async function _applyImportedCustomColors(rawColors, mode) {
     _scenes.forEach(scene => { scene.svg.style.opacity = _ann.opacity; });
     window.MeldexViewerAnnotationLegacy?.setOpacity?.(_ann.opacity);
   }
+  // 右クリックした位置の線・塗り（新しい座標系で保存したもの）。旧座標の表示専用アノテートは対象外。
+  function hitAt(clientX, clientY) {
+    if (_ann.visible === false || typeof window._coreAnnotationElementHit !== 'function') return null;
+    for (const scene of _scenes) {
+      const rect = scene.wrap.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) continue;
+      const local = clientToLocal(scene.svg, clientX, clientY);
+      const tolerance = localLengthForScreenPx(scene.svg, 6);
+      for (const el of Array.from(scene.strokesG.querySelectorAll('[data-ann-id]')).reverse()) {
+        if (el.classList.contains('viewer-ann-preview') || !el._viewerAnnotationHistoryRow) continue;
+        const parts = el.matches('path,polygon,rect,ellipse') ? [el] : Array.from(el.querySelectorAll('path,polygon,rect,ellipse'));
+        if (parts.some(part => window._coreAnnotationElementHit(part, local.x, local.y, tolerance))) return { scene, el };
+      }
+    }
+    return null;
+  }
+  // 描いた後の色の変更（共通カラーパレット。不透明度も選べる）。選んでいる間は見た目だけ変え、閉じた時に1回保存する。
+  async function recolor(hit, clientX, clientY) {
+    const el = hit?.el;
+    const id = el?.dataset?.annId;
+    if (!id || typeof window.openColorPalette !== 'function' || typeof window._annotationRecolorUpdate !== 'function') return false;
+    let before = null;
+    try { before = (await window.apiFetch('/annotations?ann_id=' + encodeURIComponent(id) + '&limit=1'))?.[0] || null; } catch {}
+    if (before) {
+      try { before = { ...before, data: typeof before.data === 'string' ? JSON.parse(before.data || '{}') : (before.data || {}) }; } catch { before = null; }
+    }
+    if (!before) { viewerAnnotationSaveFailed(null, 'アノテートが見つかりません'); return false; }
+    const initial = window._annotationRecolorInitialColor(before);
+    let picked = '';
+    const anchor = { getBoundingClientRect: () => ({ left: clientX, right: clientX, top: clientY, bottom: clientY, width: 0, height: 0, x: clientX, y: clientY }) };
+    return new Promise(resolve => {
+      window.openColorPalette(anchor, initial, color => {
+        if (!color || color === 'transparent') return;
+        picked = color;
+        window._paintAnnotationRecolorPreview?.(el, { ...before, ...window._annotationRecolorUpdate(before, color) });
+      }, { allowTransparent: false, onClose: async () => {
+        if (!picked || picked === initial) { if (picked) await rebuild(); resolve(false); return; }
+        try {
+          const update = window._annotationRecolorUpdate(before, picked);
+          const result = await window.apiPut('/annotations/' + encodeURIComponent(id), { ...update, expected_modified: before.modified });
+          const after = { ...before, ...update, modified: result?.modified || before.modified };
+          el._viewerAnnotationHistoryRow = after;
+          window.__viewerAnnotationReportSave?.(true, 'update', null, result, { before, after });
+          resolve(true);
+        } catch (error) {
+          viewerAnnotationSaveFailed(error, 'アノテートの色を保存できませんでした');
+          window.__viewerAnnotationReportSave?.(false, 'update', error);
+          resolve(false);
+        } finally { await rebuild(); }
+      } });
+    });
+  }
   function flushDrawing() {
     if (_draw.isDrawing()) { _draw.end(); return true; }
     return false;
@@ -4021,6 +4682,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
     setOpacity,
     clearAll,
     flushDrawing,
+    hitAt,
+    recolor,
     isDrawing: () => _draw.isDrawing(),
     viewerAnnotationUser,
     viewerAnnotationSaveFailed,
@@ -4031,7 +4694,9 @@ async function _applyImportedCustomColors(rawColors, mode) {
 
 /* === viewer-highlights.js === */
 ;
-/* Shift-drag selects an image/PDF region; the shared context menu applies a theme highlight. */
+/* ハイライトは選択した文字（PDFの文字・OCRで認識した文字）に付ける（2026-11-27 利用者の判断）。
+   Shift＋ドラッグの範囲選択は、OCRの再認識・画像検索の範囲指定にだけ使い、ハイライトには使わない。
+   文字の無い画像・スキャンPDFでは、ハイライトを出さず（理由つきで無効）、マーキングの矩形塗りを案内する。 */
 (function () {
   'use strict';
   const engine = () => window.MeldexViewerAnnotationScene;
@@ -4043,23 +4708,40 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
   let nativeRead=0;
   const cardReads=new WeakMap();
+  // 一覧の対象は表示中のページ・ファイル（見開きは2ページとも）。表示するページが変わったら読み直す
+  // （standalone-secondary-panel.js）。以前は表示中の1ページ目だけを、タブを開いた時に1回読んでいたため、
+  // 見開きの2ページ目や、後から移ったページのハイライトが「ハイライトはありません」のままだった（2026-11-27）。
+  function listTargets(){
+    const scene=window.MeldexViewerScene;
+    const items=scene?.getItems?.()||[];
+    const group=(scene?.getGroup?.(scene.getIndex())||[]).map(i=>items[i]).filter(Boolean);
+    const shown=[...new Set(group.map(item=>scene.itemAnnotationPath(item)).filter(Boolean))];
+    return {key:shown.join('\n'),shown};
+  }
+  function listKey(){return listTargets().key;}
   async function renderCards(host) {
     const token=(cardReads.get(host)||0)+1;cardReads.set(host,token);
     host._highlightCardObserver?.disconnect();host._highlightCardObserver=null;
-    const scene=window.MeldexViewerScene;
-    const path=scene?.itemAnnotationPath?.(scene.getItems()?.[scene.getIndex()]);
-    if(!path){host.textContent='ファイルを開いてください';return;}
-    host.textContent='読み込み中...';
+    const targets=listTargets();
+    host.dataset.highlightKey=targets.key;
+    if(!targets.shown.length){host.textContent='ファイルを開いてください';return;}
+    if(!host.querySelector('[data-viewer-highlight-card]'))host.textContent='読み込み中...';
     try {
       await ensureNative();
-      const rows=await window.apiFetch('/annotations?target='+encodeURIComponent(path));
+      const results=await Promise.all(targets.shown.map(path=>window.apiFetch('/annotations?target='+encodeURIComponent(path))));
       if(cardReads.get(host)!==token||!host.isConnected)return;
-      const items=[];
-      for(const row of rows||[]){
+      const items=[],seen=new Set();
+      for(const row of results.flat()){
+        if(!row||seen.has(row.id))continue;
         let data=row.data||{};try{if(typeof data==='string')data=JSON.parse(data);}catch{continue;}
-        if(!data.highlight&&row.type!=='highlight')continue;
-        items.push({row,data});
+        // 選んだ文字のハイライトだけ（以前に範囲のドラッグで付けた矩形はマーキングとして扱う）
+        if(row.type!=='highlight'&&!(data.highlight&&Array.isArray(data.boxes)&&data.boxes.length))continue;
+        seen.add(row.id);items.push({row,data});
       }
+      // ページ順（EPUBは章・文字の順）・作った順に並べる
+      const order=data=>[Number(data.textAnchor?.spine ?? data.pageIndex)||0,Number(data.textAnchor?.start)||0];
+      items.sort((a,b)=>(order(a.data)[0]-order(b.data)[0])||(order(a.data)[1]-order(b.data)[1])
+        ||String(a.row.created||'').localeCompare(String(b.row.created||'')));
       const build=({row,data})=>{
         const card=document.createElement('button');card.type='button';card.className='gb-btn';
         card.dataset.viewerHighlightCard=row.id;
@@ -4094,12 +4776,79 @@ async function _applyImportedCustomColors(rawColors, mode) {
       if(token===nativeRead&&rows?.length)await ensureNative();
     }catch{}
   }
-  let selection = null, dragging = null, armedColor = null;
+  let selection = null, dragging = null;
   function colors() {
     try { if (parent !== window && parent.GBAnnotationHighlights) return parent.GBAnnotationHighlights.colors(); } catch {}
     return (window.getThemeColorSlotSettings?.() || []).filter(Boolean).map(slot => slot.color).filter(Boolean).concat(window.PALETTE_COLORS || ['#e4bd60', '#90bc83', '#7eacd1', '#c48080']).slice(0, 8);
   }
-  function cancel() { selection?.element?.remove(); selection = null; dragging = null; armedColor = null; }
+  // ハイライトの色は共通カラーパレットで選ぶ（不透明度つき）。本体の中では本体と同じ「最後に使った色」を使う。
+  const OPACITY_MODEL = 'color-alpha-v1';
+  const COLOR_KEY = 'meldex-annotation-highlight-color';
+  function currentColor() {
+    try { if (parent !== window && parent.GBAnnotationHighlights?.currentColor) return parent.GBAnnotationHighlights.currentColor(); } catch {}
+    try { const saved = localStorage.getItem(COLOR_KEY); if (saved && CSS.supports('color', saved)) return saved; } catch {}
+    const base = colors()[0] || '#e4bd60';
+    return typeof window._annotationColorWithAlpha === 'function' ? window._annotationColorWithAlpha(base, 0.4) : base;
+  }
+  function rememberColor(color) {
+    if (!color || color === 'transparent') return;
+    try { if (parent !== window && parent.GBAnnotationHighlights?.rememberColor) { parent.GBAnnotationHighlights.rememberColor(color); return; } } catch {}
+    try { localStorage.setItem(COLOR_KEY, color); } catch {}
+  }
+  function pickColor(onPicked) {
+    if (typeof window.openColorPalette !== 'function') return;
+    const rect = selection?.element?.getBoundingClientRect?.();
+    const x = rect ? rect.left + rect.width / 2 : innerWidth / 2, y = rect ? rect.bottom : innerHeight / 2;
+    const anchor = { getBoundingClientRect: () => ({ left: x, right: x, top: y, bottom: y, width: 0, height: 0, x, y }) };
+    let picked = '';
+    window.openColorPalette(anchor, currentColor(), color => { if (color && color !== 'transparent') picked = color; },
+      { allowTransparent: false, onClose: () => { if (picked) { rememberColor(picked); onPicked(picked); } } });
+  }
+  function cancel() { selection?.element?.remove(); selection = null; dragging = null; }
+  const NO_TEXT_REASON = 'ハイライトは選択した文字に付けます。文字の無い画像やスキャンしたPDFには、マーキングの矩形塗りを使ってください';
+  const EPUB_NO_TEXT_REASON = 'ハイライトは選択した文字に付けます。本文の文字を選んでから押してください';
+  // EPUBの本文（viewer-epub.js）。文字は枠（iframe）の中で選ぶ。
+  const epub = () => (window.MeldexViewerEpub?.isActive?.() ? window.MeldexViewerEpub : null);
+  function noTextReason() { return epub() ? EPUB_NO_TEXT_REASON : NO_TEXT_REASON; }
+  // EPUBのハイライト: 位置は章のパス・本文の文字位置・引用（前後つき）。文字の大きさやページ割りが変わっても同じ文字に付く。
+  async function applyEpub(color) {
+    const reader = epub();
+    const context = reader?.captureSelection?.();
+    if (!context) { window.MeldexViewerScene?.flashStatus?.(EPUB_NO_TEXT_REASON, 5000); return false; }
+    try { await ensureNative(); } catch (error) { window.MeldexViewerScene?.flashStatus?.('ハイライトを保存できませんでした: ' + error.message, 5000); return false; }
+    const requestId = crypto.randomUUID();
+    rememberColor(color);
+    const anchor = context.anchor;
+    const data = { text: context.text, textAnchor: anchor, opacityModel: OPACITY_MODEL, clientRequestId: requestId };
+    const row = { type: 'highlight', target_path: context.path, target_kind: 'text_range', body: context.text, color, opacity: 1, data,
+      target_ref: { file: context.path, container: { kind: 'epub_chapter', id: anchor.href }, anchorSchema: 'meldex-text-anchor-v1',
+        startOffset: anchor.start, endOffset: anchor.end, snippet: context.text, prefix: anchor.prefix, suffix: anchor.suffix },
+      user: engine()?.viewerAnnotationUser?.() || 'anonymous' };
+    const pendingId = reader.addPending({ ...row, id: 'pending-' + requestId });
+    reader.clearSelection();
+    if (parent !== window) parent.postMessage({ type: 'viewer-ann-highlight-pending', requestId, targetPath: context.path }, location.origin);
+    try {
+      const result = await window.apiPost('/annotations', row);
+      const after = { ...row, id: result.id, created: result.created, modified: result.modified || result.created };
+      reader.commitPending(pendingId, after);
+      window.__viewerAnnotationReportSave?.(true, 'create', null, { ...result, highlightRequestId: requestId }, { before: null, after });
+      return true;
+    } catch (error) {
+      reader.commitPending(pendingId, null);
+      if (engine()?.viewerAnnotationSaveFailed) engine().viewerAnnotationSaveFailed(error);
+      else window.MeldexViewerScene?.flashStatus?.('ハイライトを保存できませんでした: ' + (error?.message || error), 5000);
+      window.__viewerAnnotationReportSave?.(false, 'create', error, { highlightRequestId: requestId });
+      // 同じ文字を選び直した状態に戻し、そのまま再試行できるようにする
+      reader.restoreSelection(context);
+      return false;
+    }
+  }
+  // 選んだ文字（PDFの文字層・OCRの認識結果・EPUBの本文）があるか。範囲だけの選択は含めない
+  function hasTextSelection() {
+    if (epub()) return !!epub().hasSelection();
+    captureText();
+    return !!(selection?.data?.boxes?.length && selection.scene.wrap.isConnected && engine()?.getScenes().includes(selection.scene));
+  }
   function captureText() {
     const text = window.MeldexViewerTextLayer?.getSelection?.();
     if (!text?.text || !text.boxes?.length) return;
@@ -4136,17 +4885,21 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
   async function apply(color) {
     if (!selection?.scene.wrap.isConnected || !engine().getScenes().includes(selection.scene) || selection.path !== selection.scene.path
-      || selection.data.width < 1 || selection.data.height < 1) { cancel(); armedColor = color; return; }
+      || !selection.data?.boxes?.length || selection.data.width < 1 || selection.data.height < 1) {
+      window.MeldexViewerScene?.flashStatus?.(NO_TEXT_REASON, 5000);
+      return false;
+    }
     const { scene, data, element, path: targetPath } = selection;
     const requestId = crypto.randomUUID();
-    selection = null; armedColor = null; element?.remove();
-    const savedData = { ...data, coordinateSpace: engine().COORD_SPACE, highlight: true,
+    selection = null; element?.remove();
+    rememberColor(color);
+    const savedData = { ...data, coordinateSpace: engine().COORD_SPACE, highlight: true, opacityModel: OPACITY_MODEL,
       mediaWidth: scene.mediaWidth, mediaHeight: scene.mediaHeight, thumbnail: thumbnail(scene, data), clientRequestId: requestId };
     if (scene.isPdf) savedData.pageIndex = scene.pageIndex;
-    const painted = engine().renderRect(scene, savedData, color, 0.42, null);
+    const painted = engine().renderRect(scene, savedData, color, 1, null);
     if (parent !== window) parent.postMessage({ type: 'viewer-ann-highlight-pending', requestId, targetPath: scene.path }, location.origin);
     try {
-      const row = { type: 'rect', target_path: scene.path, target_kind: 'viewer_region', color, opacity: 0.42,
+      const row = { type: 'rect', target_path: scene.path, target_kind: 'viewer_region', color, opacity: 1,
         body: data.text || '', data: savedData, target_ref: { file: scene.path, pageIndex: scene.pageIndex }, user: engine().viewerAnnotationUser() };
       const result = await window.apiPost('/annotations', row);
       const after = { ...row, id: result.id, created: result.created, modified: result.modified || result.created };
@@ -4159,11 +4912,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
     }
   }
   document.addEventListener('pointerdown', event => {
-    if (event.button !== 0 || !event.shiftKey && !armedColor || document.documentElement.dataset.viewerAnnotationCapability === 'disabled') return;
+    if (event.button !== 0 || !event.shiftKey || document.documentElement.dataset.viewerAnnotationCapability === 'disabled') return;
     const scene = engine()?.findSceneForClientPoint(event.clientX, event.clientY);
     if (!scene) return;
     event.preventDefault(); event.stopImmediatePropagation();
-    const color = armedColor; cancel(); armedColor = color;
+    cancel();
     dragging = { scene, path: scene.path, point: engine().clientToLocal(scene.svg, event.clientX, event.clientY), pointer: event.pointerId };
     try { scene.wrap.setPointerCapture(event.pointerId); } catch {}
   }, true);
@@ -4174,7 +4927,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (!engine().getScenes().includes(scene) || dragging.path !== scene.path) { cancel(); return; }
     const data = bounds(scene, point, engine().clientToLocal(scene.svg, event.clientX, event.clientY));
     selection?.element?.remove();
-    const element = engine().renderRect(scene, data, armedColor || 'var(--accent)', 0.25, null);
+    const element = engine().renderRect(scene, data, 'var(--accent)', 0.25, null);
     element.dataset.highlightSelection = '';
     element.setAttribute('stroke', 'var(--accent)'); element.setAttribute('stroke-width', engine().localLengthForScreenPx(scene.svg, 1));
     selection = { scene, path: dragging.path, data, element };
@@ -4182,13 +4935,24 @@ async function _applyImportedCustomColors(rawColors, mode) {
   document.addEventListener('pointerup', event => {
     if (!dragging || event.pointerId !== dragging.pointer) return;
     event.preventDefault(); event.stopImmediatePropagation(); dragging = null;
-    if (armedColor) void apply(armedColor);
   }, true);
+  // 本体のアノテートツールバーの「ハイライト」ボタンへ、文字を選んでいるかを知らせる（押せる／押せないの切り替え）
+  let lastTextState = null, textStateTimer = 0;
+  document.addEventListener('selectionchange', () => {
+    clearTimeout(textStateTimer);
+    textStateTimer = setTimeout(() => {
+      const has = epub() ? !!epub().hasSelection() : !!window.MeldexViewerTextLayer?.getSelection?.()?.text;
+      if (has === lastTextState || parent === window) return;
+      lastTextState = has;
+      try { parent.postMessage({ type: 'viewer-ann-text-selection', hasText: has }, location.origin); } catch {}
+    }, 80);
+  });
   document.addEventListener('pointercancel', cancel, true);
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !window.MeldexContextMenuUI?.isOpen()) cancel(); }, true);
   window.MeldexViewerHighlights = {
-    ensureNative, loadNativeExisting, renderCards,
+    ensureNative, loadNativeExisting, renderCards, listKey,
     getRegion: () => {
+      if (epub()) return null; // EPUBは文字の本文なので、範囲での認識・画像検索の対象にしない
       captureText();
       if (!selection || !selection.scene.wrap.isConnected || !engine()?.getScenes().includes(selection.scene)) return null;
       const { scene, path, data } = selection;
@@ -4196,11 +4960,30 @@ async function _applyImportedCustomColors(rawColors, mode) {
         box: [data.x / scene.mediaWidth, data.y / scene.mediaHeight, data.width / scene.mediaWidth, data.height / scene.mediaHeight] };
     },
     menuItems: () => {
-      captureText(); // Keep media coordinates before the menu takes focus.
-      return [{ label: 'ハイライト', ariaLabel: 'ハイライト', icon: 'highlighter', items: colors().map((color, index) => ({ label: 'テーマカラー ' + (index + 1), ariaLabel: 'テーマカラー ' + (index + 1), icon: 'square', color, action: () => apply(color) })) }];
+      // Keep media coordinates before the menu takes focus.
+      if (!hasTextSelection()) {
+        return [{ label: 'ハイライト', ariaLabel: 'ハイライト', icon: 'highlighter', disabled: true, title: noTextReason(), e2eId: 'viewer-highlight-create' }];
+      }
+      const color = currentColor();
+      // 色のパレットを開く間に選択が外れても付けられるよう、EPUBは開いた時の選択を覚えておく
+      const create = epub() ? (picked => applyEpub(picked)) : (picked => apply(picked));
+      return [
+        { label: 'ハイライト', ariaLabel: 'ハイライト', icon: 'highlighter', color, e2eId: 'viewer-highlight-create', action: () => create(currentColor()) },
+        { label: 'ハイライトの色...', ariaLabel: 'ハイライトの色...', icon: 'palette', e2eId: 'viewer-highlight-pick-color', action: () => pickColor(picked => create(picked)) },
+      ];
     },
+    // アノテートツールバーの「ハイライト」ボタン: 今選んでいる文字にハイライトを付ける
+    hasTextSelection,
+    highlightTextSelection(color) {
+      if (epub()) return applyEpub(color || currentColor());
+      if (!hasTextSelection()) { window.MeldexViewerScene?.flashStatus?.(NO_TEXT_REASON, 5000); return false; }
+      return apply(color || currentColor());
+    },
+    get noTextReason() { return noTextReason(); },
+    currentColor,
     reveal(item) {
       const data = typeof item.data === 'string' ? JSON.parse(item.data) : item.data || {};
+      if (data.textAnchor?.kind === 'epub') return epub() ? epub().reveal(item) : false;
       const normalize = path => String(path || '').replace(/\\/g, '/');
       let scene = engine()?.getScenes().find(s => normalize(s.path) === normalize(item.target_path) && (data.pageIndex == null || s.pageIndex === data.pageIndex));
       if (!scene && data.pageIndex != null && window.MeldexViewerScene.getIndex() !== data.pageIndex) { window.MeldexViewerScene.goToIndex(data.pageIndex); return false; }
@@ -4731,13 +5514,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
     if (points.length < 2) return;
     const fallbackPx = data.width || (item.type === 'marker' ? 12 : (item.type === 'lasso' ? 1 : 3));
     const widthMedia = _legacyLengthToMedia(scene, fallbackPx);
-    SceneEngine().renderStroke(scene, item.type, points, item.color, item.opacity, item.id, widthMedia);
+    SceneEngine().renderStroke(scene, item.type, points, item.color, item.opacity, item.id, widthMedia, data);
   }
 
   function _renderConvertedRect(scene, item, data) {
     const rect = _legacyRectToMedia(scene, data);
     if (!(rect.width > 0) || !(rect.height > 0)) return;
-    SceneEngine().renderRect(scene, rect, item.color, item.opacity, item.id);
+    SceneEngine().renderRect(scene, { ...rect, opacityModel: data.opacityModel }, item.color, item.opacity, item.id);
   }
 
   // 旧しっぽ({startX,startY,endX,endY}は付箋左上origin相対) → 絶対(#display基準px) → メディア座標
@@ -5134,6 +5917,10 @@ async function _applyImportedCustomColors(rawColors, mode) {
       setWidth(tool, width) { SceneEngine().setWidth(tool, width); },
       toggleVisible() { SceneEngine().setVisible(SceneEngine().ann().visible === false); _syncToolbar(); },
       clearAll() { SceneEngine().clearAll(); },
+      // ハイライトは選んだ文字に付ける（ツールバーのボタン）
+      hasTextSelection() { return !!window.MeldexViewerHighlights?.hasTextSelection?.(); },
+      highlightSelection() { return window.MeldexViewerHighlights?.highlightTextSelection?.(SceneEngine().ann().color); },
+      noTextReason() { return window.MeldexViewerHighlights?.noTextReason || ''; },
       close() { setState(false); },
       openColorPicker(anchor) {
         const engine = SceneEngine();
@@ -5210,6 +5997,8 @@ async function _applyImportedCustomColors(rawColors, mode) {
   // 明示的な再読み込み要求。path は現在のシーン群のいずれかに一致する場合のみ意味を持つ
   // （新設計ではシーンは「今表示中の画像/ページ」に紐づくため、任意パスの単独読み込みは扱わない）。
   function load(path) {
+    // EPUBのハイライトは本文の枠（iframe）の中に描く。親の取り消し・やり直し・色の変更の後に読み直す。
+    if (window.MeldexViewerEpub?.isActive?.()) void window.MeldexViewerEpub.reloadHighlights();
     ensureToolbar();
     if (path) {
       const found = SceneEngine().findSceneByPath(path);
@@ -5765,9 +6554,54 @@ function format(snapshot) {
     } catch { return ''; }
   }
 
-  function searchItems(target) {
-    const text = String(window.MeldexViewerTextLayer?.getSelection?.()?.text || window.getSelection?.()?.toString?.() || '').trim();
-    const image = target?.closest?.('img') || (!target && document.querySelector?.('.layer.show img'));
+  // EPUBの本文は枠（iframe）の中で選ぶ（viewer-epub.js）。
+  const epub = () => (window.MeldexViewerEpub?.isActive?.() ? window.MeldexViewerEpub : null);
+  function selectedText() {
+    if (epub()) return epub().selectedText();
+    return String(window.MeldexViewerTextLayer?.getSelection?.()?.text || window.getSelection?.()?.toString?.() || '').trim();
+  }
+
+  // 右クリックした位置が選んだ文字の上（または、すぐ近く）か。
+  function pointOnSelection(x, y) {
+    if (epub()) return epub().pointOnSelection(x, y);
+    const selection = window.getSelection?.();
+    if (!selection?.rangeCount || selection.isCollapsed || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const margin = 8;
+    for (let index = 0; index < selection.rangeCount; index++) {
+      for (const rect of selection.getRangeAt(index).getClientRects()) {
+        if (x >= rect.left - margin && x <= rect.right + margin && y >= rect.top - margin && y <= rect.bottom + margin) return true;
+      }
+    }
+    return false;
+  }
+
+  function copySelectedText(text) {
+    // 文字の層の copy の処理が、選んだ文字を正しい順で渡す（viewer-text-layer.js）。
+    let copied = false;
+    if (epub()) copied = epub().copySelection();
+    else try { copied = document.execCommand('copy'); } catch { copied = false; }
+    if (copied) { Scene()?.flashStatus?.('コピーしました', 1200); return; }
+    Promise.resolve(navigator.clipboard?.writeText?.(text))
+      .then(() => Scene()?.flashStatus?.('コピーしました', 1200))
+      .catch(() => Scene()?.flashStatus?.('コピーできませんでした。Ctrl+C でもう一度お試しください', 5000));
+  }
+
+  // 文字を選んでいる時の右クリックは、選んだ文字への操作だけを出す（2026-11-27 利用者の依頼）。
+  // ページ送り・拡大縮小・再生などの閲覧操作は、選択を外して右クリックするか、メインメニューから使う。
+  function selectionItems(text) {
+    return [
+      { label: 'コピー', icon: 'copy', shortcut: 'Ctrl+C', action: () => copySelectedText(text) },
+      ...(annotationsAvailable() ? (window.MeldexViewerHighlights?.menuItems() || []) : []),
+      sep(),
+      ...searchItems(null, { textOnly: true }),
+      ...(typeof window.MeldexViewerOcr?.search === 'function'
+        ? [{ label: '文書内を検索…', icon: 'fileSearch', action: () => window.MeldexViewerOcr.search() }] : []),
+    ];
+  }
+
+  function searchItems(target, options = {}) {
+    const text = selectedText();
+    const image = options.textOnly ? null : (target?.closest?.('img') || (!target && document.querySelector?.('.layer.show img')));
     // 端末内の画像をアップロードせず、ローカルAPIのURL・ファイルの場所も外へ渡さない。
     const imageUrl = image && (publicImageUrl(image._viewerItem?.path || image._viewerItem?.url)
       || publicImageUrl(image.currentSrc || image.src));
@@ -5790,17 +6624,29 @@ function format(snapshot) {
     ];
   }
 
+  // 進む方向ごとの項目名とアイコン（上へ・下へ・左へ・右へ）。
+  const DIRECTION_ITEMS = [
+    { value: 'up', label: '上へ', icon: 'arrowUp' },
+    { value: 'down', label: '下へ', icon: 'arrowDown' },
+    { value: 'left', label: '左へ', icon: 'arrowLeft' },
+    { value: 'right', label: '右へ', icon: 'arrowRight' },
+  ];
+
   function items(target) {
     const scene = Scene();
     const playbackActive = scene.isPlaybackActive?.() ?? scene.isPlaying();
+    // 前へ・次へ・1枚ずらしのアイコンは進む方向に合わせる（ショートカット表記はレジストリの現在値）。
+    const icons = window.MeldexViewerControls?.directionIcons?.()
+      || { prev: 'chevronLeft', next: 'chevronRight', shiftBackward: 'arrowLeft', shiftForward: 'arrowRight' };
+    const direction = scene.getDirection?.() || 'right';
     return [
       ...searchItems(target),
       ...(window.MeldexViewerScreenshotSource?.menuItems?.() || []),
       ...(window.MeldexViewerOcr?.menuItems?.() || []),
-      { label: '前へ', icon: 'chevronLeft', shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
-      { label: '次へ', icon: 'chevronRight', shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
-      { label: '1枚戻る', icon: 'arrowLeft', shortcutId: 'viewer.shiftBackward', action: () => { scene.pause(); scene.shiftBackward(); } },
-      { label: '1枚進む', icon: 'arrowRight', shortcutId: 'viewer.shiftForward', action: () => { scene.pause(); scene.shiftForward(); } },
+      { label: '前へ', icon: icons.prev, shortcutId: 'viewer.prev', action: () => { scene.pause(); scene.prevGroup(); } },
+      { label: '次へ', icon: icons.next, shortcutId: 'viewer.next', action: () => { scene.pause(); scene.nextGroup(); } },
+      { label: '1枚戻る', icon: icons.shiftBackward, shortcutId: 'viewer.shiftBackward', action: () => { scene.pause(); scene.shiftBackward(); } },
+      { label: '1枚進む', icon: icons.shiftForward, shortcutId: 'viewer.shiftForward', action: () => { scene.pause(); scene.shiftForward(); } },
       sep(),
       { label: scene.isSheetContext() ? '前の画像行' : '前のフォルダ', icon: 'folderInput', shortcutId: 'viewer.prevFolder', action: () => scene.prevFolder() },
       { label: scene.isSheetContext() ? '次の画像行' : '次のフォルダ', icon: 'folderOutput', shortcutId: 'viewer.nextFolder', action: () => scene.nextFolder() },
@@ -5820,9 +6666,11 @@ function format(snapshot) {
       sep(),
       { label: '表示モード', icon: 'layout', items: [
         { label: `${scene.getMode() === 'single' ? '● ' : ''}単ページ`, icon: 'rectangleHorizontal', action: () => scene.setMode('single') },
-        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き_右へ`, icon: 'bookOpen', action: () => scene.setMode('spread') },
-        { label: `${scene.getMode() === 'manga' ? '● ' : ''}見開き_左へ`, icon: 'bookOpenText', action: () => scene.setMode('manga') },
+        { label: `${scene.getMode() === 'spread' ? '● ' : ''}見開き`, icon: 'bookOpen', action: () => scene.setMode('spread') },
       ] },
+      { label: '進む方向', icon: 'move', items: DIRECTION_ITEMS.map(entry => (
+        { label: `${direction === entry.value ? '● ' : ''}${entry.label}`, icon: entry.icon, ariaLabel: entry.label, action: () => scene.setDirection(entry.value) }
+      )) },
       { label: '回転・反転', icon: 'rotateCw', items: [
         { label: '左右反転', icon: 'flipHorizontal', shortcutId: 'viewer.flipH', action: () => scene.toggleFlipH() },
         { label: '上下反転', icon: 'flipVertical', action: () => scene.toggleFlipV() },
@@ -5841,7 +6689,7 @@ function format(snapshot) {
       ...(annotationsAvailable() ? [
         sep(),
         ...(window.MeldexViewerHighlights?.menuItems() || []),
-        { label: 'アノテート', icon: 'penTool', shortcutId: 'viewer.annotation', action: () => window.MeldexViewerAnnotationEntry.toggle() },
+        { label: 'アノテート', icon: 'squarePen', shortcutId: 'viewer.annotation', action: () => window.MeldexViewerAnnotationEntry.toggle() },
         ...(annotationVersionsAvailable() ? [
           { label: 'アノテートのバージョン管理...', icon: 'history', action: openAnnotationVersions },
         ] : []),
@@ -5854,13 +6702,24 @@ function format(snapshot) {
   }
 
   async function openMenuAt(clientX, clientY, target) {
-    if (window.MeldexStandaloneNative && !window.MeldexViewerAnnotations && window.MeldexViewerTextLayer?.getSelection()) {
+    if (window.MeldexStandaloneNative && !window.MeldexViewerAnnotations && (window.MeldexViewerTextLayer?.getSelection() || epub()?.selectedText())) {
       try {
         await window.MeldexViewerHighlights.ensureNative();
       } catch(error) { window.showStatus?.('ハイライトを読み込めませんでした: '+error.message,true); return; }
     }
-    window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: items(target) });
+    const text = selectedText();
+    let menuItems = text && pointOnSelection(clientX, clientY) ? selectionItems(text) : items(target);
+    // 描いた線・塗りの上なら、先頭に「色...」（共通カラーパレットで色と不透明度を変える）
+    const hit = annotationsAvailable() && !(text && pointOnSelection(clientX, clientY))
+      ? window.MeldexViewerAnnotationScene?.hitAt?.(clientX, clientY) : null;
+    if (hit) {
+      menuItems = [{ label: '色...', ariaLabel: '色...', icon: 'palette', e2eId: 'viewer-annotation-recolor',
+        action: () => void window.MeldexViewerAnnotationScene.recolor(hit, clientX, clientY) }, sep(), ...menuItems];
+    }
+    window.MeldexContextMenuUI?.openAt({ x: clientX, y: clientY, ariaLabel: 'ビューワーメニュー', items: menuItems });
   }
+  // EPUBの本文（iframe）の右クリックから開く入口（viewer-epub.js が親の座標へ直して呼ぶ）
+  window.MeldexViewerContextMenu = Object.freeze({ openAt: openMenuAt });
 
   // ツールバー左端のアプリアイコン＝メインメニューボタン（UI共通ルール19）。右クリックと同じメニューを
   // ボタンの直下に開き、閉じたらボタンへフォーカスを戻す。開いている間にもう一度押すと閉じる。

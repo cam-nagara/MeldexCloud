@@ -28,7 +28,7 @@ function _elPropIconHtml(propName, propTypes, size) {
   return '';
 }
 
-async function _elRefreshFormValueHistory(ctx, propName) {
+async function _elRefreshFormValueHistory(ctx, propName, snapshot) {
   const runtime = globalThis.MeldexDbFormRuntime;
   if (typeof runtime?.historyScope !== 'function') return ctx.rerender?.();
   const normalize = path => String(path || '').replace(/\\/g, '/');
@@ -46,11 +46,17 @@ async function _elRefreshFormValueHistory(ctx, propName) {
     const live = canvas._elContext;
     if (!canvas.isConnected || !live?.grid?.isConnected || !matches(live)) continue;
     const before = JSON.stringify(ownValues(live.data));
-    const fresh = await apiFetch('/entity?path=' + encodeURIComponent(live.entityPath), { silentError: true, skipBrowseCache: true, cache: 'no-store' });
-    if (!canvas.isConnected || !live.grid.isConnected || !matches(live) || JSON.stringify(ownValues(live.data)) !== before) continue;
+    const usableSnapshot = snapshot && normalize(snapshot.path) === normalize(live.entityPath)
+      && (!entryId(live.data) || entryId(snapshot) === entryId(live.data))
+      && snapshot.properties && Number.isInteger(snapshot.revision) && snapshot.revision >= Number(live.data?.revision || 0);
+    const fresh = usableSnapshot ? snapshot
+      : await apiFetch('/entity?path=' + encodeURIComponent(live.entityPath), { silentError: true, skipBrowseCache: true, cache: 'no-store' });
+    if (!canvas.isConnected || !live.grid.isConnected || !matches(live)) continue;
+    const currentValues = JSON.stringify(ownValues(live.data));
+    if (currentValues !== before && currentValues !== JSON.stringify(ownValues(fresh))) continue;
     if (!live.data.properties) live.data.properties = {};
     Object.defineProperty(live.data.properties, propName, { value: Array.isArray(ownValues(fresh)) ? ownValues(fresh) : [], enumerable: true, writable: true, configurable: true });
-    if (fresh.revision != null) { live.data.revision = fresh.revision; live.options?.onRevision?.(fresh.revision); }
+    if (fresh.revision != null && Number(fresh.revision) >= Number(live.data.revision || 0)) { live.data.revision = fresh.revision; live.options?.onRevision?.(fresh.revision); }
     for (const cell of live.layout.cells.filter(cell => cell.type === 'field' && cell.prop === propName)) {
       const body = canvas.querySelector('.el-cell[data-cell-id="' + CSS.escape(cell.id) + '"] .el-cell-body');
       if (!body || body.querySelector('[data-form-dirty="true"],.value-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,[contenteditable="true"]')) continue;
@@ -97,7 +103,7 @@ function _elBuildFieldCellContent(cell, ctx) {
         dbPath: ctx.options?.ctx?.dbPath || ctx.dbPath, ctx: ctx.options?.ctx,
         historyScope: formConfig && typeof globalThis.MeldexDbFormRuntime?.historyScope === 'function'
           ? () => globalThis.MeldexDbFormRuntime.historyScope(ctx) : ctx.options?.historyScope,
-        onHistoryChanged: ctx.options?.onHistoryChanged || (formConfig ? () => _elRefreshFormValueHistory(ctx, propName) : undefined),
+        onHistoryChanged: ctx.options?.onHistoryChanged || (formConfig ? change => _elRefreshFormValueHistory(ctx, propName, change?.entitySnapshot) : undefined),
       });
     } else {
       const values = Array.isArray(ctx.data.properties[propName]) ? ctx.data.properties[propName] : [];
@@ -478,27 +484,74 @@ function _elShowImageCellPopup(anchorBtn, ctx, existingCell) {
   uploadBtn.className = 'el-tab-menu-item';
   uploadBtn.dataset.e2eId = 'entity-layout-image-upload';
   uploadBtn.innerHTML = (typeof lucide === 'function' ? lucide('image', 13) : '') + '<span>画像をアップロード</span>';
+  const uploadStatus = document.createElement('div');
+  uploadStatus.className = 'gb-muted';
+  uploadStatus.dataset.e2eId = 'entity-layout-image-upload-status';
+  uploadStatus.setAttribute('role', 'status');
+  uploadStatus.hidden = true;
+  const retryUpload = document.createElement('button');
+  retryUpload.type = 'button'; retryUpload.className = 'el-tab-menu-item';
+  retryUpload.dataset.e2eId = 'entity-layout-image-upload-retry';
+  retryUpload.textContent = '再試行'; retryUpload.hidden = true;
+  let selectedFile = null, uploading = false;
+  const uploadPreview = document.createElement('img');
+  uploadPreview.className = 'el-image-upload-preview'; uploadPreview.hidden = true;
+  uploadPreview.dataset.e2eId = 'entity-layout-image-upload-preview';
+  uploadPreview.width = 160; uploadPreview.height = 120;
+  let previewUrl = '';
+  const releasePreview = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = ''; uploadPreview.removeAttribute('src'); uploadPreview.hidden = true;
+  };
+  const positionUploadPopup = () => {
+    if (typeof positionPopup === 'function') positionPopup(popup, anchorBtn.getBoundingClientRect(), { gap: 4 });
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+  };
+  const uploadSelected = async () => {
+    if (uploading || !selectedFile) return;
+    if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
+    const file = selectedFile;
+    uploading = true; uploadBtn.disabled = true; retryUpload.disabled = true; iconBtn.disabled = true;
+    popup.dataset.imageUploadBusy = '1';
+    uploadStatus.hidden = false; retryUpload.hidden = true;
+    uploadStatus.className = 'gb-muted';
+    uploadStatus.textContent = file.name + ' を追加しています…';
+    try {
+      const meta = await _elUploadLayoutImage(file, ctx);
+      if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) {
+        throw new Error('編集できない状態に変わったため、画像を配置しませんでした。編集できる状態に戻して再試行してください');
+      }
+      applyImage({ source: 'upload', path: meta.path || '', url: meta.url || '', spec: '', alt: meta.filename || file.name });
+      close();
+      if (typeof showStatus === 'function') showStatus('画像を設定しました');
+    } catch (error) {
+      uploadStatus.className = 'el-cell-missing';
+      uploadStatus.textContent = file.name + ' を追加できません: ' + (error?.message || error);
+      retryUpload.hidden = false;
+      positionUploadPopup();
+      if (typeof showStatus === 'function') showStatus('画像のアップロードに失敗しました: ' + (error?.message || error), true);
+    } finally {
+      uploading = false; popup.dataset.imageUploadBusy = '0';
+      uploadBtn.disabled = false; retryUpload.disabled = false; iconBtn.disabled = false;
+    }
+  };
+  retryUpload.addEventListener('click', uploadSelected);
   uploadBtn.addEventListener('click', () => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/png,image/jpeg,image/gif,image/webp';
-    input.addEventListener('change', async () => {
+    input.addEventListener('change', () => {
       const file = input.files && input.files[0];
-      if (!file) return;
-      if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
-      close();
-      try {
-        const meta = await _elUploadLayoutImage(file, ctx);
-        if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
-        applyImage({ source: 'upload', path: meta.path || '', url: meta.url || '', spec: '', alt: meta.filename || file.name });
-        if (typeof showStatus === 'function') showStatus('画像を設定しました');
-      } catch (error) {
-        if (typeof showStatus === 'function') showStatus('画像のアップロードに失敗しました: ' + (error?.message || error), true);
-      }
+      if (!file || uploading) return;
+      releasePreview(); selectedFile = file;
+      previewUrl = URL.createObjectURL(file); uploadPreview.src = previewUrl;
+      uploadPreview.alt = file.name; uploadPreview.hidden = false;
+      positionUploadPopup(); void uploadSelected();
     });
     input.click();
   });
   popup.appendChild(uploadBtn);
+  popup.append(uploadPreview, uploadStatus, retryUpload);
 
   const iconBtn = document.createElement('button');
   iconBtn.type = 'button';
@@ -535,6 +588,8 @@ function _elShowImageCellPopup(anchorBtn, ctx, existingCell) {
   }
 
   const close = _elAttachPopupCommon(popup, anchorBtn);
+  const cleanupUploadPopup = popup._cleanup;
+  popup._cleanup = () => { selectedFile = null; releasePreview(); cleanupUploadPopup?.(); };
 }
 
 /* レイアウト用画像のアップロード。画像型列と同じ /media/upload（sheet_pathスコープ）を使い、

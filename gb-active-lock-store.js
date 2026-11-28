@@ -849,10 +849,20 @@
       await window.MeldexProductionManagement?.waitForCloudProductionIdle?.(provider);
     }
     const token = _token(body || {}, headers);
+    const tokenHash = await _tokenHash(token);
+    // One mutation evaluates all candidates against one fresh snapshot of each
+    // management scope. Never retain it for another mutation or account.
+    const stores = new Map();
     for (const candidate of candidates) {
-      await requireAvailable(provider, candidate.path, token, {
+      if (!candidate.path || _isSystemExcluded(candidate.path)) continue;
+      const scope = await _scopeForPath(provider, candidate.path);
+      const key = scope?.scopeKey || scope;
+      if (!stores.has(key)) stores.set(key, await _readStore(provider, scope));
+      const target = scope ? _canonicalForScope(scope, candidate.path) : _normalizeFolderPath(candidate.path);
+      const entry = _findConflict(stores.get(key).entries, target, tokenHash, {
         includeDescendants: candidate.includeDescendants,
-      });
+      }, scope);
+      if (entry) throw _conflictError(_localizedEntry(entry, scope), candidate.path);
     }
   }
 

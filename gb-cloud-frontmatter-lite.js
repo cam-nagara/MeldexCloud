@@ -66,7 +66,7 @@
       if (!body) return out;
       yamlSplitInline(body).forEach((part) => {
         const pair = yamlPair(part);
-        if (pair) out[pair.key] = yamlScalar(pair.raw);
+        if (pair) Object.defineProperty(out, pair.key, { value: yamlScalar(pair.raw), enumerable: true, writable: true, configurable: true });
       });
       return out;
     }
@@ -451,7 +451,7 @@
         if (!pair) { markLossy(); index += 1; continue; }
         // 重複キーはデスクトップ版（yaml.safe_load）と同じく後勝ち。
         const result = readValue(pair.rest, index, col, true);
-        out[pair.key] = result.value;
+        Object.defineProperty(out, pair.key, { value: result.value, enumerable: true, writable: true, configurable: true });
         index = result.index;
       }
       return { value: out, index };

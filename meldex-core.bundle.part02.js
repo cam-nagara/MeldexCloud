@@ -1,3 +1,5 @@
+        if (pending) _showMobileStatusToast(pending.text, pending.isError, true);
+      });
     }
     return;
   }
@@ -594,10 +596,11 @@ function replaceIcons(root) {
     else if (cls.includes('ico-pencil')) name = 'pencil';
     else if (cls.includes('ico-highlighter')) name = 'highlighter';
     else if (cls.includes('ico-lasso')) name = 'lasso';
+    // ico-squarePen を先に見る（ico-square が前方一致で拾い、アノテートのボタンが四角になっていた。2026-11-27）
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
-    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';
@@ -895,6 +898,3 @@ function initIframeMarkup(scrollContainer, options = {}) {
           _boardClientToWorld(r.left, r.top),
           _boardClientToWorld(r.right, r.top),
           _boardClientToWorld(r.right, r.bottom),
-          _boardClientToWorld(r.left, r.bottom),
-        ].filter(pt => Number.isFinite(pt?.x) && Number.isFinite(pt?.y));
-        if (pts.length) {

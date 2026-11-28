@@ -95,6 +95,27 @@ function bdFindNodeDropTargetAtPoint(clientX, clientY, dragIds) {
   const ids = [...new Set((dragIds || []).filter(Boolean))];
   if (!ids.length) return null;
   const idSet = new Set(ids);
+  if (typeof document.elementsFromPoint === 'function') {
+    const excludedIds = new Set(ids);
+    if (typeof bdDescendants === 'function') {
+      ids.forEach(id => bdDescendants(id).forEach(childId => excludedIds.add(childId)));
+    }
+    // Read the hit stack without hiding every selection overlay. Style writes
+    // here otherwise force another board-wide layout on every pointer move.
+    for (const hit of document.elementsFromPoint(clientX, clientY)) {
+      const card = hit.closest?.('.bd-node');
+      if (card) {
+        const nodeId = typeof card.id === 'string' && card.id.startsWith('bdn-') ? card.id.slice(4) : '';
+        if (!nodeId) return null;
+        if (excludedIds.has(nodeId)) continue;
+        return card;
+      }
+      if (hit.closest?.('.bd-resize, .bd-selection-rect')) continue;
+      // A sidebar, modal, or any other real occluder must still block the drop.
+      return null;
+    }
+    return null;
+  }
   const dragEls = ids.map(id => document.getElementById('bdn-' + id)).filter(Boolean);
   const selectionOverlays = typeof document.querySelectorAll === 'function'
     ? [...document.querySelectorAll('.bd-resize, .bd-selection-rect')]

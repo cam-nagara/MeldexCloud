@@ -992,7 +992,7 @@
   });
   window.addEventListener('load', () => setTimeout(() => {
     // デスクトップ付箋の小窓には重複の通知先もフォルダツリーも無い。監視は本体側だけが行う。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     startMonitor();
     refreshOutlinerBadges(document);
   }, 0), { once: true });

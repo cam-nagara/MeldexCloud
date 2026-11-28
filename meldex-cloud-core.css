@@ -5641,6 +5641,9 @@ mark.db-find-current-text {
   color: var(--red);
 }
 .el-cell-add-column { margin-top: 6px; max-width: 100%; }
+.el-image-upload-preview { display: block; max-width: 100%; object-fit: contain; margin: 4px auto; }
+.el-image-upload-preview[hidden] { display: none; }
+.el-image-popup .el-cell-missing { white-space: normal; overflow-wrap: anywhere; }
 .el-cell.el-editable .el-cell-add-column { pointer-events: auto; }
 .el-cell-placeholder {
   align-items: center;
@@ -9433,6 +9436,22 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   scroll-padding-bottom: 34vh;
 }
 
+body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]::before {
+  /* 上端（時刻・電波の表示の裏）に固定した帯。iPhone はこの色で上端を塗る（2026-11-27 黒いグラデーションの修正）。
+     色は画面のいちばん上の帯から読んだ値（MeldexTopEdgeColor）。影・グラデーションは付けない。 */
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--meldex-top-edge-bg, var(--bg, #0b0d10));
+  background-image: none;
+  box-shadow: none;
+  pointer-events: none;
+  z-index: 2147483000;
+}
+
 /* Unified mobile folder explorer for cloud/local mobile surfaces. */
 
 .cloud-mobile-explorer-list-pane,
@@ -12117,13 +12136,31 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   overflow: hidden; cursor: pointer;
 }
 .rp-ann-preview-card:hover { border-color: var(--annotation-accent); }
+/* カードの見出しは1行（タイプのアイコン・アノテート先・作成者・日時・「…」）。2026-11-27 */
 .rp-ann-preview-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 6px 8px; background: var(--annotation-hover-bg); color: var(--annotation-fg); font-size: 11px;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; min-width: 0;
+  padding: 3px 4px 3px 8px; background: var(--annotation-hover-bg); color: var(--annotation-fg); font-size: 11px;
+  white-space: nowrap;
 }
-.rp-ann-preview-head > span:first-child { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.rp-ann-preview-head > span:first-child { flex-wrap: wrap; }
-.rp-ann-preview-head .rp-ann-preview-meta { flex-basis: 100%; padding: 0; white-space: normal; overflow-wrap: anywhere; }
+.rp-ann-preview-kind { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--annotation-muted-fg); }
+.rp-ann-preview-target { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-ann-preview-head .rp-ann-user-badge { flex: 0 1 auto; min-width: 0; max-width: 7em; overflow: hidden; color: var(--annotation-muted-fg); }
+.rp-ann-preview-head .rp-ann-user-badge-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-ann-preview-time { flex: 0 0 auto; color: var(--annotation-muted-fg); font-size: 10px; font-variant-numeric: tabular-nums; }
+.rp-ann-preview-head .rp-ann-preview-actions { margin-inline-start: auto; }
+/* タイプのタブ。幅が足りない時はラベルを隠してアイコンだけにする（改行しない） */
+.rp-ann-tabs { display: flex; flex-wrap: nowrap; flex-shrink: 0; overflow: hidden; border-bottom: 1px solid var(--border); padding: 0 4px; }
+.rp-ann-tabs .gb-inner-tab { flex: 0 0 auto; white-space: nowrap; }
+.rp-ann-tabs.rp-ann-tabs-compact .gb-inner-tab-label { display: none; }
+.rp-ann-tabs.rp-ann-tabs-compact .gb-inner-tab { flex: 1 1 0; min-width: 0; justify-content: center; }
+.rp-ann-preview-image { display: block; max-width: 100%; max-height: 120px; object-fit: contain; border-radius: 4px; }
+/* 縦書きモード: 本文を縦書きにし、スクリーンショットは回転させず大きく表示する（縦書きの書籍の撮影を読みやすくする） */
+#rp-ann-list.rp-ann-vertical .rp-ann-text-body {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  max-inline-size: 24em; max-block-size: 100%; overflow: auto;
+}
+#rp-ann-list.rp-ann-vertical .rp-ann-sticky-preview { max-height: none; }
+#rp-ann-list.rp-ann-vertical .rp-ann-preview-image { max-height: min(70vh, 640px); width: auto; margin-inline: auto; }
 .rp-ann-preview-card:focus-visible { outline: 2px solid var(--annotation-accent); outline-offset: -2px; }
 .rp-ann-preview-card:has(:focus-visible):not(:focus-visible) { outline: none; }
 .rp-ann-preview-body { padding: 8px; }
@@ -12155,10 +12192,6 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   #rp-ann-list .rp-ann-group-header {
     min-height: 44px;
     box-sizing: border-box;
-  }
-  #rp-ann-list .rp-ann-preview-head {
-    flex-wrap: wrap;
-    row-gap: 4px;
   }
   #rp-ann-list .rp-ann-row-actions,
   #rp-ann-list .rp-ann-preview-actions {
@@ -14510,19 +14543,138 @@ button.pt-chip-style-sample--relation,
 .pt-modal .field + .field { margin-top: var(--ui-space-3); }
 /* チェックボックスラベル */
 .pt-check-label { display: flex; align-items: center; gap: var(--ui-space-3); margin-top: var(--ui-space-4); font-size: var(--ui-font-12); cursor: pointer; }
-/* 数式テキストエリア */
-.pt-formula-textarea {
-  width: 100%; font-size: var(--ui-font-12); font-family: monospace;
-  padding: var(--ui-space-2); tab-size: 2; white-space: pre; overflow: auto;
+/* 数式の列設定（gb-db-formula-editor.js, 2026-11-27）。設定欄の「項目名と値を1行」の形にせず、
+   見出し・入力欄・引数の並び・色分け・結果を縦に積む。入力欄は常に全幅。 */
+.pt-formula-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  min-width: 0;
 }
-.pt-formula-tools,
-.pt-formula-props {
+.pt-formula-head {
   display: flex;
   align-items: center;
-  gap: var(--ui-space-2);
-  flex-wrap: wrap;
-  margin-top: var(--ui-space-2);
+  gap: var(--ui-space-3);
+  min-width: 0;
 }
+.pt-formula-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+}
+.pt-formula-head-actions {
+  display: inline-flex;
+  gap: var(--ui-space-2);
+  flex: 0 0 auto;
+}
+.pt-formula-insert {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+}
+.pt-formula-textarea {
+  display: block;
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 88px;
+  box-sizing: border-box;
+  font-size: var(--ui-font-13);
+  font-family: var(--ui-font-mono, monospace);
+  line-height: 1.5;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  resize: vertical;
+}
+/* 引数の並びは1行分の高さを常に取り、出し入れで下の要素を動かさない。 */
+.pt-formula-signature {
+  min-height: 18px;
+  font-family: var(--ui-font-mono, monospace);
+  font-size: var(--ui-font-12);
+  line-height: 18px;
+  color: var(--ui-fg-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pt-formula-signature-arg.active {
+  color: var(--ui-fg-strong, var(--fg));
+  font-weight: var(--ui-weight-bold, 600);
+  text-decoration: underline;
+}
+.pt-formula-signature-desc {
+  margin-left: var(--ui-space-3);
+  font-family: var(--ui-font-sans, inherit);
+}
+.pt-formula-result-box {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ui-space-3);
+  min-width: 0;
+}
+.pt-formula-result-label {
+  flex: 0 0 auto;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+}
+.pt-formula-result {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 20px;
+  font-size: var(--ui-font-13);
+  line-height: 20px;
+  color: var(--ui-fg-default);
+  overflow-wrap: anywhere;
+}
+.pt-formula-result.is-error { color: var(--red); }
+.pt-formula-result-warning {
+  color: var(--ui-warning, var(--orange, var(--red)));
+  font-size: var(--ui-font-12);
+}
+/* 列・関数を選ぶ一覧（MeldexFilterPopup の中身） */
+.pt-formula-picker { width: 320px; max-width: calc(100vw - 16px); }
+.pt-formula-picker-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  min-width: 0;
+}
+.pt-formula-picker-body .meldex-search-field { width: 100%; }
+.pt-formula-picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.pt-formula-picker-item,
+.pt-formula-picker-group,
+.pt-formula-picker-empty {
+  flex: 0 0 auto;
+}
+.pt-formula-picker-item {
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start !important;
+  gap: 0;
+  height: auto !important;
+  min-height: 0;
+  padding-top: var(--ui-space-2) !important;
+  padding-bottom: var(--ui-space-2) !important;
+  text-align: left;
+}
+.pt-formula-picker-label {
+  font-family: var(--ui-font-mono, monospace);
+  font-size: var(--ui-font-12);
+}
+.pt-formula-picker-detail {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+.pt-formula-picker-group { margin-top: var(--ui-space-2); }
 /* Phase 3e-b: 枠線設定モーダル (showGridBorderModal) */
 .gbm-modal { min-width: 340px; }
 .gbm-sections {
@@ -20687,7 +20839,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   min-height: 32px;
   max-height: 96px;
   overflow: auto;
-  margin: var(--ui-space-2) 0 0;
+  margin: 0;
   padding: var(--ui-space-2);
   background: var(--ui-bg-app);
   border: 1px solid var(--ui-border);
@@ -20702,6 +20854,11 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 .pt-formula-token-boolean { color: var(--accent); }
 .pt-formula-token-identifier { color: var(--fg); }
 .pt-formula-token-operator { color: var(--ui-fg-muted); }
+.pt-formula-error-mark {
+  color: var(--red);
+  text-decoration: wavy underline var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
 
 /* シートプロパティ設定パネル */
 .db-prop-settings {
@@ -24280,6 +24437,21 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   box-sizing: border-box;
   overflow: hidden;
 }
+.gb-file-icon-pending {
+  position: relative;
+  opacity: 0.55;
+  cursor: progress;
+}
+.gb-file-icon-pending > :not(.gb-file-icon-preview) { visibility: hidden; }
+.gb-file-icon-preview {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
 .tb-file-icon svg,
 .tb-file-icon img {
   display: block;
@@ -25132,8 +25304,8 @@ body[data-cloud-mobile-editing-ui="1"] .gb-production-task-create-dialog :is(
   width: 280px !important;
   max-width: 100%;
   min-width: 0;
-  /* 行内入力の標準幅（320px）の伸縮基準より、列幅の指定を優先する。 */
-  flex: 0 1 280px !important;
+  /* 横並びでは指定幅を使い、縦並びでは高さへ280pxを持ち込まない。 */
+  flex: 0 1 auto !important;
 }
 .gb-select-short,
 .gb-modal .gb-select.gb-select-short,
@@ -26990,6 +27162,9 @@ body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
   min-width: 80px;
   text-align: center;
   border: 1px solid var(--ui-border);
+  /* 見本の文字（タイトル・見出し等）は縦書きのように折らない（共通ルール）。行の幅までは縮めない。 */
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 .cs-row-preview--clickable {
   cursor: pointer;
@@ -29652,6 +29827,24 @@ input.gb-fmt-num { min-width: 64px; }
 }
 .gb-num-unit { flex-wrap: nowrap; }
 
+/* 共通ルール「文字を縦書きのように折らない」: 入力欄の後ろに付く単位・接尾語（件まで・時間ごと・%等）は
+   文字の幅より細く縮めない。幅が足りなければ部品ごと次の行へ回し、行の幅を超える長さの時だけ行の幅で折り返す。 */
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .gb-fmt-popup-row)
+> :is(input, select, textarea, .gb-num-unit, .gb-input, .gb-select) ~ :is(span, small, .gb-section-desc, .gb-ui-short-label):not(.gb-field-help) {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+/* 設定行に並ぶ短い操作ボタン（ボードの背景画像の「選択」「クリア」等）は文字の幅より細く縮めない。
+   長い名前のボタンが並ぶ行では縮めて折り返す既存の並びを保つ（一律に止めると行からはみ出す）。 */
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row) > .bd-detail-style-action {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+/* 部品の前に置く短い項目名（入れ子のラベル）も同じ扱いにする。 */
+.gb-ui-short-label { flex: 0 0 auto; max-width: 100%; }
+
 /* 新旧の右サイドバーと単独アプリは同じ設定部品を使用する。本文・履歴一覧には適用しない。 */
 :is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel)
 :is(.bd-detail-field, .sn2-detail-settings-row, .sn2-role-opts-row, .gb-form-option-field,
@@ -30671,20 +30864,28 @@ input.gb-fmt-num { min-width: 64px; }
 }
 
 @media (pointer: coarse) and (max-width: 768px) {
-  #app-toolbar:has(#tb-db[style*="contents"]) {
+  /* 入りきらない操作は共通のあふれメニュー（…）へ回す。ボタンを隠したり横スクロールにしたりしない（2026-11-26）。 */
+  #app-toolbar[data-sheet-toolbar="1"] {
     max-width: 100%;
     min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: hidden;
     flex-wrap: nowrap;
   }
 
-  #tb-db .sep,
-  #tb-db > button:not(.tool-menu-btn):not(#btn-filter):not([data-e2e-id="sheet-reload-current"]):not(#btn-db-detail) {
-    display: none !important;
+  /* 折り返して3段になると表が狭くなる。1行に保ち、はみ出した分をあふれメニューで測らせる。 */
+  /* ファイル名欄の固定幅（240px）はスマホ幅では操作が1つも残らない。名前はタブにも出ているので、
+     スマホでは幅を縮めて、フィルタ・再読み込み・検索のボタンを残す。 */
+  #app-toolbar[data-sheet-toolbar="1"] > #tb-db {
+    --ui-toolbar-title-width: 28vw;
   }
 
-  #app-toolbar:has(#tb-db[style*="contents"]) #toolbar-title,
+  #app-toolbar[data-sheet-toolbar="1"] > #tb-db,
+  #tb-db .db-toolbar-actions-right,
+  #tb-db .db-toolbar-display-actions {
+    flex-wrap: nowrap !important;
+  }
+
+  #app-toolbar[data-sheet-toolbar="1"] #toolbar-title,
   #tb-db .tb-title {
     min-width: 0;
     max-width: 38vw;
@@ -32512,6 +32713,11 @@ body[data-csv-sheet-mode="1"] .csv-workbench-bar {
   transform: translateX(0);
 }
 
+/* Keep the visible top toolbar clickable while the auto sidebar is open. */
+#board-standalone-shell.bd-immersive-shell.bd-chrome-right-open:not(.bd-chrome-right-pinned):has(#board-canvas-root.bd-chrome-top-open) #board-right-sidebar {
+  top: var(--bsa-top-toolbar-height, 44px);
+}
+
 #board-standalone-shell.bd-immersive-shell #board-sidebar-resizer {
   display: none !important;
 }
@@ -33878,6 +34084,12 @@ body[data-board-view-active="1"][data-board-right-pinned="1"] #right-panel {
   display: inline-flex;
   align-items: center;
   gap: var(--ui-space-1); /* 2px ペア内（密着） */
+}
+/* 共通ルール「文字を縦書きのように折らない」: 書式ポップアップの項目名（文字・背景色・線/アクセント色等）は
+   文字の幅より細く縮めない。幅が足りない時は組ごと次の行へ回す（行は折り返し可）。 */
+.gb-fmt-popup-label {
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 /* スウォッチ（背景色・文字色・枠線色・フチ色） */
@@ -36036,8 +36248,10 @@ body[data-mobile-ui-local="1"] .modal .taste-principles-view .taste-card-weight 
     box-shadow: inset 0 0 0 9999px var(--cloud-mobile-selection-row-bg, rgba(64, 156, 255, 0.14)) !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #app-toolbar,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar:not(.folder-toolbar):not(.chat-session-toolbar):not(.gb-form-app-toolbar):not([data-ui-component="search-filter-row"]),
+  /* シートは上のツールバーを出す（2026-11-26 利用者の要望）。マップも出す（☰に地図の操作が無く、スマホで地図を編集する入口が無かった）。
+     入りきらない操作は共通のあふれメニューへ回る。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #app-toolbar:not([data-sheet-toolbar="1"]),
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar:not(.folder-toolbar):not(.chat-session-toolbar):not(.gb-form-app-toolbar):not(#tb-db):not(.gb-toolbar-map):not(.gb-map-contextbar):not(.gb-map-viewbar):not([data-ui-component="search-filter-row"]),
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #se-toolbar {
     display: none !important;
   }

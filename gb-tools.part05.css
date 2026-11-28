@@ -248,7 +248,7 @@
   min-height: 32px;
   max-height: 96px;
   overflow: auto;
-  margin: var(--ui-space-2) 0 0;
+  margin: 0;
   padding: var(--ui-space-2);
   background: var(--ui-bg-app);
   border: 1px solid var(--ui-border);
@@ -263,6 +263,11 @@
 .pt-formula-token-boolean { color: var(--accent); }
 .pt-formula-token-identifier { color: var(--fg); }
 .pt-formula-token-operator { color: var(--ui-fg-muted); }
+.pt-formula-error-mark {
+  color: var(--red);
+  text-decoration: wavy underline var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
 
 /* シートプロパティ設定パネル */
 .db-prop-settings {

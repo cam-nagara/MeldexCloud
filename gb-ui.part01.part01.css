@@ -728,6 +728,21 @@
   box-sizing: border-box;
   overflow: hidden;
 }
+.gb-file-icon-pending {
+  position: relative;
+  opacity: 0.55;
+  cursor: progress;
+}
+.gb-file-icon-pending > :not(.gb-file-icon-preview) { visibility: hidden; }
+.gb-file-icon-preview {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
 .tb-file-icon svg,
 .tb-file-icon img {
   display: block;

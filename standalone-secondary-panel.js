@@ -87,6 +87,8 @@
       source.dispatchEvent(new Event('change', { bubbles: true }));
     });
     source?.addEventListener('change', () => { select.value = source.value; });
+    // メニュー等から値だけ変わった時も追従する（ビューワーの表示モード・進む方向）。
+    root.addEventListener?.('viewer-page-state', () => { if (source && select.value !== source.value) select.value = source.value; });
     return select;
   }
 
@@ -437,6 +439,17 @@
       if(host&&!host.hidden&&shell.panel.classList.contains('is-open'))root.MeldexViewerHighlights?.renderCards(host);
     };
     root.addEventListener('meldex-viewer-annotations-changed',refreshAnnotations);
+    // 表示するファイル・ページが変わったら、一覧の対象が変わった時だけ読み直す（倍率や回転では読み直さない）。
+    root.addEventListener('viewer-page-state', () => {
+      const host=tabs.panels.get('annotations');
+      const key=root.MeldexViewerHighlights?.listKey?.();
+      if(key!==undefined&&host?.dataset.highlightKey!==key)refreshAnnotations();
+    });
+    // 進む方向で矢印キーの割り当てが変わったら、開いている「ショートカットキー」タブを描き直す。
+    root.addEventListener('meldex-viewer-shortcuts-changed', () => {
+      const host = tabs.panels.get('shortcuts');
+      if (host && !host.hidden && shell.panel.classList.contains('is-open')) renderShortcutsTab(host, 'viewer');
+    });
     // 表示中のファイルが変わったら「プロパティ」タブを追従させる
     if (infoSource) {
       new MutationObserver(() => {
@@ -458,6 +471,8 @@
     const display = section('表示方法');
     const modeSource = document.getElementById('sel-mode');
     if (modeSource) display.appendChild(row('表示モード', linkedSelect(modeSource, '表示モード')));
+    const directionSource = document.getElementById('sel-direction');
+    if (directionSource) display.appendChild(row('進む方向', linkedSelect(directionSource, '進む方向')));
     const displayActions = document.createElement('div');
     displayActions.className = 'sa-secondary-actions';
     displayActions.append(

@@ -263,6 +263,8 @@ async function _meldexCorePrepareFileWrite(path, body) {
 
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
+  if (options.backgroundFileWrite === true && String(path).split('?')[0] === '/file'
+    && typeof window.runFileWriteJob === 'function') return window.runFileWriteJob(path, guardedBody, options);
   const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -1490,10 +1492,11 @@ function replaceIcons(root) {
     else if (cls.includes('ico-pencil')) name = 'pencil';
     else if (cls.includes('ico-highlighter')) name = 'highlighter';
     else if (cls.includes('ico-lasso')) name = 'lasso';
+    // ico-squarePen を先に見る（ico-square が前方一致で拾い、アノテートのボタンが四角になっていた。2026-11-27）
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
-    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';
@@ -1899,7 +1902,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
     el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
     el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
     el.setAttribute('fill', color);
-    el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+    el.setAttribute('fill-opacity', String(_annotationFillOpacity(data, normalizedOpacity, preview)));
     el.setAttribute('stroke', color);
     el.setAttribute('stroke-width', '1');
     el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -2120,6 +2123,13 @@ function initIframeMarkup(scrollContainer, options = {}) {
   }
 
   const pendingWrites = new Set();
+  const pendingNoteSaves = new Set();
+  async function flushMarkupWrites() {
+    while (pendingNoteSaves.size || pendingWrites.size) {
+      for (const commit of [...pendingNoteSaves]) commit();
+      if (pendingWrites.size) await Promise.allSettled([...pendingWrites]);
+    }
+  }
   function _saveBoardAnnotation(payload, onSaved, onError) {
     if ((!boardMode && !options.localSurface) || typeof apiPost !== 'function') return false;
     options.onMutation?.();
@@ -2213,6 +2223,10 @@ function initIframeMarkup(scrollContainer, options = {}) {
   }
 
   function _confirmEmbeddedNoteDelete(onOk) {
+    if ((boardMode || options.localSurface) && typeof _putAnnotationWithHistory === 'function') {
+      onOk?.();
+      return;
+    }
     const message = 'この付箋を削除しますか？';
     if (typeof showConfirmDialog === 'function') {
       showConfirmDialog(message, onOk);
@@ -2525,9 +2539,16 @@ function initIframeMarkup(scrollContainer, options = {}) {
       if (_updateBoardAnnotation(item.id, { data: next })) return;
       _postToParent({ type: 'ann-update-note', annId: item.id, data: next });
     };
+    const flushNoteSave = () => {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      pendingNoteSaves.delete(flushNoteSave);
+      persist();
+    };
     const scheduleSave = () => {
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(persist, 400);
+      pendingNoteSaves.add(flushNoteSave);
+      saveTimer = setTimeout(flushNoteSave, 400);
     };
     editor = _createNoteEditor(data, scheduleSave, item.id);
     note.appendChild(editor);
@@ -2728,7 +2749,9 @@ function initIframeMarkup(scrollContainer, options = {}) {
             delete note._annTailCtx.data.tailX;
             delete note._annTailCtx.data.tailY;
           }
-          AnnotationStickyTail.setTail(note, newTail, null);
+          // The menu persists its complete payload below. The tail renderer
+          // otherwise falls back to persist(), racing a second Cloud write.
+          AnnotationStickyTail.setTail(note, newTail, () => {});
         }
         persistTailState();
       };
@@ -2738,10 +2761,14 @@ function initIframeMarkup(scrollContainer, options = {}) {
         closeMenu(false);
         if (typeof window.openColorPalette === 'function') {
           window.openColorPalette(note, item.color || '', (newColor) => {
+            const previousColor = item.color;
             item.color = newColor || item.color;
             _applyNoteColor(note, item.color);
             if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) return;
-            if (_updateBoardAnnotation(item.id, { color: item.color })) return;
+            if (_updateBoardAnnotation(item.id, { color: item.color }, null, () => {
+              item.color = previousColor;
+              _applyNoteColor(note, previousColor);
+            })) return;
             _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
           });
         }
@@ -2929,16 +2956,17 @@ function initIframeMarkup(scrollContainer, options = {}) {
     if (_ann.anchor) {
       const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
       const previewData = previewType === 'rect'
-        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
-        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL };
       _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
     } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
       const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
       data.lineWidth = _ann.widths?.pen;
+      data.opacityModel = MELDEX_ANNOTATION_OPACITY_MODEL;
       _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
-      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
+      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', String(_normalizeMarkupOpacity(_ann.opacity, 1)));
       preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-dasharray', '4,4');
     } else {
       preview.setAttribute('d', _pathD(_ann.path));
@@ -2963,6 +2991,8 @@ function initIframeMarkup(scrollContainer, options = {}) {
     if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
     if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
     else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    // 新しい塗りは色の不透明度だけで描く（半透明を強制しない）
+    if (_MELDEX_ANNOTATION_FILL_TYPES.has(type)) strokeData.opacityModel = MELDEX_ANNOTATION_OPACITY_MODEL;
     const savedEl = shapeTypes.has(type)
       ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
       : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
@@ -3006,7 +3036,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
     } else {
       el.setAttribute('points', points.map(point => point.join(',')).join(' '));
       el.setAttribute('fill', color);
-      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('fill-opacity', String(_annotationFillOpacity(data, normalizedOpacity, preview)));
       el.setAttribute('stroke', color);
       el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
       el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -3136,7 +3166,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
     } else if (type === 'lasso') {
       el = document.createElementNS(_svgNS, 'polygon');
       el.setAttribute('points', points.map(p => p.join(',')).join(' '));
-      el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
+      el.setAttribute('fill', color); el.setAttribute('fill-opacity', _annotationFillOpacity(data, normalizedOpacity, false));
       el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1');
     } else {
       el = document.createElementNS(_svgNS, 'path');
@@ -3178,7 +3208,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
       el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
     }
     el.setAttribute('fill', outlined ? 'none' : color);
-    el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? .2 : .4)));
+    el.setAttribute('fill-opacity', outlined ? '0' : String(_annotationFillOpacity(data, normalizedOpacity, preview)));
     el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(normalizedOpacity));
     el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || _ann.widths?.pen || 3)));
     if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
@@ -3202,11 +3232,12 @@ function initIframeMarkup(scrollContainer, options = {}) {
       _ann.opacity = msg.opacity ?? 1;
       _ann.widths = { ..._ann.widths, ...(msg.widths || {}) };
       _ann.targetPath = msg.targetPath || '';
-      svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
-      svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
+      const drawing = !!_ann.active;
+      svg.style.pointerEvents = drawing ? 'auto' : 'none';
+      svg.style.cursor = drawing ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
       if (_ann.active && !options.localSurface) svg.style.outline = '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)';
       else svg.style.outline = '';
-      hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
+      hitRect.setAttribute('pointer-events', drawing ? 'all' : 'none');
       _updateSize();
       _syncNoteInteractivity();
     }
@@ -3299,8 +3330,8 @@ function initIframeMarkup(scrollContainer, options = {}) {
 
   const bridge = {
     options,
-    hasPendingWrites: () => pendingWrites.size > 0,
-    flush: async () => { while (pendingWrites.size) await Promise.allSettled([...pendingWrites]); },
+    hasPendingWrites: () => pendingNoteSaves.size > 0 || pendingWrites.size > 0,
+    flush: flushMarkupWrites,
     svg,
     layer,
     notesLayer,
@@ -3948,7 +3979,7 @@ function createMarkupToolbar(markup, parentEl) {
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
   };
-  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'marker',icon:'highlighter',title:'マーカー' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
+  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'sa-tb-btn' + (t.name === 'pen' ? ' active' : '');
@@ -4550,3 +4581,81 @@ document.addEventListener('DOMContentLoaded', () => {
     window.MeldexMenuIcons = Object.freeze({ icons: ICONS, iconless: ICONLESS, normalizeLabel, resolve, decorate });
   }
 })();
+
+// アノテートの塗りの透け具合（2026-11-27）。以前の塗り（投げ縄・矩形塗り・円形塗り）は、保存した
+// 不透明度に0.4（描画中は0.2）を掛けて必ず半透明で描いていた。新しい塗りは data.opacityModel に
+// 'color-alpha-v1' を持ち、色そのものの不透明度（共通カラーパレットで選ぶ）だけで描く。
+// 印のない既存の塗りは、以前と同じ見た目のまま描く（読む時に解釈し、保存し直さない）。
+const MELDEX_ANNOTATION_OPACITY_MODEL = 'color-alpha-v1';
+const _MELDEX_ANNOTATION_FILL_TYPES = new Set(['lasso', 'rect', 'ellipse-fill']);
+function _annotationUsesColorAlpha(data) {
+  return !!data && typeof data === 'object' && data.opacityModel === MELDEX_ANNOTATION_OPACITY_MODEL;
+}
+function _annotationFillOpacity(data, opacity, preview) {
+  const value = _normalizeCoreAnnotationOpacity(opacity, 1);
+  return _annotationUsesColorAlpha(data) ? value : value * (preview ? 0.2 : 0.4);
+}
+function _annotationColorAlpha(color) {
+  if (typeof parseColorToHexAlpha === 'function') return parseColorToHexAlpha(color).alpha;
+  const match = /^#(?:[0-9a-f]{6})([0-9a-f]{2})$/i.exec(String(color || '').trim());
+  return match ? parseInt(match[1], 16) / 255 : 1;
+}
+function _annotationColorWithAlpha(color, alpha) {
+  const value = Math.max(0, Math.min(1, Number(alpha)));
+  if (typeof parseColorToHexAlpha === 'function' && typeof hexAlphaToRgba === 'function') {
+    const parsed = parseColorToHexAlpha(color);
+    if (/^#[0-9a-f]{6}$/i.test(parsed.hex)) return hexAlphaToRgba(parsed.hex.toLowerCase(), Math.round(value * 1000) / 1000);
+  }
+  return color;
+}
+function _parseCoreAnnotationData(row) {
+  const raw = row?.data;
+  if (raw && typeof raw === 'object') return raw;
+  try { const parsed = JSON.parse(raw || '{}'); return parsed && typeof parsed === 'object' ? parsed : {}; } catch { return {}; }
+}
+// 描いた後の色の変更（右クリックの「色...」）で、パレットに最初に出す色。今の見た目の透け具合を色に含める。
+function _annotationRecolorInitialColor(row) {
+  const data = _parseCoreAnnotationData(row);
+  const opacity = _normalizeCoreAnnotationOpacity(row?.opacity, 1);
+  const color = row?.color || '#c48080';
+  if (row?.type === 'marker') return _annotationColorWithAlpha(color, _annotationColorAlpha(color) * opacity * 0.5);
+  // 以前の文字のハイライトは色を42%に薄めて描いていた
+  if (row?.type === 'highlight' && !_annotationUsesColorAlpha(data)) return _annotationColorWithAlpha(color, _annotationColorAlpha(color) * 0.42);
+  if (_MELDEX_ANNOTATION_FILL_TYPES.has(row?.type) && !_annotationUsesColorAlpha(data)) {
+    return _annotationColorWithAlpha(color, _annotationColorAlpha(color) * opacity * 0.4);
+  }
+  return color;
+}
+// 色の変更で保存する差分。以前のマーカーは通常の線（stroke）へ、以前の塗りは色の不透明度で描く形へ移す
+// （保存し直すのは利用者が色を変えたこの時だけ）。どちらも見た目の透け具合は色に引き継ぐ。
+function _annotationRecolorUpdate(row, color) {
+  const data = _parseCoreAnnotationData(row);
+  if (row?.type === 'marker') return { type: 'stroke', color, opacity: 1, data: { ...data, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL } };
+  if (row?.type === 'highlight' && !_annotationUsesColorAlpha(data)) {
+    return { color, opacity: 1, data: { ...data, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL } };
+  }
+  if (_MELDEX_ANNOTATION_FILL_TYPES.has(row?.type) && !_annotationUsesColorAlpha(data)) {
+    return { color, opacity: 1, data: { ...data, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL } };
+  }
+  return { color };
+}
+// 色を選んでいる間の見た目（保存は閉じた時）。row は色を変えた後の行。
+function _paintAnnotationRecolorPreview(el, row) {
+  if (!el || !row) return;
+  const data = _parseCoreAnnotationData(row);
+  const opacity = _normalizeCoreAnnotationOpacity(row.opacity, 1);
+  const parts = el.matches?.('path,polygon,rect,ellipse') ? [el] : [...(el.querySelectorAll?.('path,polygon,rect,ellipse') || [])];
+  parts.forEach(part => {
+    part.setAttribute('stroke', row.color);
+    part.setAttribute('stroke-opacity', String(row.type === 'marker' ? opacity * 0.5 : opacity));
+    const fill = part.getAttribute('fill');
+    if (fill && fill !== 'none') {
+      part.setAttribute('fill', row.color);
+      part.setAttribute('fill-opacity', String(_annotationFillOpacity(data, opacity, false)));
+    }
+  });
+}
+if (typeof window !== 'undefined') {
+  Object.assign(window, { MELDEX_ANNOTATION_OPACITY_MODEL, _annotationUsesColorAlpha, _annotationFillOpacity,
+    _annotationColorWithAlpha, _annotationRecolorInitialColor, _annotationRecolorUpdate, _paintAnnotationRecolorPreview });
+}

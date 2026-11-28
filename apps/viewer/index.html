@@ -2,7 +2,7 @@
 <html data-standalone-app="viewer" data-standalone-cloud="viewer" data-meldex-cloud-app="viewer" lang="ja" spellcheck="false">
 <head>
   <base href="../../">
-  <meta name="meldex-app-version" content="0.7.896">
+  <meta name="meldex-app-version" content="0.7.1012">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="theme-color" content="#0b0d10">
   <meta name="mobile-web-app-capable" content="yes">
@@ -30,7 +30,8 @@
 <link rel="stylesheet" href="gb-loading-indicators.css">
 <link rel="stylesheet" href="viewer.css">
 <link rel="stylesheet" href="viewer-text-layer.css">
-<link rel="stylesheet" href="viewer-page-list.css"><script src="gb-escape.js"></script>
+<link rel="stylesheet" href="viewer-page-list.css">
+<link rel="stylesheet" href="gb-crop-box.css"><script src="gb-escape.js"></script>
 <script src="gb-theme-migration.js"></script>
 <script src="offline-bundles/gb-theme-manager.js"></script>
 <script src="gb-theme-document.js"></script>
@@ -69,7 +70,7 @@
 <aside id="viewer-pages" aria-label="ページ一覧" hidden>
   <div class="viewer-pages-header"><strong>ページ一覧</strong><button id="viewer-pages-close" class="tb-icon-btn" aria-label="ページ一覧を閉じる" title="ページ一覧を閉じる">×</button></div>
   <div class="viewer-pages-settings">
-    <label>表示<select id="viewer-pages-mode" class="tb-select"><option value="single">単ページ</option><option value="spread">見開き_右へ</option><option value="manga">見開き_左へ</option></select></label>
+    <label>表示<select id="viewer-pages-mode" class="tb-select"><option value="single">単ページ</option><option value="spread">見開き</option></select></label>
     <label>開始ページ<select id="viewer-pages-first" class="tb-select"><option value="left">左ページ</option><option value="right">右ページ</option></select></label>
   </div>
   <div id="viewer-pages-status" role="status" aria-live="polite"></div>
@@ -100,18 +101,24 @@
   <button id="btn-viewer-main-menu" class="tb-app-icon tb-main-menu-btn" data-app-icon="media" data-gb-tooltip-key="toolbar.mainMenu" type="button" title="メインメニュー" aria-label="ビューワーのメインメニュー" aria-haspopup="menu" aria-expanded="false" data-e2e-id="viewer-main-menu"></button>
   <button id="btn-page-list" class="tb-icon-btn" title="ページ一覧" aria-label="ページ一覧" aria-expanded="false" aria-controls="viewer-pages"><span class="ico ico-list"></span></button>
   <!-- 前後のフォルダのアイコン（skipBack / skipForward）は共通のアイコン置換表に無いため、viewer-controls.js が描画する -->
-  <button id="btn-prev-folder" class="tb-icon-btn" title="前のフォルダ (↑)" aria-label="前のフォルダ" data-e2e-id="viewer-prev-folder"></button>
-  <button id="btn-prev" class="tb-icon-btn" title="前へ (←)" aria-label="前へ"><span class="ico ico-arrowLeft"></span></button>
-  <button id="btn-open-local-file" class="tb-icon-btn" title="画像またはPDFを開く" aria-label="画像またはPDFを開く" hidden><span class="ico ico-folderOpen"></span></button>
+  <button id="btn-prev-folder" class="tb-icon-btn" title="前のフォルダ (↑)" aria-label="前のフォルダ" data-e2e-id="viewer-prev-folder" data-shortcut-id="viewer.prevFolder"></button>
+  <button id="btn-prev" class="tb-icon-btn" title="前へ (←)" aria-label="前へ" data-shortcut-id="viewer.prev"><span class="ico ico-arrowLeft"></span></button>
+  <button id="btn-open-local-file" class="tb-icon-btn" title="画像・PDF・EPUBを開く" aria-label="画像・PDF・EPUBを開く" hidden><span class="ico ico-folderOpen"></span></button>
   <button id="btn-play" class="tb-icon-btn" title="再生/一時停止 (Space)" aria-label="再生"><span class="ico ico-play"></span></button>
-  <button id="btn-next" class="tb-icon-btn" title="次へ (→)" aria-label="次へ"><span class="ico ico-arrowRight"></span></button>
-  <button id="btn-next-folder" class="tb-icon-btn" title="次のフォルダ (↓)" aria-label="次のフォルダ" data-e2e-id="viewer-next-folder"></button>
+  <button id="btn-next" class="tb-icon-btn" title="次へ (→)" aria-label="次へ" data-shortcut-id="viewer.next"><span class="ico ico-arrowRight"></span></button>
+  <button id="btn-next-folder" class="tb-icon-btn" title="次のフォルダ (↓)" aria-label="次のフォルダ" data-e2e-id="viewer-next-folder" data-shortcut-id="viewer.nextFolder"></button>
   <input type="range" id="seek-bar" min="0" max="0" value="0" title="シークバー">
   <span id="counter">0 / 0</span>
-  <select id="sel-mode" class="tb-select" title="表示モード">
+  <select id="sel-mode" class="tb-select" title="表示モード" aria-label="表示モード">
     <option value="single" selected>単ページ</option>
-    <option value="spread">見開き_右へ</option>
-    <option value="manga">見開き_左へ</option>
+    <option value="spread">見開き</option>
+  </select>
+  <!-- 進む方向: 矢印キー・メニューの表記・見開きの並び順を決める（2026-11-27） -->
+  <select id="sel-direction" class="tb-select" title="進む方向" aria-label="進む方向">
+    <option value="up">上へ</option>
+    <option value="down">下へ</option>
+    <option value="left">左へ</option>
+    <option value="right" selected>右へ</option>
   </select>
   <button id="btn-zoom-out" class="tb-icon-btn" title="縮小" aria-label="縮小"><span class="ico ico-zoomOut"></span></button>
   <span class="zoom-label" id="zoom-label">100%</span>
@@ -126,7 +133,7 @@
   <button id="btn-annotation" class="tb-icon-btn" title="アノテート (A)" aria-label="アノテート" aria-pressed="false" data-e2e-id="viewer-annotation-toggle"><span class="ico ico-squarePen"></span></button>
   <!-- アノテートのバージョン管理と既定アプリの設定は、下端ツールバーではなく右クリックメニューから開く -->
 </div>
-<input id="viewer-local-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
+<input id="viewer-local-file-input" type="file" accept="image/*,.pdf,application/pdf,.epub,application/epub+zip" multiple hidden>
 <!-- 非表示の要素（JS参照用に維持） -->
 <input type="range" id="speed" min="0.5" max="15" step="0.5" value="3" style="display:none;">
 <span id="speed-label" style="display:none;">3.0s</span>
@@ -158,6 +165,10 @@
 <script src="viewer-video.js"></script>
 <script src="viewer-audio.js"></script>
 <script src="viewer-page-state.js"></script>
+<!-- EPUB（DRMなし）の読み込み・消毒（viewer-epub-book.js）と表示・ページ割り・ハイライト（viewer-epub.js） -->
+<script src="viewer-epub-frame.js"></script>
+<script src="viewer-epub-book.js"></script>
+<script src="viewer-epub.js"></script>
 <script src="viewer-scene.js"></script>
 <script src="viewer-cloud-file-open.js"></script>
 <script src="viewer-annotation-entry.js"></script>
@@ -176,6 +187,7 @@
 </script>
 <script src="viewer-controls.js"></script>
 <script src="viewer-page-list.js"></script>
+<script src="gb-crop-box.js"></script>
 <script src="viewer-page-edit.js"></script>
 <!-- アノテートのフロートパネルは本体と同じ共通カラーパレットを開く（gb-color-palette.js） -->
 <script src="offline-bundles/gb-color-palette.js"></script>

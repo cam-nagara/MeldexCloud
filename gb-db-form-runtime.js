@@ -346,7 +346,9 @@
     let session = viewSessions.get(owner);
     if (!session || session.dbPath !== dbPath) {
       const linkedEntry = ctx?.formApp?._embeddedEntryPath || '';
-      const initial = normalPath(linkedEntry.replace(/\/[^/]+$/, '')) === normalPath(dbPath) ? linkedEntry : '';
+      const base = typeof state !== 'undefined' ? state.vaultPath : '';
+      const comparable = path => normalPath(globalThis.GBPathUtils?.resolveForClipboard?.(path, base) || path);
+      const initial = comparable(linkedEntry).replace(/\/[^/]+$/, '') === comparable(dbPath) ? linkedEntry : '';
       session = { dbPath, path: initial, continuous: false, created: new Map() }; viewSessions.set(owner, session);
     }
     const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
@@ -436,11 +438,11 @@
           if (ctx?.formApp?._embeddedEntryPath) {
             // A topic form edits the enclosing record. Do not recursively mount
             // that topic's linked files inside its own form application.
-            renderEntityPropsGridInto(panel, data, path, { parentDb: dbPath, propTypes, ctx,
+            renderEntityPropsGridInto(panel, data, path, { parentDb: dbPath, propTypes, ctx, emptyProperties: cfg.fields,
               topicTabs: true, readOnly: access.readOnly || ctx?.readOnly });
           } else {
             const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
-            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly,
+            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly, ctx, emptyProperties: cfg.fields,
               historyScope: () => ctx?.formApp?._historyScope?.() || (typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(dbPath) : 'db:' + dbPath),
             }).ready;
           }

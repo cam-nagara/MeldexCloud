@@ -75,6 +75,13 @@ body[data-viewer-file-drop="ready"]::after {
 .spread { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 8px; flex: none; }
 .spread img, .spread canvas { max-height: 100%; object-fit: contain; user-select: none; }
 .page-canvas { box-shadow: 0 2px 12px rgba(0,0,0,0.5); background: #fff; }
+/* EPUBの本文（viewer-epub.js）。PDFのページと同じ紙の見た目。左右は .nav-area（60px）に重ねない。
+   見開きの並び順は flex の order で入れ替え、枠（iframe）は動かさない（DOMを移すと読み直しになる）。 */
+.viewer-epub { position: absolute; inset: 12px 60px; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 12px; }
+.viewer-epub[hidden], .viewer-epub-slot[hidden] { display: none; }
+.viewer-epub-slot { position: relative; flex: none; overflow: hidden; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.5); }
+.viewer-epub-slot.viewer-epub-blank { visibility: hidden; }
+.viewer-epub-frame { display: block; border: 0; background: #fff; transform-origin: 0 0; }
 
 /* 音声再生カード（サブパネル用の音声再生実装: app/docs/board-link-card-subpanel-and-card-tail-plan-2026-08-13.md
    「音声の扱い」節）。画像/動画のギャラリー型フィット計算（applyImageFitStyle）は使わず、

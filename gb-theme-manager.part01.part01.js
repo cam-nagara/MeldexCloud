@@ -18,7 +18,7 @@
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
-  const THEME_UI_DEFAULTS_VERSION = 4;
+  const THEME_UI_DEFAULTS_VERSION = 6;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -957,7 +957,16 @@
   function _encodeThemeUiApplications(cfg) {
     // Metadata travels with the settings through history, import and sync.
     // Normalization ignores it, so older clients can still read the targets.
-    return JSON.stringify({ ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION });
+    // 自動の合わせ直しで残した「控え」（_previousDefaults）は、後の保存でも消さずに引き継ぐ
+    // （以前は保存のたびに控えが落ち、元の見た目へ戻す手がかりが失われていた。2026-11-27）。
+    const next = { ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION };
+    if (next._previousDefaults == null) {
+      try {
+        const current = JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null');
+        if (current && current._previousDefaults != null) next._previousDefaults = current._previousDefaults;
+      } catch {}
+    }
+    return JSON.stringify(next);
   }
 
   function saveThemeUiApplications(cfg, options = {}) {

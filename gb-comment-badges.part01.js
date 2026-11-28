@@ -227,6 +227,7 @@
       board_card: new Map(),
       board_line: new Map(),
       sheet_cell: new Map(),
+      sheet_entry: new Map(),
       calendar_event: new Map(),
       map_feature: new Map(),
       form_field: new Map(),
@@ -245,6 +246,9 @@
       } else if (k === 'sheet_cell' && r.entryId && r.colId) {
         const key = r.entryId + '\x00' + r.colId;
         m.sheet_cell.set(key, (m.sheet_cell.get(key) || 0) + 1);
+      } else if (k === 'sheet_entry' && r.entryId) {
+        // トピック（シートの行）全体へのコメント。デスクトップのアノテートバー等から付く
+        m.sheet_entry.set(r.entryId, (m.sheet_entry.get(r.entryId) || 0) + 1);
       } else if (k === 'calendar_event' && r.eventId) {
         m.calendar_event.set(r.eventId, (m.calendar_event.get(r.eventId) || 0) + 1);
       } else if (k === 'map_feature' && r.featureId) {
@@ -725,11 +729,21 @@
     }
     const items = await fetchComments(filePath);
     if (!_isRefreshTargetCurrent(filePath, containerEl, 'sheet')) return;
-    const counts = buildCountMap(items).sheet_cell;
+    const countMap = buildCountMap(items);
+    const counts = countMap.sheet_cell;
     // renderPivot 準拠: tr[data-entity-name] > td[data-prop-name]
     // entryId=entityName, colId=propName
     containerEl.querySelectorAll('tr[data-entity-name]').forEach(tr => {
       const entryId = tr.dataset.entityName;
+      // トピック全体へのコメントは名前の列（td.col-entity）に出す
+      const entityTd = tr.querySelector(':scope > td.col-entity');
+      if (entityTd) {
+        const n = countMap.sheet_entry.get(entryId) || 0;
+        entityTd.classList.toggle('cmt-line-highlight', n > 0);
+        _bindCommentHighlight(entityTd, _commentsForTarget(items, 'sheet_entry', ref => ref.entryId === entryId), filePath);
+        _ensureBadge(entityTd, n,
+          () => _openPanelForTarget(filePath, 'sheet_entry', { file: filePath, entryId }));
+      }
       tr.querySelectorAll('td[data-prop-name]').forEach(td => {
         const colId = td.dataset.propName;
         const key = entryId + '\x00' + colId;

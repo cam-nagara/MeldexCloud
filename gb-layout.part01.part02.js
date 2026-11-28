@@ -47,17 +47,21 @@
     // ラベル付き最小72pxでも収まらないタブは、共通の「▼」から選べる。
     if (typeof ResizeObserver === 'function') {
       const updateCompact = () => {
-        tabBar.classList.remove('gb-tabs-shrink', 'gb-tabs-compact');
+        let reset = false;
+        for (const name of ['gb-tabs-shrink', 'gb-tabs-compact']) {
+          if (tabBar.classList.contains(name)) { tabBar.classList.remove(name); reset = true; }
+        }
         // class 変更後のレイアウトを反映させるため強制 reflow
-        void tabsScroll.offsetWidth;
+        if (reset) void tabsScroll.offsetWidth;
         if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
           tabBar.classList.add('gb-tabs-shrink');
         }
         const iconOnly = tabBar.classList.contains('gb-tabs-compact');
         tabsScroll.querySelectorAll('.gb-tab').forEach((tabEl) => {
           const title = tabEl.dataset.tabTitle || tabEl.querySelector('.gb-tab-label')?.textContent || 'タブ';
-          tabEl.title = iconOnly ? title : '';
-          tabEl.setAttribute('aria-label', title);
+          const tooltip = iconOnly ? title : '';
+          if (tabEl.title !== tooltip) tabEl.title = tooltip;
+          if (tabEl.getAttribute('aria-label') !== title) tabEl.setAttribute('aria-label', title);
         });
       };
       const ro = new ResizeObserver(updateCompact);
@@ -70,7 +74,7 @@
 
   function refreshPaneTabs(paneId) {
     if (!_layoutEl || !paneId) return false;
-    if (_isMobileLayout() || _maximizedPaneId) return false;
+    if (_maximizedPaneId) return false;
     const currentInfo = _paneMap[paneId];
     const currentPaneEl = currentInfo?.el;
     const currentContentEl = currentInfo?.contentEl;

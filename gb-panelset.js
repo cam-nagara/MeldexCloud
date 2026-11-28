@@ -738,13 +738,13 @@
     return wrap;
   }
 
-  function switchGroup(panelsetNode, newGroupId) {
+  function switchGroup(panelsetNode, newGroupId, options) {
     if (!panelsetNode || !newGroupId) return;
     if (panelsetNode.activeGroupId === newGroupId) return;
     const exists = (panelsetNode.groups || []).some(g => g && g.id === newGroupId);
     if (!exists) return;
     panelsetNode.activeGroupId = newGroupId;
-    if (typeof GBLayout?.render === 'function') GBLayout.render();
+    if (!options?.deferRender && typeof GBLayout?.render === 'function') GBLayout.render();
     if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
   }
 

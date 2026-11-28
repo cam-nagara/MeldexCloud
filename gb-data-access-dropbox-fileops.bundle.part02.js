@@ -178,9 +178,9 @@
   });
 /* Stable identity copy transaction helpers. This continuation file is loaded
  * inside the gb-data-access-dropbox-fileops IIFE after the operation journal. */
-  async function _freshProviderStat(provider, path) {
+  async function _freshProviderStat(provider, path, options = {}) {
     if (typeof provider?.refreshMetadata === 'function') {
-      return provider.refreshMetadata(path);
+      return options.skipMissingGuard ? provider.refreshMetadata(path, options) : provider.refreshMetadata(path);
     } else if (typeof provider?.statPathFresh === 'function') {
       return provider.statPathFresh(path);
     }
@@ -188,12 +188,12 @@
     error.status = 503; error.meldexCode = 'fresh_provider_identity_unavailable';
     throw error;
   }
-  async function _providerObjectIdentity(provider, path, fallback) {
-    const value = await _freshProviderStat(provider, path);
+  async function _providerObjectIdentity(provider, path, fallback, options) {
+    const value = await _freshProviderStat(provider, path, options);
     return _providerObjectRevision(value);
   }
   async function _freshPathExists(provider, path) {
-    return Boolean(await _freshProviderStat(provider, path));
+    return Boolean(await _freshProviderStat(provider, path, { skipMissingGuard: true }));
   }
   async function _freshWalkEntries(provider, path, limit = 1000) {
     if (typeof provider?.walkEntriesFresh !== 'function') {
@@ -209,11 +209,31 @@
       .filter(row => _dirname(row.path) === normalized)
       .map(row => ({ ...row, name: row.name || _basename(row.path), handle: row.handle || row }));
   }
-  async function _readIdentityTextPreservingBytes(provider, path) {
+  async function _readIdentityTextPreservingBytes(provider, path, options = {}) {
     let bytes = null;
-    if (typeof provider?.readBytesFresh === 'function') {
-      bytes = (await provider.readBytesFresh(path))?.bytes || null;
-    } else if (typeof provider?.downloadAsFile === 'function') {
+    if (options.identitySnapshot && typeof provider?.getMetadata === 'function' && typeof provider?.readBytesIdentityFresh === 'function') {
+      const expected = _providerObjectRevision(await provider.getMetadata(path));
+      if (expected.id && expected.rev) {
+        const snapshot = await provider.readBytesIdentityFresh(path), actual = _providerObjectRevision(snapshot);
+        if (actual.id !== expected.id || actual.rev !== expected.rev) {
+          throw Object.assign(new Error('複製元が更新されたため、再読込してから複製してください'), { status: 409, meldexCode: 'copy_source_changed' });
+        }
+        bytes = snapshot.bytes;
+        if (!bytes) throw new Error('複製元の本文を確認できません');
+      }
+    }
+    if (!bytes && typeof provider?.readBytesIdentityFresh === 'function') {
+      const snapshot = await provider.readBytesIdentityFresh(path);
+      const identity = _providerObjectRevision(snapshot);
+      if (!snapshot?.bytes || !identity.id || !identity.rev) {
+        throw Object.assign(new Error('本文とprovider identityの確認済み読込を利用できません'), {
+          status: 503, meldexCode: 'strict_identity_readback_unavailable',
+        });
+      }
+      bytes = snapshot.bytes;
+    } else if (!bytes && typeof provider?.readBytesFresh === 'function') {
+      bytes = (await provider.readBytesFresh(path, options))?.bytes || null;
+    } else if (!bytes && typeof provider?.downloadAsFile === 'function') {
       bytes = new Uint8Array(await (await provider.downloadAsFile(path)).arrayBuffer());
     }
     if (bytes) return {
@@ -222,7 +242,7 @@
     return { text: await provider.readText(path), bytes: null };
   }
   function _isIdentityTextPath(path) {
-    return /\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet)$/i.test(String(path || ''));
+    return /\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(String(path || ''));
   }
   function _cloudOrphanPayload(path, ownership, reason) {
     const providerId = ownership?.id || '';
@@ -265,7 +285,10 @@
     if (!isFile) return { handled: false };
     if (!_isIdentityTextPath(destPath)) return { handled: false };
     const docIdentity = window.MeldexDocumentIdentity;
-    const content = (await _readIdentityTextPreservingBytes(provider, sourcePath)).text;
+    const content = (await _readIdentityTextPreservingBytes(provider, sourcePath, {
+      skipMissingGuard: options.includeFormContent === true && /\.mel-form$/i.test(sourcePath),
+      identitySnapshot: options.includeFormContent === true && /\.mel-form$/i.test(sourcePath),
+    })).text;
     const fmt = docIdentity?.formatForPath?.(destPath, content);
     if (!fmt) return { handled: false };
     const result = docIdentity.regenerateDocumentId(content, fmt);
@@ -288,10 +311,20 @@
       const written = await provider.uploadBytesConditional(
         stagingPath, new TextEncoder().encode(result.text), null,
       );
-      ownership = await _providerObjectIdentity(provider, stagingPath, written);
+      const uploaded = _providerObjectRevision(written);
+      const identityReadback = uploaded.id && uploaded.rev
+        && typeof provider.readBytesIdentityFresh === 'function';
+      ownership = identityReadback ? uploaded : await _providerObjectIdentity(provider, stagingPath, written);
       if (!ownership.id || !ownership.rev) throw new Error('複製先のprovider ID/revisionを確認できません');
-      const readback = (await _readIdentityTextPreservingBytes(provider, stagingPath)).text;
-      const latest = await _providerObjectIdentity(provider, stagingPath, null);
+      let readback, latest;
+      if (identityReadback) {
+        const snapshot = await provider.readBytesIdentityFresh(stagingPath);
+        readback = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(snapshot.bytes);
+        latest = _providerObjectRevision(snapshot);
+      } else {
+        readback = (await _readIdentityTextPreservingBytes(provider, stagingPath)).text;
+        latest = await _providerObjectIdentity(provider, stagingPath, null);
+      }
       const readbackId = docIdentity.readDocumentId(readback, fmt);
       if (readback !== result.text || readbackId !== result.documentId
         || latest.id !== ownership.id || latest.rev !== ownership.rev) {
@@ -303,12 +336,15 @@
       }
       await provider.movePathNoReplace(stagingPath, destPath);
       published = true;
-      const finalOwnership = await _providerObjectIdentity(provider, destPath, null);
+      const finalOwnership = await _providerObjectIdentity(provider, destPath, null, { skipMissingGuard: !!identityReadback });
       if (finalOwnership.id !== ownership.id || finalOwnership.rev !== ownership.rev) {
         throw new Error('atomic publish後のprovider ID/revisionが一致しません');
       }
       return {
         handled: true, ownership: finalOwnership,
+        ...(options.includeFormContent === true && fmt === 'form'
+          && new TextEncoder().encode(readback).byteLength <= 2 * 1024 * 1024
+          ? { form_content: { path: destPath, content: readback, etag: finalOwnership.rev } } : {}),
         rollback: () => _rollbackOwnedCloudCopy(provider, destPath, ownership),
       };
     } catch (err) {
@@ -861,40 +897,3 @@ async function _annotationScopes(provider) {
   }
   return resolver.resolveManagementScopesForProvider(provider);
 }
-
-function _annotationUnavailable(error, operation) {
-  if (error?.status === 409 || error?.status === 410 || error?.status === 503) return error;
-  const wrapped = new Error(`アノテートSystemStorageの${operation}に失敗しました`);
-  wrapped.status = 503; wrapped.code = 'annotation_storage_unavailable'; wrapped.cause = error;
-  return wrapped;
-}
-
-function _annotationDeleted(record) {
-  return record?.deleted === true || record?.tombstone === true
-    || String(record?.state || '') === 'deleted' || String(record?.status || '') === 'tombstoned';
-}
-
-async function _findAnnotationRecordsById(provider, docId) {
-  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
-  let scopes;
-  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
-  const matches = [];
-  for (const scope of scopes) {
-    let stored;
-    try { stored = await scope.adapter.load(kind, docId); } catch (error) { throw _annotationUnavailable(error, '読込'); }
-    if (stored) matches.push({ scope, stored });
-  }
-  if (matches.length > 1) {
-    const error = new Error('同じアノテートIDが複数の管理スコープに存在します');
-    error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
-  }
-  return matches;
-}
-
-async function _readAnnotationRecord(provider, id, targetPathHint) {
-  const docId = _safeId(id, 'annotation id');
-  const contract = window.MeldexSystemStorage;
-  const hint = _normalizeFolderPath(targetPathHint || '');
-  if (hint) {
-    let scope; let stored;
-    try { scope = await window.MeldexDropboxManagementRootResolver.resolveManagementScopeForPath(provider, hint); }

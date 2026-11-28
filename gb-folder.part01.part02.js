@@ -651,6 +651,10 @@ function _updateFolderBulkBar() {
 
 // 一括操作: スライドショー
 function fvBulkSlideshow() {
+  if (!_folderSelectedItems.some(item => item.type === 'image')) {
+    showStatus('画像が選択されていません', true);
+    return;
+  }
   const selected = new Set(_folderSelectedItems.map(item => item.path));
   _openFolderImageSlideshow(_folderVisibleItems.filter(item => selected.has(item.path)));
 }
@@ -960,7 +964,8 @@ async function openFolderItem(item) {
   else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') { openMedia(item.name, item.path, item.type, _expOpts); }
   else if (item.type === 'html') { openHtmlFile(item.name, item.path, _expOpts); }
   else if (item.type === 'csv') { if (typeof openCsvFile === 'function') openCsvFile(item.name, item.path, _expOpts); else openPage(item.name, item.path, _expOpts); }
-  else if (item.type === 'document' && item.name && item.name.toLowerCase().endsWith('.pdf')) {
+  else if (item.type === 'document' && item.name && /\.(?:pdf|epub)$/i.test(item.name)) {
+    // EPUB もPDFと同じビューワーの経路で開く（ビューワーが拡張子でEPUBとして表示する）
     openViewer('/viewer?pdf=' + encodeURIComponent(item.path));
   }
   else { openNative(item.path); }

@@ -26,6 +26,15 @@ body {
   }
 }
 
+/* 右サイドバー（9900）より手前に、共通のメニュー・浮かぶパネル・ダイアログを出す。
+   他の単独アプリと同じく共通トークンを上げる（standalone-shell.css の --ui-z-modal と同じ考え方）。
+   右クリックメニューや「隠れている操作を表示」が右サイドバーの後ろに描かれていた（2026-11-27）。 */
+html:has(.sa-secondary-panel) {
+  --ui-z-popover: 9950;
+  --ui-z-menu: 10030;
+  --ui-z-modal: 10040;
+}
+
 .sa-secondary-panel {
   position: fixed;
   z-index: 9900;

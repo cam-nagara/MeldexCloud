@@ -545,10 +545,10 @@ const MeldexPublicRuntime = (() => {
       feedback_relay_enabled: !!publishCfg.feedback_relay_enabled,
       feedback_google_url: publishCfg.feedback_google_url || (window.MeldexReleaseConfig?.betaFeedback?.googleWebAppUrl || ''),
       feedback_google_sheet: publishCfg.feedback_google_sheet || (window.MeldexReleaseConfig?.betaFeedback?.feedbackSheetName || 'feedback'),
-      submit_url: publishCfg.submit_url
+      submit_url: publishCfg.intake ? '' : (publishCfg.submit_url
         || (publishCfg.server_public_url
           ? String(publishCfg.server_public_url).replace(/\/+$/, '') + '/api/public-form/submit'
-          : ''),
+          : '')),
       ...(def.runtimeExtras || {}),
     } : {};
     const connectOrigins = [];

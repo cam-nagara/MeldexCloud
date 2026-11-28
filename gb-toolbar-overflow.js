@@ -140,7 +140,7 @@
     const { toolbar, more } = entry;
     const hadMoreFocus = document.activeElement === more;
     if (!toolbar.isConnected || !toolbar.getClientRects().length) return;
-    // MAP changes save/selection state frequently without changing bar geometry.
+    // MAP, Folder and sidebar search change state without changing bar geometry.
     // Reuse only explicitly opted-in layouts; live popup state is still synced.
     const signature = entry.stableGeometry ? geometrySignature(entry) : null;
     if (signature !== null && signature === entry.geometrySignature) { syncPopup(entry); return; }
@@ -202,7 +202,10 @@
     return JSON.stringify([toolbar.clientWidth, toolbar.clientHeight, innerWidth, innerHeight,
       externalClass(toolbar.className), toolbar.getAttribute('style'),
       document.documentElement.className, document.documentElement.getAttribute('style'),
-      document.body.className, document.body.getAttribute('style'), style.font, style.zoom,
+      // Palette visibility is an interaction flag with no toolbar styling.
+      // Its close/action sequence must not invalidate stable folder geometry.
+      String(document.body.className || '').split(/\s+/).filter(name => name && name !== 'gb-command-palette-open').join(' '),
+      document.body.getAttribute('style'), style.font, style.zoom,
       entry.keep, entry.priority, nodes.map(el => {
         if (!geometryIds.has(el)) geometryIds.set(el, ++geometrySequence);
         return [geometryIds.get(el), el.tagName, externalClass(el.className?.baseVal ?? el.className),
@@ -277,7 +280,8 @@
     more.setAttribute('aria-haspopup', 'dialog');
     more.setAttribute('aria-expanded', 'false');
     more.hidden = true;
-    const entry = { toolbar, more, overflow: [], keep: opts.keep || [], priority: opts.priority || [], stableGeometry: !!opts.stableGeometry };
+    const entry = { toolbar, more, overflow: [], keep: opts.keep || [], priority: opts.priority || [],
+      stableGeometry: opts.stableGeometry === undefined ? toolbar.matches('.folder-toolbar, #sidebar-search-bar') : !!opts.stableGeometry };
     registry.set(toolbar, entry);
     toolbar.classList.add('gb-toolbar-overflow-host');
     toolbar.appendChild(more);

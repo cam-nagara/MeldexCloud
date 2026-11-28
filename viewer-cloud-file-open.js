@@ -38,20 +38,24 @@
     const name = String(file?.name || '').toLowerCase();
     const ext = name.includes('.') ? name.split('.').pop() : '';
     return file?.type === 'application/pdf' || file?.type?.startsWith('image/')
-      || ext === 'pdf' || IMAGE_EXTENSIONS.has(ext);
+      || ext === 'pdf' || ext === 'epub' || file?.type === 'application/epub+zip' || IMAGE_EXTENSIONS.has(ext);
   }
+  const isEpubFile = file => file?.type === 'application/epub+zip' || /\.epub$/i.test(String(file?.name || ''));
 
   async function openFiles(fileList) {
     let files = Array.from(fileList || []).filter(accepted);
     if (!files.length) {
-      document.getElementById('hud-info').textContent = '画像またはPDFを選択してください';
+      document.getElementById('hud-info').textContent = '画像・PDF・EPUBを選択してください';
       return false;
     }
-    const firstPdf = files.find(file => file.type === 'application/pdf' || /\.pdf$/i.test(file.name));
+    const firstPdf = files.find(file => file.type === 'application/pdf' || /\.pdf$/i.test(file.name) || isEpubFile(file));
     if (firstPdf) files = [firstPdf];
     const nextUrls = files.map(file => URL.createObjectURL(file));
     const params = new URLSearchParams();
-    if (files.length === 1 && (files[0].type === 'application/pdf' || /\.pdf$/i.test(files[0].name))) {
+    // EPUBは blob: のURLに拡張子が無いので epub= で開く
+    if (files.length === 1 && isEpubFile(files[0])) {
+      params.set('epub', nextUrls[0]);
+    } else if (files.length === 1 && (files[0].type === 'application/pdf' || /\.pdf$/i.test(files[0].name))) {
       params.set('pdf', nextUrls[0]);
     } else {
       nextUrls.forEach(url => params.append('files', url));

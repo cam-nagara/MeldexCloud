@@ -1255,6 +1255,36 @@
     throw new Error('Dropboxへもう一度接続してください');
   }
 
+  // 画像の縮小表示をまとめて取る（1回で最大25件）。1枚ごとに「親フォルダの一覧・ファイルの確認・縮小表示」の
+  // 3回の通信を、同時2本までで順に送っていたため、数千件のシートでは画面の分が出るまで数十秒〜数分かかっていた
+  // （2026-11-26 利用者報告）。本文・応答ともJSON（縮小表示はbase64）。画像の読み込みと同じ枠（同時2本）で送る。
+  async function apiThumbnailBatch(entries, options) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await getValidAccessToken();
+      if (!token) throw new Error('Dropboxへもう一度接続してください');
+      const response = await _fetchDropboxWithRetry('files/get_thumbnail_batch', async () => fetch('https://content.dropboxapi.com/2/files/get_thumbnail_batch', {
+        method: 'POST',
+        headers: await _fileApiHeaders('files/get_thumbnail_batch', {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/json',
+        }, options),
+        body: JSON.stringify({ entries: entries || [] }),
+      }), true);
+      if (response.ok) {
+        let payload = null;
+        try { payload = await response.json(); } catch {}
+        return Array.isArray(payload?.entries) ? payload.entries : [];
+      }
+      if (response.status === 401 && attempt === 0 && await _refreshAfterUnauthorized()) continue;
+      const detail = await _readDropboxError(response);
+      if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
+      throw Object.assign(new Error(String(detail)), {
+        httpStatus: response.status, dropboxRoute: 'files/get_thumbnail_batch', namespaceKind: options?.namespaceKind || 'home',
+      });
+    }
+    throw new Error('Dropboxへもう一度接続してください');
+  }
+
   async function apiContent(route, arg, init, options) {
     if (route === 'files/download') await _guardMissingRead(arg?.path, options);
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1385,6 +1415,7 @@
     resolveFileLocation,
     apiRpc,
     apiContent,
+    apiThumbnailBatch,
     readFolderEntries: _readFolderEntries,
     isMissingReadPath: _isMissingReadPath,
     getCurrentAccount,
@@ -5498,6 +5529,9 @@
 
     async _rpc(route, body, location) {
       const freshMissingCheck = !!location?.freshMissingCheck;
+      // Skip only the parent-list cache hint for strict reads. Server access
+      // and the caller's identity/revision checks still run on the real reply.
+      const skipMissingGuard = !!location?.skipMissingGuard;
       if (location && _auth()?.resolveFileLocation) {
         await _auth().getCurrentAccount(false);
         const resolved = _auth().resolveFileLocation(location.path, location.namespaceKind);
@@ -5513,12 +5547,13 @@
       }
       return _auth().apiRpc(route, body, {
         namespaceKind: location?.namespaceKind || 'home',
-        checkMissing: route === 'files/get_metadata' || route === 'files/list_folder',
+        checkMissing: route === 'files/list_folder' || (route === 'files/get_metadata' && !skipMissingGuard),
         freshMissingCheck,
       });
     }
 
     async _content(route, arg, init, location) {
+      const skipMissingGuard = !!location?.skipMissingGuard;
       if (location && _auth()?.resolveFileLocation) {
         await _auth().getCurrentAccount(false);
         const resolved = _auth().resolveFileLocation(location.path, location.namespaceKind);
@@ -5527,7 +5562,7 @@
       }
       return _auth().apiContent(route, arg, init, {
         namespaceKind: location?.namespaceKind || 'home',
-        checkMissing: route === 'files/download',
+        checkMissing: route === 'files/download' && !skipMissingGuard,
       });
     }
 
@@ -5981,7 +6016,7 @@
       return null;
     }
 
-    async getMetadata(relativePath) {
+    async getMetadata(relativePath, options = {}) {
       const normalized = _normalizeRelativePath(relativePath);
       if (this._metaCache.has(normalized)) return this._metaCache.get(normalized);
       try {
@@ -5990,7 +6025,7 @@
           path: location.path,
           include_deleted: false,
           include_has_explicit_shared_members: false,
-        }, location);
+        }, options?.skipMissingGuard ? { ...location, skipMissingGuard: true } : location);
         this._rememberMeta(normalized, payload);
         return payload;
       } catch (err) {
@@ -6002,10 +6037,10 @@
       }
     }
 
-    async refreshMetadata(relativePath) {
+    async refreshMetadata(relativePath, options = {}) {
       const normalized = _normalizeRelativePath(relativePath);
       this._forgetMeta(normalized);
-      return this.getMetadata(normalized);
+      return this.getMetadata(normalized, options);
     }
 
     async resolveFileIdentity(id, pathHint) {
@@ -6480,25 +6515,49 @@
       return { bytes, revision: meta.rev };
     }
 
-    async readBytesFresh(relativePath) {
+    async readBytesFresh(relativePath, options = {}) {
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);
       const metadata = () => this._rpc('files/get_metadata', {
         path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
-      }, { ...location, freshMissingCheck: true });
+      // These mandatory exact reads are authoritative; an optional parent-list
+      // hint cannot add proof and would duplicate the strict readback below.
+      }, { ...location, freshMissingCheck: true, skipMissingGuard: true });
       const before = await metadata();
       if (before?.['.tag'] === 'folder') {
         throw Object.assign(new Error('Dropboxの対象はフォルダです'), { status: 409, code: 'target_is_directory' });
       }
-      const response = await this._content('files/download', { path: location.path }, undefined, location);
+      const response = await this._content('files/download', { path: location.path }, undefined,
+        { ...location, skipMissingGuard: true });
       const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
       const bytes = new Uint8Array(await response.arrayBuffer());
       const after = await metadata();
-      if (!before?.rev || before.rev !== downloaded.rev || before.rev !== after?.rev) {
+      const ids = [before?.id, downloaded.id, after?.id].filter(Boolean);
+      if (!before?.rev || before.rev !== downloaded.rev || before.rev !== after?.rev
+          || new Set(ids).size > 1) {
         throw Object.assign(new Error('Dropboxファイルの読込中に内容が変わりました'), { status: 409, meldexCode: 'etag_conflict' });
       }
       this._rememberMeta(normalized, after);
-      return { bytes, revision: after.rev };
+      return { bytes, revision: after.rev,
+        ...(ids.length === 3 ? { metadata: after } : {}) };
+    }
+
+    async readBytesIdentityFresh(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath), location = this._dropboxLocation(normalized);
+      const response = await this._content('files/download', { path: location.path }, undefined, { ...location, skipMissingGuard: true });
+      const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (!downloaded.id || !downloaded.rev) throw Object.assign(new Error('Dropboxの読込識別番号とrevisionを確認できません'), {
+        status: 503, code: 'strict_cas_unavailable',
+      });
+      const current = await this._rpc('files/get_metadata', {
+        path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
+      }, { ...location, freshMissingCheck: true, skipMissingGuard: true });
+      if (downloaded.id !== current?.id || downloaded.rev !== current?.rev) {
+        throw Object.assign(new Error('Dropboxファイルの読込中に内容または識別番号が変わりました'), { status: 409, meldexCode: 'etag_conflict' });
+      }
+      this._rememberMeta(normalized, current);
+      return { bytes, revision: current.rev, provider_id: current.id };
     }
 
     async getTemporaryLink(relativePath) {
@@ -8914,7 +8973,7 @@
     if (ext === '.mel-sheet') return _phase1SurfaceType('database', 'file');
     if (ext === '.mel-scenario') return 'scriptnote';
     if (ext === '.mel-timer') return 'unsupported';
-    if (ext === '.md') {
+    if (ext === '.md' || ext === '.board.md') {
       if (lowerName.endsWith('.board.md')) return _phase1SurfaceType('board', 'file');
       const frontmatterType = _extractFrontmatterType(await _readTextSafe(provider, relativePath, ''));
       if (frontmatterType === 'board') return _phase1SurfaceType('board', 'file');
@@ -9184,9 +9243,25 @@
     if (typeof checker === 'function') await checker(provider, path, options || {});
   }
 
-  async function _relocateReferences(provider, oldPath, newPath, isFolder) {
+  async function _relocateReferences(provider, oldPath, newPath, isFolder, options) {
     const normalizedOld = _normalizeFolderPath(oldPath);
     const normalizedNew = _normalizeFolderPath(newPath);
+    const mappings = [{ oldPath: normalizedOld, newPath: normalizedNew }];
+    // Same-parent renames may arrive through a registered Dropbox root while
+    // a form or sheet stores the workspace-relative alias of the same location.
+    if (options?.sameParentAliases && typeof provider?._dropboxLocation === 'function') {
+      const before = provider._dropboxLocation(normalizedOld), after = provider._dropboxLocation(normalizedNew);
+      const physicalParent = value => String(value?.path || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').slice(0, -1).join('/').toLowerCase();
+      if (before?.namespaceKind && before.namespaceKind === after?.namespaceKind && physicalParent(before) === physicalParent(after)) {
+        const aliases = _deleteImpactItemAliases(provider, [{ kind: isFolder ? 'folder' : 'file', path: normalizedOld }], await _workspaceScanRoots());
+        const base = normalizedNew.split('/').pop();
+        for (const alias of aliases) {
+          if (alias.path === normalizedOld) continue;
+          const cut = alias.path.lastIndexOf('/');
+          mappings.push({ oldPath: alias.path, newPath: (cut >= 0 ? alias.path.slice(0, cut + 1) : '') + base });
+        }
+      }
+    }
     // キー判定はPython側 meldex_reference_codecs.is_json_reference_path_key と
     // 1対1移植した gb-reference-codecs.js の正本へ委譲する(ファイル参照整合性
     // 計画 Phase 3。Phase0監査notes.md §5「重複実装リスク」の解消。移植前は
@@ -9197,7 +9272,11 @@
     const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
     const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
     const rewritePathValue = (value) => {
-      const rewritten = _rewritePath(value, normalizedOld, normalizedNew, isFolder);
+      let rewritten = value;
+      for (const mapping of mappings) {
+        rewritten = _rewritePath(value, mapping.oldPath, mapping.newPath, isFolder);
+        if (rewritten !== value) break;
+      }
       return _normalizeFolderPath(rewritten) === _normalizeFolderPath(value) ? value : rewritten;
     };
     const rewriteReferenceText = (text) => {
@@ -9226,7 +9305,7 @@
         const original = await _readTextSafe(provider, filePath, '');
         if (!original) return;
         const manual = _rewriteScenarioManualReferences(filePath, original, rewritePathValue);
-        if (manual === original && !original.includes(normalizedOld)) return;
+        if (manual === original && !mappings.some(mapping => original.includes(mapping.oldPath))) return;
         const next = rewriteReferenceText(manual);
         if (next === original) return;
         await _requireUnlockedPath(provider, filePath, { action: 'reference-relocate' });
@@ -9340,6 +9419,33 @@
   // する」設計に合わせる（第二の索引エンジンを作らない。Phase0監査notes.md §5
   // 「重複実装リスク」を踏襲）。ライブ全件走査のため coverage は常に complete
   // として返す（Desktopのような部分索引・陳腐化の概念がCloud側には無い）。
+  function _deleteImpactItemAliases(provider, items, roots) {
+    if (typeof provider?._dropboxLocation !== 'function') return items;
+    const location = path => {
+      const value = provider._dropboxLocation(path);
+      if (!value || typeof value.path !== 'string' || !value.namespaceKind) {
+        throw Object.assign(new Error('参照対象の保存先を確認できません'), { status: 503 });
+      }
+      return { path: value.path.replace(/\\/g, '/').replace(/\/+$/, '') || '/', namespace: String(value.namespaceKind) };
+    };
+    const bases = roots.map(path => ({ path, location: location(path) }));
+    const aliases = new Map();
+    for (const item of items) {
+      aliases.set(item.kind + ':' + item.path, item);
+      const target = location(item.path), key = target.path.toLowerCase();
+      for (const base of bases) {
+        if (base.location.namespace !== target.namespace) continue;
+        const prefix = base.location.path === '/' ? '/' : base.location.path.toLowerCase() + '/';
+        const same = key === base.location.path.toLowerCase();
+        if (!same && !key.startsWith(prefix)) continue;
+        const relative = same ? '' : target.path.slice(base.location.path === '/' ? 1 : base.location.path.length + 1);
+        const path = _normalizeFolderPath([base.path, relative].filter(Boolean).join('/'));
+        if (path) aliases.set(item.kind + ':' + path, { ...item, path });
+      }
+    }
+    return [...aliases.values()];
+  }
+
   async function _queryDeleteImpact(provider, items) {
     const scanner = window.MeldexReferenceImpactLiveScan;
     if (!scanner?.query) throw Object.assign(new Error('参照影響の走査機能を利用できません'), { status: 503 });
@@ -9348,7 +9454,9 @@
       throw Object.assign(new Error('bounded参照走査に対応していない保存先です'), { status: 503 });
     }
     const files = []; const seen = new Set(); const freshSizes = new Map();
-    for (const rootPath of await _workspaceScanRoots()) {
+    const roots = await _workspaceScanRoots();
+    const impactItems = _deleteImpactItemAliases(provider, items, roots);
+    for (const rootPath of roots) {
       const remaining = scanner.MAX_FILES - files.length;
       if (remaining <= 0) throw Object.assign(new Error('参照影響の走査件数上限を超えました'), { status: 503 });
       for (const entry of await provider.walkEntriesFresh(rootPath, { maxEntries: remaining, maxPathBytes: 4 * 1024 * 1024 })) {
@@ -9360,7 +9468,7 @@
       }
     }
     return scanner.query({
-      items, listFiles: async () => files,
+      items: impactItems, listFiles: async () => files,
       readTextBounded: (path, remaining) => provider.readTextBounded(path, remaining),
       // fresh走査で受け取った大きさを再利用する。本文は毎回上限つきで読み、実際の総バイト数も走査側で検査する。
       statSize: async path => freshSizes.has(path) ? freshSizes.get(path) : Number((await provider.statPathFresh(path))?.size),
@@ -11532,7 +11640,7 @@
     const documentId = text(ref.documentId || ref.document_id);
     return documentId ? { kind: 'document', uid: documentId } : null;
   }
-  async function discoverIdentity(provider, record) {
+  async function discoverIdentity(provider, record, revisionRetry = 0) {
     const direct = explicitIdentity(record);
     if (direct) return direct;
     const targetPath = path(record?.target_path);
@@ -11544,6 +11652,11 @@
     }
     let read;
     try { read = await provider.readBytesFresh(targetPath); } catch (error) {
+      // provider自身が、読込途中の保存を検出する場合も同じ1回の再試行枠を使う。
+      if (error?.status === 409 && (error?.meldexCode || error?.code) === 'etag_conflict') {
+        if (revisionRetry === 0) return discoverIdentity(provider, record, 1);
+        throw new AnnotationTargetError('アノテート対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
+      }
       // Folder/sheet annotations have no file bytes or document header to
       // migrate. Preserve their legacy reference without probing a download.
       if (error?.code === 'target_is_directory') return null;
@@ -11571,6 +11684,11 @@
     if (!uid) return null;
     const meta = providerIdentity(await freshStat(provider, targetPath));
     if (!meta.id || !meta.rev || (read.revision && text(read.revision) !== meta.rev)) {
+      // 保存と読取が重なった時だけ1回読み直す。別文書への置換や更新の継続は拒否する。
+      if (revisionRetry === 0 && meta.id && meta.rev && read.revision && text(read.revision) !== meta.rev) {
+        const refreshed = await discoverIdentity(provider, record, 1);
+        if (refreshed?.kind === 'document' && refreshed.uid === uid) return refreshed;
+      }
       throw new AnnotationTargetError('アノテート対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
     }
     return { kind: 'document', uid };
@@ -13010,9 +13128,9 @@
   });
 /* Stable identity copy transaction helpers. This continuation file is loaded
  * inside the gb-data-access-dropbox-fileops IIFE after the operation journal. */
-  async function _freshProviderStat(provider, path) {
+  async function _freshProviderStat(provider, path, options = {}) {
     if (typeof provider?.refreshMetadata === 'function') {
-      return provider.refreshMetadata(path);
+      return options.skipMissingGuard ? provider.refreshMetadata(path, options) : provider.refreshMetadata(path);
     } else if (typeof provider?.statPathFresh === 'function') {
       return provider.statPathFresh(path);
     }
@@ -13020,12 +13138,12 @@
     error.status = 503; error.meldexCode = 'fresh_provider_identity_unavailable';
     throw error;
   }
-  async function _providerObjectIdentity(provider, path, fallback) {
-    const value = await _freshProviderStat(provider, path);
+  async function _providerObjectIdentity(provider, path, fallback, options) {
+    const value = await _freshProviderStat(provider, path, options);
     return _providerObjectRevision(value);
   }
   async function _freshPathExists(provider, path) {
-    return Boolean(await _freshProviderStat(provider, path));
+    return Boolean(await _freshProviderStat(provider, path, { skipMissingGuard: true }));
   }
   async function _freshWalkEntries(provider, path, limit = 1000) {
     if (typeof provider?.walkEntriesFresh !== 'function') {
@@ -13041,11 +13159,31 @@
       .filter(row => _dirname(row.path) === normalized)
       .map(row => ({ ...row, name: row.name || _basename(row.path), handle: row.handle || row }));
   }
-  async function _readIdentityTextPreservingBytes(provider, path) {
+  async function _readIdentityTextPreservingBytes(provider, path, options = {}) {
     let bytes = null;
-    if (typeof provider?.readBytesFresh === 'function') {
-      bytes = (await provider.readBytesFresh(path))?.bytes || null;
-    } else if (typeof provider?.downloadAsFile === 'function') {
+    if (options.identitySnapshot && typeof provider?.getMetadata === 'function' && typeof provider?.readBytesIdentityFresh === 'function') {
+      const expected = _providerObjectRevision(await provider.getMetadata(path));
+      if (expected.id && expected.rev) {
+        const snapshot = await provider.readBytesIdentityFresh(path), actual = _providerObjectRevision(snapshot);
+        if (actual.id !== expected.id || actual.rev !== expected.rev) {
+          throw Object.assign(new Error('複製元が更新されたため、再読込してから複製してください'), { status: 409, meldexCode: 'copy_source_changed' });
+        }
+        bytes = snapshot.bytes;
+        if (!bytes) throw new Error('複製元の本文を確認できません');
+      }
+    }
+    if (!bytes && typeof provider?.readBytesIdentityFresh === 'function') {
+      const snapshot = await provider.readBytesIdentityFresh(path);
+      const identity = _providerObjectRevision(snapshot);
+      if (!snapshot?.bytes || !identity.id || !identity.rev) {
+        throw Object.assign(new Error('本文とprovider identityの確認済み読込を利用できません'), {
+          status: 503, meldexCode: 'strict_identity_readback_unavailable',
+        });
+      }
+      bytes = snapshot.bytes;
+    } else if (!bytes && typeof provider?.readBytesFresh === 'function') {
+      bytes = (await provider.readBytesFresh(path, options))?.bytes || null;
+    } else if (!bytes && typeof provider?.downloadAsFile === 'function') {
       bytes = new Uint8Array(await (await provider.downloadAsFile(path)).arrayBuffer());
     }
     if (bytes) return {
@@ -13054,7 +13192,7 @@
     return { text: await provider.readText(path), bytes: null };
   }
   function _isIdentityTextPath(path) {
-    return /\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet)$/i.test(String(path || ''));
+    return /\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(String(path || ''));
   }
   function _cloudOrphanPayload(path, ownership, reason) {
     const providerId = ownership?.id || '';
@@ -13097,7 +13235,10 @@
     if (!isFile) return { handled: false };
     if (!_isIdentityTextPath(destPath)) return { handled: false };
     const docIdentity = window.MeldexDocumentIdentity;
-    const content = (await _readIdentityTextPreservingBytes(provider, sourcePath)).text;
+    const content = (await _readIdentityTextPreservingBytes(provider, sourcePath, {
+      skipMissingGuard: options.includeFormContent === true && /\.mel-form$/i.test(sourcePath),
+      identitySnapshot: options.includeFormContent === true && /\.mel-form$/i.test(sourcePath),
+    })).text;
     const fmt = docIdentity?.formatForPath?.(destPath, content);
     if (!fmt) return { handled: false };
     const result = docIdentity.regenerateDocumentId(content, fmt);
@@ -13120,10 +13261,20 @@
       const written = await provider.uploadBytesConditional(
         stagingPath, new TextEncoder().encode(result.text), null,
       );
-      ownership = await _providerObjectIdentity(provider, stagingPath, written);
+      const uploaded = _providerObjectRevision(written);
+      const identityReadback = uploaded.id && uploaded.rev
+        && typeof provider.readBytesIdentityFresh === 'function';
+      ownership = identityReadback ? uploaded : await _providerObjectIdentity(provider, stagingPath, written);
       if (!ownership.id || !ownership.rev) throw new Error('複製先のprovider ID/revisionを確認できません');
-      const readback = (await _readIdentityTextPreservingBytes(provider, stagingPath)).text;
-      const latest = await _providerObjectIdentity(provider, stagingPath, null);
+      let readback, latest;
+      if (identityReadback) {
+        const snapshot = await provider.readBytesIdentityFresh(stagingPath);
+        readback = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(snapshot.bytes);
+        latest = _providerObjectRevision(snapshot);
+      } else {
+        readback = (await _readIdentityTextPreservingBytes(provider, stagingPath)).text;
+        latest = await _providerObjectIdentity(provider, stagingPath, null);
+      }
       const readbackId = docIdentity.readDocumentId(readback, fmt);
       if (readback !== result.text || readbackId !== result.documentId
         || latest.id !== ownership.id || latest.rev !== ownership.rev) {
@@ -13135,12 +13286,15 @@
       }
       await provider.movePathNoReplace(stagingPath, destPath);
       published = true;
-      const finalOwnership = await _providerObjectIdentity(provider, destPath, null);
+      const finalOwnership = await _providerObjectIdentity(provider, destPath, null, { skipMissingGuard: !!identityReadback });
       if (finalOwnership.id !== ownership.id || finalOwnership.rev !== ownership.rev) {
         throw new Error('atomic publish後のprovider ID/revisionが一致しません');
       }
       return {
         handled: true, ownership: finalOwnership,
+        ...(options.includeFormContent === true && fmt === 'form'
+          && new TextEncoder().encode(readback).byteLength <= 2 * 1024 * 1024
+          ? { form_content: { path: destPath, content: readback, etag: finalOwnership.rev } } : {}),
         rollback: () => _rollbackOwnedCloudCopy(provider, destPath, ownership),
       };
     } catch (err) {
@@ -13778,6 +13932,7 @@ async function _writeAnnotationRecord(provider, record, options = {}) {
   await adapter.save(kind, docId, record, saveOptions);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return migrated.record?.payload || record;
 }
 
 // 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
@@ -13943,10 +14098,19 @@ async function _listAnnotationRecords(provider, query) {
     }
     for (const item of stored) {
       let payload = item?.payload;
+      // This typed record remains authoritative over its old path even if it
+      // is deleted between the index read and target resolution below.
+      if (payload && typeof payload === 'object' && payload.id) seenIds.add(String(payload.id));
       if (_annotationDeleted(payload)) continue;
       if (payload && typeof payload === 'object' && payload.id) {
-        const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id));
-        payload = migrated.record?.payload || payload;
+        let migrated;
+        try { migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id)); }
+        catch (error) {
+          if (error?.status === 410 && error?.meldexCode === 'annotation_record_deleted') continue;
+          throw error;
+        }
+        payload = migrated.record?.payload;
+        if (!payload || _annotationDeleted(payload)) continue;
       }
       if (payload && typeof payload === 'object' && payload.id) {
         const id = String(payload.id);
@@ -14411,8 +14575,8 @@ function _signPendingEditRecordsInBackground(provider, adapter, path, records) {
 }
 
 async function _listSharedEditRecords(provider, path, recursive, options = {}) {
-  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
+  await _awaitPendingEditFinalizations(options.skipIntegrity && !recursive ? {provider, path:normalized} : undefined);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = options.records || await adapter.listDocuments(kind,
@@ -14466,8 +14630,8 @@ function _editRecordPrefix(path) {
 }
 
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
-  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
+  await _awaitPendingEditFinalizations({provider, path:normalized});
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = await adapter.listDocuments(kind, { documentIdPrefix: _editRecordPrefix(normalized) });
@@ -14578,17 +14742,26 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
 // _awaitPendingEditFinalizations で先に完了を待つので、順序は従来と変わらない。
 // 確定できなかった場合は従来どおり、次回の保存時に内容の一致で回収される。
 const _pendingEditFinalizations = new Set();
+const _pendingEditFinalizationScopes = new WeakMap();
 
 const PENDING_EDIT_FINALIZATION_WAIT_MS = 45000;
 
-async function _awaitPendingEditFinalizations() {
+async function _awaitPendingEditFinalizations(target) {
+  const normalized = target?.path ? _normalizeFolderPath(target.path) : '';
   const deadline = Date.now() + PENDING_EDIT_FINALIZATION_WAIT_MS;
   while (_pendingEditFinalizations.size) {
+    const pending = [..._pendingEditFinalizations].filter(promise => {
+      if (!target?.provider || !normalized) return true;
+      const scope = _pendingEditFinalizationScopes.get(promise);
+      // Unknown scopes remain conservative. Global history/exit callers still wait for all.
+      return !scope?.provider || !scope.path || (scope.provider === target.provider && scope.path === normalized);
+    });
+    if (!pending.length) return;
     const remaining = deadline - Date.now();
     // 通信が返らず確定が終わらない場合でも、以後の保存や履歴表示を止め続けない。
     // 待ちきれなかった記録は未確定のまま残り、次回の保存時に内容の一致で回収される。
     if (remaining <= 0) return;
-    const settled = Promise.allSettled([..._pendingEditFinalizations]);
+    const settled = Promise.allSettled(pending);
     await (typeof setTimeout === 'function'
       ? Promise.race([settled, new Promise(resolve => setTimeout(resolve, remaining))])
       : settled);
@@ -14613,7 +14786,10 @@ function _commitCloudFileEdit(prepared, committedRevision) {
     return pending;
   }).catch(() => true).finally(() => {
     _pendingEditFinalizations.delete(finalization);
+    _pendingEditFinalizationScopes.delete(finalization);
   });
+  _pendingEditFinalizationScopes.set(finalization, {provider:prepared.provider,
+    path:_normalizeFolderPath(prepared.payload?.original_relative_path || '')});
   _pendingEditFinalizations.add(finalization);
   return Promise.resolve(false);
 }
@@ -14862,7 +15038,7 @@ async function _saveFileVersion(provider, path, options) {
 async function _listFileVersions(provider, path) {
   const normalized = _normalizeFolderPath(path);
   const source = await _resolveEntryHandle(provider, normalized);
-  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  if (!source || source.kind !== 'file') throw Object.assign(new Error(`ファイルが見つかりません: ${normalized}`), { status: 404, code: 'file_missing' });
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
   await _awaitPendingEditFinalizations();
   const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
@@ -15205,9 +15381,14 @@ async function _undeleteFileVersion(provider, path, token) {
     return file === folder ? '' : (file.startsWith(folder + '/') ? file.slice(folder.length + 1) : file);
   }
 
+  function _isFormCandidateReceiptRelPath(relPath) {
+    return _normalizeFolderPath(relPath).split('/').some(part => part === '_form-candidate-receipts'
+      || /^_form-candidate-[a-f0-9]{64}\.json$/i.test(part));
+  }
+
   function _skipFolderVersionRelPath(relPath) {
     const normalized = _normalizeFolderPath(relPath);
-    return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+    return _isFormCandidateReceiptRelPath(normalized) || FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
   }
 
   async function _versionFileBase64(provider, path) {
@@ -15390,6 +15571,9 @@ async function _undeleteFileVersion(provider, path, token) {
     for (const file of files) {
       if (file.entry_type === 'directory') continue;
       const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      // Older snapshots may contain a prepared receipt. Never roll operation
+      // completion back together with user contents, or a replay could resurrect data.
+      if (_isFormCandidateReceiptRelPath(relPath)) continue;
       if (seen.has(relPath.toLowerCase())) throw new Error('復元対象のパスが重複しています');
       seen.add(relPath.toLowerCase());
       const path = _joinPath(folderPath, relPath);
@@ -16454,8 +16638,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const provider = await _requirePwaProvider('readwrite');
       const now = _nowIso();
       const record = _mergeAnnotationRecord(null, body || {}, { id: _randomId('ann'), now });
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id, created: record.created, modified: record.modified };
+      const saved = await _writeAnnotationRecord(provider, record);
+      return { ok: true, id: record.id, created: record.created, modified: record.modified,
+        ...(body?.return_saved_row === true ? { saved_annotation: _annotationRow(saved) } : {}) };
     }
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -16766,20 +16951,25 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:sheetPath},layout:null,formConfig:{mode:'entry'}},null,2);
         content = titled(content,targetPath);
         if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
+        let formContent = null;
         try {
           await window.MeldexDataAccess.requestJson('/db-metadata?path=' + encodeURIComponent(sheetPath), {
             method: 'PUT', headers, body: { default_form_path: targetPath },
           });
-          await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
-            method: 'PUT', headers, body: { content, create_only: true },
+          const saved = await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+            method: 'PUT', headers, body: { content, create_only: true, ...(body?.include_form_content === true ? { include_saved_content: true } : {}) },
           });
+          if (body?.include_form_content === true && saved?.etag && typeof saved.saved_content === 'string') {
+            formContent = { path: targetPath, content: saved.saved_content, etag: saved.etag };
+          }
         } catch (error) {
           // A remote write may have committed before its response was lost.
           // Retain the sheet rather than risk deleting a form's answer data.
           error.userMessage = 'フォームの作成を確認できませんでした。シートは「' + sheetPath + '」に残っています。';
           throw error;
         }
-        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath,companion_paths:[sheetPath]},
+          ...(formContent ? {form_content:formContent} : {})};
       }
       if (type === 'map') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-map');
@@ -16891,7 +17081,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }));
         let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
         await _runPostMutationStep(warnings, 'references', async () => {
-          relocate = await _relocateReferences(provider, oldPath, newPath, true);
+          relocate = await _relocateReferences(provider, oldPath, newPath, true, { sameParentAliases: body?.type === 'database' });
         });
         return { ok: true, new_path: newPath, file_id: _fnvFileId(newPath), relocate, ..._resultWarnings(warnings) };
       }
@@ -16902,7 +17092,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         ? await _prepareAnnotationsForPathMutation(provider, {
           action: 'rename', oldPath, newPath: nextPath, isFolder: false,
         }) : [];
-      const scenarioRename = ['scenario', 'scriptnote'].includes(body?.type);
+      // Forms also store their name inside JSON. Use the same conditional write
+      // and rollback as scenarios, preserving the document ID and all other fields.
+      const scenarioRename = ['scenario', 'scriptnote', 'form-app'].includes(body?.type);
       let scenarioSnapshot = null;
       let scenarioContent = '';
       if (scenarioRename) {
@@ -16910,7 +17102,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(scenarioSnapshot.bytes);
         const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
         const doc = JSON.parse(original.replace(/^\uFEFF/, ''));
-        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('シナリオ文書の形式が不正です');
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error(body?.type === 'form-app' ? 'フォーム文書の形式が不正です' : 'シナリオ文書の形式が不正です');
         const hasDisplayTitle = !!titleHelper?.read(original.replace(/^\uFEFF/, ''), oldPath);
         const desiredTitle = displayName || newName;
         if (doc.title === desiredTitle && (!hasDisplayTitle || doc.display_title === desiredTitle)) {
@@ -16955,7 +17147,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       }));
       let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
       await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, oldPath, nextPath, false);
+        relocate = await _relocateReferences(provider, oldPath, nextPath, false, { sameParentAliases: body?.type === 'form-app' });
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate,
         ...(scenarioRename ? { etag: await _fileEtag(provider, nextPath) } : {}), ..._resultWarnings(warnings) };
@@ -17095,19 +17287,30 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
 
     async function _readFileSnapshot(provider, filePath, entry) {
-      if (typeof provider.readBytesSnapshot === 'function') {
-        const snapshot = await provider.readBytesSnapshot(filePath);
-        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      try {
+        if (typeof provider.readBytesSnapshot === 'function') {
+          const snapshot = await provider.readBytesSnapshot(filePath);
+          return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+        }
+        if (typeof provider.readBytesFresh === 'function') {
+          const snapshot = await provider.readBytesFresh(filePath);
+          return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+        }
+        const before = await _fileEtag(provider, filePath, entry);
+        const bytes = new TextEncoder().encode(await provider.readText(filePath));
+        const after = await _fileEtag(provider, filePath, entry);
+        if (!before || before !== after) _throwEtagConflict(filePath, before, after);
+        return { bytes, etag: after };
+      } catch (error) {
+        // 古い一覧に項目が残っていても、実際の読み取りで無ければ同じ404契約へそろえる。
+        if (error?.status === 404 || error?.code === 'path_not_found'
+          || (error?.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(error?.message || '')))) {
+          throw Object.assign(new Error(`ファイルが見つかりません: ${filePath}`), {
+            status: 404, httpStatus: 404, code: 'file_missing', meldexCode: 'file_missing', cause: error,
+          });
+        }
+        throw error;
       }
-      if (typeof provider.readBytesFresh === 'function') {
-        const snapshot = await provider.readBytesFresh(filePath);
-        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
-      }
-      const before = await _fileEtag(provider, filePath, entry);
-      const bytes = new TextEncoder().encode(await provider.readText(filePath));
-      const after = await _fileEtag(provider, filePath, entry);
-      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
-      return { bytes, etag: after };
     }
 
     function _savedNoteMetadata(filePath, content) {
@@ -17116,13 +17319,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       return { saved_frontmatter: /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] || '' };
     }
 /* Dropbox Cloud duplicate/save-as route orchestration continuation. */
-    async function runCloudIdentityCopyOperation(provider, operation, operationId, payload, source, chooseDestination) {
+    async function runCloudIdentityCopyOperation(provider, operation, operationId, payload, source, chooseDestination, options = {}) {
       if (!operationId) throw Object.assign(new Error('operation_id は必須です'), { status: 400 });
       const journal = window.MeldexCloudCopyOperationJournal;
       if (!journal) throw Object.assign(new Error('Cloudファイル操作履歴を利用できません'), { status: 503 });
-      return journal.withFlight(provider, operationId, operation, payload, async identity => {
+      let formContent = null;
+      const savedResult = await journal.withFlight(provider, operationId, operation, payload, async identity => {
         let record = await journal.load(provider, operationId, operation, payload, identity);
         if (record?.state === 'completed') return record.result;
+        const resuming = !!record;
         let destPath = String(record?.intent?.destination || '');
         let destName = _basename(destPath);
         if (!record) {
@@ -17160,7 +17365,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           }
           await provider.movePathNoReplace(stagingPath, destPath);
         }
-        let ownership = await _providerObjectIdentity(provider, destPath, null).catch(() => null);
+        // A fresh negative result above needs no second identity lookup before
+        // publication. Concurrent arrivals still fail at atomic no-replace.
+        // Existing/recovered destinations retain the full ownership check.
+        let ownership = destinationExists || stagingCandidates.length === 1
+          ? await _providerObjectIdentity(provider, destPath, null).catch(() => null) : null;
         const ownershipComplete = ownership?.id && (source.kind === 'directory' || ownership?.rev);
         if (ownershipComplete && !record.intent.provider_id && proof) {
           const freshProof = source.kind === 'directory'
@@ -17196,6 +17405,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           try {
             transaction = await _copyPathWithIdentityTransaction(
               provider, payload.path, destPath, source.kind, {
+                includeFormContent: options.includeFormContent === true,
                 persistPublishProof: async publishProof => {
                   record.intent = { ...record.intent, publish_proof: publishProof };
                   await journal.updateIntent(provider, operationId, operation, payload, record.intent);
@@ -17211,6 +17421,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             throw error;
           }
           ownership = transaction.ownership;
+          formContent = transaction.form_content || null;
           if (!ownership?.id || (source.kind !== 'directory' && !ownership?.rev)) {
             throw new Error('Cloud複製先のprovider identityを確認できません');
           }
@@ -17233,11 +17444,21 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             throw Object.assign(new Error('prepared Cloud folder manifestが後続更新と競合しています'), { status: 409 });
           }
         }
+        if (resuming && options.includeFormContent === true && source.kind === 'file' && /\.mel-form$/i.test(destPath)) {
+          const snapshot = await _readFileSnapshot(provider, destPath);
+          if (!snapshot.etag || snapshot.etag !== ownership.rev) {
+            throw Object.assign(new Error('再開するフォームの本文が保存時のrevisionと一致しません'), { status: 409 });
+          }
+          if (snapshot.bytes.byteLength <= 2 * 1024 * 1024) formContent = {
+            path: destPath, content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(snapshot.bytes), etag: snapshot.etag,
+          };
+        }
         // 実体と公開前の復旧証明を確認済み。後処理中の表示だけを先に通知する。
         try {
           window.dispatchEvent?.(new CustomEvent('meldex:copy-published', { detail: {
             operation_id: operationId, source_path: payload.path, new_path: destPath,
             new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+            ...(formContent ? { form_content: formContent } : {}),
           } }));
         } catch (error) { console.warn('[copy] 公開済みの表示通知に失敗', error); }
         record = await journal.runAftercare(provider, operationId, operation, payload, record, [
@@ -17258,6 +17479,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           manifest_digest: record.intent.manifest_digest || '' };
         return journal.complete(provider, operationId, operation, payload, result);
       });
+      // Keep document bytes out of the durable journal; this is a transient response.
+      return formContent ? { ...savedResult, form_content: formContent } : savedResult;
     }
     if (pathname === '/outliner/duplicate' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -17276,7 +17499,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         }
         await _directoryHandle(provider, _dirname(destPath), true);
         return { destName, destPath };
-      });
+      }, { includeFormContent: body?.include_form_content === true });
     }
 
     if (pathname === '/outliner/save-as' && method === 'POST') {
@@ -17509,8 +17732,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(sourceLocator)) {
           continue;
         }
-        if (typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');
-        const read = await provider.readBytesFresh(item.path);
+        const verifiedRead = typeof provider.readBytesIdentityFresh === 'function';
+        if (!verifiedRead && typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');
+        const read = verifiedRead ? await provider.readBytesIdentityFresh(item.path) : await provider.readBytesFresh(item.path);
         const text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes);
         const entryId = /\.md$/i.test(sourceLocator) ? _settingsEntryIdForClaim(text) : '';
         let kind = entryId ? 'entry' : '';
@@ -17522,7 +17746,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           kind = uid ? 'document' : '';
         }
         if (!uid) continue;
-        const meta = await _providerObjectIdentity(provider, item.path, null);
+        // The strict snapshot binds bytes to the downloaded object and checks
+        // its current identity. Older providers retain their readback checks.
+        const meta = verifiedRead ? { id: read.provider_id, rev: read.revision }
+          : read.metadata?.id && read.metadata?.rev === read.revision
+            ? read.metadata : await _providerObjectIdentity(provider, item.path, null);
         if (!meta?.id || !meta?.rev || String(read.revision || '') !== String(meta.rev)) {
           throw Object.assign(new Error('Dropbox bytes readback後にprovider identityが変更されました'), { status: 409 });
         }
@@ -17989,7 +18217,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (pathname === '/auth/me' && method === 'GET') {
       const username = url.searchParams.get('username') || 'anonymous';
       const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
-      return { user: username, username, role: state.access === 'viewer' ? 'viewer' : 'editor' };
+      return { user: username, username, role: state.isOwner ? 'owner' : state.access === 'viewer' ? 'viewer' : 'editor' };
     }
     if (pathname === '/pick-folder' && method === 'GET') return { ok: false, needManualInput: true };
 
@@ -19321,6 +19549,104 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return jsonResponse({ results });
   }
 
+  // Desktop's /export/canvas is also used by the board and folder menus.
+  // In browser-data mode read the same saved document through the existing
+  // access adapter, rather than sending a nonexistent HTTP route to the host.
+  async function canvasExportResponse(url, method, init) {
+    if (String(method).toUpperCase() !== 'GET') return jsonResponse({ error: 'GET のみ対応しています' }, 405);
+    const path = url.searchParams.get('path') || '';
+    const format = (url.searchParams.get('format') || 'md').toLowerCase();
+    if (!path || !['md', 'svg', 'html'].includes(format)) return jsonResponse({ error: '未対応の書き出し形式です' }, 400);
+    const record = await awaitCloudOperationWithSignal(window.MeldexDataAccess.requestJson(
+      '/file?path=' + encodeURIComponent(path) + '&raw_text=1',
+      { method: 'GET', signal: init?.signal },
+    ), init?.signal);
+    if (typeof record?.content !== 'string') return jsonResponse({ error: '書き出し元を読み込めませんでした' }, 404);
+    const raw = record.content;
+    let body = raw;
+    let title = path.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'ボード';
+    // Desktop exports just the Markdown body for older .md boards and
+    // the raw text for .mel-board files. Preserve that format contract.
+    if (/\.md$/i.test(path)) {
+      const match = raw.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      if (match) {
+        const fields = window.MeldexCloudFrontmatterLite?.yamlLite?.(match[1]) || {};
+        title = String(fields.title || fields.name || title);
+        body = raw.slice(match[0].length);
+      }
+    }
+    let content = body;
+    if (format === 'html') content = cloudExportHtml(title, body);
+    if (format === 'svg') {
+      const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+      const lines = (body || title || 'Meldex board').split(/\r\n?|\n/).map(line => line.trim()).filter(Boolean).slice(0, 80);
+      if (!lines.length) lines.push(title || 'Meldex board');
+      const height = Math.max(160, 72 + lines.length * 32);
+      const text = lines.map((line, i) => `<text x="32" y="${56 + i * 32}" font-family="system-ui, sans-serif" font-size="16" fill="#1f2937">${escape(Array.from(line).slice(0, 160).join(''))}</text>`).join('');
+      content = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="${height}" viewBox="0 0 960 ${height}"><rect width="100%" height="100%" fill="#f8fafc"/><rect x="20" y="20" width="920" height="${height - 40}" rx="8" fill="#ffffff" stroke="#cbd5e1"/>${text}</svg>`;
+    }
+    const name = Array.from(String(title).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')).slice(0, 160).join('') + '.' + format;
+    const encodedName = encodeURIComponent(name).replaceAll("'", '%27');
+    return new Response(content, {
+      headers: {
+        'Content-Type': format === 'svg' ? 'image/svg+xml; charset=utf-8' : format === 'html' ? 'text/html; charset=utf-8' : 'text/markdown; charset=utf-8',
+        'Content-Disposition': "attachment; filename*=UTF-8''" + encodedName,
+      },
+    });
+  }
+
+  function cloudExportEscape(value) {
+    return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+      .replaceAll('"','&quot;').replaceAll("'",'&#39;');
+  }
+
+  function cloudExportHtml(title, body, table) {
+    const content = table ? '<table><thead><tr>'+table.columns.map(value=>'<th>'+cloudExportEscape(value)+'</th>').join('')
+      + '</tr></thead><tbody>'+table.rows.map(row=>'<tr>'+row.map(value=>'<td>'+cloudExportEscape(value)+'</td>').join('')+'</tr>').join('')+'</tbody></table>'
+      : '<pre>'+cloudExportEscape(body)+'</pre>';
+    return '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+      + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">'
+      + '<title>'+cloudExportEscape(title)+'</title><style>body{font-family:system-ui;line-height:1.7;margin:32px}pre,td{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:6px}</style></head><body>'
+      + '<h1>'+cloudExportEscape(title)+'</h1>'+content+'</body></html>';
+  }
+
+  async function folderExportResponse(url, method, init) {
+    if(String(method).toUpperCase()!=='GET')return jsonResponse({error:'GET のみ対応しています'},405);
+    const kind=url.pathname.split('/').pop(), path=url.searchParams.get('path')||'';
+    const format=(url.searchParams.get('format')||(kind==='db'?'csv':'md')).toLowerCase();
+    const formats=kind==='db'?['csv','html','xlsx']:['txt','md','html','docx'];
+    if(!path||!formats.includes(format))return jsonResponse({error:'未対応の書き出し形式です'},400);
+    const read=route=>awaitCloudOperationWithSignal(window.MeldexDataAccess.requestJson(route,{method:'GET',signal:init?.signal}),init?.signal);
+    let title=path.split(/[\\/]/).pop().replace(/\.[^.]+$/,''), content, mime;
+    if(kind==='db') {
+      const [pivot,metadata]=await Promise.all([read('/pivot?path='+encodeURIComponent(path)),read('/db-metadata?path='+encodeURIComponent(path))]);
+      const columns=['名前',...new Set([...Object.keys(metadata.property_types||{}),...(pivot.properties||[])].filter(name=>name&&!name.startsWith('_')&&name!=='名前'))];
+      const display=value=>Array.isArray(value)?value.map(item=>display(item?.value??item)).filter(Boolean).join(' / ')
+        :value&&typeof value==='object'?String(value.label??value.name??value.value??''):String(value??'');
+      const rows=Object.entries(pivot.entities||{}).sort(([a],[b])=>a.toLowerCase().localeCompare(b.toLowerCase()))
+        .map(([name,properties])=>columns.map((column,index)=>index===0?name:display(properties[column])));
+      if(format==='xlsx')content=window.MeldexDocxExport.createSpreadsheet(columns,rows);
+      else if(format==='html'){content=cloudExportHtml(title,'',{columns,rows});mime='text/html; charset=utf-8';}
+      else {const cell=value=>'"'+String(value??'').replaceAll('"','""')+'"';
+        content='\uFEFF'+[columns,...rows].map(row=>row.map(cell).join(',')).join('\r\n')+'\r\n';mime='text/csv; charset=utf-8';}
+    } else {
+      const record=await read('/file?path='+encodeURIComponent(path)+'&raw_text=1');
+      if(typeof record?.content!=='string')return jsonResponse({error:'書き出し元を読み込めませんでした'},404);
+      let body=record.content;
+      if(/\.md$/i.test(path)){
+        const match=body.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+        if(match){const fm=window.MeldexCloudFrontmatterLite?.yamlLite?.(match[1])||{};title=String(fm.title||fm.name||title);body=body.slice(match[0].length);}
+      }
+      if(format==='docx')content=window.MeldexDocxExport.create(title,body,{vertical:['1','true','yes'].includes(url.searchParams.get('vertical'))});
+      else if(format==='html'){content=cloudExportHtml(title,body);mime='text/html; charset=utf-8';}
+      else {content=body;mime=format==='md'?'text/markdown; charset=utf-8':'text/plain; charset=utf-8';}
+    }
+    const filename=String(title||'export').replace(/[<>:"/\\|?*\x00-\x1f]/g,'_')+'.'+format;
+    return new Response(content,{headers:{'Content-Type':mime||content.type,
+      'Content-Disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(filename).replaceAll("'",'%27')}});
+  }
+
   function apiRequestPath(url) {
     const pathname = String(url?.pathname || '');
     const marker = pathname.lastIndexOf('/api');
@@ -19333,14 +19659,21 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const url = new URL(requestUrl, document.baseURI || window.location.href);
     const isSameOrigin = url.origin === window.location.origin;
     const isApiPath = /\/api(\/|$)/.test(url.pathname);
+    const isCanvasExport = /\/(?:api\/)?export\/canvas$/.test(url.pathname);
+    const isFolderExport = /\/(?:api\/)?export\/(?:note|db)$/.test(url.pathname);
     const requestHeaders = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
     const useNativeE2eHarness = new URLSearchParams(location.search).get('smoke') === '1'
       && requestHeaders.get('X-Meldex-E2E-Native-Fetch') === 'screenshot';
-    if (!isSameOrigin || !isApiPath || useNativeE2eHarness || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    if (!isSameOrigin || (!isApiPath && !isCanvasExport && !isFolderExport) || useNativeE2eHarness || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
 
     try {
+      if (isCanvasExport) {
+        const method = init?.method || (input instanceof Request ? input.method : 'GET');
+        return await canvasExportResponse(url, method, init);
+      }
+      if(isFolderExport)return await folderExportResponse(url,init?.method||(input instanceof Request?input.method:'GET'),init);
       const rawResponse = await providerResponse(url);
       if (rawResponse) return rawResponse;
       const method = init?.method || (input instanceof Request ? input.method : 'GET');
@@ -19423,10 +19756,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 (function () {
   const CACHE = window.__MeldexPwaFileUrlCache = window.__MeldexPwaFileUrlCache || {};
   const PATH_MUTATION_HOOKS = window.__MeldexPwaPathMutationHooks = window.__MeldexPwaPathMutationHooks || [];
-  const RAW_URL_RE = /\/(?:api\/)?file-raw\?[^"' )]+/g;
-  const MEDIA_URL_RE = /\/(?:api\/)?media\/file\?[^"' )]+/g;
-  const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"' )]+/g;
-  const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
+  // Inline custom properties may store an unquoted URL immediately before
+  // the CSS declaration separator. Filenames carry punctuation URL-encoded.
+  const RAW_URL_RE = /\/(?:api\/)?file-raw\?[^"'\s);]+/g;
+  const MEDIA_URL_RE = /\/(?:api\/)?media\/file\?[^"'\s);]+/g;
+  const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"'\s);]+/g;
+  const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"'\s);]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
   const ELEMENT_REQUESTS = new WeakMap();
   const THUMBNAIL_FLIGHTS = new Map();
@@ -19781,12 +20116,178 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return size ? _extractRawPath(pathLike) + '#thumbnail-' + size : '';
   }
 
+  // ---- 縮小表示のまとめ取り（2026-11-26 利用者報告「画像列のサムネイルが何十分も出ない」） ----
+  // 以前は1枚ごとに「親フォルダの一覧（存在確認）・ファイルの確認・縮小表示」の3回を、画像用の枠（同時2本）で
+  // 頼んだ順に送っていた。疑似Dropbox（1回0.4秒）の3000件のシートで、最初の画面に15.8秒、10画面スクロールした先の
+  // 画面に45秒かかり、見えなくなった行の分が先に処理されていた。Dropbox の回数制限に当たると更に何倍にもなる。
+  // ・1回の通信で最大25枚まとめて取る（files/get_thumbnail_batch。版番号も同じ応答で返る）。
+  // ・後から頼まれた分（今見えている画面）を先に送る。画面から外れた分は後回しにする。
+  // ・ファイル名が中身の指紋（_media/blobs/xx/<64桁>）の画像は中身が変わらないので、端末内の控えを確認なしで使う。
+  const THUMB_BATCH_MAX = 25;
+  const THUMB_BATCH_EXTS = /\.(?:jpe?g|png|tiff?|gif|webp|ppm|bmp)$/i;
+  const IMMUTABLE_MEDIA_RE = /(?:^|\/)_media\/(?:blobs|thumbs)\/[0-9a-f]{2}\/[0-9a-f]{64}\.[a-z0-9]+$/i;
+  const THUMB_BATCH_QUEUE = [];
+  let thumbBatchTimer = null;
+  let thumbBatchActive = 0;
+  let thumbBatchSeq = 0;
+
+  function _thumbDimensions(size) {
+    const pixels = Math.max(64, Math.min(1024, Number(size) || 256));
+    return pixels <= 64 ? 'w64h64' : pixels <= 128 ? 'w128h128' : pixels <= 256 ? 'w256h256'
+      : pixels <= 480 ? 'w640h480' : pixels <= 768 ? 'w1024h768' : 'w2048h1536';
+  }
+
+  async function _thumbScope(provider) {
+    const auth = window.MeldexDropboxAuth;
+    const account = await auth?.getCurrentAccount?.(false);
+    if (!account?.account_id) throw new Error('Dropboxへもう一度接続してください');
+    return JSON.stringify([account.account_id, account.root_info || {}, provider?.getVaultPath?.(), auth.getVaultNamespaceKind?.() || 'home']);
+  }
+
+  function _thumbLocation(provider, candidate) {
+    const location = provider._dropboxLocation(candidate);
+    return window.MeldexDropboxAuth?.resolveFileLocation?.(location.path, location.namespaceKind) || location;
+  }
+
+  async function _thumbPersistKey(scope, location, size) {
+    const text = ['thumb-v2', scope, location.namespaceKind || '', location.path, size].join('\n');
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+    return new URL('./__meldex_thumbnail_cache__/' + hash, document.baseURI).href;
+  }
+
+  function _thumbBlobFromBase64(text) {
+    const binary = atob(String(text || ''));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: 'image/png' });
+  }
+
+  function _thumbBatchSupported(provider, normalized) {
+    return !!(_runtime()?.isDropboxMode?.() && typeof window.MeldexDropboxAuth?.apiThumbnailBatch === 'function'
+      && typeof provider?._dropboxLocation === 'function' && THUMB_BATCH_EXTS.test(normalized));
+  }
+
+  function _scheduleThumbBatch() {
+    if (thumbBatchTimer || !THUMB_BATCH_QUEUE.length || thumbBatchActive >= 2) return;
+    // 同じ描画で並ぶ画像をまとめるため、わずかに待ってから送る。
+    thumbBatchTimer = setTimeout(() => { thumbBatchTimer = null; _flushThumbBatch(); }, 30);
+  }
+
+  function _takeThumbBatch() {
+    // 画面に残っている要求を先に、その中では新しい順に。外れたものは後回し（消さない: 戻ってきた時に要る）。
+    const visible = job => !job.element || job.element.isConnected;
+    const order = [...THUMB_BATCH_QUEUE].sort((a, b) => Number(visible(b)) - Number(visible(a)) || b.seq - a.seq);
+    const namespaceKind = order[0].location.namespaceKind || 'home';
+    const picked = order.filter(job => (job.location.namespaceKind || 'home') === namespaceKind).slice(0, THUMB_BATCH_MAX);
+    picked.forEach(job => THUMB_BATCH_QUEUE.splice(THUMB_BATCH_QUEUE.indexOf(job), 1));
+    return { namespaceKind, picked };
+  }
+
+  function _flushThumbBatch() {
+    while (THUMB_BATCH_QUEUE.length && thumbBatchActive < 2) {
+      const { namespaceKind, picked } = _takeThumbBatch();
+      thumbBatchActive += 1;
+      (async () => {
+        let results;
+        try {
+          results = await window.MeldexDropboxAuth.apiThumbnailBatch(picked.map(job => ({
+            path: job.location.path, format: 'png', size: job.dimensions, mode: 'strict',
+          })), { namespaceKind });
+        } catch (error) {
+          picked.forEach(job => job.reject(error));
+          return;
+        }
+        picked.forEach((job, index) => {
+          const entry = results[index];
+          if (entry?.['.tag'] === 'success' && entry.thumbnail) {
+            job.resolve({ blob: _thumbBlobFromBase64(entry.thumbnail), rev: entry.metadata?.rev || '' });
+            return;
+          }
+          const failure = entry?.failure || {};
+          const notFound = /not_found/.test(JSON.stringify(failure));
+          job.reject(Object.assign(new Error(notFound ? 'path/not_found/' : 'thumbnail/' + (failure['.tag'] || 'failed')), { notFound }));
+        });
+      })().finally(() => { thumbBatchActive -= 1; _scheduleThumbBatch(); });
+    }
+  }
+
+  function _queueThumbBatch(location, size, element) {
+    return new Promise((resolve, reject) => {
+      THUMB_BATCH_QUEUE.push({ location, dimensions: _thumbDimensions(size), element, resolve, reject, seq: ++thumbBatchSeq });
+      _scheduleThumbBatch();
+    });
+  }
+
+  async function _ensureBatchedThumbnailUrl(provider, pathLike, normalized, size, options) {
+    const scope = await _thumbScope(provider);
+    const key = _thumbnailCacheKey(pathLike);
+    const immutable = IMMUTABLE_MEDIA_RE.test(normalized);
+    const memory = CACHE[key];
+    if (immutable && memory?.batch && memory.mediaScope === scope) return memory;
+    const candidates = window.MeldexCloudMediaPath?.candidates?.(normalized) || [normalized];
+    let lastError = null;
+    for (const candidate of candidates) {
+      const location = _thumbLocation(provider, candidate);
+      const persistentKey = immutable && globalThis.crypto?.subtle ? await _thumbPersistKey(scope, location, size) : '';
+      const flightKey = persistentKey || JSON.stringify([scope, location.namespaceKind, location.path, size]);
+      let work = THUMBNAIL_FLIGHTS.get(flightKey);
+      const owner = !work;
+      if (owner) {
+        work = (async () => {
+          let cache = null, blob = null, rev = '';
+          if (persistentKey && globalThis.caches) {
+            try {
+              cache = await caches.open('meldex-image-thumbnails-v2');
+              blob = await (await cache.match(persistentKey))?.blob() || null;
+            } catch (_) {}
+          }
+          const retained = !!blob;
+          if (!blob) ({ blob, rev } = await _queueThumbBatch(location, size, options?.element));
+          if (await _thumbScope(provider) !== scope) throw new Error('画像の取得中にDropboxの接続先が変更されました');
+          // 中身の変わる画像は、同じ版なら前の表示を使い回す（画面の作り直しで点滅させない）。
+          const current = CACHE[key];
+          if (!immutable && current?.batch && current.rev === rev && current.mediaScope === scope) return current;
+          if (cache && !retained) {
+            try { await cache.put(persistentKey, new Response(blob, { headers: { 'Content-Type': blob.type || 'image/png' } })); } catch (_) {}
+          }
+          const url = URL.createObjectURL(blob);
+          const next = { path: normalized, cacheKey: key, url, mime: blob.type || 'image/png', size: blob.size, batch: true, rev,
+            identity: 'batch:' + (persistentKey || rev), mediaScope: scope,
+            mediaLocation: JSON.stringify(provider._dropboxLocation(normalized)) };
+          CACHE[key] = next;
+          if (current?.url?.startsWith('blob:') && current.url !== url) URL.revokeObjectURL(current.url);
+          return next;
+        })();
+        THUMBNAIL_FLIGHTS.set(flightKey, work);
+      }
+      try {
+        return await work;
+      } catch (error) {
+        lastError = error;
+        if (!error?.notFound) throw error;
+      } finally {
+        if (owner && THUMBNAIL_FLIGHTS.get(flightKey) === work) THUMBNAIL_FLIGHTS.delete(flightKey);
+      }
+    }
+    throw lastError || new Error('path/not_found/');
+  }
+
   async function _ensureThumbnailUrl(pathLike, options) {
     const normalized = _extractRawPath(pathLike), size = _thumbnailSize(pathLike);
     const provider = await _provider();
     if (!_runtime()?.isDropboxMode?.() || !provider?._mediaCacheRecord
         || !/\.(?:png|jpe?g|webp|bmp|avif|gif|tiff?|ppm|svg|heic|heif)$/i.test(normalized)) {
       return ensureRawUrl(pathLike, options);
+    }
+    if (_thumbBatchSupported(provider, normalized)) {
+      try {
+        return await _ensureBatchedThumbnailUrl(provider, pathLike, normalized, size, options);
+      } catch (error) {
+        // 変換できない画像だけは従来の取り方（原寸から端末内で縮小）へ戻す。通信の失敗はそのまま返す
+        // （1枚ずつの取り直しは回数制限を悪化させる）。
+        if (!/^thumbnail\/(?:unsupported_extension|unsupported_image|conversion_error)/.test(String(error?.message || ''))) throw error;
+      }
     }
     const candidates = window.MeldexCloudMediaPath?.candidates?.(normalized) || [normalized];
     let media, mediaPath, lastError;
@@ -19901,7 +20402,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       if (cached && ownsTarget()) _setElementUrlIfChanged(target, prop, cached.url);
       const refresh = () => {
         if (cached && !ownsTarget()) return cached;
-        return ensureDisplayUrl(pathLike).then(info => {
+        return ensureDisplayUrl(pathLike, { element: target }).then(info => {
           if (ownsTarget() && info?.url) _setElementUrlIfChanged(target, prop, info.url);
           return info;
         }).catch(error => {
@@ -20001,9 +20502,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     MEDIA_URL_RE.lastIndex = 0;
     THUMB_URL_RE.lastIndex = 0;
     ARCHIVE_FILE_URL_RE.lastIndex = 0;
+    // Custom properties are also persisted as theme settings. Their source
+    // references must survive reload; only rendered CSS uses transient blobs.
+    const sourceValues = Array.from(element.style || [])
+      .filter(name => name.startsWith('--'))
+      .map(name => element.style.getPropertyValue(name).trim());
     const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(MEDIA_URL_RE), ...styleValue.matchAll(THUMB_URL_RE), ...styleValue.matchAll(ARCHIVE_FILE_URL_RE)];
     rawMatches.forEach((match) => {
       const urlText = match[0];
+      if (sourceValues.some(value => value === urlText || value.endsWith(urlText))) return;
       ensureDisplayUrl(urlText).then((info) => {
         const current = element.getAttribute('style') || '';
         if (!current.includes(urlText) || !info?.url) return;
@@ -20347,6 +20854,8 @@ async function _meldexCorePrepareFileWrite(path, body) {
 
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
+  if (options.backgroundFileWrite === true && String(path).split('?')[0] === '/file'
+    && typeof window.runFileWriteJob === 'function') return window.runFileWriteJob(path, guardedBody, options);
   const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -21574,10 +22083,11 @@ function replaceIcons(root) {
     else if (cls.includes('ico-pencil')) name = 'pencil';
     else if (cls.includes('ico-highlighter')) name = 'highlighter';
     else if (cls.includes('ico-lasso')) name = 'lasso';
+    // ico-squarePen を先に見る（ico-square が前方一致で拾い、アノテートのボタンが四角になっていた。2026-11-27）
+    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-square')) name = 'square';
     else if (cls.includes('ico-eraser')) name = 'eraser';
     else if (cls.includes('ico-stickyNote')) name = 'stickyNote';
-    else if (cls.includes('ico-squarePen')) name = 'squarePen';
     else if (cls.includes('ico-clipboardList')) name = 'clipboardList';
     else if (cls.includes('ico-trash2')) name = 'trash2';
     else if (cls.includes('ico-crosshair')) name = 'crosshair';
@@ -21983,7 +22493,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
     el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
     el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
     el.setAttribute('fill', color);
-    el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+    el.setAttribute('fill-opacity', String(_annotationFillOpacity(data, normalizedOpacity, preview)));
     el.setAttribute('stroke', color);
     el.setAttribute('stroke-width', '1');
     el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -22204,6 +22714,13 @@ function initIframeMarkup(scrollContainer, options = {}) {
   }
 
   const pendingWrites = new Set();
+  const pendingNoteSaves = new Set();
+  async function flushMarkupWrites() {
+    while (pendingNoteSaves.size || pendingWrites.size) {
+      for (const commit of [...pendingNoteSaves]) commit();
+      if (pendingWrites.size) await Promise.allSettled([...pendingWrites]);
+    }
+  }
   function _saveBoardAnnotation(payload, onSaved, onError) {
     if ((!boardMode && !options.localSurface) || typeof apiPost !== 'function') return false;
     options.onMutation?.();
@@ -22297,6 +22814,10 @@ function initIframeMarkup(scrollContainer, options = {}) {
   }
 
   function _confirmEmbeddedNoteDelete(onOk) {
+    if ((boardMode || options.localSurface) && typeof _putAnnotationWithHistory === 'function') {
+      onOk?.();
+      return;
+    }
     const message = 'この付箋を削除しますか？';
     if (typeof showConfirmDialog === 'function') {
       showConfirmDialog(message, onOk);
@@ -22609,9 +23130,16 @@ function initIframeMarkup(scrollContainer, options = {}) {
       if (_updateBoardAnnotation(item.id, { data: next })) return;
       _postToParent({ type: 'ann-update-note', annId: item.id, data: next });
     };
+    const flushNoteSave = () => {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      pendingNoteSaves.delete(flushNoteSave);
+      persist();
+    };
     const scheduleSave = () => {
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(persist, 400);
+      pendingNoteSaves.add(flushNoteSave);
+      saveTimer = setTimeout(flushNoteSave, 400);
     };
     editor = _createNoteEditor(data, scheduleSave, item.id);
     note.appendChild(editor);
@@ -22812,7 +23340,9 @@ function initIframeMarkup(scrollContainer, options = {}) {
             delete note._annTailCtx.data.tailX;
             delete note._annTailCtx.data.tailY;
           }
-          AnnotationStickyTail.setTail(note, newTail, null);
+          // The menu persists its complete payload below. The tail renderer
+          // otherwise falls back to persist(), racing a second Cloud write.
+          AnnotationStickyTail.setTail(note, newTail, () => {});
         }
         persistTailState();
       };
@@ -22822,10 +23352,14 @@ function initIframeMarkup(scrollContainer, options = {}) {
         closeMenu(false);
         if (typeof window.openColorPalette === 'function') {
           window.openColorPalette(note, item.color || '', (newColor) => {
+            const previousColor = item.color;
             item.color = newColor || item.color;
             _applyNoteColor(note, item.color);
             if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) return;
-            if (_updateBoardAnnotation(item.id, { color: item.color })) return;
+            if (_updateBoardAnnotation(item.id, { color: item.color }, null, () => {
+              item.color = previousColor;
+              _applyNoteColor(note, previousColor);
+            })) return;
             _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
           });
         }
@@ -23013,16 +23547,17 @@ function initIframeMarkup(scrollContainer, options = {}) {
     if (_ann.anchor) {
       const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
       const previewData = previewType === 'rect'
-        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
-        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL };
       _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
     } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
       const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
       data.lineWidth = _ann.widths?.pen;
+      data.opacityModel = MELDEX_ANNOTATION_OPACITY_MODEL;
       _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
-      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
+      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', String(_normalizeMarkupOpacity(_ann.opacity, 1)));
       preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-dasharray', '4,4');
     } else {
       preview.setAttribute('d', _pathD(_ann.path));
@@ -23047,6 +23582,8 @@ function initIframeMarkup(scrollContainer, options = {}) {
     if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
     if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
     else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    // 新しい塗りは色の不透明度だけで描く（半透明を強制しない）
+    if (_MELDEX_ANNOTATION_FILL_TYPES.has(type)) strokeData.opacityModel = MELDEX_ANNOTATION_OPACITY_MODEL;
     const savedEl = shapeTypes.has(type)
       ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
       : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
@@ -23090,7 +23627,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
     } else {
       el.setAttribute('points', points.map(point => point.join(',')).join(' '));
       el.setAttribute('fill', color);
-      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('fill-opacity', String(_annotationFillOpacity(data, normalizedOpacity, preview)));
       el.setAttribute('stroke', color);
       el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
       el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -23220,7 +23757,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
     } else if (type === 'lasso') {
       el = document.createElementNS(_svgNS, 'polygon');
       el.setAttribute('points', points.map(p => p.join(',')).join(' '));
-      el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
+      el.setAttribute('fill', color); el.setAttribute('fill-opacity', _annotationFillOpacity(data, normalizedOpacity, false));
       el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1');
     } else {
       el = document.createElementNS(_svgNS, 'path');
@@ -23262,7 +23799,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
       el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
     }
     el.setAttribute('fill', outlined ? 'none' : color);
-    el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? .2 : .4)));
+    el.setAttribute('fill-opacity', outlined ? '0' : String(_annotationFillOpacity(data, normalizedOpacity, preview)));
     el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(normalizedOpacity));
     el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || _ann.widths?.pen || 3)));
     if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
@@ -23286,11 +23823,12 @@ function initIframeMarkup(scrollContainer, options = {}) {
       _ann.opacity = msg.opacity ?? 1;
       _ann.widths = { ..._ann.widths, ...(msg.widths || {}) };
       _ann.targetPath = msg.targetPath || '';
-      svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
-      svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
+      const drawing = !!_ann.active;
+      svg.style.pointerEvents = drawing ? 'auto' : 'none';
+      svg.style.cursor = drawing ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
       if (_ann.active && !options.localSurface) svg.style.outline = '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)';
       else svg.style.outline = '';
-      hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
+      hitRect.setAttribute('pointer-events', drawing ? 'all' : 'none');
       _updateSize();
       _syncNoteInteractivity();
     }
@@ -23383,8 +23921,8 @@ function initIframeMarkup(scrollContainer, options = {}) {
 
   const bridge = {
     options,
-    hasPendingWrites: () => pendingWrites.size > 0,
-    flush: async () => { while (pendingWrites.size) await Promise.allSettled([...pendingWrites]); },
+    hasPendingWrites: () => pendingNoteSaves.size > 0 || pendingWrites.size > 0,
+    flush: flushMarkupWrites,
     svg,
     layer,
     notesLayer,
@@ -24032,7 +24570,7 @@ function createMarkupToolbar(markup, parentEl) {
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
   };
-  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'marker',icon:'highlighter',title:'マーカー' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
+  [{ name:'pen',icon:'pencil',title:'ペン' },{ name:'lasso',icon:'lasso',title:'投げ縄' },{ name:'rect',icon:'square',title:'矩形塗り' },{ name:'eraser',icon:'eraser',title:'消しゴム' },{ name:'sticky',icon:'stickyNote',title:'付箋' }].forEach(t => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'sa-tb-btn' + (t.name === 'pen' ? ' active' : '');
@@ -24635,6 +25173,84 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 })();
 
+// アノテートの塗りの透け具合（2026-11-27）。以前の塗り（投げ縄・矩形塗り・円形塗り）は、保存した
+// 不透明度に0.4（描画中は0.2）を掛けて必ず半透明で描いていた。新しい塗りは data.opacityModel に
+// 'color-alpha-v1' を持ち、色そのものの不透明度（共通カラーパレットで選ぶ）だけで描く。
+// 印のない既存の塗りは、以前と同じ見た目のまま描く（読む時に解釈し、保存し直さない）。
+const MELDEX_ANNOTATION_OPACITY_MODEL = 'color-alpha-v1';
+const _MELDEX_ANNOTATION_FILL_TYPES = new Set(['lasso', 'rect', 'ellipse-fill']);
+function _annotationUsesColorAlpha(data) {
+  return !!data && typeof data === 'object' && data.opacityModel === MELDEX_ANNOTATION_OPACITY_MODEL;
+}
+function _annotationFillOpacity(data, opacity, preview) {
+  const value = _normalizeCoreAnnotationOpacity(opacity, 1);
+  return _annotationUsesColorAlpha(data) ? value : value * (preview ? 0.2 : 0.4);
+}
+function _annotationColorAlpha(color) {
+  if (typeof parseColorToHexAlpha === 'function') return parseColorToHexAlpha(color).alpha;
+  const match = /^#(?:[0-9a-f]{6})([0-9a-f]{2})$/i.exec(String(color || '').trim());
+  return match ? parseInt(match[1], 16) / 255 : 1;
+}
+function _annotationColorWithAlpha(color, alpha) {
+  const value = Math.max(0, Math.min(1, Number(alpha)));
+  if (typeof parseColorToHexAlpha === 'function' && typeof hexAlphaToRgba === 'function') {
+    const parsed = parseColorToHexAlpha(color);
+    if (/^#[0-9a-f]{6}$/i.test(parsed.hex)) return hexAlphaToRgba(parsed.hex.toLowerCase(), Math.round(value * 1000) / 1000);
+  }
+  return color;
+}
+function _parseCoreAnnotationData(row) {
+  const raw = row?.data;
+  if (raw && typeof raw === 'object') return raw;
+  try { const parsed = JSON.parse(raw || '{}'); return parsed && typeof parsed === 'object' ? parsed : {}; } catch { return {}; }
+}
+// 描いた後の色の変更（右クリックの「色...」）で、パレットに最初に出す色。今の見た目の透け具合を色に含める。
+function _annotationRecolorInitialColor(row) {
+  const data = _parseCoreAnnotationData(row);
+  const opacity = _normalizeCoreAnnotationOpacity(row?.opacity, 1);
+  const color = row?.color || '#c48080';
+  if (row?.type === 'marker') return _annotationColorWithAlpha(color, _annotationColorAlpha(color) * opacity * 0.5);
+  // 以前の文字のハイライトは色を42%に薄めて描いていた
+  if (row?.type === 'highlight' && !_annotationUsesColorAlpha(data)) return _annotationColorWithAlpha(color, _annotationColorAlpha(color) * 0.42);
+  if (_MELDEX_ANNOTATION_FILL_TYPES.has(row?.type) && !_annotationUsesColorAlpha(data)) {
+    return _annotationColorWithAlpha(color, _annotationColorAlpha(color) * opacity * 0.4);
+  }
+  return color;
+}
+// 色の変更で保存する差分。以前のマーカーは通常の線（stroke）へ、以前の塗りは色の不透明度で描く形へ移す
+// （保存し直すのは利用者が色を変えたこの時だけ）。どちらも見た目の透け具合は色に引き継ぐ。
+function _annotationRecolorUpdate(row, color) {
+  const data = _parseCoreAnnotationData(row);
+  if (row?.type === 'marker') return { type: 'stroke', color, opacity: 1, data: { ...data, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL } };
+  if (row?.type === 'highlight' && !_annotationUsesColorAlpha(data)) {
+    return { color, opacity: 1, data: { ...data, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL } };
+  }
+  if (_MELDEX_ANNOTATION_FILL_TYPES.has(row?.type) && !_annotationUsesColorAlpha(data)) {
+    return { color, opacity: 1, data: { ...data, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL } };
+  }
+  return { color };
+}
+// 色を選んでいる間の見た目（保存は閉じた時）。row は色を変えた後の行。
+function _paintAnnotationRecolorPreview(el, row) {
+  if (!el || !row) return;
+  const data = _parseCoreAnnotationData(row);
+  const opacity = _normalizeCoreAnnotationOpacity(row.opacity, 1);
+  const parts = el.matches?.('path,polygon,rect,ellipse') ? [el] : [...(el.querySelectorAll?.('path,polygon,rect,ellipse') || [])];
+  parts.forEach(part => {
+    part.setAttribute('stroke', row.color);
+    part.setAttribute('stroke-opacity', String(row.type === 'marker' ? opacity * 0.5 : opacity));
+    const fill = part.getAttribute('fill');
+    if (fill && fill !== 'none') {
+      part.setAttribute('fill', row.color);
+      part.setAttribute('fill-opacity', String(_annotationFillOpacity(data, opacity, false)));
+    }
+  });
+}
+if (typeof window !== 'undefined') {
+  Object.assign(window, { MELDEX_ANNOTATION_OPACITY_MODEL, _annotationUsesColorAlpha, _annotationFillOpacity,
+    _annotationColorWithAlpha, _annotationRecolorInitialColor, _annotationRecolorUpdate, _paintAnnotationRecolorPreview });
+}
+
 ;
 
 /* === gb-toolbar-overflow.js === */
@@ -24781,7 +25397,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const { toolbar, more } = entry;
     const hadMoreFocus = document.activeElement === more;
     if (!toolbar.isConnected || !toolbar.getClientRects().length) return;
-    // MAP changes save/selection state frequently without changing bar geometry.
+    // MAP, Folder and sidebar search change state without changing bar geometry.
     // Reuse only explicitly opted-in layouts; live popup state is still synced.
     const signature = entry.stableGeometry ? geometrySignature(entry) : null;
     if (signature !== null && signature === entry.geometrySignature) { syncPopup(entry); return; }
@@ -24843,7 +25459,10 @@ document.addEventListener('DOMContentLoaded', () => {
     return JSON.stringify([toolbar.clientWidth, toolbar.clientHeight, innerWidth, innerHeight,
       externalClass(toolbar.className), toolbar.getAttribute('style'),
       document.documentElement.className, document.documentElement.getAttribute('style'),
-      document.body.className, document.body.getAttribute('style'), style.font, style.zoom,
+      // Palette visibility is an interaction flag with no toolbar styling.
+      // Its close/action sequence must not invalidate stable folder geometry.
+      String(document.body.className || '').split(/\s+/).filter(name => name && name !== 'gb-command-palette-open').join(' '),
+      document.body.getAttribute('style'), style.font, style.zoom,
       entry.keep, entry.priority, nodes.map(el => {
         if (!geometryIds.has(el)) geometryIds.set(el, ++geometrySequence);
         return [geometryIds.get(el), el.tagName, externalClass(el.className?.baseVal ?? el.className),
@@ -24918,7 +25537,8 @@ document.addEventListener('DOMContentLoaded', () => {
     more.setAttribute('aria-haspopup', 'dialog');
     more.setAttribute('aria-expanded', 'false');
     more.hidden = true;
-    const entry = { toolbar, more, overflow: [], keep: opts.keep || [], priority: opts.priority || [], stableGeometry: !!opts.stableGeometry };
+    const entry = { toolbar, more, overflow: [], keep: opts.keep || [], priority: opts.priority || [],
+      stableGeometry: opts.stableGeometry === undefined ? toolbar.matches('.folder-toolbar, #sidebar-search-bar') : !!opts.stableGeometry };
     registry.set(toolbar, entry);
     toolbar.classList.add('gb-toolbar-overflow-host');
     toolbar.appendChild(more);
@@ -26231,6 +26851,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function _render(detail) {
     if (!document.body) return;
+    if (detail?.reason === 'begin' && detail.operation?.visible === false) return;
     const operations = detail?.operations || window.MeldexOperationProgress.list();
     _renderTray(operations);
     _renderOrigins(operations);

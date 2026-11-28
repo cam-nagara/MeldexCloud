@@ -98,7 +98,7 @@
     db: 'シート データベース', scenario: 'シナリオ', sync: '同期 更新',
   };
 
-  function _japaneseKeywords(name, tags) {
+  function _japaneseKeywords(name, tags, normalizedName) {
     if (!_japaneseIndex || _japaneseIndexSource !== global.EMOJI_ANNOTATIONS) {
       _japaneseIndexSource = global.EMOJI_ANNOTATIONS;
       const counts = new Map();
@@ -112,7 +112,7 @@
       _japaneseIndex = new Map([...counts].map(([en, words]) => [en,
         [...words].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([ja]) => ja).join(' ')]));
     }
-    const kebab = _toKebab(name);
+    const kebab = normalizedName ?? _toKebab(name);
     const tokens = [kebab, ...kebab.replace(/\d+(?:d)?/g, '-').split('-'), ...(tags || '').split(' ')];
     return [...new Set(tokens.flatMap(token => [JAPANESE_ICON_WORDS[token], _japaneseIndex.get(token)]).filter(Boolean))].join(' ');
   }
@@ -304,10 +304,10 @@
     element.dataset.iconSpec = normalizeSpec(spec);
   }
 
-  function _lucideTagKeywords(name) {
+  function _lucideTagKeywords(name, normalizedName) {
     const src = global.LUCIDE_TAGS;
     if (!src) return '';
-    const kebab = _toKebab(name);
+    const kebab = normalizedName ?? _toKebab(name);
     const tags = src[name] || src[kebab] || null;
     if (!Array.isArray(tags) || !tags.length) return '';
     return tags.join(' ');
@@ -321,17 +321,17 @@
     };
     if (typeof global.LUCIDE !== 'undefined' && global.LUCIDE) Object.keys(global.LUCIDE).forEach(add);
     if (global.LUCIDE_FULL) Object.keys(global.LUCIDE_FULL).forEach(add);
-    return [...names].sort((a, b) => _toKebab(a).localeCompare(_toKebab(b))).map((name) => {
+    return [...names].map((name) => {
       const kebab = _toKebab(name);
-      const tags = _lucideTagKeywords(name);
+      const tags = _lucideTagKeywords(name, kebab);
       return {
         type: 'lucide',
         spec: 'lucide:' + name,
         name,
         label: kebab,
-        search: [name, kebab, tags, _japaneseKeywords(name, tags)].filter(Boolean).join(' '),
+        search: [name, kebab, tags, _japaneseKeywords(name, tags, kebab)].filter(Boolean).join(' '),
       };
-    });
+    }).sort((a, b) => a.label.localeCompare(b.label));
   }
 
   // Material Symbols の名前・分類・検索語は大きいので、選択画面を開いた時に一度だけ読む。
@@ -488,7 +488,9 @@
       activeSource = sourceDefs[0]?.id || defaultSource;
     }
     const pageSize = Math.max(24, Math.min(1000, Number(options.pageSize || options.initialPageSize) || 240));
-    let visibleLimit = pageSize;
+    // 初回は画面外の候補を作り過ぎず、追加表示は従来の件数を保つ。呼出元の明示指定は変えない。
+    const initialLimit = options.pageSize || options.initialPageSize ? pageSize : Math.min(pageSize, 64);
+    let visibleLimit = initialLimit;
     let renderToken = 0;
     document.querySelectorAll('.gb-icon-picker').forEach((picker) => {
       if (typeof picker._requestClose === 'function') picker._requestClose();
@@ -600,7 +602,7 @@
         if (sourceDef.id === activeSource) tab.classList.add('active');
         tab.addEventListener('click', () => {
           activeSource = sourceDef.id;
-          visibleLimit = pageSize;
+          visibleLimit = initialLimit;
           tabs.querySelectorAll('.gb-icon-picker-tab').forEach((el) => el.classList.toggle('active', el === tab));
           tabs.querySelectorAll('.gb-icon-picker-tab').forEach((el) => el.setAttribute('aria-selected', el === tab ? 'true' : 'false'));
           renderGrid();
@@ -821,7 +823,7 @@
     }
 
     function resetAndRenderGrid() {
-      visibleLimit = pageSize;
+      visibleLimit = initialLimit;
       renderGrid();
     }
 
@@ -836,15 +838,19 @@
     }
 
     search.addEventListener('input', resetAndRenderGrid);
-    document.body.appendChild(picker);
     const anchorRect = options.anchorEl?.getBoundingClientRect?.() || {
       left: window.innerWidth / 2 - 180,
       right: window.innerWidth / 2 + 180,
       top: 80,
       bottom: 80,
     };
+    // positionPopup は viewport を読んだ後に追加する。先に追加すると寸法読取で
+    // 新規画面のレイアウトを一度余計に確定してしまう。
     if (typeof global.positionPopup === 'function') global.positionPopup(picker, anchorRect, { prefer: options.prefer || 'below' });
-    else if (typeof global.clampPopupToViewport === 'function') global.clampPopupToViewport(picker);
+    else {
+      document.body.appendChild(picker);
+      if (typeof global.clampPopupToViewport === 'function') global.clampPopupToViewport(picker);
+    }
     search.focus();
     scheduleInitialRender();
     if (includeMaterial) {

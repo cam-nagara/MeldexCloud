@@ -316,7 +316,11 @@ const MeldexUnifiedSearch = (() => {
     const tagCondition = readTagCondition();
     // 文字列が空でも、タグ条件だけが入っていれば検索を通す（2-F）。
     if (!q && !tagCondition.tagIds.length) return { results: [], scopes: active(), unavailable: [] };
-    const params = new URLSearchParams({ q, scopes: active().join(','), limit: String(options.limit || 50) });
+    const enabled = active();
+    const scopes = Array.isArray(options.scopes) ? enabled.filter(scope => options.scopes.includes(scope)) : enabled;
+    if (!scopes.length) return { results: [], scopes: [], unavailable: [] };
+    const params = new URLSearchParams({ q, scopes: scopes.join(','), limit: String(options.limit || 50) });
+    if (options.namePreview === true) params.set('name_preview', '1');
     if (options.path) params.set('path', options.path);
     if (tagCondition.tagIds.length) {
       params.set('tag_ids', tagCondition.tagIds.join(','));
@@ -526,16 +530,39 @@ function doTreeNameSearch() {
   // 2026-11-22 M-014 フォルダツリー網羅テスト）。
   if (q || hasTagCondition) {
     clearTimeout(_treeUnifiedSearchTimer);
+    const scopes = MeldexUnifiedSearch.active();
+    const browserData = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || ['dropbox', 'browser'].includes(document.body?.dataset?.cloudMode);
+    const fastNames = q && !browserData && scopes.includes('name');
     _treeUnifiedSearchTimer = setTimeout(() => {
+      if (seq !== _treeUnifiedSearchSeq) return;
       _treeUnifiedSearchTimer = 0;
-      MeldexUnifiedSearch.search(q, { limit: 100 }).then(data => {
+      let complete = false;
+      const applyResults = data => {
         if (seq !== _treeUnifiedSearchSeq) return;
         _treeUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
         applyTreeNameSearch();
         _treeExpandToUnifiedResults(seq);
         MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), data, q);
-      }).catch(() => {});
-    }, 240);
+      };
+      // ローカル版では本文の検索を待たず名前の一致を出す。最終結果は従来の統一検索で確定する。
+      // Dropbox側では同じ保存先の読み直しを増やさず、従来の1要求を維持する。
+      const searchComplete = () => {
+        if (seq !== _treeUnifiedSearchSeq) return;
+        _treeUnifiedSearchTimer = 0;
+        MeldexUnifiedSearch.search(q, { limit: 100 }).then(data => {
+          complete = true;
+          applyResults(data);
+        }).catch(() => {});
+      };
+      if (fastNames) {
+        MeldexUnifiedSearch.search(q, { limit: 100, scopes: ['name'], namePreview: true }).then(data => {
+          if (!complete) applyResults(data);
+        }).catch(() => {});
+        // 本文検索は従来の240msまで待ち、連続入力中の重い要求を増やさない。
+        _treeUnifiedSearchTimer = setTimeout(searchComplete, 140);
+      } else searchComplete();
+    }, fastNames || (scopes.length === 1 && scopes[0] === 'name') ? 100 : 240);
   } else {
     clearTimeout(_treeUnifiedSearchTimer);
     _treeUnifiedSearchTimer = 0;
@@ -1162,7 +1189,7 @@ function openSearchResult(path, type, location = null) {
   else if (kind === 'image' || kind === 'video' || kind === 'audio') {
     if (typeof openMedia === 'function') openMedia(label, path, kind, _expOpts);
   }
-  else if (kind === 'document' && String(path || '').toLowerCase().endsWith('.pdf')) openViewer('/viewer?pdf=' + encodeURIComponent(path));
+  else if (kind === 'document' && /\.(?:pdf|epub)$/i.test(String(path || ''))) openViewer('/viewer?pdf=' + encodeURIComponent(path));
   else if (kind === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, label, _expOpts); }
   else if (kind === 'board') openBoard(label, path, _expOpts);
   else if (kind === 'csv' && typeof openCsvFile === 'function') openCsvFile(label, path, _expOpts);

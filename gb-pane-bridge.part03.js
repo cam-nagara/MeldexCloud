@@ -344,22 +344,16 @@
 
   function _activateToolPaneMatch(match, options) {
     if (!match?.paneId || !match?.tabId) return;
-    const previousActivePane = GBLayout?.activePane || '';
     let groupChanged = false;
     if (match.panelsetNode && match.groupId && match.panelsetNode.activeGroupId !== match.groupId) {
       groupChanged = true;
       if (typeof GBPanelSet?.switchGroup === 'function') {
-        GBPanelSet.switchGroup(match.panelsetNode, match.groupId);
+        GBPanelSet.switchGroup(match.panelsetNode, match.groupId, { deferRender: true });
       } else {
         match.panelsetNode.activeGroupId = match.groupId;
       }
     }
-    GBTabs.activateTab(match.paneId, match.tabId, options);
-    if (groupChanged && typeof _refreshPaneAfterTabSwitch === 'function') {
-      _refreshPaneAfterTabSwitch(match.paneId, {
-        previousActivePane: options?.preserveActivePane ? null : previousActivePane,
-      });
-    }
+    GBTabs.activateTab(match.paneId, match.tabId, groupChanged ? { ...(options || {}), forceRender: true } : options);
   }
 
   function _scheduleContentPaneRestore(paneId) {

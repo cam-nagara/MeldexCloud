@@ -718,7 +718,7 @@ class VersionComponent extends ToolComponent {
             const entity = await apiFetch('/entity?path=' + encodeURIComponent(path), { silentError: true });
             if (this._destroyed || this._loadSeq !== loadSeq || !this.el || state.currentEntityPath !== path) return;
             const parent = String(path).replace(/\\/g, '/').replace(/\/[^/]+$/, '');
-            if (entity?.path === path && Number(entity.revision) >= 1 && parent && parent !== path) {
+            if (entity?.path === path && Number.isInteger(entity.revision) && entity.revision >= 0 && parent && parent !== path) {
               window._meldexEntityVersionTarget = { path, dbPath: parent, sequence: window._selectEntityLoadSeq };
               if (typeof GBLayout !== 'undefined') {
                 const tab = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || []).find(item => item.id === this.tabId);

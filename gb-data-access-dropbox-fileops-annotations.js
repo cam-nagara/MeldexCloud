@@ -228,6 +228,7 @@ async function _writeAnnotationRecord(provider, record, options = {}) {
   await adapter.save(kind, docId, record, saveOptions);
   const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+  return migrated.record?.payload || record;
 }
 
 // 履歴復元では、削除記録を通常の読込・移行へ渡さない。削除記録は残したまま
@@ -393,10 +394,19 @@ async function _listAnnotationRecords(provider, query) {
     }
     for (const item of stored) {
       let payload = item?.payload;
+      // This typed record remains authoritative over its old path even if it
+      // is deleted between the index read and target resolution below.
+      if (payload && typeof payload === 'object' && payload.id) seenIds.add(String(payload.id));
       if (_annotationDeleted(payload)) continue;
       if (payload && typeof payload === 'object' && payload.id) {
-        const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id));
-        payload = migrated.record?.payload || payload;
+        let migrated;
+        try { migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id)); }
+        catch (error) {
+          if (error?.status === 410 && error?.meldexCode === 'annotation_record_deleted') continue;
+          throw error;
+        }
+        payload = migrated.record?.payload;
+        if (!payload || _annotationDeleted(payload)) continue;
       }
       if (payload && typeof payload === 'object' && payload.id) {
         const id = String(payload.id);

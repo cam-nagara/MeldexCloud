@@ -96,13 +96,13 @@
     if (points.length < 2) return;
     const fallbackPx = data.width || (item.type === 'marker' ? 12 : (item.type === 'lasso' ? 1 : 3));
     const widthMedia = _legacyLengthToMedia(scene, fallbackPx);
-    SceneEngine().renderStroke(scene, item.type, points, item.color, item.opacity, item.id, widthMedia);
+    SceneEngine().renderStroke(scene, item.type, points, item.color, item.opacity, item.id, widthMedia, data);
   }
 
   function _renderConvertedRect(scene, item, data) {
     const rect = _legacyRectToMedia(scene, data);
     if (!(rect.width > 0) || !(rect.height > 0)) return;
-    SceneEngine().renderRect(scene, rect, item.color, item.opacity, item.id);
+    SceneEngine().renderRect(scene, { ...rect, opacityModel: data.opacityModel }, item.color, item.opacity, item.id);
   }
 
   // 旧しっぽ({startX,startY,endX,endY}は付箋左上origin相対) → 絶対(#display基準px) → メディア座標

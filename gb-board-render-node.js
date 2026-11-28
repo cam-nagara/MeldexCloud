@@ -879,7 +879,9 @@ function bdAppendNodeImage(div, node) {
     bdSyncNodeImageGeometryAfterLayout(div, node, 'image-error');
   };
   div.appendChild(img);
-  img.src = node.img;
+  // A relocated linked image was just read and verified. Reuse those bytes
+  // for this render only; the saved node keeps its original link URL.
+  img.src = window.bdTakeRelocatedImagePreview?.(node) || node.img;
   window.MeldexImageLoading?.track?.(img, { host: div, label: 'ボードの画像を読み込んでいます', errorMode: 'silent' });
 }
 

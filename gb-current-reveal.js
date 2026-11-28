@@ -285,6 +285,26 @@
     const children = _nodeChildrenContainer(node);
     const toggle = node?.querySelector?.(':scope > .tree-node-row .tree-toggle');
     if (!children || children.dataset.loaded === 'true' || toggle?.dataset.expanded !== 'true') return;
+    if (typeof MutationObserver === 'function') {
+      await new Promise(resolve => {
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timeout);
+          observer.disconnect();
+          resolve();
+        };
+        const check = () => {
+          if (!node.isConnected || toggle.dataset.expanded !== 'true' || children.dataset.loaded === 'true') finish();
+        };
+        const observer = new MutationObserver(check);
+        const timeout = setTimeout(finish, 1500);
+        observer.observe(node.parentElement || node, { attributes: true, attributeFilter: ['data-loaded', 'data-expanded'], childList: true, subtree: true });
+        check();
+      });
+      return;
+    }
     for (let i = 0; i < 30; i++) {
       await _sleep(50);
       if (!node.isConnected || toggle.dataset.expanded !== 'true' || children.dataset.loaded === 'true') return;
@@ -321,6 +341,25 @@
     }
   }
 
+  async function _ensureHomeFolderForReveal(path) {
+    const home = typeof _homeFolderPath === 'string' ? _normalizePath(_homeFolderPath) : '';
+    const target = _normalizePath(path);
+    const body = document.getElementById('body-home');
+    if (!home || !target.startsWith(home + '/') || !body) return false;
+    try {
+      if (body.classList.contains('collapsed')) {
+        if (typeof toggleSidebarSection !== 'function') return false;
+        await toggleSidebarSection('home');
+      } else if (body.dataset.loaded !== 'true' || !_findTreeNodeExact(target)) {
+        if (typeof renderHomeFolderTree !== 'function') return false;
+        await renderHomeFolderTree({ reason: 'reveal-home-target' });
+      }
+      return body.dataset.loaded === 'true';
+    } catch {
+      return false;
+    }
+  }
+
   async function _expandTreeToPath(path) {
     for (const candidate of _candidateRevealPaths(path)) {
       let exact = _findTreeNodeExact(candidate);
@@ -328,7 +367,15 @@
         await _expandTreeNodeAncestors(exact);
         return exact;
       }
-      for (const prefix of _pathPrefixes(candidate)) {
+      const prefixes = _pathPrefixes(candidate);
+      let start = 0;
+      for (let index = prefixes.length - 1; index >= 0; index--) {
+        if (_findTreeNodeExact(prefixes[index])) {
+          start = index;
+          break;
+        }
+      }
+      for (const prefix of prefixes.slice(start)) {
         const node = _findTreeNodeExact(prefix);
         if (!node) continue;
         await _expandTreeNode(node);
@@ -383,6 +430,7 @@
       return false;
     }
     await _ensureOutlinerLoadedIfEmpty();
+    await _ensureHomeFolderForReveal(path);
     let expandedNode = await _expandTreeToPath(path);
     if (!expandedNode && typeof refreshOutliner === 'function') {
       // 新規作成や改名の直後は、表示中の枝がまだ古い場合がある。

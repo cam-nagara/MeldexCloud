@@ -393,14 +393,19 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const imageReturnFocus = () => document.querySelector(`[data-e2e-id="${MeldexEscape.cssIdent(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
+    const imageReturnFocus = () => {
+      const target = document.querySelector(`[data-e2e-id="${MeldexEscape.cssIdent(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
+      if (target.isConnected) target.style.display = '';
+      return target;
+    };
+    const imageOptions = { ...options, dbPath, ctx: valueCtx, returnFocus: imageReturnFocus };
     const imageManager = propTypeConfig.type === 'image' && typeof showImageGalleryModal === 'function'
-      ? () => showImageGalleryModal(entityPath, propName, val, propTypeConfig, { returnFocus: imageReturnFocus })
+      ? () => showImageGalleryModal(entityPath, propName, val, propTypeConfig, imageOptions)
       : null;
-    _showValueContextMenu(e, val, entityPath, propName, imageManager ? {
-      onAddCandidate: () => showImageGalleryModal(entityPath, propName, { value: '' }, propTypeConfig, { returnFocus: imageReturnFocus }),
+    _showValueContextMenu(e, val, entityPath, propName, { ...options, dbPath, ctx: valueCtx, ...(imageManager ? {
+      onAddCandidate: () => showImageGalleryModal(entityPath, propName, { value: '' }, propTypeConfig, imageOptions),
       onManageImage: imageManager,
-    } : {});
+    } : {}) });
   });
   row.appendChild(moreBtn);
   row.addEventListener('mouseenter', () => { moreBtn.style.display = ''; });

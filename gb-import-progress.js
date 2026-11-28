@@ -539,7 +539,7 @@
   }
 
   function _init() {
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     start();
   }
 

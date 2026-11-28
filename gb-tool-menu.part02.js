@@ -1,24 +1,50 @@
 async function _duplicateCurrentFile(toolType) {
   const path = getCurrentFilePath();
   if (!path) return;
+  const isForm = toolType === 'form-app';
+  const progress = isForm ? window.MeldexOperationProgress?.begin?.({
+    kind: 'file-duplicate', label: 'ファイルを複製しています',
+    mode: 'indeterminate', showInTray: true, priority: 35,
+  }) : null;
+  let reservation;
   try {
+    const copyOpen = isForm && typeof FormAppComponent !== 'undefined'
+      ? FormAppComponent.prepareCopyOpen?.(path) : null;
+    if (copyOpen?.flush && !await copyOpen.flush()) throw new Error('元のフォームを保存できないため、複製を中止しました');
     // 取り消しの記録は、操作した画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは複製をゴミ箱へ移す）
     const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
-    const res = await apiPost('/outliner/duplicate', { path });
-    await _refreshWorkspaceAfterFileMutation();
+    if (isForm && typeof historyReserve === 'function') reservation = historyReserve('ファイルを複製', historyScope, null, { preserveRedoOnCancel: true });
+    const res = isForm && typeof FormAppComponent !== 'undefined' && typeof FormAppComponent.copyWithPreview === 'function'
+      ? await FormAppComponent.copyWithPreview(path, copyOpen, { historyPending: reservation?.entry?._historyPending })
+      : await apiPost('/outliner/duplicate', { path, ...(copyOpen ? { include_form_content: true } : {}) });
+    if (!isForm) await _refreshWorkspaceAfterFileMutation();
     const duplicatedPath = res?.new_path || '';
     const duplicatedName = _toolMenuDisplayName(duplicatedPath || path, toolType, res?.new_name || '');
     if (duplicatedPath && typeof pushCreatedOutlinerItemHistory === 'function') {
-      pushCreatedOutlinerItemHistory({ path: duplicatedPath, type: toolType || 'page' }, 'ファイルを複製: ' + (duplicatedName || duplicatedPath), {
+      const register = () => pushCreatedOutlinerItemHistory({ path: duplicatedPath, type: toolType || 'page' }, 'ファイルを複製: ' + (duplicatedName || duplicatedPath), {
         scope: historyScope, refresh: () => _refreshWorkspaceAfterFileMutation(),
       });
+      if (reservation?.capture) reservation.capture(register); else register();
+      if (res.form_previewed && typeof historySetScope === 'function' && typeof _historyActiveScope !== 'undefined') historySetScope(_historyActiveScope);
     }
-    if (duplicatedPath && typeof navOpen === 'function') {
-      navOpen({ type: _toolMenuNavType(toolType), label: duplicatedName, path: duplicatedPath });
+    if (duplicatedPath && !res.form_previewed && typeof navOpen === 'function') {
+      const opened = navOpen({ type: _toolMenuNavType(toolType), label: duplicatedName, path: duplicatedPath },
+        copyOpen ? { formCopyOpen: { ...copyOpen, file: res.form_content } } : undefined);
+      if (isForm) await opened;
     }
+    if (isForm) {
+      // Opening resolves when the content is mounted, before its first paint.
+      // Keep the unrelated tree rebuild out of that first visible frame.
+      if (globalThis.requestAnimationFrame) await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await _refreshWorkspaceAfterFileMutation();
+    }
+    progress?.succeed?.({ summary: 'ファイルを複製しました' });
     showStatus('ファイルを複製しました' + (duplicatedName ? ': ' + duplicatedName : ''));
   } catch (e) {
+    progress?.fail?.({ error: 'ファイルの複製に失敗しました: ' + (e?.message || e || '') });
     showStatus('ファイルの複製に失敗しました: ' + (e?.message || e || ''), true);
+  } finally {
+    reservation?.cancel?.();
   }
 }
 
@@ -97,6 +123,10 @@ function buildToolMenuItems(toolType, component) {
           if (typeof importXlsxToDb === 'function') importXlsxToDb();
           else _showUnavailableToolMenuAction('Excelからインポート');
         }, disabled: !hasFile },
+        ...(_toolMenuKindleImportAvailable() ? [{ label: 'Kindleの本棚を取り込む...', action: () => {
+          if (typeof importKindleLibraryToDb === 'function') importKindleLibraryToDb();
+          else _showUnavailableToolMenuAction('Kindleの本棚を取り込む');
+        }, disabled: !hasFile }] : []),
       ],
       export: [
         { label: 'CSVとして保存...', action: () => _exportFile('db', 'csv'), disabled: !hasFile },
@@ -215,6 +245,8 @@ function buildToolMenuItems(toolType, component) {
       { label: 'シートから一括読込...', action: () => {
         if (typeof bdOpenBulkLinkImport === 'function') bdOpenBulkLinkImport();
       }, disabled: !hasFile },
+      { separator: true },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
     calendar: [
       { label: '新規イベント', action: () => _openCalendarEventFromMenu() },
@@ -259,7 +291,7 @@ function buildToolMenuItems(toolType, component) {
 
   const fileActions = hasFile && !isFolderTool ? [
     { separator: true },
-    { label: '別名で保存...', action: context => _showSaveAsModal(currentPath, { trigger: context?.trigger }) },
+    { label: '別名で保存...', action: context => _showSaveAsModal(currentPath, { trigger: context?.trigger, toolType }) },
     { label: 'ファイルを複製', action: () => _duplicateCurrentFile(toolType) },
     { label: 'ファイルを削除', action: () => _deleteCurrentFile(toolType) },
   ] : [];
@@ -428,6 +460,62 @@ async function importXlsxToDb() {
       return;
     }
     if (typeof showStatus === 'function') showStatus('Excelのインポートに失敗しました: ' + (e?.userMessage || e?.message || e), true);
+  }
+}
+
+// シート: 「インポート」→「Kindleの本棚を取り込む...」
+// Kindle for PC（Windows）がこのPCに残す本棚の記録を、開いているシートへ取り込む。Cloud・Windows以外では出さない。
+function _toolMenuKindleImportAvailable() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
+  const platform = String(navigator.userAgentData?.platform || navigator.platform || '');
+  return /^win/i.test(platform);
+}
+
+async function importKindleLibraryToDb() {
+  const label = 'Kindleの本棚を取り込む';
+  const dbPath = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : null;
+  if (!dbPath) { _showUnavailableToolMenuAction(label); return; }
+  let status = null;
+  try {
+    status = await apiFetch('/import-kindle/status');
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('Kindleの本棚を確認できませんでした: ' + (e?.userMessage || e?.message || e), true);
+    return;
+  }
+  if (!status?.available) {
+    if (typeof showStatus === 'function') showStatus(status?.message || (label + 'を実行できませんでした'), true);
+    return;
+  }
+  const count = Number(status.count || 0);
+  const syncLine = status.sync_time ? 'Kindle for PCの最終同期: ' + status.sync_time : 'Kindle for PCの最終同期: 不明';
+  const helpHost = document.createElement('div');
+  helpHost.className = 'gb-kindle-import-help';
+  helpHost.dataset.e2eId = 'kindle-import-help';
+  helpHost.innerHTML = '最新の本棚にするには ' + (typeof fieldHelp === 'function' ? fieldHelp(
+    '取り込まれるのは、Kindle for PCが最後に同期した時点の本棚です。最新にしたい時は、先にKindle for PCを開いて同期してから取り込んでください。'
+    + '同じシートへもう一度取り込むと、ASINで照合して新しい本を追加し、変わった項目だけを更新します。'
+    + '自分で足した列の値と、Kindleから無くなった本はそのまま残ります。'
+  ) : '');
+  const accepted = typeof cfConfirm === 'function'
+    ? await cfConfirm('Kindleの本棚（' + count + '冊）をこのシートに取り込みます\n' + syncLine, { okLabel: '取り込む', extraNode: helpHost })
+    : false;
+  if (!accepted) return;
+  try {
+    const result = await runBackgroundJob('/import-kindle', { db_path: dbPath, background: true }, { operationLabel: 'Kindleの本棚を取り込んでいます' });
+    const added = Number(result?.added || 0);
+    const updated = Number(result?.updated || 0);
+    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    if (typeof showStatus === 'function') {
+      showStatus('Kindleの本棚を取り込みました（追加 ' + added + '冊・更新 ' + updated + '冊）' + (warnings.length ? '。' + warnings[0] : ''), warnings.length > 0);
+    }
+    if (typeof selectDatabase === 'function' && getCurrentFilePath() === dbPath) selectDatabase(dbPath);
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      if (typeof showStatus === 'function') showStatus('Kindleの本棚の取り込みを停止しました。取り込み済みの本は残り、もう一度取り込むと続きを反映します。');
+      if (getCurrentFilePath() === dbPath && typeof selectDatabase === 'function') selectDatabase(dbPath);
+      return;
+    }
+    if (typeof showStatus === 'function') showStatus('Kindleの本棚を取り込めませんでした: ' + (e?.userMessage || e?.message || e), true);
   }
 }
 
@@ -644,6 +732,12 @@ async function _showSaveAsModal(srcPath, options = {}) {
     // 取り消しの記録は、操作した画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは作ったコピーをゴミ箱へ移す）
     const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
     try {
+      if (options.toolType === 'form-app' && typeof FormAppComponent !== 'undefined') {
+        const source = FormAppComponent.prepareCopyOpen?.(srcPath, { preloadSheet: false });
+        if (source?.flush && !await source.flush()) {
+          throw new Error('元のフォームを保存できないため、別名での保存を中止しました');
+        }
+      }
       const res = await apiPost('/outliner/save-as', {
         path: srcPath,
         new_name: newName,

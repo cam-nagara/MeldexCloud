@@ -51,8 +51,10 @@
     box-shadow: inset 0 0 0 9999px var(--cloud-mobile-selection-row-bg, rgba(64, 156, 255, 0.14)) !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #app-toolbar,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar:not(.folder-toolbar):not(.chat-session-toolbar):not(.gb-form-app-toolbar):not([data-ui-component="search-filter-row"]),
+  /* シートは上のツールバーを出す（2026-11-26 利用者の要望）。マップも出す（☰に地図の操作が無く、スマホで地図を編集する入口が無かった）。
+     入りきらない操作は共通のあふれメニューへ回る。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #app-toolbar:not([data-sheet-toolbar="1"]),
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #main-views .gb-toolbar:not(.folder-toolbar):not(.chat-session-toolbar):not(.gb-form-app-toolbar):not(#tb-db):not(.gb-toolbar-map):not(.gb-map-contextbar):not(.gb-map-viewbar):not([data-ui-component="search-filter-row"]),
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile-editing-ui="1"] #se-toolbar {
     display: none !important;
   }

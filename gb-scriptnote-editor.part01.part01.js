@@ -479,30 +479,44 @@ class ScriptNoteEditor {
         return;
       }
       if (action === 'overwrite') {
+        const documentAtRequest = this.doc;
         const json = JSON.stringify(this.collectDoc(), null, 2);
-        const result = await apiPut('/file?path=' + encodeURIComponent(path), {
-          content: json,
-          force_overwrite: true,
-        });
-        const resolved = coordinator?.resolveConflict?.(documentKey, generation);
-        if (coordinator && !resolved) {
-          throw new Error('シナリオの競合状態が更新されたため、上書き結果を確定できません');
-        }
-        if (this._path === path) {
-          this._lastSavedEtag = result?.etag || this._lastSavedEtag;
-          if (coordinator && (result?.transport_revision || result?.etag)) {
-            this._lastSavedTransportRevision = coordinator.normalizeTransportRevision(
-              coordinator.currentTransportName(),
-              result.transport_revision || result.etag,
-            );
-            coordinator.bindDocumentIdentity(path, result);
+        const savedRowIds = createScriptNoteRowIdSet(this.doc);
+        // 保存先へ書けた時点と、版の確定通知は別の時刻になる。後続の保存は
+        // 競合解除と版の反映まで待ち、その間の追加入力を保存済みにしない。
+        const pending = (async () => {
+          const result = await apiPut('/file?path=' + encodeURIComponent(path), {
+            content: json,
+            force_overwrite: true,
+          }, { backgroundFileWrite: true });
+          const resolved = coordinator?.resolveConflict?.(documentKey, generation);
+          if (coordinator && !resolved) {
+            throw new Error('シナリオの競合状態が更新されたため、上書き結果を確定できません');
           }
-          this._lastSavedRowIds = createScriptNoteRowIdSet(this.doc);
-          this._dirty = false;
+          const sameDocument = this._path === path && this.doc === documentAtRequest;
+          const unchanged = sameDocument && JSON.stringify(this.collectDoc(), null, 2) === json;
+          if (sameDocument) {
+            this._lastSavedEtag = result?.etag || this._lastSavedEtag;
+            if (coordinator && (result?.transport_revision || result?.etag)) {
+              this._lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+                coordinator.currentTransportName(),
+                result.transport_revision || result.etag,
+              );
+              coordinator.bindDocumentIdentity(path, result);
+            }
+            this._lastSavedRowIds = savedRowIds;
+            this._dirty = !unchanged;
+          }
+          if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+          if (unchanged) await window.MeldexDraftRecovery?.markSynced?.(path);
+          if (typeof showStatus === 'function') showStatus('自分の編集でシナリオを上書き保存しました');
+        })();
+        this._conflictWritePending = pending;
+        try {
+          await pending;
+        } finally {
+          if (this._conflictWritePending === pending) this._conflictWritePending = null;
         }
-        if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
-        await window.MeldexDraftRecovery?.markSynced?.(path);
-        if (typeof showStatus === 'function') showStatus('自分の編集でシナリオを上書き保存しました');
         return;
       }
 
@@ -535,7 +549,7 @@ class ScriptNoteEditor {
         const result = await apiPut('/file?path=' + encodeURIComponent(nextPath), {
           content: prepared.text,
           ...(targetExists ? { force_overwrite: true } : { create_only: true }),
-        });
+        }, { backgroundFileWrite: true });
         if (this._path !== path) throw new Error('表示中のシナリオが切り替わったため、別名保存結果を確定できません');
         const resolved = coordinator?.resolveConflict?.(documentKey, generation);
         if (coordinator && !resolved) throw new Error('シナリオの競合状態が更新されました');
@@ -594,6 +608,10 @@ class ScriptNoteEditor {
   }
 
   async save() {
+    if (this._conflictWritePending) {
+      try { await this._conflictWritePending; } catch (_) {}
+      if (!this._dirty) return true;
+    }
     if (!this.doc) return true;
     if (this._readOnly) {
       if (this._dirty && typeof showStatus === 'function') {
@@ -631,7 +649,7 @@ class ScriptNoteEditor {
           : (chainedRevision || this._lastSavedEtag || ''),
         transport_revision: revisionForWrite || '',
         skip_if_missing: true,
-      });
+      }, { backgroundFileWrite: true });
     };
     try {
       // 工程2-C項目3: 2秒自動保存・flush()・書式変換保存を同じ文書キューへ接続する
@@ -798,6 +816,9 @@ class ScriptNoteEditor {
 
   flush() {
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    if (this._conflictWritePending) {
+      return this._conflictWritePending.catch(() => {}).then(() => this.flush());
+    }
     this._syncAllFromDom();
     if (this._dirty) return this.save();
     return Promise.resolve(true);
@@ -1463,6 +1484,7 @@ class ScriptNoteEditor {
   _render() {
     if (!this.host || !this.doc) return;
     this._repackWrapForResize = null;
+    this._refreshScriptNoteColumnLayout = null;
     this._teardownWrapResizeObserver();
     if (typeof this._sanitizeRowSelection === 'function') this._sanitizeRowSelection();
     // フロートバーを除去（document.body上にあるため host.innerHTML='' では消えない）
@@ -1573,26 +1595,30 @@ class ScriptNoteEditor {
     }
 
     // ヘッダー生成
-    const textWidth = colWidths._text || 0;
     const colLabels = this.doc.editor?.columnLabels || {};
     const countDef = this._getCountDef();
     const defaultLabels = { _gutter: countDef.primaryLabel, _gutter2: countDef.secondaryLabel, _character: 'キャラ', _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
-    const allStdCols = [
-      { id: '_handle', label: '', width: colWidths._handle || 54 },
-      { id: '_gutter', label: colLabels._gutter || defaultLabels._gutter, width: colWidths._gutter || 40 },
-      { id: '_gutter2', label: colLabels._gutter2 || defaultLabels._gutter2, width: colWidths._gutter2 || 48 },
-      { id: '_character', label: colLabels._character || defaultLabels._character, width: colWidths._character || 88 },
-      { id: '_role', label: colLabels._role || defaultLabels._role, width: colWidths._role || 88 },
-      { id: '_status', label: colLabels._status || defaultLabels._status, width: colWidths._status || 92 },
-      { id: '_text', label: colLabels._text || defaultLabels._text, width: textWidth },
-    ];
-    // 列のアイコン（列メニューの「アイコンを変更」で選ぶ）。固定列は standardColumnSettings、追加列は列定義に持つ。
-    const stdHeaderSettings = this.doc.editor?.standardColumnSettings || {};
-    allStdCols.forEach(col => { col.icon = typeof stdHeaderSettings[col.id]?.icon === 'string' ? stdHeaderSettings[col.id].icon : ''; });
-    const allColumns = [
-      ...allStdCols,
-      ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80, icon: typeof c.icon === 'string' ? c.icon : '' })),
-    ];
+    const buildColumns = () => {
+      const colWidths = this.doc.editor?.columnWidths || {};
+      const textWidth = colWidths._text || 0;
+      const allStdCols = [
+        { id: '_handle', label: '', width: colWidths._handle || 54 },
+        { id: '_gutter', label: colLabels._gutter || defaultLabels._gutter, width: colWidths._gutter || 40 },
+        { id: '_gutter2', label: colLabels._gutter2 || defaultLabels._gutter2, width: colWidths._gutter2 || 48 },
+        { id: '_character', label: colLabels._character || defaultLabels._character, width: colWidths._character || 88 },
+        { id: '_role', label: colLabels._role || defaultLabels._role, width: colWidths._role || 88 },
+        { id: '_status', label: colLabels._status || defaultLabels._status, width: colWidths._status || 92 },
+        { id: '_text', label: colLabels._text || defaultLabels._text, width: textWidth },
+      ];
+      // 列のアイコン（列メニューの「アイコンを変更」で選ぶ）。固定列は standardColumnSettings、追加列は列定義に持つ。
+      const stdHeaderSettings = this.doc.editor?.standardColumnSettings || {};
+      allStdCols.forEach(col => { col.icon = typeof stdHeaderSettings[col.id]?.icon === 'string' ? stdHeaderSettings[col.id].icon : ''; });
+      return [
+        ...allStdCols,
+        ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80, icon: typeof c.icon === 'string' ? c.icon : '' })),
+      ];
+    };
+    const allColumns = buildColumns();
     const columnsById = new Map(allColumns.map(column => [column.id, column]));
     const cols = this._getVisibleColumnIds().map(id => columnsById.get(id)).filter(Boolean);
     const buildHeader = (withResizer = true, instanceKey = '') => {
@@ -1626,7 +1652,7 @@ class ScriptNoteEditor {
         cell.dataset.colLabel = col.label;
         cell.dataset.e2eId = `sn2-header-cell-${safeId(col.id)}${e2eSuffix}`;
         if (viewMode === 'vertical' && col.id !== '_handle') this._wrapTcy(cell);
-        if (col.id !== '_handle') this._prependScriptNoteHeaderIcon?.(cell, col.icon);
+        if (col.id !== '_handle') this._prependScriptNoteHeaderIcon?.(cell, this._getScriptNoteColumnIcon?.(col.id) ?? col.icon);
         if (col.width) cell.style.width = viewMode === 'vertical' ? '' : `var(--sn2-col-${col.id}, ${col.width}px)`;
         // ヘッダーセルのD&D並べ替え（_handle以外）
         if (col.id !== '_handle') {
@@ -1653,7 +1679,7 @@ class ScriptNoteEditor {
             this._pushUndo('列順序変更');
             if (!this.doc.editor) this.doc.editor = {};
             this.doc.editor.columnOrder = order;
-            this._render();
+            if (!this._refreshScriptNoteColumnLayout?.()) this._render();
             this._markDirty();
           });
         }
@@ -1792,9 +1818,12 @@ class ScriptNoteEditor {
         if (col.width) {
           el.style.setProperty(`--sn2-col-${col.id}`, col.width + 'px');
           if (viewMode === 'vertical') el.style.setProperty(`--sn2-vcol-${col.id}`, col.width + 'px');
+        } else {
+          el.style.removeProperty(`--sn2-col-${col.id}`);
+          el.style.removeProperty(`--sn2-vcol-${col.id}`);
         }
       });
-      if (textWidth > 0) el.style.setProperty('--sn2-text-flex', '0 0 auto');
+      el.style.setProperty('--sn2-text-flex', this.doc.editor?.columnWidths?._text > 0 ? '0 0 auto' : '0 1 auto');
     };
     setColVars(scroll);
     setColVars(editor);

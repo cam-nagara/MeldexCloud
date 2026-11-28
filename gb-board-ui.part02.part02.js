@@ -18,12 +18,16 @@ let _bdLastDetailSelectionKey = null;
 function _bdSyncDepthStyleTabForSelectionChange() {
   const nodeIds = (typeof bd !== 'undefined' && bd.selected) ? [...bd.selected].sort() : [];
   const connIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds().slice().sort() : [];
-  const key = nodeIds.join(',') + '|' + connIds.join(',');
+  const context = typeof bd !== 'undefined' ? [bd.path || '', Number(bd._openSeq) || 0] : ['', 0];
+  const key = JSON.stringify([...context, nodeIds, connIds]);
   if (key === _bdLastDetailSelectionKey) return;
   _bdLastDetailSelectionKey = key;
   const depthEl = document.getElementById('detail-tab-board-depth-style');
   if (depthEl && depthEl.childElementCount > 0 && typeof _bdRenderDepthStyleInPanel === 'function') {
+    depthEl._bdDepthSelectionRefreshPending = true;
+    if (depthEl.hidden) return;
     _bdRenderDepthStyleInPanel(depthEl, _bdLastDepthEditIndex);
+    depthEl._bdDepthSelectionRefreshPending = false;
   }
 }
 
@@ -92,6 +96,12 @@ function bdRefreshSelectionDetails(forceEmpty) {
 
 function bdSyncBoardUi(forceEmptyDetail) {
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdSyncBoardUi') : 0;
+  const refresh = () => _bdSyncBoardUiContents(forceEmptyDetail, started);
+  if (typeof bdWithNormalizedBoardUiState === 'function') return bdWithNormalizedBoardUiState(refresh);
+  return refresh();
+}
+
+function _bdSyncBoardUiContents(forceEmptyDetail, started) {
   if (typeof state === 'undefined' || state.view === 'board') {
     const selected = bd.nodes.filter(node => bd.selected.has(node.id));
     const targets = selected.map(node => {

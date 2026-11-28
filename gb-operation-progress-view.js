@@ -655,6 +655,7 @@
 
   function _render(detail) {
     if (!document.body) return;
+    if (detail?.reason === 'begin' && detail.operation?.visible === false) return;
     const operations = detail?.operations || window.MeldexOperationProgress.list();
     _renderTray(operations);
     _renderOrigins(operations);

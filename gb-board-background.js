@@ -114,7 +114,7 @@ function _bdCanvasCssVar(canvas, key) {
 
 function _bdBoardThemeCssVar(canvas, key) {
   return _bdCanvasCssVar(canvas, key)
-    || (typeof getCssVar === 'function' ? (getCssVar(key) || '').trim() : '');
+    || (typeof getCssVar === 'function' ? ((typeof bdReadRenderCssVar === 'function' ? bdReadRenderCssVar(key) : getCssVar(key)) || '').trim() : '');
 }
 
 function _bdClearCanvasBackgroundFileStyleVars(canvasEl) {
@@ -252,7 +252,10 @@ function _bdBoardThemeBackgroundColor() {
     : '';
   if (fileStyleBg) return fileStyleBg;
   if (!String(bd?.themeId || '').trim()) {
-    const documentBg = typeof getCssVar === 'function' ? (getCssVar('--bd-bg') || '').trim() : '';
+    const readDocumentBg = () => typeof getCssVar === 'function'
+      ? ((typeof bdReadRenderCssVar === 'function' ? bdReadRenderCssVar('--bd-bg') : getCssVar('--bd-bg')) || '').trim() : '';
+    const documentBg = typeof bdReadBoardThemeCssValue === 'function'
+      ? bdReadBoardThemeCssValue('--bd-bg', readDocumentBg) : readDocumentBg();
     if (documentBg) return documentBg;
   }
   if (typeof MeldexThemeManager === 'undefined' || typeof MeldexThemeManager.getActiveBoardTheme !== 'function') {

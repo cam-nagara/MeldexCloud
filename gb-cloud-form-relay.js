@@ -175,8 +175,14 @@ const MeldexCloudFormRelay = (() => {
         if (envelope.submission_id !== id) throw new Error('受付番号が異なります');
         const response = await decrypt(binding.channel, envelope);
         if (!binding.token || response.token !== binding.token || response.form_source_id !== binding.sourceId) { result.blocked++; continue; }
-        await io.import({ ...response, source_path: binding.sourcePath, submission_id: id });
-        io.receipt(id); result.imported++;
+        const outcome = await io.import({ ...response, source_path: binding.sourcePath, submission_id: id });
+        if (outcome?.queued) {
+          result.queued = (result.queued || 0) + 1;
+          continue;
+        }
+        io.receipt(id);
+        if (outcome?.replayed) result.replayed = (result.replayed || 0) + 1;
+        else result.imported++;
       } catch (error) { result.failed++; io.onError?.(error, path); }
     }
     return result;
@@ -188,7 +194,15 @@ const MeldexCloudFormRelay = (() => {
       write: (path, content) => apiPut('/file?path=' + encodeURIComponent(path), { content, create_only: true }),
       list: async path => {
         try {
-          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true', { silentError: true });
+          const provider = await globalThis.MeldexStorageAdapter?.getProvider?.();
+          if (typeof provider?.refreshMetadata === 'function') {
+            if (await provider.ensureWorkspacePermission?.('read') === false)
+              throw Object.assign(new Error('保存先の読み取り権限がありません'), { status: 403 });
+            // The respondent can create this folder after an earlier empty poll.
+            // Refresh only the intake folder instead of retaining a cached miss.
+            if (!await provider.refreshMetadata(path)) return [];
+          }
+          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true', { silentError: true, skipBrowseCache: true, cache: 'no-store' });
           return Array.isArray(items) ? items : items.items || [];
         } catch (error) { if (error.status === 404) return []; throw error; }
       },
@@ -240,11 +254,14 @@ const MeldexCloudFormRelay = (() => {
         if (event.source !== target.popup || event.origin !== target.origin || event.data?.nonce !== target.nonce
           || event.data?.type !== 'meldex-form-intake-result') return;
         if (event.data.ok) { submitViaCloud.pending = null; finish(null, event.data); }
-        else finish(new Error(event.data.error || '回答を保存できませんでした'));
+        else {
+          if (submitViaCloud.pending?.key === payloadKey && event.data.outcome_unknown === true) submitViaCloud.pending.uncertain = true;
+          finish(new Error(event.data.error || '回答を保存できませんでした'));
+        }
       };
       const send = () => {
         if (target.popup.closed) { finish(new Error('受付画面が閉じられました。入力は残っています')); return; }
-        target.popup.postMessage({ type: 'meldex-form-intake', nonce: target.nonce, artifactPath: intake.artifact_path, artifactFolderId: intake.folder_id || '', envelope }, target.origin);
+        target.popup.postMessage({ type: 'meldex-form-intake', nonce: target.nonce, artifactPath: intake.artifact_path, artifactFolderId: intake.folder_id || '', envelope, outcome_unknown: submitViaCloud.pending?.key === payloadKey && submitViaCloud.pending.uncertain === true }, target.origin);
       };
       const timer = setInterval(send, 500), timeout = setTimeout(() => finish(new Error('受付を確認できません。Cloudへのログイン後に再送してください')), 300000);
       window.addEventListener('message', receive); send();
@@ -272,15 +289,26 @@ const MeldexCloudFormRelay = (() => {
         const status = document.createElement('p'); status.setAttribute('role', 'status');
         const wrapper = document.createElement('div'); wrapper.append(body, status);
         const send = document.createElement('button'); send.className = 'gb-btn gb-btn-primary'; send.textContent = '回答を送信'; send.dataset.e2eId = 'form-intake-send';
-        let saving = false;
+        let saving = false, uncertain = event.data.outcome_unknown === true;
         const modal = GBUI.createModal({ id: 'form-intake', title: '回答の送信', body: wrapper, footer: send,
-          onBeforeClose: () => !saving, onClose: () => { if (!completed) { reply({ ok: false, error: '送信を取り消しました' }); busy = false; } } });
+          onBeforeClose: () => !saving, onClose: () => {
+            if (!completed) {
+              completed = { ok: false, outcome_unknown: uncertain, error: uncertain
+                ? '送信結果は未確認です。保存されている可能性があります。同じ内容で再試行してください'
+                : '送信を取り消しました' };
+              reply(completed); busy = false;
+            }
+          } });
         send.addEventListener('click', async () => {
           if (saving) return; saving = true; send.disabled = true;
           try {
-            completed = await accept(request, io); reply(completed);
+            completed = await accept(request, { ...io, write: (...args) => {
+              uncertain = true; return io.write(...args);
+            } }); reply(completed);
             status.textContent = '回答を受け付けました。この画面を閉じられます。';
-          } catch (error) { status.textContent = '保存できません: ' + (error.userMessage || error.message) + '。ログイン・共有権限を確認して再試行してください。'; }
+          } catch (error) {
+            status.textContent = '保存できません: ' + (error.userMessage || error.message) + '。ログイン・共有権限を確認して再試行してください。';
+          }
           finally { saving = false; send.disabled = !!completed; }
         });
         modal.open();

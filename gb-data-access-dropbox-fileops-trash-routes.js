@@ -347,7 +347,7 @@
     if (pathname === '/auth/me' && method === 'GET') {
       const username = url.searchParams.get('username') || 'anonymous';
       const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
-      return { user: username, username, role: state.access === 'viewer' ? 'viewer' : 'editor' };
+      return { user: username, username, role: state.isOwner ? 'owner' : state.access === 'viewer' ? 'viewer' : 'editor' };
     }
     if (pathname === '/pick-folder' && method === 'GET') return { ok: false, needManualInput: true };
 

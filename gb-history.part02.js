@@ -123,6 +123,8 @@ function historyMarkFileEffects(entry, effects) {
   if (!entry || !effects) return entry;
   const clean = (list) => (Array.isArray(list) ? list : []).map(p => String(p || '')).filter(Boolean);
   entry.fileEffects = { undoDeletes: clean(effects.undoDeletes), redoDeletes: clean(effects.redoDeletes) };
+  const owner = String(effects.undoCompanionOwner || '');
+  if (owner && entry.fileEffects.undoDeletes.some(path => _historySameFile(path, owner))) entry.fileEffects.undoCompanionOwner = owner;
   return entry;
 }
 
@@ -158,6 +160,9 @@ function _historyEntryDeletesOtherFile(entry, direction, scope) {
   const paths = entry?.fileEffects?.[direction === 'undo' ? 'undoDeletes' : 'redoDeletes'] || [];
   if (!paths.length) return false;
   const own = _historyScopeFilePath(scope);
+  // 新規フォームと同時に作った回答先だけを、フォーム側から一緒に取り消す。
+  const companionOwner = direction === 'undo' && entry?.fileEffects?.undoCompanionOwner;
+  if (own && companionOwner && _historySameFile(companionOwner, own) && paths.some(path => _historySameFile(path, own))) return false;
   return paths.some(path => !own || !_historySameFile(path, own));
 }
 
@@ -1042,7 +1047,13 @@ function _meldexMapTabHistoryScope(tab) {
 }
 
 function _meldexFormAppTabHistoryScope(tab) {
-  const path = String(tab?.path || tab?.state?.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  let path = String(tab?.path || tab?.state?.formPath || '');
+  if (path && typeof MeldexRuntimeAdapter !== 'undefined' && MeldexRuntimeAdapter.isBrowserDataMode?.() === false
+      && typeof state !== 'undefined' && state.vaultPath && window.GBPathUtils?.isAbsolute && window.GBPathUtils?.join
+      && window.GBPathUtils.isAbsolute(state.vaultPath) && !window.GBPathUtils.isAbsolute(path)) {
+    path = window.GBPathUtils.join(state.vaultPath, path);
+  }
+  path = path.replace(/\\/g, '/').replace(/^\/+/, '');
   return path ? `form-app:${path}` : '';
 }
 

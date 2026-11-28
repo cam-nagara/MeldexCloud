@@ -73,6 +73,8 @@
     const appTb = effectiveShowToolbar ? _ensureAppToolbarElement() : document.getElementById('app-toolbar');
     const tbDb = appTb?.querySelector?.('#tb-db') || document.getElementById('tb-db');
     if (tbDb) tbDb.style.display = effectiveIsDbView ? 'contents' : 'none';
+    // 見た目の規則はこの目印で見分ける（style属性を :has() で見ると全体の再計算が起きる。2026-11-27）。
+    if (appTb) appTb.dataset.sheetToolbar = effectiveIsDbView ? '1' : '0';
     const rtTb = appTb?.querySelector?.('#rt-toolbar') || document.getElementById('rt-toolbar');
     // page-view内に専用ツールバー(#page-rt-toolbar)があるので、app-toolbar内のrt-toolbarは常に非表示
     if (rtTb) rtTb.style.display = 'none';

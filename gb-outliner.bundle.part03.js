@@ -1,3 +1,24 @@
+    || !!window.MeldexSaveSafety?.isConflictPath?.(normalized);
+}
+
+function _syncOutlinerConflictBadgeToNode(nodeEl) {
+  if (!nodeEl || !nodeEl._nodeData) return;
+  const row = nodeEl.querySelector(':scope > .tree-node-row');
+  const label = row?.querySelector('.tree-label');
+  if (!row || !label) return;
+  row.querySelector('.tree-conflict-badge')?.remove();
+  row.classList.remove('has-conflict');
+  if (!_isOutlinerConflictPath(nodeEl._nodeData.path)) return;
+  row.classList.add('has-conflict');
+  const badge = document.createElement('span');
+  badge.className = 'tree-conflict-badge';
+  badge.innerHTML = lucide('triangleAlert', 12);
+  badge.title = '競合が発生しています。比較ビューまたは競合解消ダイアログで確認してください';
+  badge.dataset.gbTooltip = badge.title;
+  label.insertAdjacentElement('afterend', badge);
+}
+
+function refreshVisibleOutlinerConflictState() {
   document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')
     .forEach(node => _syncOutlinerConflictBadgeToNode(node));
 }
@@ -493,6 +514,10 @@ function createTreeNodeFromBrowse(item, rootPath) {
             });
           }
           childrenDiv.dataset.loaded = 'true';
+          // 検索中の遅延読込は、一致の子が届いた時点で祖先の表示も確定する。
+          // 検索側の次の250msタイマーまで、閉じたフォルダ全体を隠したまま待たせない。
+          if ((_treeSearchQuery || (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length)
+              && typeof applyTreeNameSearch === 'function') applyTreeNameSearch();
           // 読み込み中にArrowRightの2打目が押されていた場合、最初の子へフォーカス
           // 移動する予約を消化する。フォーカスが別ノードへ移っていたら（選択が
           // このノード以外になっていたら）予約は破棄し、勝手にフォーカスを飛ばさない。
@@ -872,29 +897,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
       showStatus('ワークスペースの中に移動する場合は、ワークスペース名の上にドロップしてください');
       return;
     }
-
-    const targetParent = div.parentElement;
-
-    // リンクファイルチェック
-    const hasLinked = nodes.some(n => n._nodeData && n._nodeData.linked);
-    if (hasLinked) {
-      showStatus('リンクファイルは移動できません（Alt+D&Dでリンク先を変更）');
-      return;
-    }
-
-    // 移動先フォルダを決定
-    let destFolder = '';
-    if (position === 'inside' && (isFolder || isDB)) {
-      destFolder = item.path;
-    } else {
-      const virtualParentPath = window.GBOutlinerVirtualRender?.parentPathForItem(div.parentElement, item.path);
-      const parentNode = div.parentElement?.closest('.tree-node');
-      if (virtualParentPath !== undefined) {
-        destFolder = virtualParentPath || parentNode?._nodeData?.path || '';
-      } else if (parentNode) {
-        destFolder = parentNode._nodeData?.path || '';
-      } else if (div.closest('#body-home') && _homeFolderPath) {
-        destFolder = _homeFolderPath;
-      } else {
-        destFolder = '';
-      }

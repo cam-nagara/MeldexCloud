@@ -16,6 +16,28 @@
     const values = slots.filter(Boolean).map(slot => slot.color).filter(Boolean);
     return values.length ? values : (global.PALETTE_COLORS || ['#e4bd60', '#90bc83', '#7eacd1', '#c48080']).slice(0, 8);
   }
+  // ハイライトの色は共通カラーパレットで選ぶ（不透明度つき）。最後に使った色を次のハイライトに使う。
+  // 色に不透明度を含め、以前の「42%に薄める」は印（opacityModel）のない以前のハイライトだけに使う（2026-11-27）。
+  const OPACITY_MODEL = 'color-alpha-v1';
+  const COLOR_KEY = 'meldex-annotation-highlight-color';
+  function currentColor() {
+    try { const saved = localStorage.getItem(COLOR_KEY); if (saved && CSS.supports('color', saved)) return saved; } catch {}
+    const base = colors()[0] || '#e4bd60';
+    return typeof global._annotationColorWithAlpha === 'function' ? global._annotationColorWithAlpha(base, 0.4) : base;
+  }
+  function rememberColor(color) {
+    if (!color || color === 'transparent') return;
+    try { localStorage.setItem(COLOR_KEY, color); } catch {}
+  }
+  // 共通カラーパレットで色を選び、閉じた時に1回だけ呼び出し元へ返す（選ばずに閉じたら返さない）。
+  function pickColor(x, y, onPicked) {
+    if (typeof global.openColorPalette !== 'function') return false;
+    const anchor = { getBoundingClientRect: () => ({ left: x, right: x, top: y, bottom: y, width: 0, height: 0, x, y }) };
+    let picked = '';
+    global.openColorPalette(anchor, currentColor(), color => { if (color && color !== 'transparent') picked = color; },
+      { allowTransparent: false, onClose: () => { if (picked) { rememberColor(picked); onPicked(picked); } } });
+    return true;
+  }
   function textNodes(block) {
     const nodes = [], walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
       acceptNode: n => n.parentElement?.closest('._nl-id,.cmt-badge,.cmt-line-badge,button,[aria-hidden=true]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
@@ -127,20 +149,25 @@
         || (anchor.kind === 'note' && rangeFor(surface.host.querySelector('[data-editor-local-id=page-content],#page-content'), anchor, cache));
       if (!range) continue;
       const color = CSS.supports('color', item.color) ? item.color : colors()[0];
-      if (!groups.has(color)) groups.set(color, []);
-      groups.get(color).push(range); state.ranges.set(item.id, range);
+      const group = (data.opacityModel === OPACITY_MODEL ? 'alpha|' : 'legacy|') + color;
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(range); state.ranges.set(item.id, range);
     }
     const rules = [];
-    for (const [color, ranges] of groups) {
+    for (const [group, ranges] of groups) {
       const key = 'meldex-highlight-' + (++serial);
+      const [model, color] = [group.slice(0, group.indexOf('|')), group.slice(group.indexOf('|') + 1)];
       CSS.highlights.set(key, new Highlight(...ranges)); state.keys.push(key);
-      rules.push(`::highlight(${key}) { background-color: color-mix(in srgb, ${color} 42%, transparent); color: inherit; }`);
+      // 新しいハイライトは色（不透明度を含む）のとおり、以前のハイライトは従来どおり42%に薄める
+      const background = model === 'alpha' ? color : `color-mix(in srgb, ${color} 42%, transparent)`;
+      rules.push(`::highlight(${key}) { background-color: ${background}; color: inherit; }`);
     }
     state.style.textContent = rules.join('\n');
   }
   async function create(context, color) {
     const { surface, range, text, anchor } = context;
-    const pending = { id: 'pending-' + (++serial), type: 'highlight', color, data: { text, textAnchor: anchor, clientRequestId: crypto.randomUUID() } };
+    rememberColor(color);
+    const pending = { id: 'pending-' + (++serial), type: 'highlight', color, data: { text, textAnchor: anchor, opacityModel: OPACITY_MODEL, clientRequestId: crypto.randomUUID() } };
     const scope = historyScope();
     const reservation = historyReserve('アノテート: ハイライト追加', scope, surface.path);
     if (!states.has(surface.id)) render(surface, []);
@@ -152,7 +179,7 @@
           : anchor.line ? { kind: 'note_line', id: anchor.line } : undefined;
       const row = { type: 'highlight', target_path: surface.path, target_kind: 'text_range', body: text,
         user: typeof getUsername === 'function' ? getUsername() : 'anonymous',
-        color, opacity: 0.42, data: pending.data, target_ref: { file: surface.path, container,
+        color, opacity: 1, data: pending.data, target_ref: { file: surface.path, container,
           anchorSchema: 'meldex-text-anchor-v1', startOffset: anchor.start, endOffset: anchor.end, snippet: text,
           prefix: anchor.prefix, suffix: anchor.suffix } };
       const result = await apiPost('/annotations', row);
@@ -220,11 +247,13 @@
       if (menu?.dataset.annotationHighlightMenu) return;
       if (!menu && document.querySelector('[data-annotation-highlight-menu]')) return;
       const rect = menu?.getBoundingClientRect();
-      const opened = global.MeldexContextMenuUI.openAt({ menu, x: event.clientX, y: event.clientY,
+      const x = event.clientX, y = event.clientY;
+      const opened = global.MeldexContextMenuUI.openAt({ menu, x, y,
         anchorRect: rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.top } : undefined,
-        ariaLabel: '選択範囲', items: [{ label: 'ハイライト', icon: 'highlighter', items: colors().map((color, index) => ({
-          label: 'テーマカラー ' + (index + 1), icon: 'square', color, action: () => void create(context, color),
-        })) }, ...(menu ? [{ type: 'separator' }] : [])] });
+        ariaLabel: '選択範囲', items: [
+          { label: 'ハイライト', icon: 'highlighter', color: currentColor(), e2eId: 'annotation-highlight-create', action: () => void create(context, currentColor()) },
+          { label: 'ハイライトの色...', icon: 'palette', e2eId: 'annotation-highlight-pick-color', action: () => pickColor(x, y, color => void create(context, color)) },
+          ...(menu ? [{ type: 'separator' }] : [])] });
       opened.dataset.annotationHighlightMenu = '1';
     };
   }
@@ -237,7 +266,7 @@
     event.preventDefault();
     setTimeout(decorate, 0);
   }, true);
-  global.GBAnnotationHighlights = { colors, capture, create, mutate, render, dispose, parse, rangeFor, prepareMenu,
+  global.GBAnnotationHighlights = { colors, currentColor, rememberColor, pickColor, capture, create, mutate, render, dispose, parse, rangeFor, prepareMenu,
     reveal(surface, item) { const range = states.get(surface.id)?.ranges.get(item.id); if (!range?.startContainer.isConnected) return false; indicate(range); return true; },
   };
 })(window);

@@ -210,7 +210,8 @@
     if (_consumeSuppressedSidebarOpen()) return false;
     const { sidebar, backdrop } = _sidebarElements();
     if (!sidebar) return false;
-    _sidebarOpenGeneration += 1;
+    // レイアウトによる付け直しは、利用者が改めて開いた操作として扱わない。
+    if (!_sanitizingLayout) _sidebarOpenGeneration += 1;
     _ensureTreeScreenHeader();
     _dockSidebarForDrawer(sidebar);
     _clearSidebarDragOffset(sidebar);

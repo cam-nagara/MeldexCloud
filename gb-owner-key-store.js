@@ -13,6 +13,8 @@
   const ENVELOPE_SCHEMA = 'meldex.owner-hmac-key.encrypted.v2';
   const WRAP_KEY_SECRET = 'meldex-owner-key-wrap-v2';
   let _dbPromise = null;
+  let _wrapKeyCaches = new WeakMap();
+  const WRAP_KEY_CACHE_LIMIT = 8;
 
   function _workspaceScope() {
     let workspace = null;
@@ -79,20 +81,35 @@
 
   async function _deriveWrapKey(saltBytes) {
     const cryptoApi = _webCrypto();
-    const material = await cryptoApi.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(WRAP_KEY_SECRET),
-      { name: 'PBKDF2' },
-      false,
-      ['deriveKey']
-    );
-    return cryptoApi.subtle.deriveKey(
-      { name: 'PBKDF2', salt: saltBytes, iterations: KDF_ITERATIONS, hash: 'SHA-256' },
-      material,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
+    const salt = ArrayBuffer.isView(saltBytes)
+      ? new Uint8Array(saltBytes.buffer, saltBytes.byteOffset, saltBytes.byteLength).slice()
+      : new Uint8Array(saltBytes).slice();
+    const cacheId = _bytesToBase64(salt);
+    let cache = _wrapKeyCaches.get(cryptoApi);
+    if (!cache) { cache = new Map(); _wrapKeyCaches.set(cryptoApi, cache); }
+    if (cache.has(cacheId)) {
+      const pending = cache.get(cacheId);
+      cache.delete(cacheId); cache.set(cacheId, pending);
+      return pending;
+    }
+    // Cache only the non-extractable wrapping primitive, not the owner key.
+    // Each read still loads and authenticates the current encrypted record.
+    const pending = (async () => {
+      const material = await cryptoApi.subtle.importKey(
+        'raw', new TextEncoder().encode(WRAP_KEY_SECRET), { name: 'PBKDF2' }, false, ['deriveKey']
+      );
+      return cryptoApi.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations: KDF_ITERATIONS, hash: 'SHA-256' },
+        material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+      );
+    })();
+    cache.set(cacheId, pending);
+    if (cache.size > WRAP_KEY_CACHE_LIMIT) cache.delete(cache.keys().next().value);
+    try { return await pending; }
+    catch (error) {
+      if (cache.get(cacheId) === pending) cache.delete(cacheId);
+      throw error;
+    }
   }
 
   function _openDb() {
@@ -373,6 +390,7 @@
   }
 
   async function clear() {
+    _wrapKeyCaches = new WeakMap();
     const scope = _workspaceScope();
     try {
       const db = await _openDb();

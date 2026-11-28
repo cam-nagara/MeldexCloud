@@ -84,7 +84,14 @@ async function _folderDuplicateItems(items, refresh) {
     const treeSync = typeof folderToolbarSyncTree === 'function'
       ? folderToolbarSyncTree((items || []).map(target => _folderDirectParentKey(target.path))).catch(() => null)
       : null;
-    try { await refresh(); } catch (error) { console.error('[folder duplicate] 表示の更新に失敗', error); }
+    // 確定した複製を既に描けた面は、そのカードを消して再読込しない。履歴用のrefreshは上で保持する。
+    const reflected = result.created?.length > 0 && result.created.every(path =>
+      result.panelReflectedPaths?.includes(path) && typeof _folderPath !== 'undefined'
+      && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, _folderDirectParentKey(path))
+      && _folderItems.some(item => _folderDropPathsEqual(item.path, path)));
+    if (!reflected) {
+      try { await refresh(); } catch (error) { console.error('[folder duplicate] 表示の更新に失敗', error); }
+    }
     await treeSync;
   }
   const reason = result.failed ? _folderFailureReason(result.error) : '';
@@ -1023,6 +1030,19 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
   progress?.updateOperation?.(result.ok + result.failed);
 }
 
+function _folderLocalPathKey(value) {
+  let normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const provider = window.MeldexStorageAdapter?.getProvider?.();
+  const browserData = window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  const base = String(typeof state !== 'undefined' ? state.vaultPath || '' : '').replace(/\\/g, '/');
+  // Dropboxの名前空間・ブラウザの仮想パスは、ローカル保存先へ結合しない。
+  if (normalized && !provider?._dropboxLocation && !browserData && /^(?:[a-z]:\/|\/)/i.test(base)
+      && !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(normalized)) {
+    normalized = base.replace(/\/+$/, '') + '/' + normalized;
+  }
+  return /^[a-z]:(?:\/|$)/i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+}
+
 function _folderDropPathsEqual(left, right) {
   const provider = window.MeldexStorageAdapter?.getProvider?.();
   const cloudKey = window.__MeldexPwaDataAccessInternals?._folderLinkPathKey;
@@ -1030,11 +1050,7 @@ function _folderDropPathsEqual(left, right) {
     const key = cloudKey(provider, left);
     return !!key && key === cloudKey(provider, right);
   }
-  const normalize = value => {
-    const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
-    return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
-  };
-  return !!left && !!right && normalize(left) === normalize(right);
+  return !!left && !!right && _folderLocalPathKey(left) === _folderLocalPathKey(right);
 }
 
 function _folderStageCreateTreePreview(parentPath, type, label) {
@@ -1134,7 +1150,7 @@ function _folderInsertDroppedItemsIntoOutliner(parentPath, items) {
   });
 }
 
-function _folderApplySavedDropResults(parentPath, savedResults, files) {
+function _folderApplySavedDropResults(parentPath, savedResults, files, options = {}) {
   const rows = (savedResults || []).map((saved, index) =>
     _folderDroppedFileFallbackItem(saved, files?.[index])).filter(item => item.path);
   if (!rows.length) return 0;
@@ -1145,14 +1161,21 @@ function _folderApplySavedDropResults(parentPath, savedResults, files) {
       const provider = window.MeldexStorageAdapter?.getProvider?.();
       const cloudKey = window.__MeldexPwaDataAccessInternals?._folderLinkPathKey;
       if (provider?._dropboxLocation && cloudKey) return cloudKey(provider, value) || 'unresolved:' + normalized;
-      return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+      return _folderLocalPathKey(value);
     };
     const byPath = new Map(_folderItems.map(item => [pathKey(item?.path), item]));
-    rows.forEach(item => byPath.set(pathKey(item.path), item));
+    rows.forEach(item => {
+      const key = pathKey(item.path);
+      const existing = byPath.get(key);
+      byPath.set(key, existing ? { ...existing, ...item, path: existing.path } : item);
+    });
     _folderItems = [...byPath.values()];
     if (typeof registerFileTypes === 'function') registerFileTypes(rows);
     if (typeof renderFolderGrid === 'function') {
-      renderFolderGrid({ preserveSelectedPaths: (_folderSelectedItems || []).map(item => item?.path).filter(Boolean) });
+      const selectedPaths = Array.isArray(options?.selectPaths)
+        ? options.selectPaths.map(path => byPath.get(pathKey(path))?.path || path)
+        : (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
+      renderFolderGrid({ preserveSelectedPaths: selectedPaths });
     }
   }
   _folderInsertDroppedItemsIntoOutliner(parentPath, rows);
@@ -1213,14 +1236,6 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   // ドロップの内容はイベントが続いている間に読む（待った後では読めない）。
   const dropped = _folderDragPayloadItemsFromEvent(event, payloadOverride);
   let targetPath = targetItem?.path || '';
-  // 移動先のフォルダの名前の変更がまだ保存中なら、終わるのを待って新しい場所へ移動する。
-  if (targetPath && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
-    try { targetPath = await _outlinerAwaitPendingRenameForTarget(targetPath); }
-    catch (error) {
-      showStatus(String(error?.message || '移動先の名前の変更を確認できません'), true);
-      return 0;
-    }
-  }
   const targetKey = _folderMembershipKey(targetPath);
   const items = dropped.filter(source => {
     const sourceKey = _folderMembershipKey(source.path);
@@ -1272,8 +1287,18 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   try {
   pendingPaths.forEach(path => _folderPendingMovePaths.add(path));
   if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: pendingSelection });
+  // 移動先のフォルダの名前の変更がまだ保存中なら、終わるのを待って新しい場所へ移動する。
+  if (targetPath && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
+    try { targetPath = await _outlinerAwaitPendingRenameForTarget(targetPath); }
+    catch (error) {
+      const reason = String(error?.message || '移動先の名前の変更を確認できません');
+      progress?.finishOperation?.(progressToken, { failed: items.length, label: '移動できませんでした', summary: reason });
+      showStatus(reason, true);
+      return 0;
+    }
+  }
   // 件数が多い時は、まとめての移動（/outliner/move-batch）へ分けて送る。結果は1件ずつ受け取る。
-  const mover = _folderCreateMover(items, targetPath, { skip: source => source.sourceSurface === 'sheet-image' });
+  const mover = _folderCreateMover(items, targetPath, { minimum: 2, skip: source => source.sourceSurface === 'sheet-image' });
   // 表示への反映は、まとめて送った分は塊ごとに1回（1件ごとに描き直すと件数の2乗で遅くなる）
   let unappliedMoves = [];
   const applyMovesToView = source => {
@@ -1378,6 +1403,7 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     showStatus(`${ok}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
   const registerMoves = () => window.MeldexFileMoveHistory?.register?.(movedItems, {
+    batchMinimum: 2,
     label: `フォルダパネル: ${movedItems.length} 件を移動`,
     detail: `→ ${targetPath}`,
     refresh: async () => {
@@ -1434,7 +1460,8 @@ function _folderCreateMover(sources, destFolder, options = {}) {
     return apiPost('/outliner/move', { path: source.path, dest_folder: dest, conflict_policy: 'error' });
   };
   const eligible = (Array.isArray(sources) ? sources : []).filter(source => source?.path && !(options.skip && options.skip(source)));
-  const batched = eligible.length >= FOLDER_MOVE_BATCH_MIN && !_folderMoveBatchUnsupported
+  const minimum = Number.isInteger(options.minimum) && options.minimum >= 2 ? options.minimum : FOLDER_MOVE_BATCH_MIN;
+  const batched = eligible.length >= minimum && !_folderMoveBatchUnsupported
     && !window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof apiPost === 'function';
   if (!batched) {
     return { batched: false, uncertain: false, post: single, isChunkEnd: () => true, unclaimed: () => [] };

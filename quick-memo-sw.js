@@ -43,6 +43,7 @@ const QUICK_MEMO_ASSETS = [
   'meldex-core.bundle.part03.js',
   'meldex-core.bundle.part04.js',
   'meldex-core.bundle.part05.js',
+  'meldex-core.bundle.part06.js',
   'meldex-core.part01.js',
   'meldex-core.part02.js',
   'meldex-core.part02.part01.js',

@@ -13,6 +13,8 @@ Object.assign(ScriptNoteEditor.prototype, {
         types: this.doc.scenarioTypes, characters: this.doc.characters,
         revision: this._detailDataRevision || 0, readOnly: !!this._readOnly,
         path: this._path || '', snapshot: JSON.stringify(this.doc),
+        columnIndependentSnapshot: this._roleManagementColumnIndependentSnapshot(this.doc),
+        roleRoot: container.querySelector('.sn2-role-management'),
       };
     } catch (_) {
       this._lastRoleManagementRender = null;
@@ -20,16 +22,37 @@ Object.assign(ScriptNoteEditor.prototype, {
     return result;
   },
 
-  _canReuseRoleManagementPanel(container) {
+  _roleManagementColumnIndependentSnapshot(doc) {
+    const editor = { ...(doc.editor || {}) };
+    delete editor.columnWidths; delete editor.columnOrder;
+    const withoutIcon = value => { const copy = { ...value }; delete copy.icon; return copy; };
+    if (editor.standardColumnSettings) {
+      const settings = Object.fromEntries(Object.entries(editor.standardColumnSettings)
+        .map(([id, value]) => [id, withoutIcon(value)]).filter(([, value]) => Object.keys(value).length));
+      if (Object.keys(settings).length) editor.standardColumnSettings = settings;
+      else delete editor.standardColumnSettings;
+    }
+    if (Array.isArray(editor.customColumns)) editor.customColumns = editor.customColumns.map(withoutIcon);
+    const content = { ...doc, editor };
+    const identity = { ...(doc.meldex || {}) }; delete identity.save_stamp;
+    if (Object.keys(identity).length) content.meldex = identity;
+    else delete content.meldex;
+    return JSON.stringify(content);
+  },
+
+  _canReuseRoleManagementPanel(container, options = {}) {
     const rendered = this._lastRoleManagementRender;
     // 列幅は既存の監視が追随する。監視が使えない旧環境では従来の再描画へ戻す。
     if (typeof ResizeObserver !== 'function' || !container?.isConnected || !rendered || rendered.container !== container
       || rendered.doc !== this.doc || rendered.editor !== this.doc?.editor
       || rendered.types !== this.doc?.scenarioTypes || rendered.characters !== this.doc?.characters
-      || rendered.revision !== (this._detailDataRevision || 0)
+      || (!options.columnLayoutOnly && rendered.revision !== (this._detailDataRevision || 0))
+      || (options.columnLayoutOnly && rendered.roleRoot !== container.querySelector('.sn2-role-management'))
       || rendered.readOnly !== !!this._readOnly || rendered.path !== (this._path || '')
       || !container.querySelector('.sn2-role-management')) return false;
-    try { return rendered.snapshot === JSON.stringify(this.doc); }
+    try { return options.columnLayoutOnly
+      ? rendered.columnIndependentSnapshot === this._roleManagementColumnIndependentSnapshot(this.doc)
+      : rendered.snapshot === JSON.stringify(this.doc); }
     catch (_) { return false; }
   },
 

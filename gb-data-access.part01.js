@@ -992,7 +992,7 @@
     if (ext === '.mel-sheet') return _phase1SurfaceType('database', 'file');
     if (ext === '.mel-scenario') return 'scriptnote';
     if (ext === '.mel-timer') return 'unsupported';
-    if (ext === '.md') {
+    if (ext === '.md' || ext === '.board.md') {
       if (lowerName.endsWith('.board.md')) return _phase1SurfaceType('board', 'file');
       const frontmatterType = _extractFrontmatterType(await _readTextSafe(provider, relativePath, ''));
       if (frontmatterType === 'board') return _phase1SurfaceType('board', 'file');
@@ -1262,9 +1262,25 @@
     if (typeof checker === 'function') await checker(provider, path, options || {});
   }
 
-  async function _relocateReferences(provider, oldPath, newPath, isFolder) {
+  async function _relocateReferences(provider, oldPath, newPath, isFolder, options) {
     const normalizedOld = _normalizeFolderPath(oldPath);
     const normalizedNew = _normalizeFolderPath(newPath);
+    const mappings = [{ oldPath: normalizedOld, newPath: normalizedNew }];
+    // Same-parent renames may arrive through a registered Dropbox root while
+    // a form or sheet stores the workspace-relative alias of the same location.
+    if (options?.sameParentAliases && typeof provider?._dropboxLocation === 'function') {
+      const before = provider._dropboxLocation(normalizedOld), after = provider._dropboxLocation(normalizedNew);
+      const physicalParent = value => String(value?.path || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').slice(0, -1).join('/').toLowerCase();
+      if (before?.namespaceKind && before.namespaceKind === after?.namespaceKind && physicalParent(before) === physicalParent(after)) {
+        const aliases = _deleteImpactItemAliases(provider, [{ kind: isFolder ? 'folder' : 'file', path: normalizedOld }], await _workspaceScanRoots());
+        const base = normalizedNew.split('/').pop();
+        for (const alias of aliases) {
+          if (alias.path === normalizedOld) continue;
+          const cut = alias.path.lastIndexOf('/');
+          mappings.push({ oldPath: alias.path, newPath: (cut >= 0 ? alias.path.slice(0, cut + 1) : '') + base });
+        }
+      }
+    }
     // キー判定はPython側 meldex_reference_codecs.is_json_reference_path_key と
     // 1対1移植した gb-reference-codecs.js の正本へ委譲する(ファイル参照整合性
     // 計画 Phase 3。Phase0監査notes.md §5「重複実装リスク」の解消。移植前は
@@ -1275,7 +1291,11 @@
     const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
     const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
     const rewritePathValue = (value) => {
-      const rewritten = _rewritePath(value, normalizedOld, normalizedNew, isFolder);
+      let rewritten = value;
+      for (const mapping of mappings) {
+        rewritten = _rewritePath(value, mapping.oldPath, mapping.newPath, isFolder);
+        if (rewritten !== value) break;
+      }
       return _normalizeFolderPath(rewritten) === _normalizeFolderPath(value) ? value : rewritten;
     };
     const rewriteReferenceText = (text) => {
@@ -1304,7 +1324,7 @@
         const original = await _readTextSafe(provider, filePath, '');
         if (!original) return;
         const manual = _rewriteScenarioManualReferences(filePath, original, rewritePathValue);
-        if (manual === original && !original.includes(normalizedOld)) return;
+        if (manual === original && !mappings.some(mapping => original.includes(mapping.oldPath))) return;
         const next = rewriteReferenceText(manual);
         if (next === original) return;
         await _requireUnlockedPath(provider, filePath, { action: 'reference-relocate' });
@@ -1418,6 +1438,33 @@
   // する」設計に合わせる（第二の索引エンジンを作らない。Phase0監査notes.md §5
   // 「重複実装リスク」を踏襲）。ライブ全件走査のため coverage は常に complete
   // として返す（Desktopのような部分索引・陳腐化の概念がCloud側には無い）。
+  function _deleteImpactItemAliases(provider, items, roots) {
+    if (typeof provider?._dropboxLocation !== 'function') return items;
+    const location = path => {
+      const value = provider._dropboxLocation(path);
+      if (!value || typeof value.path !== 'string' || !value.namespaceKind) {
+        throw Object.assign(new Error('参照対象の保存先を確認できません'), { status: 503 });
+      }
+      return { path: value.path.replace(/\\/g, '/').replace(/\/+$/, '') || '/', namespace: String(value.namespaceKind) };
+    };
+    const bases = roots.map(path => ({ path, location: location(path) }));
+    const aliases = new Map();
+    for (const item of items) {
+      aliases.set(item.kind + ':' + item.path, item);
+      const target = location(item.path), key = target.path.toLowerCase();
+      for (const base of bases) {
+        if (base.location.namespace !== target.namespace) continue;
+        const prefix = base.location.path === '/' ? '/' : base.location.path.toLowerCase() + '/';
+        const same = key === base.location.path.toLowerCase();
+        if (!same && !key.startsWith(prefix)) continue;
+        const relative = same ? '' : target.path.slice(base.location.path === '/' ? 1 : base.location.path.length + 1);
+        const path = _normalizeFolderPath([base.path, relative].filter(Boolean).join('/'));
+        if (path) aliases.set(item.kind + ':' + path, { ...item, path });
+      }
+    }
+    return [...aliases.values()];
+  }
+
   async function _queryDeleteImpact(provider, items) {
     const scanner = window.MeldexReferenceImpactLiveScan;
     if (!scanner?.query) throw Object.assign(new Error('参照影響の走査機能を利用できません'), { status: 503 });
@@ -1426,7 +1473,9 @@
       throw Object.assign(new Error('bounded参照走査に対応していない保存先です'), { status: 503 });
     }
     const files = []; const seen = new Set(); const freshSizes = new Map();
-    for (const rootPath of await _workspaceScanRoots()) {
+    const roots = await _workspaceScanRoots();
+    const impactItems = _deleteImpactItemAliases(provider, items, roots);
+    for (const rootPath of roots) {
       const remaining = scanner.MAX_FILES - files.length;
       if (remaining <= 0) throw Object.assign(new Error('参照影響の走査件数上限を超えました'), { status: 503 });
       for (const entry of await provider.walkEntriesFresh(rootPath, { maxEntries: remaining, maxPathBytes: 4 * 1024 * 1024 })) {
@@ -1438,7 +1487,7 @@
       }
     }
     return scanner.query({
-      items, listFiles: async () => files,
+      items: impactItems, listFiles: async () => files,
       readTextBounded: (path, remaining) => provider.readTextBounded(path, remaining),
       // fresh走査で受け取った大きさを再利用する。本文は毎回上限つきで読み、実際の総バイト数も走査側で検査する。
       statSize: async path => freshSizes.has(path) ? freshSizes.get(path) : Number((await provider.statPathFresh(path))?.size),

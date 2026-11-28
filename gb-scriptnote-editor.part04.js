@@ -479,30 +479,38 @@
   // B-MANGA と同じJIS系配置・隣接衝突解決をCSS座標へ反映する。
   _adjustRubySpacing() {
     if (!this.host) return;
-    this._adjustTcyAlignment(this.host);
     const model = typeof MeldexRubyPresentation !== 'undefined' ? MeldexRubyPresentation : null;
-    if (!model) return;
+    if (!model) { this._adjustTcyAlignment(this.host); return; }
     model.refreshRubyNodes(this);
     const presentation = model.ensureDocument(this.doc);
     const isVertical = this.doc?.editor?.viewMode === 'vertical';
     const spans = this.host.querySelectorAll('.sn2-text [data-ruby], .sn2-custom-text [data-ruby]');
-    if (!spans.length) return;
+    if (!spans.length) { this._adjustTcyAlignment(this.host); return; }
     const z = typeof _getZoom === 'function' ? _getZoom() : 1;
-    // 配置の計算はノートと共通（MeldexRubyPresentation.layoutRubySpans）。
-    model.layoutRubySpans(spans, {
-      presentation,
-      isVertical,
-      zoom: z,
-      prefix: '--sn2-ruby',
-      cellOf: span => span.closest('.sn2-text, .sn2-custom-text'),
-      beforeResolve: (rows, spanToInfo) => this._appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z),
-    });
+    // 最初の字形測定より前に末尾文字の計測要素も置き、同じ配置計算で測る。
+    const suffixCells = [...this.host.querySelectorAll('.sn2-text[data-after]:not(:empty)')]
+      .filter(cell => cell.querySelector('[data-ruby]'));
+    const suffixProbes = this._prepareAfterTextRubyBoundaries(suffixCells);
+    try {
+      this._adjustTcyAlignment(this.host);
+      // 配置の計算はノートと共通（MeldexRubyPresentation.layoutRubySpans）。
+      model.layoutRubySpans(spans, {
+        presentation,
+        isVertical,
+        zoom: z,
+        prefix: '--sn2-ruby',
+        cellOf: span => span.closest('.sn2-text, .sn2-custom-text'),
+        beforeResolve: (rows, spanToInfo) => this._appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z, suffixProbes),
+      });
+    } finally {
+      suffixProbes.forEach(entry => entry?.probe.remove());
+    }
   }
 
   // 後の文字列（data-after）は::afterで描画され重なり解決の対象外だったため、
   // 最終文字のルビが閉じ括弧等に被る不具合があった。占有幅を「動かせない境界」
   // (span:null, minExtent===extent) として同じ行のresolveRubyOverlapsに参加させる。
-  _appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z) {
+  _appendAfterTextRubyBoundaries(rows, spanToInfo, isVertical, z, prepared = null) {
     const targets = [];
     this.host.querySelectorAll('.sn2-text[data-after]:not(:empty)').forEach(textEl => {
       const rubySpans = textEl.querySelectorAll('[data-ruby]');
@@ -511,7 +519,7 @@
       if (!info || info._lineKey === undefined) return;
       targets.push({ textEl, lineKey: info._lineKey });
     });
-    const boundaries = this._measureAfterTextRubyBoundaries(targets.map(target => target.textEl), isVertical, z);
+    const boundaries = this._measureAfterTextRubyBoundaries(targets.map(target => target.textEl), isVertical, z, prepared);
     boundaries.forEach((boundary, index) => {
       if (boundary) rows.get(targets[index].lineKey)?.push(boundary);
     });
@@ -523,38 +531,44 @@
     return this._measureAfterTextRubyBoundaries([textEl], isVertical, z)[0];
   }
 
-  _measureAfterTextRubyBoundaries(textEls, isVertical, z) {
-    // 終端位置を全て読んでから計測要素をまとめて追加し、寸法をまとめて読む。
-    // 行ごとの追加・読取・削除は、文書全体の配置計算を行数分繰り返してしまう。
+  _prepareAfterTextRubyBoundaries(textEls) {
     const entries = textEls.map(textEl => {
       const afterText = textEl.dataset.after || '';
-      const lastChild = textEl.lastChild;
+      let lastChild = textEl.lastChild;
+      // 編集用の空の文字ノードは矩形を持たない。DOMとキャレットを保ったまま、
+      // 実際の末尾文字の位置を使う（空ノードを測ると0座標になってしまう）。
+      while (lastChild?.nodeType === Node.TEXT_NODE && lastChild.textContent === '') lastChild = lastChild.previousSibling;
       if (!afterText || !lastChild) return null;
-      // 末尾がinline-block要素なら、要素自身の矩形を終端とする。
-      let endRect;
-      if (lastChild.nodeType === Node.TEXT_NODE) {
-        const endRange = document.createRange();
-        endRange.selectNodeContents(textEl);
-        endRange.collapse(false);
-        endRect = endRange.getBoundingClientRect();
-      } else {
-        endRect = lastChild.getBoundingClientRect();
-      }
       const probe = document.createElement('span');
       probe.textContent = afterText;
       probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:-9999px;';
-      return { textEl, endRect, probe };
+      return { textEl, lastChild, probe };
     });
     entries.forEach(entry => { if (entry) entry.textEl.appendChild(entry.probe); });
+    return entries;
+  }
+
+  _measureAfterTextRubyBoundaries(textEls, isVertical, z, prepared = null) {
+    const byCell = prepared ? new Map(prepared.filter(Boolean).map(entry => [entry.textEl, entry])) : null;
+    const entries = byCell ? textEls.map(cell => byCell.get(cell) || null) : this._prepareAfterTextRubyBoundaries(textEls);
     let measurements;
+    let endRects;
     try {
+      endRects = entries.map(entry => {
+        if (!entry) return null;
+        if (entry.lastChild.nodeType !== Node.TEXT_NODE) return entry.lastChild.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(entry.lastChild);
+        range.collapse(false);
+        return range.getBoundingClientRect();
+      });
       measurements = entries.map(entry => entry ? entry.probe.getBoundingClientRect() : null);
     } finally {
-      entries.forEach(entry => entry?.probe.remove());
+      if (!prepared) entries.forEach(entry => entry?.probe.remove());
     }
     return entries.map((entry, index) => {
       if (!entry) return null;
-      const { endRect } = entry;
+      const endRect = endRects[index];
       const probeRect = measurements[index];
       const afterSize = (isVertical ? probeRect.height : probeRect.width) / z;
       if (!(afterSize > 0)) return null;

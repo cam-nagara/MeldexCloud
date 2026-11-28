@@ -1381,7 +1381,19 @@ let _fileLockRefreshTimer = null;
 const FILE_LOCK_SYSTEM_EXCLUDED = ['_chat', '_skills', '_models', '_knowledge', '.meldex', '_meldex', '.trash', '_trash'];
 
 function _normalizeLockedItemPath(path) {
-  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  let value = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  // Cloudの相対表記とソース仮想パスは、保存先とnamespaceを含めて照合する。
+  // 別ソースの同名ファイルをロック対象に混ぜない。
+  if (value && !/^dropbox:(?:home|team_root):\//i.test(value)
+    && window.MeldexRuntimeAdapter?.isDropboxMode?.()
+    && typeof window.MeldexSourceFolderRegistry?.resolveDropboxLocation === 'function') {
+    try {
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      const location = window.MeldexSourceFolderRegistry.resolveDropboxLocation(value, provider?.getVaultPath?.());
+      value = 'dropbox:' + location.namespaceKind + ':' + location.path;
+    } catch {}
+  }
+  return value.toLowerCase();
 }
 function _pathOrAncestorIn(entries, targetPath) {
   const target = _normalizeLockedItemPath(targetPath);
@@ -1422,6 +1434,10 @@ function _fileLockAuthHeaders() {
 async function _fileLockApi(path, opts = {}) {
   const headers = { ..._fileLockAuthHeaders(), ...(opts.headers || {}) };
   if (opts.body != null && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+    && typeof window.MeldexDataAccess?.requestJson === 'function') {
+    return window.MeldexDataAccess.requestJson(path, { ...opts, headers });
+  }
   const res = await fetch(API_BASE + path, { ...opts, headers });
   const text = await res.text();
   let payload = {};
@@ -1451,6 +1467,11 @@ async function _ensureRoleLoaded(force = false) {
   finally { _fileLockRolePromise = null; }
 }
 function isFileLockOwner() {
+  // 起動途中の役割キャッシュを、Cloud接続完了後や別ワークスペースへ持ち越さない。
+  // ロック保存側のMeldexFileLockStoreと同じ現在の所有者情報で表示を判断する。
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    return window.MeldexRuntimeAdapter.getWorkspaceState?.()?.isOwner === true;
+  }
   return _currentRoleCache === 'owner';
 }
 function _writeFileLockCache(entries) {

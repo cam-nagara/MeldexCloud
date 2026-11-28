@@ -1,3 +1,37 @@
+    keep.add(node);
+    const next = previous ? previous.nextSibling : container.firstChild;
+    if (node !== next) container.insertBefore(node, next);
+    previous = node;
+  }
+  existing.forEach(node => {
+    if (keep.has(node)) return;
+    if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(node);
+    node.remove();
+  });
+  return true;
+}
+
+// 複数のフォルダを差分で反映し、どれかが差分で反映できなければツリー全体を読み直す。
+async function _outlinerSyncFoldersOrReload(folderPaths) {
+  const unique = Array.from(new Set((folderPaths || []).map(path => String(path || '')).filter(Boolean)));
+  let ok = unique.length > 0;
+  for (const path of unique) {
+    try { if (!(await _outlinerSyncFolderChildren(path))) ok = false; }
+    catch (error) { console.warn('[outliner] 差分の反映に失敗しました', error); ok = false; }
+  }
+  if (!ok && typeof loadOutliner === 'function') await loadOutliner();
+  await _outlinerRefreshFolderPanelFor(unique);
+  return ok;
+}
+
+function _outlinerParentPath(path) {
+  const value = String(path || '').replace(/[\\/]+$/, '');
+  const cut = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+  return cut >= 0 ? value.slice(0, cut) : '';
+}
+
+// 保存済みの移動を差分で反映する。失敗した項目の行は動かさず、残りの一覧は後で照合する。
+function _outlinerApplyCommittedMove(oldPath, newPath, name, fileId) {
   if (!newPath || oldPath === newPath || typeof _findTreeNodeByPath !== 'function') return;
   const node = _findTreeNodeByPath(oldPath);
   if (!node) return;
@@ -22,14 +56,16 @@ function isOutlinerCopyPendingPath(path) {
 function _outlinerSetCopyPendingNode(node, pending) {
   if (!node) return;
   if (pending && node.dataset.copyPending !== 'true') {
-    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity };
+    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity, busy: node.getAttribute?.('aria-busy') ?? null };
     node.dataset.copyPending = 'true'; node.inert = true; node.style.opacity = '0.62';
     node.setAttribute('aria-busy', 'true');
   } else if (!pending && node.dataset.copyPending === 'true') {
     node.inert = node._copyPreviewPrevious?.inert || false;
     node.style.opacity = node._copyPreviewPrevious?.opacity || '';
+    const busy = node._copyPreviewPrevious?.busy;
     delete node._copyPreviewPrevious; delete node.dataset.copyPending;
-    node.removeAttribute('aria-busy');
+    if (busy == null) node.removeAttribute('aria-busy');
+    else node.setAttribute('aria-busy', busy);
   }
 }
 
@@ -52,7 +88,12 @@ function _beginOutlinerPublishedCopyPreview(item, detail) {
       if (!hadTree && typeof _removeOutlinerNodesForPaths === 'function') _removeOutlinerNodesForPaths([path]);
     }
     _outlinerSetCopyPendingNode(findNode(), stillPending);
-    if (typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+    // The committed result is applied by the caller. Release the preview's
+    // interaction guard in place instead of rebuilding the entire grid twice.
+    for (const card of document.querySelectorAll('.fv-item[data-path]')) {
+      if (same(card.dataset.path)) _outlinerSetCopyPendingNode(card, stillPending);
+    }
+    if (outcome === false && !stillPending && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
       renderFolderGrid({ preserveSelectedPaths: (typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems : []).map(row => row.path) });
     }
   };
@@ -93,7 +134,10 @@ async function _outlinerPostCopyWithPreview(route, body, item, options = {}) {
   window.addEventListener('meldex:mode-changed', abandon);
   try {
     if (options.revealTreeDestination) _outlinerRevealCopyDestination(body.dest_folder || _outlinerParentPath(body.path));
-    const result = await apiPost(route, prepared.body);
+    const nativeProgress = window.MeldexOsFileIntake?.isSupported?.() === true;
+    const result = await apiPost(route, nativeProgress ? { ...prepared.body, copy_publish_stream: true,
+      ...(options.nativeCopySnapshotGroup ? { copy_snapshot_group: options.nativeCopySnapshotGroup } : {}) } : prepared.body,
+      nativeProgress ? { copyPublishStream: { operationId: prepared.body.operation_id, sourcePath: prepared.body.path } } : {});
     succeeded = result?.ok !== false;
     if (succeeded && active) window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
     return result;
@@ -116,10 +160,13 @@ async function _outlinerDuplicateItems(items, options = {}) {
   try {
   const targets = Array.from(items || []);
   for (let offset = 0; offset < targets.length; offset += 2) {
+    const copyOptions = targets.length - offset > 1 && window.MeldexOsFileIntake?.isSupported?.() === true
+      ? { ...options, nativeCopySnapshotGroup: crypto.randomUUID() } : options;
     const outcomes = await Promise.all(targets.slice(offset, offset + 2).map(async target => {
-      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, options) }; }
+      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, copyOptions) }; }
       catch (error) { return { target, error }; }
     }));
+    const reflectedByParent = new Map();
     for (const { target, res, error } of outcomes) {
       if (error) { result.failed += 1; if (!result.error) result.error = error; continue; }
       result.ok += 1;
@@ -128,12 +175,20 @@ async function _outlinerDuplicateItems(items, options = {}) {
         result.created.push(createdPath);
         createdItems.push({ path: createdPath, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file',
           name: res?.new_name || createdPath.split('/').pop() || createdPath });
-        try {
-          if (typeof _folderApplySavedDropResults === 'function') {
-            _folderApplySavedDropResults(_outlinerParentPath(createdPath), [{ item: createdItems[createdItems.length - 1] }], []);
-          }
-        } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
+        const parent = _outlinerParentPath(createdPath);
+        if (!reflectedByParent.has(parent)) reflectedByParent.set(parent, []);
+        reflectedByParent.get(parent).push(createdItems[createdItems.length - 1]);
       }
+    }
+    // 同じ保存先への確定済み2件は1回の描画で反映する。失敗した項目は含めない。
+    for (const [parent, rows] of reflectedByParent) {
+      try {
+        if (typeof _folderApplySavedDropResults !== 'function') continue;
+        const reflected = _folderApplySavedDropResults(parent, rows.map(item => ({ item })), []);
+        if (reflected && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+          (result.panelReflectedPaths ||= []).push(...rows.map(item => item.path));
+        }
+      } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
     }
   }
   const register = () => {
@@ -192,7 +247,10 @@ function _pushCreatedOutlinerItemsHistory(createdItems, label, scope, options = 
       if (failures.length) throw new Error(`${failures.length} 件をゴミ箱から戻せませんでした`);
     },
     scope);
-  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path) });
+  const companionOwner = records.length === 2 && records.some(record => record.type === 'database' && record.kind === 'folder')
+    ? records.find(record => record.type === 'form-app' && record.kind === 'file' && record.path === options.companionOwner)?.path || '' : '';
+  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path),
+    ...(companionOwner ? { undoCompanionOwner: companionOwner } : {}) });
   return entry;
 }
 
@@ -442,7 +500,9 @@ function closeTreeContextMenu() {
     try { cleanup(); } catch {}
   });
   _outlinerContextMenuCleanups.clear();
-  document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+  document.querySelectorAll('.gb-context-menu').forEach(el => {
+    if (!el.parentElement?.closest?.('.gb-context-menu')) el.remove();
+  });
 }
 
 // gb-path-utils.js（window.GBPathUtils）へ委譲。未ロード時は同等ロジックへフォールバックする。
@@ -838,63 +898,3 @@ async function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     [['設定する', true], ['解除する', false]].forEach(([label, val]) => {
       _outlinerAppendMenuItem(calPanel, {
         html: radioMark(isMain === val) + '<span>' + _outlinerEscHtml(label) + '</span>',
-        checked: isMain === val,
-        action: () => {
-        closeTreeContextMenu();
-        const before = _captureMainCalendarSettingsHistory();
-        if (val) {
-          localStorage.setItem('main-calendar-path', nodeData.path);
-          const mcFid = _pathToFileId(nodeData.path);
-          if (mcFid) localStorage.setItem('main-calendar-id', mcFid);
-          showStatus(`「${nodeData.name}」をメインカレンダーに設定しました`);
-          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー設定', before, nodeData.path);
-        } else {
-          localStorage.removeItem('main-calendar-path');
-          localStorage.removeItem('main-calendar-id');
-          showStatus('メインカレンダー設定を解除しました');
-          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー解除', before, nodeData.path);
-        }
-        },
-      });
-    });
-  }
-
-  // --- バージョン管理（フォルダのみ） ---
-  if (!isMulti && (isFolder || isDB) && nodeData.path) {
-    addSep();
-    addMenuItem('バージョンを保存', async () => {
-      closeTreeContextMenu();
-      if (typeof saveFolderVersion !== 'function') {
-        showStatus('バージョンを保存できませんでした：この画面ではバージョン管理を使えません', true);
-        return;
-      }
-      await saveFolderVersion(nodeData.path);
-    }, null, 'save');
-    addMenuItem('バージョン管理', () => {
-      closeTreeContextMenu();
-      if (typeof openFolderVersionTab === 'function') openFolderVersionTab(nodeData.path);
-      else if (typeof openVersionTab === 'function') openVersionTab(nodeData.path, 'folder');
-    }, null, 'gitBranch');
-  }
-
-  // --- 画像ツール（フォルダのみ） ---
-  if (!isMulti && (nodeData.type === 'folder' || nodeData._isRoot) && nodeData.path) {
-    addMenuItem('重複画像を検出', () => {
-      closeTreeContextMenu();
-      showDuplicateScanModal(nodeData.path);
-    }, null, 'search');
-    addMenuItem('画像インデックスを作成', () => {
-      closeTreeContextMenu();
-      clipIndexFolder(nodeData.path);
-    }, null, 'image');
-  }
-
-  // --- 自動タグ付け（フォルダは深い階層まで再帰処理） ---
-  if (!isMulti && nodeData.path && !isEntity && window.isAutoTagRuntimeAvailable?.() === true) {
-    const recursiveAutoTag = isFolder || !!nodeData._isRoot;
-    addMenuItem(
-      recursiveAutoTag ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け',
-      () => {
-        closeTreeContextMenu();
-        if (typeof autoTagFolderTarget === 'function') {
-          autoTagFolderTarget(nodeData, { recursive: recursiveAutoTag });

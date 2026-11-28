@@ -13,7 +13,56 @@
   const status = document.getElementById('viewer-pages-status');
   const folderStatus = document.getElementById('viewer-pages-load-status');
   const narrow = () => document.documentElement.dataset.toolbarDensity !== 'desktop' && matchMedia('(max-width: 820px)').matches;
-  const rowHeight = 152;
+  const PAGE_ROW_HEIGHT = 152;
+  // EPUBは縮小画像ではなく本の目次（nav / NCX、無ければ章の一覧）を1行ずつ出す（viewer-epub.js）。
+  const EPUB_ROW_HEIGHT = 30;
+  let rowHeight = PAGE_ROW_HEIGHT;
+  const isEpub = () => !!Scene.isEpub?.() && !!window.MeldexViewerEpub?.isReady?.();
+  const heading = pane.querySelector('.viewer-pages-header strong');
+  function epubEntries() {
+    const toc = window.MeldexViewerEpub.toc();
+    const items = Scene.getItems();
+    if (toc.length) return toc.map(entry => ({ ...entry, spine: window.MeldexViewerEpub.spineIndexOf(entry.href) }));
+    return items.map((item, index) => ({ label: item.name || ('章 ' + (index + 1)), href: '', fragment: '', depth: 0, spine: index }));
+  }
+  function epubCurrentRow(entries) {
+    const current = Scene.getIndex();
+    let row = 0;
+    entries.forEach((entry, index) => { if (entry.spine >= 0 && entry.spine <= current) row = index; });
+    return row;
+  }
+  function syncEpub(reveal) {
+    const entries = source && signature.startsWith('epub:') && !reveal && source.length ? source : epubEntries();
+    const nextSignature = 'epub:' + entries.length + ':' + Scene.getIndex();
+    rowHeight = EPUB_ROW_HEIGHT;
+    if (heading) heading.textContent = '目次';
+    if (source !== entries || signature !== nextSignature) {
+      source = entries; signature = nextSignature;
+      groups = entries.map((_, index) => [index]);
+      indexRows = [];
+      rowsHost.style.height = groups.length * rowHeight + 'px';
+      version++;
+    }
+    const top = epubCurrentRow(entries) * rowHeight;
+    if (reveal || top < scroll.scrollTop || top + rowHeight > scroll.scrollTop + scroll.clientHeight) scroll.scrollTop = Math.max(0, top - rowHeight * 2);
+    schedule();
+  }
+  function makeEpubCell(index) {
+    const entry = source[index];
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'note-toc-item viewer-page-item viewer-epub-toc-item';
+    button.dataset.index = index;
+    button.style.paddingInlineStart = (8 + Math.min(6, entry.depth || 0) * 12) + 'px';
+    button.setAttribute('aria-current', epubCurrentRow(source) === index ? 'page' : 'false');
+    button.title = entry.label; button.textContent = entry.label;
+    button.onclick = () => {
+      Scene.pause();
+      if (entry.href) window.MeldexViewerEpub.goToHref(entry.href + (entry.fragment ? '#' + entry.fragment : ''));
+      else window.MeldexViewerEpub.goToChapter(entry.spine);
+      if (narrow()) setVisible(false);
+    };
+    return button;
+  }
   let identity = '', source = null, signature = '', groups = [], indexRows = [];
   let visible = false, width = 200, frame = 0, version = 0, rendering = false;
   let documentRef = null;
@@ -90,10 +139,13 @@
       source = null;
       return;
     }
+    if (isEpub()) { syncEpub(reveal); return; }
+    if (rowHeight !== PAGE_ROW_HEIGHT) { rowHeight = PAGE_ROW_HEIGHT; source = null; signature = ''; }
+    if (heading && heading.textContent !== 'ページ一覧') heading.textContent = 'ページ一覧';
     const items = Scene.getItems();
     const names = new Set(items.map(item => item.name));
     extraEntries = folderEntries.filter(entry => !names.has(entry.name));
-    const nextSignature = mode.value + ':' + first.value + ':' + Scene.getIndex() + ':' + items.map(item => item.w + 'x' + item.h).join(',') + ':' + extraEntries.length;
+    const nextSignature = mode.value + ':' + (Scene.getDirection?.() || '') + ':' + first.value + ':' + Scene.getIndex() + ':' + items.map(item => item.w + 'x' + item.h).join(',') + ':' + extraEntries.length;
     if (source !== items || signature !== nextSignature) {
       source = items; signature = nextSignature;
       groups = []; indexRows = [];
@@ -177,11 +229,19 @@
     const fragment = document.createDocumentFragment();
     for (let i = begin; i < end; i++) {
       const row = document.createElement('div'); row.className = 'viewer-page-row'; row.style.top = i * rowHeight + 'px';
+      if (signature.startsWith('epub:')) {
+        row.classList.add('viewer-epub-toc-row');
+        row.appendChild(makeEpubCell(i));
+        fragment.appendChild(row);
+        continue;
+      }
       const group = groups[i];
-      const order = mode.value === 'manga' ? [...group].reverse() : group;
+      // 見開き＋左へ（右から左へめくる）は、本文と同じく最初のページを右に置く。
+      const rightToLeft = mode.value !== 'single' && Scene.getDirection?.() === 'left';
+      const order = rightToLeft ? [...group].reverse() : group;
       if (mode.value !== 'single') {
         row.classList.add('viewer-page-spread');
-        if (group.length === 1 && group[0] < source.length) row.dataset.firstSide = group[0] === 0 ? first.value : (mode.value === 'manga' ? 'right' : 'left');
+        if (group.length === 1 && group[0] < source.length) row.dataset.firstSide = group[0] === 0 ? first.value : (rightToLeft ? 'right' : 'left');
       }
       order.forEach(n => row.appendChild(makeCell(n)));
       fragment.appendChild(row);
@@ -189,6 +249,9 @@
     rowsHost.replaceChildren(fragment);
     pump();
   }
+  // 本文のページを描き始めたら、描いている途中のサムネイルを止めて手を譲る（viewer-scene.js が知らせる）。
+  let activeThumbnailTask = null;
+  window.addEventListener('viewer-pdf-busy', () => { try { activeThumbnailTask?.cancel(); } catch (_) {} });
   async function pump() {
     if (rendering || !visible || !documentRef) return;
     rendering = true;
@@ -196,6 +259,10 @@
       while (visible) {
         const cell = rowsHost.querySelector('[data-pending="true"]');
         if (!cell) break;
+        // 本文のページを描いている間は待つ。サムネイルもページ全体の画像を読み解くため、
+        // 先に描くと、まだ見ていないページへ移った時の表示が遅れていた（2026-11-27）。
+        await Scene.whenPdfIdle?.();
+        if (!visible || cell.dataset.pending !== 'true' || !cell.isConnected) continue;
         cell.dataset.pending = 'working';
         const index = Number(cell.dataset.index), stamp = version, doc = documentRef;
         try {
@@ -205,7 +272,17 @@
           const viewport = page.getViewport({ scale: Math.min(108 / natural.width, 108 / natural.height) });
           const canvas = document.createElement('canvas');
           canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
-          await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+          const task = page.render({ canvasContext: canvas.getContext('2d'), viewport });
+          activeThumbnailTask = task;
+          try {
+            await task.promise;
+          } catch (error) {
+            // 本文の描画を優先して取り消した時は、後で描き直す（失敗の表示にしない）。
+            if (error?.name === 'RenderingCancelledException') { cell.dataset.pending = 'true'; continue; }
+            throw error;
+          } finally {
+            if (activeThumbnailTask === task) activeThumbnailTask = null;
+          }
           if (stamp !== version || !visible) continue;
           cache.set(index, canvas);
           if (cache.size > 64) cache.delete(cache.keys().next().value);

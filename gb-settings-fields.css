@@ -121,6 +121,24 @@ input.gb-fmt-num { min-width: 64px; }
 }
 .gb-num-unit { flex-wrap: nowrap; }
 
+/* 共通ルール「文字を縦書きのように折らない」: 入力欄の後ろに付く単位・接尾語（件まで・時間ごと・%等）は
+   文字の幅より細く縮めない。幅が足りなければ部品ごと次の行へ回し、行の幅を超える長さの時だけ行の幅で折り返す。 */
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row, .cal-option-field, .dup-settings-field, .msr-field-row,
+  .gb-scheduler-field, .sa-field, .external-responder-setting-row, .sn2-rowset-save-field,
+  .bd-group-manager-field, .gb-fmt-popup-row)
+> :is(input, select, textarea, .gb-num-unit, .gb-input, .gb-select) ~ :is(span, small, .gb-section-desc, .gb-ui-short-label):not(.gb-field-help) {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+/* 設定行に並ぶ短い操作ボタン（ボードの背景画像の「選択」「クリア」等）は文字の幅より細く縮めない。
+   長い名前のボタンが並ぶ行では縮めて折り返す既存の並びを保つ（一律に止めると行からはみ出す）。 */
+:is(.gb-field-row, .gb-field-inline, .gb-field-select-row) > .bd-detail-style-action {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+/* 部品の前に置く短い項目名（入れ子のラベル）も同じ扱いにする。 */
+.gb-ui-short-label { flex: 0 0 auto; max-width: 100%; }
+
 /* 新旧の右サイドバーと単独アプリは同じ設定部品を使用する。本文・履歴一覧には適用しない。 */
 :is(.rp-content, .gb-pane-role-right-sidebar, .sa-option-panel)
 :is(.bd-detail-field, .sn2-detail-settings-row, .sn2-role-opts-row, .gb-form-option-field,

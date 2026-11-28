@@ -56,7 +56,6 @@
           editor.style.alignItems = 'flex-start';
           editor.style.width = 'max-content';
         }
-        unmeasuredRowIndices.forEach(index => editor.appendChild(allRowEls[index]));
       }
       scroll.appendChild(editor);
       this.host.innerHTML = '';
@@ -88,6 +87,10 @@
           allRowEls.forEach(el => { el.style.height = headerHeight + 'px'; });
         }
       }
+      // 表示領域と縦書きの行高を先に確定する。全行を置いてから測ると、
+      // 未確定の高さで全文を配置し、直後に同じ全文を配置し直してしまう。
+      // 本文は縦横とも最終の段だけに置く。初期の分割は目安に留め、
+      // ルビ確定後に全行を実測して分割し直すため、ここで全文を仮配置しない。
       // ヘッダーサイズ: 縦書きではヘッダーの幅（行と同じ方向で場所を取る）
       // 仮測定ではなく、固定値を使う（ヘッダーの実幅は行のレイアウト確定後でないと正確に測れない）
       const headerSize = viewMode === 'vertical' ? 40 : 28;
@@ -95,13 +98,17 @@
 
       // 読み取りと書き込みを分けてまとめる。行ごとに「書いて測る」を繰り返すと、
       // 1行ごとに画面全体の再レイアウトが走り、行数に比例して重くなる。
-      const applyVerticalWrapSizing = () => {
+      const applyVerticalWrapSizing = (measurements = null) => {
         if (viewMode !== 'vertical') return;
         const zV = typeof _getZoom === 'function' ? _getZoom() : 1;
         const groups = [...editor.querySelectorAll('.sn2-column-group')];
         const headerHeights = groups.map(group => {
           const h = group.querySelector('.sn2-header');
-          return h ? h.getBoundingClientRect().height / zV : null;
+          if (!h) return null;
+          if (measurements?.has(h)) return measurements.get(h);
+          const height = h.getBoundingClientRect().height / zV;
+          measurements?.set(h, height);
+          return height;
         });
         verticalWrapHeaderHeight = headerHeights.find(height => height > 0) || 0;
         const groupRows = groups.map((group, index) => (headerHeights[index] == null ? [] : [...group.querySelectorAll('.sn2-row')]));
@@ -175,9 +182,9 @@
         const bodySize = (viewMode === 'vertical' ? rect.width : rect.height) / zPack;
         return Math.ceil(Math.max(bodySize + margins.total, 1));
       };
-      const repackVerticalWrapFromFinalWidths = () => {
+      const repackVerticalWrapFromFinalWidths = (measurements = null) => {
         if (viewMode !== 'vertical') return false;
-        applyVerticalWrapSizing();
+        applyVerticalWrapSizing(measurements);
         return true;
       };
       const measureWrapOverflowAmounts = () => {
@@ -202,8 +209,8 @@
           return Math.max(0, currentScrollRect.top - rect.top, rect.bottom - visibleBottom);
         }).filter(amount => amount > 1);
       };
-      const repackWrapFromFinalSizes = (force = false) => {
-        if (viewMode === 'vertical') repackVerticalWrapFromFinalWidths();
+      const repackWrapFromFinalSizes = (force = false, measurements = null) => {
+        if (viewMode === 'vertical') repackVerticalWrapFromFinalWidths(measurements);
         const overflowAmounts = measureWrapOverflowAmounts();
         if (!force && !overflowAmounts.length) return false;
         const zV = typeof _getZoom === 'function' ? _getZoom() : 1;
@@ -219,14 +226,14 @@
         const needsRebuild = overflowAmounts.length || currentWrapColumnSignature() !== wrapColumnSignature(packedColumns);
         if (!needsRebuild) return false;
         rebuildWrapColumns(packedColumns);
-        if (viewMode === 'vertical') repackVerticalWrapFromFinalWidths();
+        if (viewMode === 'vertical') repackVerticalWrapFromFinalWidths(measurements);
         const remainingOverflow = measureWrapOverflowAmounts();
         if (remainingOverflow.length) {
           const overflowGuard = Math.ceil(Math.max(...remainingOverflow) / zV) + wrapFitGuard;
           const adjustedAvailSize = Math.max(baseAvailSize - overflowGuard, 100);
           if (adjustedAvailSize < baseAvailSize) {
             rebuildWrapColumns(packWrapColumns(finalRowSizes, adjustedAvailSize));
-            if (viewMode === 'vertical') repackVerticalWrapFromFinalWidths();
+            if (viewMode === 'vertical') repackVerticalWrapFromFinalWidths(measurements);
           }
         }
         return true;
@@ -235,46 +242,15 @@
         if (viewMode !== 'vertical') return;
         scroll.scrollLeft = 0;
       };
-      const settleWrapPacking = (forceFirstPass = false, resetPosition = true) => {
+      const settleWrapPacking = (forceFirstPass = false, resetPosition = true, measurements = new Map()) => {
         if (resetPosition) resetVerticalWrapHorizontalPosition();
         for (let pass = 0; pass < 4; pass += 1) {
-          if (!repackWrapFromFinalSizes(forceFirstPass && pass === 0)) break;
+          if (!repackWrapFromFinalSizes(forceFirstPass && pass === 0, measurements)) break;
         }
       };
 
-      // 各行のサイズを測定（CSS ピクセルに正規化）。
-      // 全行を先にまとめて読み、はみ出す行だけ最小幅を書いてから、その行だけ測り直す。
-      const measureAllWrapRowSizes = (els) => {
-        const reads = els.map(el => {
-          const margins = measureWrapMargins(el);
-          let size = measureWrapOuterSize(el);
-          let textBodyWidth = 0;
-          if (viewMode === 'vertical') {
-            // 縦書きは最終行高を先に適用してから実効幅を測る。
-            // 行高未確定の scrollWidth を使うと長文方向の値になり、段が2行程度で折れる。
-            size = Math.max(size, (el.scrollWidth || 0) + margins.total);
-            textBodyWidth = el.querySelector('.sn2-text')?.scrollWidth || 0;
-          }
-          return { margins, size, textBodyWidth };
-        });
-        if (viewMode === 'vertical') {
-          const widened = [];
-          reads.forEach((read, index) => {
-            if (read.textBodyWidth && read.textBodyWidth + read.margins.total > read.size) {
-              els[index].style.minWidth = Math.ceil(read.textBodyWidth) + 'px';
-              widened.push(index);
-            }
-          });
-          widened.forEach(index => {
-            const read = reads[index];
-            read.size = Math.max(read.textBodyWidth + read.margins.total, measureWrapOuterSize(els[index]));
-          });
-        }
-        return reads.map(read => Math.ceil(Math.max(read.size, 1)));
-      };
       const rowSizes = cachedRowSizes.slice();
-      const measuredMissingSizes = measureAllWrapRowSizes(unmeasuredRowIndices.map(index => allRowEls[index]));
-      unmeasuredRowIndices.forEach((index, measuredIndex) => { rowSizes[index] = measuredMissingSizes[measuredIndex]; });
+      unmeasuredRowIndices.forEach(index => { rowSizes[index] = headerSize; });
 
       // 段に分割
       const columns = packWrapColumns(rowSizes, availSize);
@@ -300,14 +276,65 @@
         scroll.scrollTop = top; scroll.scrollLeft = left;
         return true;
       };
+      const ownerDocument = this.doc, ownerHost = this.host;
+      this._refreshScriptNoteColumnLayout = () => {
+        if (this.doc !== ownerDocument || this.host !== ownerHost || !scroll.isConnected
+          || !ownerHost.contains(scroll)) return false;
+        const specifications = new Map(buildColumns().map(column => [column.id, column]));
+        const ids = this._getVisibleColumnIds();
+        if (ids.length !== cols.length || new Set(ids).size !== ids.length
+          || ids.some(id => !specifications.has(id) || !cols.some(column => column.id === id))) return false;
+        const models = new Map(this.doc.rows.map(row => [row.id, row]));
+        const rows = allRowEls.map(row => ({ row, model: models.get(row.dataset.rowId), cells: new Map([...row.children]
+          .filter(cell => cell.dataset?.colId).map(cell => [cell.dataset.colId, cell])) }));
+        if (rows.some(({ model, cells }) => !model || ids.some(id => !cells.has(id)))) return false;
+        let nextColumnWidth = null;
+        if (viewMode !== 'vertical') {
+          const previousWidth = parseFloat(editor.style.getPropertyValue('--sn2-column-width'));
+          if (!Number.isFinite(previousWidth) || previousWidth <= 0) return false;
+          // 既存の見積りに含まれる非表示列等の幅は保持し、変えた列の差だけ反映する。
+          nextColumnWidth = previousWidth + cols.reduce((sum, column) => sum
+            + (specifications.get(column.id).width || 300) - (column.width || 300), 0);
+          if (nextColumnWidth <= 0) return false;
+        }
+        const top = scroll.scrollTop, left = scroll.scrollLeft;
+        const orderChanged = ids.some((id, index) => cols[index].id !== id);
+        cols.splice(0, cols.length, ...ids.map(id => specifications.get(id)));
+        rows.forEach(({ row, model, cells }) => {
+          // スペーサー等は末尾へ残し、編集欄を同じ要素のまま並べ直す。
+          const tail = [...row.children].filter(cell => !cell.dataset?.colId);
+          const order = [...ids.map(id => cells.get(id)), ...tail];
+          order.forEach((cell, index) => {
+            if (row.children[index] === cell) return;
+            if (window.GBPaneKeepAlive) GBPaneKeepAlive.move(row, cell, row.children[index] || null);
+            else row.insertBefore(cell, row.children[index] || null);
+          });
+          row.style.removeProperty('min-width');
+          if (orderChanged) this._applyRowStyle(row, model.role);
+        });
+        [...editor.querySelectorAll('.sn2-column-group')].forEach((group, index) => {
+          group.querySelector('.sn2-header')?.replaceWith(buildHeader(true, index ? `wrap-${index + 1}` : ''));
+        });
+        setColVars(scroll); setColVars(editor);
+        if (nextColumnWidth !== null) editor.style.setProperty('--sn2-column-width', nextColumnWidth + 'px');
+        // 初期配置と同じく、高さを先に決めてルビを測り、全行の配置は最後の1回にする。
+        if (viewMode === 'vertical') applyVerticalWrapSizing();
+        this._adjustRubySpacing();
+        this._repackWrapForResize();
+        this._setupPanSpacer(scroll, editor, viewMode);
+        scroll.scrollTop = top; scroll.scrollLeft = left;
+        return true;
+      };
       this._bind();
       this._applyReadOnlyDom();
       // 先に行の高さを決め、ルビ等の寸法が確定してから段を最終配置する。
       // まだ寸法の変わる途中で全行を段組みすると、直後に同じ計測をやり直す。
-      if (viewMode === 'vertical') applyVerticalWrapSizing();
+      // 同期更新中だけ同じ見出しの実寸を共有する。別フレーム・リサイズには持ち越さない。
+      const initialHeaderMeasurements = new Map();
+      if (viewMode === 'vertical') applyVerticalWrapSizing(initialHeaderMeasurements);
       this._adjustRubySpacing();
       // 新しく作った領域は未スクロール。以後の再配置では従来どおり起点へ戻して測る。
-      settleWrapPacking(true, false);
+      settleWrapPacking(true, false, initialHeaderMeasurements);
       if (lastFinalRowSizes?.length === wrapRowKeys.length) {
         // Undo/Redoで直前の本文へ戻る時も、その本文の実測寸法を再利用する。
         // 最終配置は上で毎回検査する。異なる表示設定はglobalKeyで分離し、
@@ -328,4 +355,6 @@
       // 縦書き折り返し: 各段のヘッダー高さを測定し行に適用 + テキスト幅拡張
       if (viewMode === 'vertical') {
         requestAnimationFrame(() => {
+          if (this.doc !== ownerDocument || this.host !== ownerHost || !scroll.isConnected
+            || !ownerHost.contains(scroll)) return;
           settleWrapPacking(true);

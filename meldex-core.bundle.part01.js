@@ -267,6 +267,8 @@ async function _meldexCorePrepareFileWrite(path, body) {
 
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
+  if (options.backgroundFileWrite === true && String(path).split('?')[0] === '/file'
+    && typeof window.runFileWriteJob === 'function') return window.runFileWriteJob(path, guardedBody, options);
   const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -896,5 +898,3 @@ function _showMobileStatusToast(text, isError, atPaint = false) {
         _mobileStatusToastFrame = 0;
         const pending = _mobileStatusToastPending;
         _mobileStatusToastPending = null;
-        if (pending) _showMobileStatusToast(pending.text, pending.isError, true);
-      });

@@ -127,7 +127,11 @@
     const rect = parent.getBoundingClientRect();
     const z = _dockPopupZoom();
     const defaultWidth = _inferDefaultPopupWidth(panelsetNode);
-    const rawW = defaultWidth > 0 ? Math.max(MIN_W, Math.round(defaultWidth)) : Math.max(MIN_W, Math.floor((rect.width / z) * DEFAULT_W_RATIO));
+    let rawW = defaultWidth > 0 ? Math.max(MIN_W, Math.round(defaultWidth)) : Math.max(MIN_W, Math.floor((rect.width / z) * DEFAULT_W_RATIO));
+    // スマートフォン幅では画面の幅いっぱいに開く。既定の狭い幅のままだと、見出し等の文字が
+    // 縦書きのように1〜2文字ずつ折れていた（共通ルール、2026-11-27）。
+    const viewportW = (window.innerWidth || document.documentElement.clientWidth || 0) / z;
+    if (viewportW > 0 && viewportW <= 640) rawW = Math.max(rawW, viewportW - 16);
     const rawH = Math.max(MIN_H, Math.floor((rect.height / z) * DEFAULT_H_RATIO));
     return _clampPopupSize({ w: rawW, h: rawH });
   }

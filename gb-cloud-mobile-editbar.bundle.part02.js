@@ -1,3 +1,14 @@
+      return typeof ann !== 'undefined' && !!ann?.active;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  function _isAnnotationPhoneViewport() {
+    return Math.max(0, Number(window.innerWidth) || Number(document.documentElement?.clientWidth) || 0) <= 640;
+  }
+
+  function _currentAnnotationTool() {
     const active = document.querySelector('#ann-toolbar .ann-tool.active[data-tool]');
     if (active?.dataset?.tool) return active.dataset.tool;
     try {
@@ -78,6 +89,23 @@
     document.getElementById('btn-overlay-toggle')?.click?.();
     _syncAnnotationBarState();
     return true;
+  }
+
+  async function _clearAnnotationSurface(event) {
+    const button = event?.currentTarget;
+    if (button?.disabled) return false;
+    if (typeof window.annClear !== 'function') {
+      if (typeof showStatus === 'function') showStatus('アノテートを削除できませんでした', true);
+      return false;
+    }
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    try { return await window.annClear(); }
+    catch {
+      if (typeof showStatus === 'function') showStatus('アノテートを削除できませんでした', true);
+      return false;
+    } finally {
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    }
   }
 
   function _closeAnnotationToolbar() {
@@ -870,31 +898,3 @@
       setTimeout(_scheduleRefresh, 180);
       setTimeout(_scheduleRefresh, 420);
     });
-    document.addEventListener('focusout', () => { if (_isEnabled()) setTimeout(_scheduleRefresh, 80); });
-    document.addEventListener('input', (event) => {
-      if (!_isEnabled()) return;
-      if (_editableFromNode(event.target)) _saveSelection();
-      if (_chatInputFromNode(event.target)) _activeChatInput = event.target;
-      if (_plainInputFromNode(event.target)) _activePlainInput = event.target;
-    }, true);
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        _closeMenuSheet();
-        _closeOverflowSheet();
-      }
-    });
-    new MutationObserver(_scheduleRefresh).observe(document.body, {
-      attributes: true,
-      attributeFilter: ['data-cloud-mode', 'data-cloud-mobile', 'data-cloud-mobile-keyboard', 'data-cloud-mobile-editing-ui'],
-      childList: true,
-    });
-    const mainViews = document.getElementById('main-views');
-    if (mainViews) {
-      // ツールバーのあふれ判定は測り直しのたびに隠しクラスを外して付け直す。
-      // その出し入れだけでは更新しない（拾うとあふれ判定と互いに起こし合って止まらない）。
-      new MutationObserver((records) => {
-        if (records.some(record => !_isToolbarOverflowClassToggle(record))) _scheduleRefresh();
-      }).observe(mainViews, {
-        attributes: true,
-        attributeFilter: ['style', 'class'],
-        attributeOldValue: true,

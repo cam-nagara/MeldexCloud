@@ -234,6 +234,14 @@
     return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
   }
 
+  // 塗りの透け具合。新しい塗り（data.opacityModel）は色の不透明度だけ、以前の塗りは従来どおり半透明で描く。
+  const OPACITY_MODEL = 'color-alpha-v1';
+  function _fillOpacity(data, opacity, preview) {
+    if (typeof window._annotationFillOpacity === 'function') return window._annotationFillOpacity(data, opacity, preview);
+    const o = _normalizeOpacity(opacity, 1);
+    return data?.opacityModel === OPACITY_MODEL ? o : o * (preview ? 0.2 : 0.4);
+  }
+
   function _applyRectEl(el, data, color, opacity, preview) {
     const o = _normalizeOpacity(opacity, 1);
     el.setAttribute('x', Number(data?.x) || 0);
@@ -241,7 +249,7 @@
     el.setAttribute('width', Math.max(0.01, Number(data?.width) || 0));
     el.setAttribute('height', Math.max(0.01, Number(data?.height) || 0));
     el.setAttribute('fill', color);
-    el.setAttribute('fill-opacity', String(o * (preview ? 0.2 : 0.4)));
+    el.setAttribute('fill-opacity', String(_fillOpacity(data, o, preview)));
     el.setAttribute('stroke', color);
     el.setAttribute('stroke-width', '1');
     el.setAttribute('stroke-opacity', String(o));
@@ -249,13 +257,13 @@
     return el;
   }
 
-  function renderStroke(scene, type, points, color, opacity, annId, widthMedia) {
+  function renderStroke(scene, type, points, color, opacity, annId, widthMedia, data) {
     const o = _normalizeOpacity(opacity, 1);
     let el;
     if (type === 'lasso') {
       el = document.createElementNS(NS, 'polygon');
       el.setAttribute('points', points.map(p => p[0] + ',' + p[1]).join(' '));
-      el.setAttribute('fill', color); el.setAttribute('fill-opacity', String(o * 0.4));
+      el.setAttribute('fill', color); el.setAttribute('fill-opacity', String(_fillOpacity(data, o, false)));
       el.setAttribute('stroke', color); el.setAttribute('stroke-width', String(_drawWidth(type, widthMedia, 1)));
     } else {
       el = document.createElementNS(NS, 'path');
@@ -277,8 +285,10 @@
 
   function renderRect(scene, data, color, opacity, annId) {
     const el = document.createElementNS(NS, Array.isArray(data.boxes) && data.boxes.length ? 'g' : 'rect');
+    // 新しいハイライトは下の文字が読めるよう、色を乗算で重ねる（色の不透明度が100%でも文字が隠れない）
+    if (data?.highlight && data.opacityModel === OPACITY_MODEL) el.style.mixBlendMode = 'multiply';
     if (el.tagName.toLowerCase() === 'g') {
-      for (const box of data.boxes) el.appendChild(_applyRectEl(document.createElementNS(NS, 'rect'), box, color, opacity, false));
+      for (const box of data.boxes) el.appendChild(_applyRectEl(document.createElementNS(NS, 'rect'), { ...box, opacityModel: data.opacityModel }, color, opacity, false));
     } else _applyRectEl(el, data, color, opacity, false);
     // renderStroke同様、pointer-eventsは親svgからの継承に一本化する（個別指定禁止）。
     if (annId) el.dataset.annId = annId;
@@ -300,7 +310,7 @@
     }
     const o = _normalizeOpacity(opacity, 1);
     el.setAttribute('fill', outlined ? 'none' : color);
-    el.setAttribute('fill-opacity', outlined ? '0' : String(o * (preview ? .2 : .4)));
+    el.setAttribute('fill-opacity', outlined ? '0' : String(_fillOpacity(data, o, preview)));
     el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(o));
     el.setAttribute('stroke-width', String(_drawWidth(type, data?.lineWidth, 1)));
     if (preview) el.setAttribute('stroke-dasharray', '4,4');
@@ -340,6 +350,7 @@
       if (ellipseTool || rectTool) {
         const data = ellipseTool ? _ellipseData(active.path) : _rectData(active.path);
         data.lineWidth = active.widthMedia;
+        data.opacityModel = OPACITY_MODEL;
         const replacement = renderShape(active.scene, active.tool, data, _ann.color, _ann.opacity, null, true);
         active.previewEl.remove();
         active.previewEl = replacement;
@@ -347,7 +358,7 @@
         active.previewEl.style.pointerEvents = 'none';
       } else if (active.tool === 'lasso') {
         active.previewEl.setAttribute('points', active.path.map(p => p[0] + ',' + p[1]).join(' '));
-        active.previewEl.setAttribute('fill', _ann.color); active.previewEl.setAttribute('fill-opacity', '0.2');
+        active.previewEl.setAttribute('fill', _ann.color); active.previewEl.setAttribute('fill-opacity', String(_normalizeOpacity(_ann.opacity, 1)));
         active.previewEl.setAttribute('stroke', _ann.color); active.previewEl.setAttribute('stroke-dasharray', String(active.widthMedia) + ',' + String(active.widthMedia));
       } else {
         active.previewEl.setAttribute('d', _pathD(active.path));
@@ -368,11 +379,13 @@
       const type = shapeTypes.has(tool) ? tool : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : (tool === 'polyline' ? 'polyline' : 'stroke')));
       const data = type.startsWith('ellipse') ? _ellipseData(path) : (shapeTypes.has(type) ? _rectData(path) : { points: path, width: widthMedia });
       if (shapeTypes.has(type)) data.lineWidth = widthMedia;
+      // 新しい塗りは色の不透明度だけで描く（半透明を強制しない）
+      if (['lasso', 'rect', 'ellipse-fill'].includes(type)) data.opacityModel = OPACITY_MODEL;
       data.coordinateSpace = COORD_SPACE;
       data.mediaWidth = scene.mediaWidth;
       data.mediaHeight = scene.mediaHeight;
       if (scene.isPdf && scene.pageIndex != null) data.pageIndex = scene.pageIndex;
-      const el = shapeTypes.has(type) ? renderShape(scene, type, data, _ann.color, _ann.opacity, null, false) : renderStroke(scene, type, path, _ann.color, _ann.opacity, null, widthMedia);
+      const el = shapeTypes.has(type) ? renderShape(scene, type, data, _ann.color, _ann.opacity, null, false) : renderStroke(scene, type, path, _ann.color, _ann.opacity, null, widthMedia, data);
       try {
         const row = {
           target_path: scene.path, type, data, color: _ann.color, opacity: _ann.opacity, user: viewerAnnotationUser(),
@@ -508,7 +521,7 @@
           const element = renderShape(sceneEntry, item.type, data, item.color, item.opacity, item.id, false);
           element._viewerAnnotationHistoryRow = { ...item, data: { ...data } };
         } else if (data.points) {
-          const element = renderStroke(sceneEntry, item.type, data.points, item.color, item.opacity, item.id, data.width);
+          const element = renderStroke(sceneEntry, item.type, data.points, item.color, item.opacity, item.id, data.width, data);
           element._viewerAnnotationHistoryRow = { ...item, data: { ...data } };
         }
       });
@@ -538,7 +551,9 @@
     return next;
   }
   function setTool(tool) {
-    _ann.tool = tool;
+    // 以前のマーカー（保存したツールの状態・古い常駐パレット）はペンとして扱う
+    _ann.tool = tool === 'marker' || tool === 'highlight' ? 'pen' : tool;
+    tool = _ann.tool;
     _scenes.forEach(scene => {
       if (_ann.active) scene.svg.style.cursor = annotationCursor(tool);
     });
@@ -599,6 +614,58 @@
     _scenes.forEach(scene => { scene.svg.style.opacity = _ann.opacity; });
     window.MeldexViewerAnnotationLegacy?.setOpacity?.(_ann.opacity);
   }
+  // 右クリックした位置の線・塗り（新しい座標系で保存したもの）。旧座標の表示専用アノテートは対象外。
+  function hitAt(clientX, clientY) {
+    if (_ann.visible === false || typeof window._coreAnnotationElementHit !== 'function') return null;
+    for (const scene of _scenes) {
+      const rect = scene.wrap.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) continue;
+      const local = clientToLocal(scene.svg, clientX, clientY);
+      const tolerance = localLengthForScreenPx(scene.svg, 6);
+      for (const el of Array.from(scene.strokesG.querySelectorAll('[data-ann-id]')).reverse()) {
+        if (el.classList.contains('viewer-ann-preview') || !el._viewerAnnotationHistoryRow) continue;
+        const parts = el.matches('path,polygon,rect,ellipse') ? [el] : Array.from(el.querySelectorAll('path,polygon,rect,ellipse'));
+        if (parts.some(part => window._coreAnnotationElementHit(part, local.x, local.y, tolerance))) return { scene, el };
+      }
+    }
+    return null;
+  }
+  // 描いた後の色の変更（共通カラーパレット。不透明度も選べる）。選んでいる間は見た目だけ変え、閉じた時に1回保存する。
+  async function recolor(hit, clientX, clientY) {
+    const el = hit?.el;
+    const id = el?.dataset?.annId;
+    if (!id || typeof window.openColorPalette !== 'function' || typeof window._annotationRecolorUpdate !== 'function') return false;
+    let before = null;
+    try { before = (await window.apiFetch('/annotations?ann_id=' + encodeURIComponent(id) + '&limit=1'))?.[0] || null; } catch {}
+    if (before) {
+      try { before = { ...before, data: typeof before.data === 'string' ? JSON.parse(before.data || '{}') : (before.data || {}) }; } catch { before = null; }
+    }
+    if (!before) { viewerAnnotationSaveFailed(null, 'アノテートが見つかりません'); return false; }
+    const initial = window._annotationRecolorInitialColor(before);
+    let picked = '';
+    const anchor = { getBoundingClientRect: () => ({ left: clientX, right: clientX, top: clientY, bottom: clientY, width: 0, height: 0, x: clientX, y: clientY }) };
+    return new Promise(resolve => {
+      window.openColorPalette(anchor, initial, color => {
+        if (!color || color === 'transparent') return;
+        picked = color;
+        window._paintAnnotationRecolorPreview?.(el, { ...before, ...window._annotationRecolorUpdate(before, color) });
+      }, { allowTransparent: false, onClose: async () => {
+        if (!picked || picked === initial) { if (picked) await rebuild(); resolve(false); return; }
+        try {
+          const update = window._annotationRecolorUpdate(before, picked);
+          const result = await window.apiPut('/annotations/' + encodeURIComponent(id), { ...update, expected_modified: before.modified });
+          const after = { ...before, ...update, modified: result?.modified || before.modified };
+          el._viewerAnnotationHistoryRow = after;
+          window.__viewerAnnotationReportSave?.(true, 'update', null, result, { before, after });
+          resolve(true);
+        } catch (error) {
+          viewerAnnotationSaveFailed(error, 'アノテートの色を保存できませんでした');
+          window.__viewerAnnotationReportSave?.(false, 'update', error);
+          resolve(false);
+        } finally { await rebuild(); }
+      } });
+    });
+  }
   function flushDrawing() {
     if (_draw.isDrawing()) { _draw.end(); return true; }
     return false;
@@ -626,6 +693,8 @@
     setOpacity,
     clearAll,
     flushDrawing,
+    hitAt,
+    recolor,
     isDrawing: () => _draw.isDrawing(),
     viewerAnnotationUser,
     viewerAnnotationSaveFailed,

@@ -1,3 +1,28 @@
+    const targetParent = div.parentElement;
+
+    // リンクファイルチェック
+    const hasLinked = nodes.some(n => n._nodeData && n._nodeData.linked);
+    if (hasLinked) {
+      showStatus('リンクファイルは移動できません（Alt+D&Dでリンク先を変更）');
+      return;
+    }
+
+    // 移動先フォルダを決定
+    let destFolder = '';
+    if (position === 'inside' && (isFolder || isDB)) {
+      destFolder = item.path;
+    } else {
+      const virtualParentPath = window.GBOutlinerVirtualRender?.parentPathForItem(div.parentElement, item.path);
+      const parentNode = div.parentElement?.closest('.tree-node');
+      if (virtualParentPath !== undefined) {
+        destFolder = virtualParentPath || parentNode?._nodeData?.path || '';
+      } else if (parentNode) {
+        destFolder = parentNode._nodeData?.path || '';
+      } else if (div.closest('#body-home') && _homeFolderPath) {
+        destFolder = _homeFolderPath;
+      } else {
+        destFolder = '';
+      }
     }
     // 移動先のフォルダの名前の変更が保存中なら、終わるのを待って新しい場所へ移動する（2026-11-24 利用者の報告）。
     if (destFolder && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
@@ -873,28 +898,3 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
       }
       throw new Error('削除結果を確認できませんでした。フォルダツリーを更新して状態を確認してください。');
     } catch (reason) {
-      // Only an absent legacy endpoint permits a single-item fallback. A token
-      // may already be consumed after a conflict, timeout or uncertain response.
-      if (![404, 405].includes(Number(reason?.status))) {
-        return batchTargets.map(item => {
-          try { options.onFailure?.(item, reason); } catch {}
-          return { status: 'rejected', reason };
-        });
-      }
-    }
-  }
-  const results = [];
-  for (const item of targets) {
-    try {
-      const value = await apiPost('/outliner/delete', {
-        path: item.path,
-        kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
-        ...(item.assetId ? { assetId: item.assetId } : {}),
-        ...((item.entry_id || item.entryId) ? { expected_entry_id: item.entry_id || item.entryId,
-          expected_entry_name: item.name || undefined } : {}),
-        ...confirmationPayload,
-      }, { silentError: options.silentError === true });
-      results.push({ status: 'fulfilled', value });
-      const trashRef = _outlinerTrashRefFromResponse(value);
-      if (trashRef && typeof options.onSuccess === 'function') {
-        try { options.onSuccess(item, value); } catch {}

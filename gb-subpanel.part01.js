@@ -113,6 +113,13 @@ const GBSubPanel = (() => {
   }
 
   // ---- 対象の正規化（既に解決済みならそのまま使い、未解決ならルーターへ委ねる） ----
+  function _moveFormOpenRead(from, to) {
+    const read = from?._formOpenRead;
+    if (!read || from === to) return;
+    delete from._formOpenRead;
+    if (read.path === to?.path) Object.defineProperty(to, '_formOpenRead', { value: read, configurable: true });
+  }
+
   async function _normalizeTarget(target) {
     let entry;
     if (target && typeof target === 'object' && target.type) {
@@ -140,12 +147,17 @@ const GBSubPanel = (() => {
         && GBLinkRouter.isExternalUrl(entry.path)) {
       entry.external = true;
     }
-    // 比較（compare）は合成パス、エントリ（entity）はSQLite上の論理.mdパスを取り得るため、
-    // 物理ファイルの実在確認には乗せない。各レンダラーが現役APIで読み込み、そこで
-    // 実在しない場合のエラーを表示する。
+    // 比較（compare）は合成パス、エントリ（entity）はSQLite上の論理.mdパスを取り得る。
+    // フォームは自身の読込で存在・権限・内容を確認し、失敗時は再読込を表示する。
+    // 各レンダラーの確認より前に、同じ実在確認の通信を直列で増やさない。
     if (!entry.external && entry.path && entry.type !== 'unsupported' && entry.type !== 'compare' && entry.type !== 'entity'
+        && entry.type !== 'form-app'
         && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.checkAvailability === 'function') {
       entry.availability = await GBLinkRouter.checkAvailability(entry.path);
+    }
+    if (!entry.external && entry.path && entry.type === 'form-app' && typeof FormAppComponent !== 'undefined' && typeof FormAppComponent.prepareOpenRead === 'function') {
+      const read = FormAppComponent.prepareOpenRead(entry.path);
+      if (read) Object.defineProperty(entry, '_formOpenRead', { value: read, configurable: true });
     }
     return entry;
   }
@@ -496,6 +508,7 @@ const GBSubPanel = (() => {
         path: entry.path || '',
         state: entry.state || {},
       };
+    _moveFormOpenRead(entry, tab);
     return { id: INNER_PANE_ID, type: 'pane', tabs: [tab], activeTabIndex: 0 };
   }
 

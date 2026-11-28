@@ -605,7 +605,7 @@ const MeldexExportHtml = (() => {
         }
       });
       const style = node.getAttribute?.('style') || '';
-      if (/url\(\s*(["']?)(?!data:|__MELDEX_ASSET_BASE__\/)/i.test(style)) {
+      if (/url\((?!\s*["']?(?:data:|#|__MELDEX_ASSET_BASE__\/))/i.test(style)) {
         throw new Error('公開HTMLに未埋込みのCSS資産が残っています');
       }
     });

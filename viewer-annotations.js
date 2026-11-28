@@ -311,6 +311,10 @@
       setWidth(tool, width) { SceneEngine().setWidth(tool, width); },
       toggleVisible() { SceneEngine().setVisible(SceneEngine().ann().visible === false); _syncToolbar(); },
       clearAll() { SceneEngine().clearAll(); },
+      // ハイライトは選んだ文字に付ける（ツールバーのボタン）
+      hasTextSelection() { return !!window.MeldexViewerHighlights?.hasTextSelection?.(); },
+      highlightSelection() { return window.MeldexViewerHighlights?.highlightTextSelection?.(SceneEngine().ann().color); },
+      noTextReason() { return window.MeldexViewerHighlights?.noTextReason || ''; },
       close() { setState(false); },
       openColorPicker(anchor) {
         const engine = SceneEngine();
@@ -387,6 +391,8 @@
   // 明示的な再読み込み要求。path は現在のシーン群のいずれかに一致する場合のみ意味を持つ
   // （新設計ではシーンは「今表示中の画像/ページ」に紐づくため、任意パスの単独読み込みは扱わない）。
   function load(path) {
+    // EPUBのハイライトは本文の枠（iframe）の中に描く。親の取り消し・やり直し・色の変更の後に読み直す。
+    if (window.MeldexViewerEpub?.isActive?.()) void window.MeldexViewerEpub.reloadHighlights();
     ensureToolbar();
     if (path) {
       const found = SceneEngine().findSceneByPath(path);

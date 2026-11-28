@@ -429,6 +429,8 @@ function _isSettingsLocalVaultPath(path) {
 }
 
 async function _syncSettingsVaultPathFromOutlinerRoots(roots) {
+  // Dropbox treats the workspace independently of desktop vault selection.
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return true;
   const localVisible = Array.isArray(roots)
     ? roots.find(root => root && root.visible && _isSettingsLocalVaultPath(root.path))
     : null;
@@ -1267,7 +1269,10 @@ function _restoreSettingsDialogStorageAfterHistory(keys) {
   if (keys.some(key => key.startsWith('meldex-a11y-'))) {
     window.MeldexAccessibility?.applyPreferences?.();
   }
-  if (keys.some(key => key === 'editor-theme' || key === 'editor-theme-name' || key.startsWith('meldex-theme-'))) {
+  if (keys.some(key => ['editor-theme', 'editor-theme-name', 'meldex-default-theme-id', 'meldex-custom-themes'].includes(key) || key.startsWith('meldex-theme-'))) {
+    // Storage undo can remove the newly selected custom theme entirely. Apply
+    // the restored preset before its saved overrides, clearing obsolete vars.
+    window.MeldexThemeManager?.refreshThemeSettingsAfterExternalChange?.(keys);
     if (typeof loadColorSettings === 'function') loadColorSettings();
   }
   if (keys.some(key => _SETTINGS_PROFILE_KEYS.includes(key))) {

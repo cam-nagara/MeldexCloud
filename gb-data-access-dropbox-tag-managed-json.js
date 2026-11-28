@@ -86,7 +86,7 @@
         const saved = await adapter.save(kind, documentId, {
           legacy_path: String(path),
           value: next,
-        }, { expectedRevision: current ? current.revision : null });
+        }, { expectedRevision: current ? current.revision : null, baseRecord: current });
         return structuredClone(saved.payload.value);
       } catch (error) {
         if (error?.name !== 'SystemStorageConflictError'

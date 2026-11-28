@@ -959,12 +959,8 @@ async function _apiPutValue(valObj, updates) {
         });
       }
     } catch {}
-    try {
-      const ptc = dbPath && valObj.property && typeof getPropertyTypes === 'function'
-        ? getPropertyTypes(dbPath)?.[valObj.property]
-        : null;
-      if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
-    } catch {}
+    // 画像の参照は削除・GCの入口で永続データから再確認する。
+    // 値保存ごとの全保存先走査は、保存後の画面更新を妨げるため行わない。
     if (updates.new_rich_html !== undefined) {
       if (updates.new_rich_html) valObj.rich_html = updates.new_rich_html;
       else delete valObj.rich_html;
@@ -1011,13 +1007,16 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
   return _dbQueueEntryMutation(entityPath, mutationDbPath, async (latestEntityPath) => {
     const writeEntityPath = latestEntityPath || entityPath;
     const key = writeEntityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
-    const body = { [key]: writeEntityPath, property: propName, value, status, note: note || '' };
+    let body = { [key]: writeEntityPath, property: propName, value, status, note: note || '' };
     if (richHtml) body.rich_html = richHtml;
     if (extra && typeof extra === 'object') {
+      if (extra.entry_id || extra.expected_entry_id) body.expected_entry_id = String(extra.expected_entry_id || extra.entry_id);
+      if (extra.operation_id) body.operation_id = String(extra.operation_id);
       if (Array.isArray(extra.relations)) body.relations = extra.relations;
       if (Array.isArray(extra.published_in)) body.published_in = extra.published_in;
       if (extra.link && typeof extra.link === 'object') body.link = { ...extra.link };
       if (extra.created) body.created = extra.created;
+      if (extra._return_entity === true) body._return_entity = true;
       const baseRevision = Number(extra.baseRevision ?? extra.base_revision ?? extra.entryRevision ?? extra.revision);
       if (Number.isInteger(baseRevision) && baseRevision >= 0) body.baseRevision = baseRevision;
     }
@@ -1026,9 +1025,35 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     const usableRevisions = [requestedRevision, latestRevision]
       .filter(revision => Number.isInteger(revision) && revision >= 0);
     if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
-    const cellBase = typeof _dbCellBaseForSave === 'function' ? _dbCellBaseForSave(writeEntityPath, propName) : null;
+    let cellBase = typeof _dbCellBaseForSave === 'function' ? _dbCellBaseForSave(writeEntityPath, propName) : null;
     if (cellBase) body.cell_base = cellBase;
-    const res = await apiPost('/value', body);
+    const retry = extra?._candidateAddRetry;
+    if (retry && typeof retry === 'object') {
+      const intent = { ...body }; delete intent.baseRevision; delete intent.cell_base; delete intent._return_entity;
+      const signature = JSON.stringify(intent);
+      if (retry.body) {
+        if (retry.signature !== signature) throw Object.assign(new Error('前の保存結果を確認できていません。先に同じ内容で再試行してください'), {status:409});
+        body = JSON.parse(JSON.stringify(retry.body));
+        cellBase = body.cell_base || null;
+      } else {
+        body.operation_id = body.operation_id || 'form-candidate-' + crypto.randomUUID();
+        retry.body = JSON.parse(JSON.stringify(body)); retry.signature = signature; retry.ambiguous = false;
+      }
+    }
+    let res;
+    try {
+      res = await apiPost('/value', body);
+    } catch (error) {
+      // These responses prove that the write was rejected before any mutation.
+      // Network loss and conflicts retain the exact request, including its cell base.
+      if (retry) {
+        if (!retry.ambiguous && [400,403,422,423].includes(Number(error?.status))) {
+          delete retry.body; delete retry.signature; delete retry.ambiguous;
+        } else retry.ambiguous = true;
+      }
+      throw error;
+    }
+    if (retry) {delete retry.body; delete retry.signature; delete retry.ambiguous;}
     if (cellBase) {
       try {
         // 追加は保存先のセルの末尾へ1件足す。画面の一覧は追加中の印が付いたままのことがあるので使わず、
@@ -1059,12 +1084,7 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
         });
       }
     } catch {}
-    try {
-      const ptc = dbPath && propName && typeof getPropertyTypes === 'function'
-        ? getPropertyTypes(dbPath)?.[propName]
-        : null;
-      if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
-    } catch {}
+    // 候補追加も、画像削除・GC側の永続データの参照確認を正本とする。
     window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
       owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
       structural: structuralSave,

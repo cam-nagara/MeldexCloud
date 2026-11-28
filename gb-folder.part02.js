@@ -14,8 +14,8 @@ function _applyPanelSize(el, pos, size) {
 // プレビューコンテンツを生成
 function _renderPreviewContent(item) {
   const frag = document.createDocumentFragment();
-  // 画像・PDF → viewer.htmlをiframeで埋め込み
-  const isPdf = item.name && item.name.toLowerCase().endsWith('.pdf');
+  // 画像・PDF・EPUB → viewer.htmlをiframeで埋め込み（EPUBも ?pdf= で渡し、ビューワーが拡張子で見分ける）
+  const isPdf = item.name && /\.(?:pdf|epub)$/i.test(item.name);
   if (item.type === 'image' && item.external_reference) {
     const img = document.createElement('img');
     img.className = 'fp-img';
@@ -201,7 +201,8 @@ function showFolderPreview(item) {
   const previewPane = document.getElementById('gb-preview-pane');
   if (previewPane && previewPane.closest('.gb-pane-content')) {
     // 白フラッシュ防止: 同種のコンテンツならsrc更新のみ
-    const isPdf = item.name && item.name.toLowerCase().endsWith('.pdf');
+    // EPUB もPDFと同じ ?pdf= でビューワーへ渡す（ビューワーが拡張子でEPUBとして表示する）
+    const isPdf = item.name && /\.(?:pdf|epub)$/i.test(item.name);
     const existingIframe = previewPane.querySelector('iframe');
     if ((item.type === 'image' || isPdf) && existingIframe && !item.external_reference) {
       const newSrc = isPdf
@@ -624,7 +625,7 @@ function _inferViewerFileTypeFromPath(path) {
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico', 'tif', 'tiff', 'heic', 'heif', 'psd', 'psb'].includes(ext)) return 'image';
   if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext)) return 'video';
   if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return 'audio';
-  if (ext === 'pdf') return 'pdf';
+  if (ext === 'pdf' || ext === 'epub') return 'pdf';
   if (ext === 'csv') return 'csv';
   if (ext === 'html' || ext === 'htm') return 'html';
   return '';
@@ -1893,7 +1894,7 @@ function fvBulkAutoTag(sourceItems = _folderSelectedItems) {
             const ext = name.split('.').pop().toLowerCase();
             const imgExts = ['jpg','jpeg','png','gif','bmp','webp','svg','ico'];
             const vidExts = ['mp4','webm','mov','avi','mkv'];
-            const type = imgExts.includes(ext) ? 'image' : vidExts.includes(ext) ? 'video' : ext === 'pdf' ? 'pdf' : 'file';
+            const type = imgExts.includes(ext) ? 'image' : vidExts.includes(ext) ? 'video' : (ext === 'pdf' || ext === 'epub') ? 'pdf' : 'file';
             showFolderPreview({ name, path: data.path, type });
           }
         } catch {}

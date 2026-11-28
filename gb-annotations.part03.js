@@ -95,7 +95,7 @@ function _updateRectFillEl(rect, data, color, opacity, preview) {
   rect.setAttribute('height', Math.max(1, Number(data?.height) || 0));
   rect.setAttribute('fill', color);
   const normalizedOpacity = _normalizeAnnotationOpacity(opacity, 1);
-  rect.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+  rect.setAttribute('fill-opacity', String(typeof _annotationFillOpacity === 'function' ? _annotationFillOpacity(data, normalizedOpacity, preview) : normalizedOpacity * (preview ? 0.2 : 0.4)));
   rect.setAttribute('stroke', color);
   rect.setAttribute('stroke-width', '1');
   rect.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -128,7 +128,7 @@ function _updateAnnotationShapeEl(el, type, data, color, opacity, preview) {
     el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
   }
   el.setAttribute('fill', outlined ? 'none' : color);
-  el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+  el.setAttribute('fill-opacity', outlined ? '0' : String(typeof _annotationFillOpacity === 'function' ? _annotationFillOpacity(data, normalizedOpacity, preview) : normalizedOpacity * (preview ? 0.2 : 0.4)));
   el.setAttribute('stroke', color);
   el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || ann.widths?.pen || 3)));
   el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -222,6 +222,7 @@ if (typeof _initTrayAnnotationHost === 'function') {
 window.GBAnnotationSurfaces = (() => {
   const surfaces = new Map();
   let selected = null, scheduled = false, revealRevision = 0;
+  let clearing = false;
   const enabled = () => typeof GBLayout !== 'undefined' && !!document.getElementById('main-area') && !_isTrayAnnotationHost();
   const isOpen = () => enabled() && ann.active;
   const scope = s => 'annotation:' + _normalizeAnnotationTargetPath(s.path) + '#' + s.id;
@@ -316,6 +317,10 @@ window.GBAnnotationSurfaces = (() => {
     for (const [id, info] of Object.entries(typeof GBLayout !== 'undefined' ? GBLayout.paneMap || {} : {})) {
       const node = info.node || GBLayout.findNode?.(GBLayout.root, id)?.node;
       const tab = node?.tabs?.[node.activeTabIndex];
+      if (tab?.type === 'form-app') {
+        const app = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
+        if (!app?.surface?.isConnected || app.path !== tab.path) continue;
+      }
       // 対象外のフォルダ等では寸法を読まない。大量カードの追加直後に不要な全体配置を確定させない。
       if (tab && _ANNOTATION_TARGET_VIEW_TYPES.has(tab.type) && visible(info.contentEl)) {
         out.push({ id, host: info.contentEl, tab });
@@ -389,7 +394,7 @@ window.GBAnnotationSurfaces = (() => {
     _positionFloatingToolbar(toolbar, document.querySelector('.gb-dock-rail-annotate'));
     toolbar.classList.add('visible'); document.body.classList.add('ann-toolbar-active');
     _refreshAnnFloatingViewLockButton({ force: true });
-    broadcast(); return true;
+    broadcast(); scheduleHighlightSync(); return true;
   }
   function close() {
     ann.active = false;
@@ -398,23 +403,42 @@ window.GBAnnotationSurfaces = (() => {
     document.querySelectorAll('[data-annotation-selected]').forEach(el => el.removeAttribute('data-annotation-selected'));
     broadcast(); return true;
   }
+  async function navigateHistory(direction) {
+    const s = selected;
+    if (!s) return false;
+    await s.bridge?.flush?.();
+    return direction === 'undo' ? historyUndo(activeScope(s, 'undo')) : historyRedo(activeScope(s, 'redo'));
+  }
   async function clear() {
     const s = selected;
-    if (!s || s.readOnly) return false;
+    if (!s || s.readOnly || clearing) return false;
     if (s.iframe) { return s.iframe.contentWindow.MeldexViewerAnnotationScene?.clearAll({ confirmed: true }); }
-    if (!await cfConfirm('この画面のアノテートをすべて削除しますか？')) return false;
-    await s.bridge.flush();
-    let before;
-    try { before = await apiFetch(_annotationTargetFetchUrl(s.path)); }
-    catch { showStatus('アノテートを読み込めませんでした', true); return false; }
-    const rows = before.filter(item => !['comment', 'note', 'sticky'].includes(item.type) || _isStandaloneAnnotationNoteItem(item, _parseAnnotationData(item)));
-    const results = await Promise.allSettled(rows.map(item => apiDelete('/annotations/' + encodeURIComponent(item.id))));
-    const deleted = rows.filter((_, i) => results[i].status === 'fulfilled');
-    _pushAnnotationBatchHistory('アノテート: 全削除', deleted, [], s.path, scope(s));
-    s.mutation++; await reload(s);
-    if (deleted.length !== rows.length) { showStatus('アノテートを一部削除できませんでした', true); return false; }
-    showStatus('アノテートを全削除しました');
-    return true;
+    const button = document.querySelector('#ann-toolbar [data-action="annClear()"]');
+    clearing = true;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    showStatus('アノテートを削除しています...');
+    try {
+      await s.bridge.flush();
+      let before;
+      try { before = await apiFetch(_annotationTargetFetchUrl(s.path)); }
+      catch { showStatus('アノテートを読み込めませんでした', true); return false; }
+      const rows = before.filter(item => !['comment', 'note', 'sticky'].includes(item.type) || _isStandaloneAnnotationNoteItem(item, _parseAnnotationData(item)));
+      // Every row shares one durable store revision. Concurrent deletes can
+      // conflict with each other; retain partial history while saving in order.
+      const deleted = [];
+      for (const item of rows) {
+        try { await apiDelete('/annotations/' + encodeURIComponent(item.id)); deleted.push(item); }
+        catch { /* Report the incomplete batch after preserving its history. */ }
+      }
+      _pushAnnotationBatchHistory('アノテート: 全削除', deleted, [], s.path, scope(s));
+      s.mutation++; await reload(s);
+      if (deleted.length !== rows.length) { showStatus('アノテートを一部削除できませんでした', true); return false; }
+      showStatus('アノテートを全削除しました');
+      return true;
+    } finally {
+      clearing = false;
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    }
   }
   const observe = () => {
     new MutationObserver(() => {
@@ -424,6 +448,74 @@ window.GBAnnotationSurfaces = (() => {
     }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-cloud-readonly', 'data-cloud-quota-blocked'] });
     sync();
   };
+  // 描いた線・塗りの上の右クリック: 共通メニューの「色...」から共通カラーパレット（不透明度つき）で色を変える。
+  function strokeAt(s, clientX, clientY) {
+    if (!s || s.iframe || !s.bridge?.layer || s.bridge.svg.style.visibility === 'hidden') return null;
+    const layer = s.bridge.layer, ctm = layer.getScreenCTM?.();
+    if (!ctm) return null;
+    const point = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+    const tolerance = 6 / (Math.hypot(ctm.a, ctm.b) || 1);
+    for (const el of [...layer.querySelectorAll('[data-ann-id]')].reverse()) {
+      if (el.classList.contains('ann-preview')) continue;
+      const parts = el.matches('path,polygon,rect,ellipse') ? [el] : [...el.querySelectorAll('path,polygon,rect,ellipse')];
+      if (parts.some(part => _coreAnnotationElementHit(part, point.x, point.y, tolerance))) return el;
+    }
+    return null;
+  }
+  // 本文側の右クリックメニュー（document で受ける）より先に判定するため window の捕捉段階で受ける。
+  window.addEventListener('contextmenu', e => {
+    if (!enabled() || e.defaultPrevented) return;
+    const s = fromElement(e.target);
+    if (!s || s.readOnly) return;
+    const el = strokeAt(s, e.clientX, e.clientY);
+    if (!el || !window.MeldexContextMenuUI?.openAt) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    select(s);
+    const x = e.clientX, y = e.clientY;
+    window.MeldexContextMenuUI.openAt({ x, y, ariaLabel: 'アノテート', items: [
+      { label: '色...', ariaLabel: '色...', icon: 'palette', e2eId: 'annotation-stroke-recolor',
+        action: () => void window.GBAnnotationRecolor.open({ id: el.dataset.annId, targetPath: s.path, scope: window.GBAnnotationRecolor.currentScope(),
+          anchor: window.GBAnnotationRecolor.anchorAt(x, y), preview: row => _paintAnnotationRecolorPreview(el, row),
+          refresh: () => { s.mutation++; void reload(s); } }) },
+    ] });
+  }, true);
+  // ツールバーの「ハイライト」: 選んでいる文字に付ける（描画ツールではない）。ノート等の本文の選択か、
+  // ビューワー（PDFの文字層・OCRの認識結果）の選択がある時だけ押せる。無い時は理由をツールチップで示す。
+  const HIGHLIGHT_NO_TEXT = 'ハイライトは選択した文字に付けます。文字を選んでから押してください（文字の無い画像やスキャンしたPDFには、マーキングの矩形塗りを使います）';
+  function highlightTarget() {
+    const context = window.GBAnnotationHighlights?.capture?.();
+    if (context) return { context };
+    if (selected?.iframe && selected.hasText && !selected.readOnly) return { frame: selected };
+    return null;
+  }
+  function syncHighlightButton() {
+    const button = document.getElementById('ann-highlight-selection');
+    if (!button || !enabled()) return;
+    const ready = ann.active && !!highlightTarget();
+    if (button.getAttribute('aria-disabled') !== String(!ready)) button.setAttribute('aria-disabled', String(!ready));
+    button.classList.toggle('disabled', !ready);
+    const title = ready ? 'ハイライト — 選んだ文字にツールバーの色でハイライトを付けます' : HIGHLIGHT_NO_TEXT;
+    if (button.title !== title) button.title = title;
+  }
+  let highlightSyncTimer = 0;
+  const scheduleHighlightSync = () => { clearTimeout(highlightSyncTimer); highlightSyncTimer = setTimeout(syncHighlightButton, 80); };
+  document.addEventListener('selectionchange', () => { if (ann.active) scheduleHighlightSync(); });
+  document.addEventListener('pointerdown', e => {
+    if (e.target.closest?.('#ann-highlight-selection')) e.preventDefault(); // 押しても文字の選択を外さない
+  }, true);
+  document.addEventListener('click', e => {
+    const button = e.target.closest?.('#ann-highlight-selection');
+    if (!button) return;
+    e.preventDefault();
+    const target = button.getAttribute('aria-disabled') === 'true' ? null : highlightTarget();
+    if (!target) { showStatus(HIGHLIGHT_NO_TEXT, true); return; }
+    if (target.context) void window.GBAnnotationHighlights.create(target.context, ann.color);
+    else {
+      try { target.frame.iframe.contentWindow?.MeldexViewerHighlights?.highlightTextSelection?.(ann.color); }
+      catch { showStatus('ハイライトを付けられませんでした', true); }
+    }
+    scheduleHighlightSync();
+  });
   document.addEventListener('pointerdown', e => { if (e.target.closest?.('[data-undo-button],[data-redo-button]')) return; const s = fromElement(e.target); if (s) select(s); }, true);
   document.addEventListener('focusin', e => { if (e.target.closest?.('[data-undo-button],[data-redo-button]')) return; const s = fromElement(e.target); if (s) select(s); }, true);
   document.addEventListener('keydown', e => {
@@ -444,6 +536,11 @@ window.GBAnnotationSurfaces = (() => {
     if (e.data?.type === 'viewer-ann-open-menu') {
       if (e.data.targetPath) s.path = String(e.data.targetPath);
       select(s); if (!ann.active) toggle(s.host); else broadcast();
+    }
+    if (e.data?.type === 'viewer-ann-text-selection') {
+      s.hasText = !!e.data.hasText;
+      if (s.hasText) select(s);
+      scheduleHighlightSync();
     }
     if (['viewer-ann-pointer-target', 'viewer-ann-state-changed'].includes(e.data?.type)) {
       const pathChanged = e.data.targetPath && s.path !== String(e.data.targetPath);
@@ -469,7 +566,7 @@ window.GBAnnotationSurfaces = (() => {
     }
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', observe, { once: true }); else observe();
-  return { enabled, isOpen, sync, toggle, close, broadcast, clear,
+  return { enabled, isOpen, sync, toggle, close, broadcast, clear, syncHighlightButton,
     usesHistory: () => isOpen() || !!selected?.iframe,
     forElement: fromElement,
     captureTargets: () => { sync(); return [...surfaces.values()]; },
@@ -480,16 +577,17 @@ window.GBAnnotationSurfaces = (() => {
       const documentPath = path.replace(/(\.pdf)#page=\d+$/i, '$1');
       const same = value => samePath(value, path);
       sync();
+      const sceneHas = s => { try { return !!s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path); } catch { return false; } };
       const find = () => [selected, ...surfaces.values()].filter(Boolean).find(s => same(s.path)
         || s.iframe && samePath(s.sourcePath, documentPath)
-        || s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path));
+        || sceneHas(s));
       let s = find();
       if (!s) {
         if (selected?.id === 'gb-subpanel-inner-pane' && window.GBSubPanel) {
           await openLinkedPathInRightSidebar(documentPath, documentPath.split(/[\\/]/).pop(), { sourceEl: document.activeElement });
         } else {
           if (selected?.id && GBLayout.paneMap[selected.id]) GBLayout.setActivePane(selected.id);
-          if (/\.(?:pdf|png|jpe?g|gif|webp|bmp)$/i.test(documentPath)) openMedia(documentPath.split(/[\\/]/).pop(), documentPath, /\.pdf$/i.test(documentPath) ? 'pdf' : 'image');
+          if (/\.(?:pdf|epub|png|jpe?g|gif|webp|bmp)$/i.test(documentPath)) openMedia(documentPath.split(/[\\/]/).pop(), documentPath, /\.(?:pdf|epub)$/i.test(documentPath) ? 'pdf' : 'image');
           else await jumpToAnnotation(documentPath);
         }
         while (performance.now() < deadline) {
@@ -505,7 +603,9 @@ window.GBAnnotationSurfaces = (() => {
         const viewer = s.iframe.contentWindow;
         while (performance.now() < deadline) {
           if (revision !== revealRevision || !s.host.isConnected) return true;
-          if (viewer?.MeldexViewerHighlights?.reveal(item)) return true;
+          // 開いた直後のビューワーは読み込み中の文書（別origin扱い）の間があり、参照すると例外になる。待って再試行する。
+          try { if (viewer?.MeldexViewerHighlights?.reveal(item)) return true; }
+          catch (error) { if (error?.name !== 'SecurityError') throw error; }
           await new Promise(resolve => setTimeout(resolve, 25));
         }
         showStatus('アノテートの位置が見つかりませんでした', true); return true;
@@ -540,7 +640,54 @@ window.GBAnnotationSurfaces = (() => {
     target: () => selected,
     historyScopeFor: (direction, surface = selected) => surface ? activeScope(surface, direction === 'redo' ? 'redo' : 'undo') : '',
     documentHistoryScope: (surface = selected) => surface ? documentScope(surface) : '',
-    undo: () => selected ? historyUndo(activeScope(selected, 'undo')) : false,
-    redo: () => selected ? historyRedo(activeScope(selected, 'redo')) : false,
+    undo: () => navigateHistory('undo'),
+    redo: () => navigateHistory('redo'),
   };
+})();
+
+/* 描いた後の色の変更。共通カラーパレットを開き、選んでいる間は見た目だけ変え、閉じた時に1回保存して
+   元に戻す／やり直し・ヒストリーへ1件残す。以前のマーカーと塗りは、この時に色の不透明度で描く形へ移す。 */
+window.GBAnnotationRecolor = (() => {
+  // ハイライトの追加と同じ履歴の置き場（アノテートツールを開いている時はその画面、閉じている時は開いている本文）
+  const currentScope = () => {
+    if (window.GBAnnotationSurfaces?.usesHistory?.()) return window.GBAnnotationSurfaces.historyScope();
+    return window.GBEditorHost?.get()?.historyScope?.() ?? (typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '');
+  };
+  const anchorAt = (x, y) => ({ getBoundingClientRect: () => ({ left: x, right: x, top: y, bottom: y, width: 0, height: 0, x, y }) });
+  async function open({ id, targetPath, scope = currentScope(), anchor, preview, refresh, label = 'アノテート: 色' }) {
+    let before = null;
+    try { before = await _fetchAnnotationHistoryRow(id); } catch {}
+    if (!before) { showStatus('アノテートが見つかりません', true); return false; }
+    if (typeof openColorPalette !== 'function') return false;
+    const initial = _annotationRecolorInitialColor(before);
+    let picked = '';
+    return new Promise(resolve => {
+      openColorPalette(anchor, initial, color => {
+        if (!color || color === 'transparent') return;
+        picked = color;
+        preview?.({ ...before, ..._annotationRecolorUpdate(before, color) });
+      }, { allowTransparent: false, onClose: async () => {
+        if (!picked || picked === initial) { refresh?.(); resolve(false); return; }
+        const path = targetPath || before.target_path;
+        const reservation = typeof historyReserve === 'function' ? historyReserve(label, scope, path) : null;
+        try {
+          const update = _annotationRecolorUpdate(before, picked);
+          const result = await apiPut('/annotations/' + encodeURIComponent(id), { ...update, expected_modified: before.modified });
+          const modified = result?.modified || before.modified;
+          const after = { ...before, ...update, modified, modified_at: modified };
+          if (reservation) reservation.capture(() => _pushAnnotationHistory(label, before, after, path, scope));
+          else _pushAnnotationHistory(label, before, after, path, scope);
+          resolve(true);
+        } catch (error) {
+          reservation?.cancel();
+          showStatus('アノテートの色を保存できませんでした: ' + (error?.message || error), true);
+          resolve(false);
+        } finally {
+          refresh?.();
+          if (typeof loadRpAnnotationList === 'function') void loadRpAnnotationList();
+        }
+      } });
+    });
+  }
+  return { open, anchorAt, currentScope };
 })();

@@ -568,8 +568,12 @@ function _settingsThemeBoardSetVar(key, value) {
   if (value == null || value === '') document.documentElement.style.removeProperty(key);
   else document.documentElement.style.setProperty(key, String(value));
   if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
-  if (typeof bd !== 'undefined' && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyBoardThemeRuntime === 'function') MeldexThemeManager.applyBoardThemeRuntime(bd);
-  if (typeof _bdApplyCurrentBoardBackground === 'function') _bdApplyCurrentBoardBackground();
+  // Runtime already paints the canvas background along with the theme vars.
+  if (typeof bd !== 'undefined' && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyBoardThemeRuntime === 'function') {
+    const canvas = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : document.getElementById('bd-canvas');
+    const world = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('world') : document.getElementById('bd-world');
+    MeldexThemeManager.applyBoardThemeRuntime(bd, canvas, world);
+  } else if (typeof _bdApplyCurrentBoardBackground === 'function') _bdApplyCurrentBoardBackground();
 }
 
 function settingsThemeBoardToggleShadow(input) {
@@ -629,6 +633,18 @@ function settingsThemeBoardChooseBgImage() {
         input.remove();
         return;
       }
+      const overlay = document.querySelector('[data-e2e-id="settings-dialog-overlay"]');
+      if (overlay?.__settingsMaintenanceBusy || overlay?.getAttribute('aria-busy') === 'true') { input.remove(); return; }
+      const boardPath = bd.path;
+      const previousImage = document.documentElement.style.getPropertyValue('--bd-bg-image');
+      const previousDirty = !!window._settingsThemeDirty;
+      const roots = [...new Set([overlay, panel?.closest?.('[role="dialog"]') || panel].filter(Boolean))];
+      const controls = [...new Set(roots.flatMap(root => [...root.querySelectorAll('input, select, textarea, button')]))];
+      const disabled = controls.map(control => control.disabled);
+      if (overlay) overlay.__settingsMaintenanceBusy = true;
+      controls.forEach(control => { control.disabled = true; });
+      let previewUrl = '', uploadedUrl = '';
+      if (typeof showStatus === 'function') showStatus('背景画像を読み込んでいます...');
       try {
         const reader = new FileReader();
         const dataUrl = await new Promise((resolve, reject) => {
@@ -636,8 +652,18 @@ function settingsThemeBoardChooseBgImage() {
           reader.onerror = () => reject(reader.error);
           reader.readAsDataURL(file);
         });
+        if (bd.path !== boardPath || panel && !panel.isConnected) throw new Error('背景画像の設定先が変わりました');
+        // The draft previews local bytes immediately; settings cannot commit
+        // until the durable image path replaces these temporary bytes.
+        // A raw data URI contains a semicolon and is not a valid unquoted
+        // custom-property value. A scoped object URL is safe for this draft.
+        previewUrl = URL.createObjectURL(file);
+        _settingsThemeBoardSetVar('--bd-bg-image', previewUrl);
+        // Let the selected image reach the screen before upload bookkeeping
+        // and its workspace refreshes can consume the next frame.
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const dir = (() => {
-          const p = String(bd.path || '');
+          const p = String(boardPath || '');
           const i = p.lastIndexOf('/');
           return i >= 0 ? p.substring(0, i) : '';
         })();
@@ -647,13 +673,24 @@ function settingsThemeBoardChooseBgImage() {
           body: JSON.stringify({ data: dataUrl, filename: file.name || 'background.png' }),
         });
         if (!res?.ok || !res.path) throw new Error('upload failed');
-        const url = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-        _settingsThemeBoardSetVar('--bd-bg-image', url);
+        if (bd.path !== boardPath || panel && !panel.isConnected) throw new Error('背景画像の設定先が変わりました');
+        uploadedUrl = window.MeldexResourceUrl?.fileRaw?.(res.path)
+          || API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
+        _settingsThemeBoardSetVar('--bd-bg-image', uploadedUrl);
         // パネル再描画
         _settingsThemeRefreshBoardExtras();
         if (typeof showStatus === 'function') showStatus('背景画像を設定しました');
       } catch {
+        const current = document.documentElement.style.getPropertyValue('--bd-bg-image');
+        if (previewUrl && (current === previewUrl || uploadedUrl && current === uploadedUrl)) {
+          _settingsThemeBoardSetVar('--bd-bg-image', previousImage);
+          if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(previousDirty);
+        }
         if (typeof showStatus === 'function') showStatus('背景画像の設定に失敗しました', true);
+      } finally {
+        controls.forEach((control, index) => { control.disabled = disabled[index]; });
+        if (overlay) overlay.__settingsMaintenanceBusy = false;
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
       }
     }
     input.remove();

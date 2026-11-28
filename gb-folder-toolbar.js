@@ -407,7 +407,7 @@
             return _pushCreatedOutlinerItemsHistory([
               { path: node.path, type: node.type || type, kind: (node.type || type) === 'folder' ? 'folder' : 'file' },
               ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
-            ], '新規作成: ' + name, historyScope);
+            ], '新規作成: ' + name, historyScope, type === 'form-app' ? { companionOwner: node.path } : {});
           }
           return typeof pushCreatedOutlinerItemHistory === 'function'
             ? pushCreatedOutlinerItemHistory({ path: node.path, type: node.type || type }, '新規作成: ' + name, {
@@ -594,7 +594,8 @@
           }
         },
         // 貼り付けたフォルダの中身を先に描き、ツリーの読み直しは後で行う（全体の読み直しを待つと 1〜2 秒かかっていた）
-        refresh: typeof options.refresh === 'function' ? options.refresh : (paths => _folderToolbarRefresh(paths || [], {
+        refresh: typeof options.refresh === 'function' ? options.refresh : ((paths, refreshOptions = {}) => _folderToolbarRefresh(paths || [], {
+          ...refreshOptions,
           treeFolders: [destFolder, ...(clip.mode === 'cut' ? clip.items.map(item => _folderToolbarParentPath(item.path)) : [])],
         })),
       });

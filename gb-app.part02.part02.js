@@ -539,6 +539,10 @@ function showView(viewName, ctx) {
   // app-toolbarの表示切替
   const appTb = document.getElementById('app-toolbar');
   _setDisplay('tb-db', isDbView ? 'contents' : 'none');
+  // シートのツールバーを出しているかは目印の属性で見分ける。見た目の規則で「表示の書き方」（style属性）を
+  // :has() の中から見ると、どの要素のstyleを変えても画面全体の見た目を計算し直し、列の多いシートでは
+  // メニューを開くだけで1秒かかっていた（2026-11-27）。
+  if (appTb) appTb.dataset.sheetToolbar = isDbView ? '1' : '0';
   // ページビュー: app-toolbarにリッチテキストツールバー表示
   const showRtInAppbar = (resolvedViewName === 'page');
   _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');

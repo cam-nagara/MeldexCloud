@@ -296,6 +296,8 @@
   }
 
   function reportApiSuccess(path, opts, result) {
+    // 受付番号は保存の確定ではない。版・競合・連続失敗は完成結果で更新する。
+    if (result?.job_id) return;
     if (isSaveMutation(path, opts)) {
       consecutiveSaveFailures = 0;
       clearConflict(_extractMutationPath(path, opts));

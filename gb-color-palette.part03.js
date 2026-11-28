@@ -87,6 +87,14 @@ function _adoptPersonalColorsRecord(record, options) {
 // GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS 以内の呼び出しは即座に諦めて
 // 連続リトライ（無限ループ）を避ける。明確な404だけは恒久フォールバックとする。
 function _ensurePersonalColorsInit() {
+  // Browser data mode has no PC-wide personal-color endpoint. Its durable
+  // palette is the browser store; do not turn a successful import into a
+  // desktop synchronization failure or retry loop.
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    _personalColorsApiAvailable = false;
+    _personalColorsApiPermanentlyUnavailable = true;
+    return Promise.resolve();
+  }
   if (_personalColorsApiPermanentlyUnavailable) return Promise.resolve();
   if (_personalColorsInitPromise) return _personalColorsInitPromise;
   if (_personalColorsApiAvailable === false
@@ -452,17 +460,21 @@ async function _applyImportedCustomColors(rawColors, mode) {
       });
       if (res && Array.isArray(res.colors)) {
         _personalColorsRevision = res.revision == null ? null : res.revision;
-        _saveCustomColors(res.colors, { label, skipServerSync: true });
+        if (!_saveCustomColors(res.colors, { label, skipServerSync: true })) return false;
         if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${res.colors.length}色）`);
-        return;
+        return true;
       }
+      throw new Error('読み込み結果を確認できませんでした');
     } catch (e) {
-      console.warn('[gb-color-palette] import via API failed, falling back to local merge:', e);
+      console.warn('[gb-color-palette] import via API failed:', e);
+      if (typeof showStatus === 'function') showStatus('カスタムカラーを読み込めませんでした（保存先に書けません）', true);
+      return false;
     }
   }
   const finalColors = mode === 'replace'
     ? normalized
     : _personalColorsNormalizeList([...getCustomColors(), ...normalized]);
-  _saveCustomColors(finalColors, { label });
+  if (!_saveCustomColors(finalColors, { label })) return false;
   if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${finalColors.length}色）`);
+  return true;
 }

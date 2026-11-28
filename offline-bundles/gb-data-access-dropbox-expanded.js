@@ -1466,7 +1466,9 @@
     if (!body?.operation_id || body[_valueWriteIntent]) return body;
     const id = String(body.operation_id);
     if (!/^[A-Za-z0-9._:-]{8,128}$/.test(id)) throw Object.assign(new Error('保存操作IDが不正です'), { status: 400 });
-    const hash = await window.MeldexSystemStorage.computeRevision(body);
+    const identity = { ...body };
+    delete identity._return_entity;
+    const hash = await window.MeldexSystemStorage.computeRevision(identity);
     return { ...body, [_valueWriteIntent]: { id, hash } };
   }
 
@@ -1764,13 +1766,16 @@
     if (Array.isArray(raw)) return raw.map((candidate) => {
       if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
         const row = {
+          ...candidate,
           value: candidate.value == null ? '' : String(candidate.value),
           status: String(candidate.status || '案'),
           note: String(candidate.note || ''),
           created: String(candidate.created || ''),
           relations: Array.isArray(candidate.relations) ? candidate.relations : undefined,
         };
+        if (Object.prototype.hasOwnProperty.call(candidate, 'candidate_id') && typeof candidate.candidate_id === 'string' && candidate.candidate_id) row.candidate_id = candidate.candidate_id;
         if (candidate.rich_html != null) row.rich_html = String(candidate.rich_html || '');
+        if (candidate.link && typeof candidate.link === 'object' && !Array.isArray(candidate.link)) row.link = { ...candidate.link };
         return row;
       }
       return { value: candidate == null ? '' : String(candidate), status: '案', note: '', created: '' };
@@ -1794,6 +1799,7 @@
           created: candidate.created || _nowIso(),
         };
         if (candidate.rich_html != null) row.rich_html = candidate.rich_html;
+        if (candidate.link) row.link = { ...candidate.link };
         return row;
       });
     });
@@ -2250,10 +2256,13 @@
     return normalized;
   }
 
-  async function _sheetStoreMode(provider, dbPath, signal) {
+  async function _sheetStoreMode(provider, dbPath, signal, options = {}) {
+    const store = await _readSheetStoreMaybe(provider, dbPath, signal);
+    // A canonical store already determines the storage format. Value-write
+    // guards still read the current column settings separately before writing.
+    if (options.existingStoreOnly && store) return { enabled: true, store };
     const note = await _folderFrontmatter(provider, dbPath).catch(() => ({ frontmatter: {} }));
     const fm = note.frontmatter || {};
-    const store = await _readSheetStoreMaybe(provider, dbPath, signal);
     return {
       enabled: !!store || String(fm.storage || fm.sheet_storage || fm.entry_storage || fm.storage_backend || '').toLowerCase() === 'sqlite'
         || String(fm.cloud_storage || '').toLowerCase() === 'sheet-store-v1',
@@ -2299,17 +2308,22 @@
     return _migrateMarkdownEntriesToSheetStore(provider, dbPath, store, signal);
   }
 
-  async function _readSheetStoreEntry(provider, rawPath) {
+  async function _readSheetStoreEntry(provider, rawPath, options = {}) {
     let path = _normalizeFolderPath(rawPath);
     if (!/\.md$/i.test(path)) path += '.md';
     const dbPath = _dirname(path);
-    const store = await _sheetStoreForRead(provider, dbPath);
-    if (!store) return null;
     const fileName = _sheetStoreFileName(path);
+    const mode = await _sheetStoreMode(provider, dbPath, undefined, { existingStoreOnly: true });
+    // A known canonical row (including a tombstone) needs no folder-wide
+    // Markdown migration. Unknown rows still use the legacy migration path.
+    const store = mode.store?.rows?.[fileName] ? mode.store
+      : await _sheetStoreForRead(provider, dbPath, mode);
+    if (!store) return null;
     const row = store.rows[fileName];
     // tombstone行（deleted:true）はfrontmatterを持たないため「無い」として扱う。
     // ここを素通りさせると空のfrontmatterを持つ生存エントリとして読めてしまい、
     // 直リンク経由の閲覧・編集で削除済み項目を誤って復活させてしまう。
+    if (row?.deleted && options.includeDeleted) return { deleted: true, dbPath, fileName, path: _joinPath(dbPath, fileName) };
     if (!row || row.deleted) return null;
     return {
       dbPath,
@@ -2557,6 +2571,11 @@
         relations: Array.isArray(candidate.relations) ? candidate.relations : (Array.isArray(parsed.frontmatter.relations) ? parsed.frontmatter.relations : []),
         created: candidate.created || '',
         rich_html: candidate.rich_html || '',
+        ...(Object.prototype.hasOwnProperty.call(candidate, 'created_by') ? { created_by: candidate.created_by } : {}),
+        ...(Array.isArray(candidate.published_in) ? { published_in: [...candidate.published_in] } : {}),
+        ...(candidate.link ? { link: { ...candidate.link } } : {}),
+        ...(typeof candidate.candidate_id === 'string' && candidate.candidate_id ? { candidate_id: candidate.candidate_id } : {}),
+        ...(parsed.frontmatter.id ? { entry_id: String(parsed.frontmatter.id) } : {}),
         property: prop,
         candidate_index: index,
         entry_revision: Number(parsed.frontmatter.meldex_revision || 0),
@@ -2574,6 +2593,12 @@
       revision: Number(parsed.frontmatter.meldex_revision || 0),
       relations: Array.isArray(parsed.frontmatter.relations) ? parsed.frontmatter.relations : [],
     };
+  }
+
+  // The committed record is already in memory. Keep it out of durable write receipts.
+  function _withValueEntitySnapshot(result, path, parsed, body) {
+    return body?._return_entity === true
+      ? { ...result, entity_snapshot: _entityPayloadFromParsed(path, parsed) } : result;
   }
 
   async function _readPivotFromSheetStore(provider, dbPath, filters, mode, signal) {
@@ -2625,6 +2650,11 @@
           relations: Array.isArray(candidate.relations) ? candidate.relations : (Array.isArray(frontmatter.relations) ? frontmatter.relations : []),
           created: candidate.created || '',
           rich_html: candidate.rich_html || '',
+          ...(typeof candidate.candidate_id === 'string' && candidate.candidate_id ? { candidate_id: candidate.candidate_id } : {}),
+          ...(frontmatter.id ? { entry_id: String(frontmatter.id) } : {}),
+          ...(Object.prototype.hasOwnProperty.call(candidate, 'created_by') ? { created_by: candidate.created_by } : {}),
+          ...(Array.isArray(candidate.published_in) ? { published_in: [...candidate.published_in] } : {}),
+          ...(candidate.link ? { link: { ...candidate.link } } : {}),
           property: propName,
           candidate_index: index,
           entry_revision: Number(frontmatter.meldex_revision || 0),
@@ -3177,6 +3207,9 @@
   }
 
   function _applySettingsEntryValueUpdate(parsed, path, body) {
+    if (body?.expected_entry_id && String(parsed.frontmatter.id || '') !== String(body.expected_entry_id)) {
+      throw Object.assign(new Error('回答トピックが置き換わっています。入力を保持しています'), { status: 409, code: 'entry_identity_conflict' });
+    }
     const replay = _valueWriteReplay(parsed.frontmatter, body);
     if (replay) return { body: parsed.body || '', result: replay, replay: true };
     if (body && Object.prototype.hasOwnProperty.call(body, 'new_body')) {
@@ -3191,9 +3224,15 @@
       throw new Error('制作管理に必要な列の名前は変更できません');
     }
     const props = parsed.frontmatter.properties && typeof parsed.frontmatter.properties === 'object' ? parsed.frontmatter.properties : {};
-    const cellUnchanged = _cellBaseMatches(props[prop], body);
-    const list = _normalizeCandidates(props[prop]);
+    const rawCandidates = Object.prototype.hasOwnProperty.call(props, prop) ? props[prop] : undefined;
+    const cellUnchanged = _cellBaseMatches(rawCandidates, body);
+    const list = _normalizeCandidates(rawCandidates);
     let index = Number.isInteger(body?.candidate_index) ? body.candidate_index : Number(body?.candidate_index);
+    if (body?.candidate_id) {
+      const matches = list.flatMap((candidate, position) => candidate.candidate_id === String(body.candidate_id) ? [position] : []);
+      if (matches.length !== 1) throw Object.assign(new Error('候補の識別情報を確認できません。入力を保持しています'), { status: 409, code: 'candidate_identity_conflict' });
+      index = matches[0];
+    }
     if (!Number.isInteger(index) || index < 0 || index >= list.length) {
       if (body?._delete) return { body: parsed.body || '', result: { ok: true, skipped: true } };
       index = list.length;
@@ -3222,12 +3261,12 @@
     let resultIndex = index;
     if (!body?._delete && newProp !== prop) {
       const [candidate] = list.splice(index, 1);
-      const targetList = _normalizeCandidates(props[newProp]);
+      const targetList = _normalizeCandidates(Object.prototype.hasOwnProperty.call(props, newProp) ? props[newProp] : undefined);
       resultIndex = targetList.length;
       targetList.push(candidate);
-      props[newProp] = targetList;
+      Object.defineProperty(props, newProp, { value: targetList, enumerable: true, writable: true, configurable: true });
     }
-    if (list.length) props[prop] = list;
+    if (list.length) Object.defineProperty(props, prop, { value: list, enumerable: true, writable: true, configurable: true });
     else delete props[prop];
     parsed.frontmatter.properties = props;
     return {
@@ -3281,10 +3320,10 @@
     }
   }
 
-  async function _updateSheetStoreValue(provider, path, body) {
-    let stored = null;
+  async function _updateSheetStoreValue(provider, path, body, initialStored) {
+    let stored = initialStored || null;
     try {
-      stored = await _readSheetStoreEntry(provider, path);
+      stored ||= await _readSheetStoreEntry(provider, path);
     } catch (err) {
       if (body?.skip_if_missing || body?.skipIfMissing) return { ok: true, skipped: true, missing: true };
       throw err;
@@ -3294,8 +3333,10 @@
       throw new Error(`トピックが見つかりません: ${path}`);
     }
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
-    await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
-    await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
+    await Promise.all([
+      _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]),
+      _rejectImportLockedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]),
+    ]);
     const history = _sharedEditHistory();
     const actor = history?.actor?.(null, body || {}) || null;
     const historyBefore = _sharedHistoryContent(history, {
@@ -3304,7 +3345,7 @@
     });
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
-    if (applied.replay) return applied.result;
+    if (applied.replay) return _withValueEntitySnapshot(applied.result, stored.path, parsed, body);
     await _pmSafeApplyDurationRecalcHook(
       provider, stored.path, parsed.frontmatter, String(body?.property || ''),
     );
@@ -3325,19 +3366,27 @@
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, stored.path, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult(saved, renameInfo);
+    return _withValueEntitySnapshot(_attachAutoTaskRenameResult(saved, renameInfo), stored.path, { frontmatter: parsed.frontmatter, body: applied.body }, body);
   }
 
-  async function _addSheetStoreValue(provider, body) {
+  async function _addSheetStoreValue(provider, body, initialStored, candidateIntent = null) {
     const entryPath = _normalizeFolderPath(body?.entry_path || body?.folder_path || '');
-    const stored = await _readSheetStoreEntry(provider, entryPath);
+    const stored = initialStored || await _readSheetStoreEntry(provider, entryPath);
     if (!stored) throw new Error('settings-entry ではありません');
+    if (body?.expected_entry_id && String(stored.frontmatter.id || '') !== String(body.expected_entry_id)) {
+      throw Object.assign(new Error('回答トピックが置き換わっています。入力を保持しています'), { status: 409, code: 'entry_identity_conflict' });
+    }
+
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(stored.dbPath, prop);
-    await _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]);
-    await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [prop]);
-    await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
+    if (!candidateIntent) {
+      await Promise.all([
+        _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]),
+        _rejectImportLockedPropertyEdit(provider, stored.dbPath, [prop]),
+      ]);
+      await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
+    }
     const history = _sharedEditHistory();
     const actor = history?.actor?.(null, body || {}) || null;
     const historyBefore = _sharedHistoryContent(history, {
@@ -3345,17 +3394,21 @@
       body: stored.body || '',
     });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
-    const list = _normalizeCandidates(props[prop]);
+    const list = _normalizeCandidates(Object.prototype.hasOwnProperty.call(props, prop) ? props[prop] : undefined);
+    const cellUnchanged = _cellBaseMatches(list, body);
+    const sourceRevision = String(stored.frontmatter?.meldex_revision || '');
     const candidate = {
       value: String(body?.value ?? ''),
       status: String(body?.status || '案'),
       note: String(body?.note || ''),
       created: _nowIso(),
     };
+    if (candidateIntent) candidate.candidate_id = candidateIntent.candidate_id;
     if (body?.rich_html != null) candidate.rich_html = String(body.rich_html || '');
     if (body?.link && typeof body.link === 'object') candidate.link = { ...body.link };
     list.push(candidate);
-    props[prop] = list;
+    const savedResult = _finishValueWrite(stored.frontmatter, body, { ok: true, path: stored.path, property: prop, candidate_index: list.length - 1, ...(candidateIntent ? {candidate_id:candidateIntent.candidate_id,entry_id:stored.frontmatter.id} : {}) }, { cellUnchanged });
+    Object.defineProperty(props, prop, { value: list, enumerable: true, writable: true, configurable: true });
     stored.frontmatter.properties = props;
     await _pmSafeApplyDurationRecalcHook(
       provider, stored.path, stored.frontmatter, prop,
@@ -3365,19 +3418,19 @@
       currentContent: historyBefore,
       nextContent: { frontmatter: stored.frontmatter, body: stored.body || '' },
       actor,
-      sourceRevision: String(stored.frontmatter?.meldex_revision || ''),
+      sourceRevision,
       snapshotPath: stored.dbPath,
       snapshotKind: 'folder',
       fileKind: 'settings-entry',
       propertyName: prop,
     }, async () => {
       await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
-      return { ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 };
+      return savedResult;
     });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, stored.path, stored.frontmatter,
     );
-    return _attachAutoTaskRenameResult(saved, renameInfo);
+    return _withValueEntitySnapshot(_attachAutoTaskRenameResult(saved, renameInfo), stored.path, stored, body);
   }
 
   async function _updateValue(provider, path, body) {
@@ -3386,8 +3439,9 @@
     // Entity reads already prefer the canonical sheet store. Writes must use
     // that same source even when a compatibility Markdown mirror still exists.
     // Otherwise a successful mirror write can leave the visible row unchanged.
-    if (await _readSheetStoreEntry(provider, normalized)) {
-      return _updateSheetStoreValue(provider, normalized, body || {});
+    const stored = await _readSheetStoreEntry(provider, normalized);
+    if (stored) {
+      return _updateSheetStoreValue(provider, normalized, body || {}, stored);
     }
     const entry = await _resolveEntryHandle(provider, normalized);
     if (!entry || entry.kind !== 'file') {
@@ -3395,8 +3449,11 @@
     }
     await _requireUnlocked(provider, normalized, { action: 'update-value' });
     const parsed = await _readFrontmatterFile(provider, normalized);
+    if (body?.expected_entry_id && String(parsed.frontmatter.id || '') !== String(body.expected_entry_id)) {
+      throw Object.assign(new Error('回答トピックが置き換わっています。入力を保持しています'), { status: 409, code: 'entry_identity_conflict' });
+    }
     const replay = _valueWriteReplay(parsed.frontmatter, body);
-    if (replay) return replay;
+    if (replay) return _withValueEntitySnapshot(replay, normalized, parsed, body);
     const type = String(parsed.frontmatter.type || '');
     const history = _sharedEditHistory();
     const actor = history?.actor?.(null, body || {}) || null;
@@ -3436,8 +3493,10 @@
         return savedResult;
       });
     }
-    await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
-    await _rejectImportLockedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
+    await Promise.all([
+      _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]),
+      _rejectImportLockedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]),
+    ]);
     const applied = _applySettingsEntryValueUpdate(parsed, normalized, body || {});
     await _pmSafeApplyDurationRecalcHook(
       provider, normalized, parsed.frontmatter, String(body?.property || ''),
@@ -3458,37 +3517,51 @@
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, normalized, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult(saved, renameInfo);
+    return _withValueEntitySnapshot(_attachAutoTaskRenameResult(saved, renameInfo), normalized, { frontmatter: parsed.frontmatter, body: applied.body }, body);
   }
 
-  async function _addValue(provider, body) {
+  async function _addValue(provider, body, candidateIntent = null) {
+    if (body?.operation_id && !candidateIntent) return _addFormCandidate(provider, body);
     const entryPath = _normalizeFolderPath(body?.entry_path || body?.folder_path || '');
     if (!entryPath) throw new Error('entry_path は必須です');
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(_dirname(entryPath), prop);
-    await _rejectComputedPropertyEdit(provider, _dirname(entryPath), [prop]);
-    await _rejectImportLockedPropertyEdit(provider, _dirname(entryPath), [prop]);
-    if (await _readSheetStoreEntry(provider, entryPath)) return _addSheetStoreValue(provider, body || {});
+    const stored = candidateIntent ? candidateIntent.stored : await _readSheetStoreEntry(provider, entryPath);
+    if (stored) return _addSheetStoreValue(provider, body || {}, stored, candidateIntent);
     const entry = await _resolveEntryHandle(provider, entryPath).catch(() => null);
     if (!entry || entry.kind !== 'file') return _addSheetStoreValue(provider, body || {});
-    await _requireUnlocked(provider, entryPath, { action: 'add-value' });
-    const parsed = await _readFrontmatterFile(provider, entryPath);
+    // The canonical store validates its own column guards; file writes do so here.
+    if (!candidateIntent) {
+      await Promise.all([
+        _rejectComputedPropertyEdit(provider, _dirname(entryPath), [prop]),
+        _rejectImportLockedPropertyEdit(provider, _dirname(entryPath), [prop]),
+      ]);
+      await _requireUnlocked(provider, entryPath, { action: 'add-value' });
+    }
+    const parsed = candidateIntent ? candidateIntent.parsed : await _readFrontmatterFile(provider, entryPath);
     if (parsed.frontmatter.type !== 'settings-entry') throw new Error('settings-entry ではありません');
+    if (body?.expected_entry_id && String(parsed.frontmatter.id || '') !== String(body.expected_entry_id)) {
+      throw Object.assign(new Error('回答トピックが置き換わっています。入力を保持しています'), { status: 409, code: 'entry_identity_conflict' });
+    }
+
     const history = _sharedEditHistory();
     const actor = history?.actor?.(null, body || {}) || null;
     const historyBefore = _sharedHistoryContent(history, { frontmatter: parsed.frontmatter, body: parsed.body || '' });
     const props = parsed.frontmatter.properties && typeof parsed.frontmatter.properties === 'object' ? parsed.frontmatter.properties : {};
-    const list = _normalizeCandidates(props[prop]);
+    const list = _normalizeCandidates(Object.prototype.hasOwnProperty.call(props, prop) ? props[prop] : undefined);
+    const cellUnchanged = _cellBaseMatches(list, body);
     const candidate = {
       value: String(body?.value ?? ''),
       status: String(body?.status || '案'),
       note: String(body?.note || ''),
       created: _nowIso(),
     };
+    if (candidateIntent) candidate.candidate_id = candidateIntent.candidate_id;
     if (body?.rich_html != null) candidate.rich_html = String(body.rich_html || '');
     list.push(candidate);
-    props[prop] = list;
+    const savedResult = _finishValueWrite(parsed.frontmatter, body, { ok: true, path: entryPath, property: prop, candidate_index: list.length - 1, ...(candidateIntent ? {candidate_id:candidateIntent.candidate_id,entry_id:parsed.frontmatter.id} : {}) }, { cellUnchanged });
+    Object.defineProperty(props, prop, { value: list, enumerable: true, writable: true, configurable: true });
     parsed.frontmatter.properties = props;
     await _pmSafeApplyDurationRecalcHook(
       provider, entryPath, parsed.frontmatter, prop,
@@ -3504,12 +3577,126 @@
       propertyName: prop,
     }, async () => {
       await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
-      return { ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 };
+      return savedResult;
     });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, entryPath, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult(saved, renameInfo);
+    return _withValueEntitySnapshot(_attachAutoTaskRenameResult(saved, renameInfo), entryPath, parsed, body);
+  }
+
+  // Only identities and hashes enter the private receipt; answer values stay in the row.
+  async function _addFormCandidate(provider, body) {
+    const id = String(body.operation_id || ''), path = _normalizeFolderPath(body.entry_path || body.folder_path || '');
+    const prop = String(body.property || '');
+    const conflict = message => Object.assign(new Error(message), {status:409});
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(id) || !/\.md$/i.test(path) || !prop || !body.value)
+      throw Object.assign(new Error('保存操作ID、回答トピック、項目、値を指定してください'), {status:400});
+    _rejectProductionReservedLegacyProperties(_dirname(path), prop);
+    await Promise.all([
+      _rejectComputedPropertyEdit(provider, _dirname(path), [prop]),
+      _rejectImportLockedPropertyEdit(provider, _dirname(path), [prop]),
+      _requireUnlocked(provider, path, {action:'add-value'}),
+    ]);
+    const payload = {...body}; delete payload.operation_id; delete payload._return_entity;
+    const hash = await window.MeldexSystemStorage.computeRevision({operation:'form-candidate-add',payload});
+    const history = _sharedEditHistory(), actor = history?.actor?.(null, body || {}) || null;
+    const key = await window.MeldexSystemStorage.computeRevision({operation:'form-candidate-id',id,path,actor});
+    const receiptPath = _joinPath(_dirname(path),'_form-candidate-'+key+'.json');
+    const flightKey = JSON.stringify([provider._mediaScope || '',path,id,actor]);
+    const flightsByProvider = _addFormCandidate.flights || (_addFormCandidate.flights = new WeakMap());
+    let flights = flightsByProvider.get(provider);
+    if (!flights) {flights = new Map(); flightsByProvider.set(provider,flights);}
+    if (flights.has(flightKey)) {
+      const previous = flights.get(flightKey);
+      if (previous.hash !== hash) throw conflict('保存操作IDが別の内容で再利用されています');
+      return previous.promise;
+    }
+    const read = async () => {
+      const stored = await _readSheetStoreEntry(provider,path,{includeDeleted:true});
+      if (stored?.deleted) throw conflict('保存先の回答は削除されています。入力を保持しています');
+      const parsed = stored || await _readFrontmatterFile(provider,path);
+      if (parsed?.frontmatter?.type !== 'settings-entry' || !parsed.frontmatter.id)
+        throw conflict('回答トピックの識別情報を確認できません。入力を保持しています');
+      return {stored,parsed};
+    };
+    const validate = value => {
+      if (!value || value.fileType !== 'meldex-form-candidate-receipt' || value.schema_version !== 1
+        || value.hash !== hash || !/^ent_[A-Za-z0-9_-]+$/.test(value.entry_id)
+        || !/^cand_[a-f0-9]{32}$/.test(value.candidate_id) || !['prepared','writing','completed'].includes(value.state))
+        throw conflict('候補の保存記録が一致しません。入力を保持しています');
+      return value;
+    };
+    const promise = (async () => {
+      if (typeof provider.writeJsonMerged !== 'function') throw new Error('候補の保存記録を安全に保存できません');
+      const current = await read(), fm = current.parsed.frontmatter;
+      if (body.expected_entry_id && String(body.expected_entry_id) !== String(fm.id))
+        throw conflict('回答トピックが置き換わっています。入力を保持しています');
+      const proposed = {fileType:'meldex-form-candidate-receipt',schema_version:1,hash,
+        entry_id:fm.id,candidate_id:'cand_'+crypto.randomUUID().replace(/-/g,''),
+        source_revision:Number(fm.meldex_revision || 0),state:'writing'};
+      let receipt, receiptRevision = "";
+      // writeJsonMerged creates its parent and atomically reads/compares the receipt.
+      // Persist the write intent directly; a second prepared->writing save is redundant.
+      const preparedWrite = await provider.writeJsonMerged(receiptPath,(value,metadata) => {
+        if (value) {receipt = validate(value); receiptRevision = String(metadata?.rev || ""); return false;}
+        if (metadata?.rev) throw conflict('候補の保存記録を読み取れません');
+        receipt = proposed;
+        return proposed;
+      },{fallbackValue:null});
+      if (preparedWrite?.meta?.rev) receiptRevision = String(preparedWrite.meta.rev);
+      validate(receipt);
+      if (fm.id !== receipt.entry_id) throw conflict('回答トピックが置き換わっています。入力を保持しています');
+      const matches = [];
+      for (const [name,values] of Object.entries(fm.properties || {})) {
+        (Array.isArray(values) ? values : [values]).forEach((value,index) => {
+          if (value?.candidate_id === receipt.candidate_id) matches.push({name,index});
+        });
+      }
+      let result;
+      if (matches.length) {
+        if (matches.length !== 1 || matches[0].name !== prop) throw conflict('以前の候補が別の列へ移っています。入力を保持しています');
+        result = _withValueEntitySnapshot({ok:true,replayed:true,path,property:prop,entry_id:fm.id,
+          candidate_id:receipt.candidate_id,candidate_index:matches[0].index,
+          revision:Number(fm.meldex_revision || 0),modified_updated:true},path,current.parsed,body);
+      } else {
+        const unchangedBeforeWrite = Number.isInteger(receipt.source_revision)
+          && Number(fm.meldex_revision || 0) === receipt.source_revision;
+        if (receipt.state === 'completed' || (receipt.state !== 'prepared' && !unchangedBeforeWrite))
+          throw conflict('以前の候補の保存先を確認できません。入力を保持しています');
+        if (receipt.state === 'prepared') {
+          const writing = await provider.writeJsonMerged(receiptPath,value => ({...validate(value),state:'writing'}));
+          receiptRevision = String(writing?.meta?.rev || '');
+          receipt = {...receipt,state:'writing'};
+        }
+        result = await _addValue(provider,{...body,expected_entry_id:receipt.entry_id},
+          {...current,candidate_id:receipt.candidate_id});
+        if (Number.isInteger(receipt.source_revision) && !(Number(result?.revision) > receipt.source_revision))
+          throw conflict('候補の保存後の更新番号を確認できません。入力を保持しています');
+      }
+      // Keep completion durable outside the candidate: restoring an older row may
+      // also restore its revision, and must never make a saved operation writable again.
+      if (receipt.state !== 'completed') {
+        const completeMerged = () => provider.writeJsonMerged(receiptPath,value => {
+          const checked = validate(value);
+          return checked.state === 'completed' ? false : {...checked,state:'completed'};
+        });
+        if (receiptRevision && typeof provider.uploadBytesConditional === 'function') {
+          try {
+            // The preparation returned this exact receipt revision. Complete with CAS
+            // directly; if another client changed it, reread and validate before merging.
+            await provider.uploadBytesConditional(receiptPath,
+              new TextEncoder().encode(JSON.stringify({...receipt,state:'completed'},null,2)),receiptRevision);
+          } catch (error) {
+            if (Number(error?.status) !== 409) throw error;
+            await completeMerged();
+          }
+        } else await completeMerged();
+      }
+      return result;
+    })();
+    flights.set(flightKey,{hash,promise});
+    try {return await promise;} finally {if(flights.get(flightKey)?.promise===promise)flights.delete(flightKey);}
   }
 
   async function _resolvePublishedSheet(provider, sheet) {

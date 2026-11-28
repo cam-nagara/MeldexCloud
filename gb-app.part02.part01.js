@@ -829,6 +829,50 @@ function _gbAppApiFetchAcquireLane(path, opts) {
   });
 }
 
+async function _gbAppReadNativeCopyStream(response, identity) {
+  const reader = response.body?.getReader?.();
+  if (!reader || !identity?.operationId || !identity.sourcePath) throw new Error('コピーの通知を確認できません');
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let buffer = '', result = null, finished = false, published = false, eof = false;
+  const accept = line => {
+    if (!line.trim()) return;
+    if (finished) throw new Error('コピーの完了後に余分な通知があります');
+    const event = JSON.parse(line);
+    if (event?.type === 'published') {
+      const detail = event.detail;
+      if (published || detail?.operation_id !== identity.operationId || detail.source_path !== identity.sourcePath
+          || typeof detail.new_path !== 'string' || !detail.new_path) throw new Error('コピーの公開通知が要求と一致しません');
+      published = true;
+      window.dispatchEvent(new CustomEvent('meldex:copy-published', { detail }));
+    } else if (event?.type === 'result') {
+      if (event.result?.operation_id !== identity.operationId || event.result?.ok !== true) throw new Error('コピーの完了通知が要求と一致しません');
+      result = event.result; finished = true;
+    } else if (event?.type === 'error') {
+      const message = typeof event.detail === 'string' ? event.detail : event.detail?.message;
+      const error = new Error(message || 'コピーを完了できませんでした');
+      error.status = Number.isInteger(event.status) && event.status >= 400 && event.status < 600 ? event.status : 500;
+      error.payload = { detail: event.detail };
+      throw error;
+    } else throw new Error('コピーの通知形式が不正です');
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      if (buffer.length > 4 * 1024 * 1024) throw new Error('コピーの通知が大きすぎます');
+      let end;
+      while ((end = buffer.indexOf('\n')) >= 0) { accept(buffer.slice(0, end)); buffer = buffer.slice(end + 1); }
+      if (done) { eof = true; break; }
+    }
+    if (buffer.trim()) accept(buffer);
+    if (!finished) throw new Error('コピーの完了通知がありません。再試行してください');
+    return result;
+  } finally {
+    if (!eof) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 async function apiFetch(path, opts) {
   const historyProjection = await window.MeldexChatManagementSheet?.handleApi?.(path, opts);
   if (historyProjection) return historyProjection.value;
@@ -887,7 +931,9 @@ async function apiFetch(path, opts) {
             throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
           }
           const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
-          const data = await res.json();
+          const data = requestOpts?.copyPublishStream && (res.headers?.get?.('content-type') || '').includes('application/x-ndjson')
+            ? await _gbAppReadNativeCopyStream(res, requestOpts.copyPublishStream)
+            : await res.json();
           if (perfInfo) {
             _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
               ...perfInfo,
@@ -1083,6 +1129,12 @@ async function _gbAppPutValueConfirmed(path, body, options) {
 
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
+  if (options.backgroundFileWrite === true && String(path).split('?')[0] === '/file'
+    && typeof window.runFileWriteJob === 'function') {
+    const result = await window.runFileWriteJob(path, guardedBody, options);
+    _gbAppNotifyPathsWritten(path, guardedBody, result);
+    return result;
+  }
   if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
     const notify = phase => { if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, phase, guardedBody); };
     notify('pending');
@@ -1111,7 +1163,7 @@ async function apiPut(path, body, options = {}) {
   } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
   window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
-  _gbAppNotifyPathsWritten(path, guardedBody, result);
+  if (!result?.job_id) _gbAppNotifyPathsWritten(path, guardedBody, result);
   return result;
 }
 
@@ -1320,7 +1372,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
   } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
     addBody('folder_path');
     addBody('file_path');
-  } else if (route === '/import-csv' || route === '/import-xlsx') {
+  } else if (route === '/import-csv' || route === '/import-xlsx' || route === '/import-kindle') {
     addBody('csv_path');
     addBody('xlsx_path');
     addBody('db_path');
@@ -1372,7 +1424,7 @@ function _apiUsesTransientActiveLock(path) {
     '/outliner/save-as', '/outliner/move', '/outliner/move-batch', '/trash/restore', '/replace', '/replace-batch',
     // シートの行の追加・名前の自動生成・取り込みは、その間だけシートを取り、終わったら放す（シートのロックを残すと、
     // ほかの端末・裏の取り込みがどの行へも書けなくなる。セルの入力中のロックは行だけ。2026-11-25）。
-    '/entity/create', '/entity/auto-name', '/import-csv', '/import-xlsx',
+    '/entity/create', '/entity/auto-name', '/import-csv', '/import-xlsx', '/import-kindle',
   ]).has(route);
 }
 
@@ -1440,8 +1492,11 @@ apiFetch = async function(path, opts) {
   const lockSpecs = sheetWide === 'schema'
     ? lockCandidatePaths.map(candidate => ({ path: candidate, includeDescendants: true }))
     : lockCandidatePaths;
+  const compactCopyLocks = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/outliner/save-as';
   const transientLease = !((_apiUsesTransientActiveLock(path) || sheetWide) && activeLocks?.acquireMutationLocks) ? null
     : lockBatchRoute ? await activeLocks.acquireMutationLocks(lockCandidatePaths, { partial: true })
+    : compactCopyLocks ? await activeLocks.acquireMutationLocks(lockSpecs, { minimum: 2 })
     : await activeLocks.acquireMutationLocks(lockSpecs);
   let lockRejectedOrder = null;
   if (lockBatchRoute && transientLease?.failed?.length) {
@@ -1457,10 +1512,9 @@ apiFetch = async function(path, opts) {
       lockRejectedOrder = split.order;
     }
   }
-  const formCreate = String(opts.method || 'GET').toUpperCase() === 'POST'
-    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/entity/create'
-    && _apiLockJsonBody(opts).source === 'form';
-  const deferredCommittedUnlock = formCreate || (String(opts.method || 'GET').toUpperCase() === 'POST'
+  const entityCreate = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/entity/create';
+  const deferredCommittedUnlock = entityCreate || (String(opts.method || 'GET').toUpperCase() === 'POST'
     && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '')));
   let mutationSucceeded = false;
   try {
@@ -1478,7 +1532,7 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
     let result = await _origApiFetch(path, opts);
-    mutationSucceeded = !formCreate || !!(result?.entry_id && result?.path);
+    mutationSucceeded = !entityCreate || !!(result?.entry_id && result?.path);
     if (lockRejectedOrder) result = _apiMergeLockRejectedResults(result, lockRejectedOrder);
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);

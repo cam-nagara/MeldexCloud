@@ -374,6 +374,10 @@ function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
         .then(() => true)
         .catch((error) => {
           console.warn('[Meldex] シート表示設定を保存できませんでした', error);
+          if (!state.superseded && _dbViewConfigBackendSavePayloads.get(key) === state && typeof showStatus === 'function') {
+            const reason = error?.userMessage || error?.message || '';
+            showStatus('シートの表示設定を保存できませんでした' + (reason ? ': ' + reason : ''), true);
+          }
           return false;
         })
     ))

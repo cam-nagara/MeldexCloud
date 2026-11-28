@@ -386,7 +386,7 @@ function bdResolveSelectionUiContext(nodeId, preferredNodeEl) {
   return { root, layer, nodeEl };
 }
 
-function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
+function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl, measuredSize) {
   const node = typeof nodeOrId === 'string'
     ? (typeof bd !== 'undefined' ? bd.nodes.find(n => n.id === nodeOrId) : null)
     : nodeOrId;
@@ -394,6 +394,9 @@ function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
   const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncSelectionRectForNode');
+  const isSelected = typeof bd !== 'undefined' && bd.selected && bd.selected.has(node.id);
+  const width = isSelected ? (measuredSize?.width ?? el.offsetWidth) : 0;
+  const height = isSelected ? (measuredSize?.height ?? el.offsetHeight) : 0;
   const safeId = MeldexEscape.cssIdent(node.id);
   let rect = layer.querySelector(`.bd-selection-rect[data-node-id="${safeId}"]`);
   if (!rect) {
@@ -402,7 +405,6 @@ function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
     rect.dataset.nodeId = node.id;
     layer.appendChild(rect);
   }
-  const isSelected = typeof bd !== 'undefined' && bd.selected && bd.selected.has(node.id);
   const isEditing = el.classList.contains('bd-editing');
   rect.classList.toggle('is-visible', isSelected);
   rect.classList.toggle('is-editing', isEditing);
@@ -410,8 +412,8 @@ function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
     const offset = 4;
     rect.style.left = `${node.x - offset}px`;
     rect.style.top = `${node.y - offset}px`;
-    rect.style.width = `${el.offsetWidth + offset * 2}px`;
-    rect.style.height = `${el.offsetHeight + offset * 2}px`;
+    rect.style.width = `${width + offset * 2}px`;
+    rect.style.height = `${height + offset * 2}px`;
   }
   bdPerfEnd('bdSyncSelectionRectForNode', started);
   return true;
@@ -425,7 +427,8 @@ function bdSyncResizeHandleForNode(nodeOrId, preferredNodeEl) {
   const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncResizeHandleForNode');
-  bdSyncSelectionRectForNode(node, el);
+  const measuredSize = node.minimized ? null : { width: el.offsetWidth, height: el.offsetHeight };
+  bdSyncSelectionRectForNode(node, el, measuredSize);
   const safeId = MeldexEscape.cssIdent(node.id);
   let handle = layer.querySelector(`.bd-resize[data-node-id="${safeId}"]`);
   if (node.minimized) {
@@ -441,8 +444,8 @@ function bdSyncResizeHandleForNode(nodeOrId, preferredNodeEl) {
   }
   const isSelected = typeof bd !== 'undefined' && bd.selected && bd.selected.has(node.id);
   handle.classList.toggle('is-visible', isSelected);
-  handle.style.left = `${node.x + el.offsetWidth}px`;
-  handle.style.top = `${node.y + el.offsetHeight}px`;
+  handle.style.left = `${node.x + measuredSize.width}px`;
+  handle.style.top = `${node.y + measuredSize.height}px`;
   bdPerfEnd('bdSyncResizeHandleForNode', started);
   return true;
 }

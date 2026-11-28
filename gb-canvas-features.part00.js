@@ -39,10 +39,32 @@
     return toHex(a.map((v, i) => v * (1 - t) + b[i] * t));
   }
 
+  let backgroundReadDepth = 0;
+  const backgroundCssValues = new Map();
+
+  function withBoardThemeColorSnapshot(refresh) {
+    if (backgroundReadDepth > 0) return refresh();
+    backgroundReadDepth++;
+    try { return refresh(); }
+    finally {
+      backgroundReadDepth--;
+      backgroundCssValues.clear();
+    }
+  }
+
+  function readBoardThemeCssValue(name, read) {
+    if (backgroundReadDepth > 0 && backgroundCssValues.has(name)) return backgroundCssValues.get(name);
+    const value = typeof read === 'function' ? read()
+      : (typeof global.bdReadRenderCssVar === 'function' ? global.bdReadRenderCssVar(name)
+        : (typeof global.getCssVar === 'function' ? global.getCssVar(name) : ''));
+    if (backgroundReadDepth > 0) backgroundCssValues.set(name, value);
+    return value;
+  }
+
   function boardBackgroundColor() {
     let bg = '';
     try { if (typeof global._bdBoardThemeBackgroundColor === 'function') bg = global._bdBoardThemeBackgroundColor(); } catch (_) { bg = ''; }
-    if (!parseColor(bg) && typeof global.getCssVar === 'function') bg = global.getCssVar('--bd-bg') || global.getCssVar('--bg') || '';
+    if (!parseColor(bg) && typeof global.getCssVar === 'function') bg = readBoardThemeCssValue('--bd-bg') || readBoardThemeCssValue('--bg') || '';
     return parseColor(bg) ? bg : '';
   }
 
@@ -53,6 +75,12 @@
   }
 
   function themeTone(color, tone, options = {}) {
+    // 背景に依存しない塗り方では、DOM更新後の不要な全体スタイル再計算を起こさない。
+    if (tone === 'plain') return { bgColor: 'transparent', borderColor: 'transparent', textColor: '', lineColor: color };
+    const readable = readableTextColor(color);
+    if (readable && !['tint', 'outline', 'card', 'neutral', 'muted'].includes(tone)) {
+      return { bgColor: color, borderColor: color, textColor: readable, lineColor: color };
+    }
     const bg = options.background || boardBackgroundColor();
     const dark = options.dark != null ? !!options.dark : isDarkColor(bg);
     const base = parseColor(bg) ? bg : (dark ? '#111419' : '#ffffff');
@@ -62,8 +90,6 @@
         return { bgColor: dark ? mixColor(color, base, 0.72) : mixColor(color, '#ffffff', 0.84), borderColor: color, textColor: ink, lineColor: color };
       case 'outline':
         return { bgColor: dark ? mixColor(color, base, 0.9) : '#ffffff', borderColor: color, textColor: ink, lineColor: color };
-      case 'plain':
-        return { bgColor: 'transparent', borderColor: 'transparent', textColor: '', lineColor: color };
       // 図解カード: 背景になじむ無彩色の面に、役割色を枠・左帯・見出しで出す。
       case 'card':
         return { bgColor: dark ? mixColor('#dfe6f0', base, 0.86) : mixColor('#f1f5f9', base, 0.35), borderColor: color, textColor: dark ? '#d4d4d4' : '#1f2937', lineColor: color };
@@ -75,7 +101,7 @@
       case 'muted':
         return { bgColor: mixColor(color, base, 0.6), borderColor: mixColor(color, base, 0.45), textColor: ink, lineColor: mixColor(color, base, 0.45) };
       default:
-        return { bgColor: color, borderColor: color, textColor: readableTextColor(color) || ink, lineColor: color };
+        return { bgColor: color, borderColor: color, textColor: readable || ink, lineColor: color };
     }
   }
 
@@ -127,16 +153,19 @@
   function buildDefaultDepthStyles(baseStyles, emptyDepthLine, board) {
     const palette = getThemeColorSet(board);
     const emptyLine = typeof emptyDepthLine === 'function' ? emptyDepthLine : () => ({});
-    return (Array.isArray(baseStyles) ? baseStyles : []).map((style, index) => {
+    const entries = Array.isArray(baseStyles) ? baseStyles : [];
+    // 同じ一式のカード色・線色では背景の計算を共有し、次の操作では新しい背景を読む。
+    const toneOptions = entries.length ? { background: boardBackgroundColor() || '#ffffff' } : {};
+    return entries.map((style, index) => {
       const rawValue = style && style._themeColorIndex;
       const rawThemeIndex = Number.isFinite(+rawValue) ? +rawValue : index;
       const themeIndex = Math.max(0, Math.floor(rawThemeIndex));
       const color = (style._themeTone ? themeRoleColor(themeIndex, palette) : palette[themeIndex % palette.length]) || style.bgColor || '';
       const line = style?.line && typeof style.line === 'object' ? { ...style.line } : {};
-      const toned = themeTone(color, style._themeTone || 'solid');
+      const toned = themeTone(color, style._themeTone || 'solid', toneOptions);
       const lineIndex = Number.isFinite(+line._themeColorIndex) ? Math.max(0, Math.floor(+line._themeColorIndex)) : themeIndex;
       const lineBase = (style._themeTone ? themeRoleColor(lineIndex, palette) : palette[lineIndex % palette.length]) || color;
-      const lineColor = themeTone(lineBase, line._themeTone || 'solid').lineColor || line.color || '';
+      const lineColor = themeTone(lineBase, line._themeTone || 'solid', toneOptions).lineColor || line.color || '';
       delete line._themeColorIndex;
       delete line._themeTone;
       const next = {
@@ -351,6 +380,8 @@
   global.bdReadableTextColor = readableTextColor;
   global.bdThemeTone = themeTone;
   global.bdBoardBackgroundColor = boardBackgroundColor;
+  global.bdWithBoardThemeColorSnapshot = withBoardThemeColorSnapshot;
+  global.bdReadBoardThemeCssValue = readBoardThemeCssValue;
   global.bdThemeRoleColor = themeRoleColor;
   global.bdMixColor = mixColor;
   global.bdBuildDefaultDepthStyles = buildDefaultDepthStyles;

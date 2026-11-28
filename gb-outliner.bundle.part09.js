@@ -1,3 +1,121 @@
+    if (section?.id === 'section-workspaces') return true;
+    return section?.id === 'section-roots' || section?.id === 'section-home';
+  }
+
+  function _outlinerLassoRectForEvent(event) {
+    const rect = scroller.getBoundingClientRect();
+    const currentX = event.clientX - rect.left + scroller.scrollLeft;
+    const currentY = event.clientY - rect.top + scroller.scrollTop;
+    const left = Math.min(startX, currentX);
+    const top = Math.min(startY, currentY);
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+    return { left, top, right: left + width, bottom: top + height, width, height };
+  }
+
+  function _outlinerLassoRowRect(row) {
+    const rowRect = row.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    return {
+      left: rowRect.left - scrollerRect.left + scroller.scrollLeft,
+      top: rowRect.top - scrollerRect.top + scroller.scrollTop,
+      right: rowRect.left - scrollerRect.left + scroller.scrollLeft + rowRect.width,
+      bottom: rowRect.top - scrollerRect.top + scroller.scrollTop + rowRect.height,
+    };
+  }
+
+  function _outlinerRectsOverlap(a, b) {
+    return !(b.right < a.left || b.left > a.right || b.bottom < a.top || b.top > a.bottom);
+  }
+
+  const updateSelection = (lassoRect) => {
+    const base = new Set(baseSelection.filter(node => node?.isConnected));
+    const hitNodes = [];
+    treeSelection.clear();
+    base.forEach(node => treeSelection.add(node));
+    _getVisibleTreeNodes(selectionScope).forEach(nodeEl => {
+      const row = nodeEl.querySelector('.tree-node-row');
+      if (!row) return;
+      if (!_outlinerRectsOverlap(lassoRect, _outlinerLassoRowRect(row))) return;
+      hitNodes.push(nodeEl);
+      if (selectionMode === 'toggle' && base.has(nodeEl)) treeSelection.remove(nodeEl);
+      else treeSelection.add(nodeEl);
+    });
+    treeSelection.lastClicked = hitNodes[hitNodes.length - 1] || [...treeSelection.items].pop() || treeSelection.lastClicked;
+    if (treeSelection.items.size > 1) showStatus(treeSelection.items.size + ' 件選択中');
+    // 仮想化コンテナ（フォルダツリー改修Phase3）: 現在マウントされていない行も、
+    // 矩形の論理Y範囲から該当する表示モデルの行を求めて選択状態に反映する（§2.5）。
+    if (window.GBOutlinerVirtualRender?.applyLassoSelection) {
+      const basePaths = new Set([...base].map(node => node?._nodeData?.path).filter(Boolean));
+      window.GBOutlinerVirtualRender.applyLassoSelection({
+        lassoRect, scope: selectionScope, mode: selectionMode, basePaths,
+      });
+    }
+  };
+
+  const beginLasso = (event) => {
+    if (active) return;
+    active = true;
+    if (!pointerCaptured && pointerId != null && scroller.setPointerCapture) {
+      try {
+        scroller.setPointerCapture(pointerId);
+        pointerCaptured = true;
+      } catch {}
+    }
+    box = document.createElement('div');
+    box.className = 'outliner-lasso-box';
+    _savedScrollerPosition = scroller.style.position;
+    scroller.style.position = 'relative';
+    scroller.appendChild(box);
+    if (selectionMode === 'replace') treeSelection.clear();
+    updateSelection(_outlinerLassoRectForEvent(event));
+  };
+
+  const endLasso = () => {
+    if (!tracking && !active) return;
+    const wasActive = active;
+    active = false;
+    tracking = false;
+    removeDocumentPointerEndHandlers();
+    box?.remove();
+    box = null;
+    if (pointerCaptured && pointerId != null && scroller.releasePointerCapture) {
+      try { scroller.releasePointerCapture(pointerId); } catch {}
+    }
+    pointerId = null;
+    pointerCaptured = false;
+    // pointerdown で設定した inline position を元に戻す
+    if (_savedScrollerPosition !== null) {
+      scroller.style.position = _savedScrollerPosition;
+      _savedScrollerPosition = null;
+    }
+    // 矩形選択は空白からしか開始しない（§2.5）ため、項目行クリックとの競合は起こらず、
+    // 行クリック抑止のための暫定フラグ（フォルダツリー改修Phase 2で撤去済み）は不要になった。
+    if (!wasActive && selectionMode === 'replace') treeSelection.clear();
+  };
+
+  function addDocumentPointerEndHandlers() {
+    document.addEventListener('pointerup', endLasso, true);
+    document.addEventListener('pointercancel', endLasso, true);
+  }
+
+  function removeDocumentPointerEndHandlers() {
+    document.removeEventListener('pointerup', endLasso, true);
+    document.removeEventListener('pointercancel', endLasso, true);
+  }
+
+  scroller.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (e.pointerType && e.pointerType !== 'mouse') return;
+    // 空白ヒットテスト（§2.5）: 明示コントロール・項目行のいずれでもない場合だけ矩形選択を待機する。
+    // 項目行から始まるドラッグは、選択状態やmodifierキーに関わらず矩形選択に一切入らない
+    // （ネイティブHTML5ドラッグ = 項目移動にそのまま委ねる。行のdraggable属性を一時的に
+    //   書き換えて競合を避ける旧来の暫定機構は撤去済み）。
+    if (!_outlinerLassoIsBlankTarget(e.target)) return;
+    selectionMode = _outlinerLassoMode(e);
+    tracking = true;
+    active = false;
+    addDocumentPointerEndHandlers();
     pointerId = e.pointerId;
     pointerCaptured = false;
     selectionScope = _outlinerLassoScopeFromTarget(e.target);

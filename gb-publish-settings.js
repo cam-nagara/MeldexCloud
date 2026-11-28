@@ -199,7 +199,7 @@ async function preparePublishContextSnapshot(snapshot) {
     contextPolicy: 'saved-active-board',
     openSeq,
     documentKey,
-    sourceRevision: String(bd.lastSavedTransportRevision || bd.lastSavedEtag || ''),
+    sourceRevision: _publishSourceRevision(bd.lastSavedTransportRevision || bd.lastSavedEtag),
     activeBoardViewId: String(bd.activeBoardViewId || snapshot.viewId || ''),
     document: bdToMd(),
     canvasHtml,
@@ -290,6 +290,21 @@ async function assertPublishAllowedForContext(ctx) {
 }
 if (typeof window !== 'undefined') window.assertPublishAllowedForContext = assertPublishAllowedForContext;
 
+// Keep the transport namespace and actual revision token when the file API
+// returns an object; coercing an object with String() loses both.
+function _publishSourceRevision(value) {
+  if (!value) return '';
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  if (coordinator?.normalizeTransportRevision && coordinator?.currentTransportName)
+    return coordinator.normalizeTransportRevision(coordinator.currentTransportName(), value);
+  if (typeof value === 'object') {
+    const transport = value.transport || value.kind;
+    const token = value.token || value.revision || value.etag;
+    return transport && token ? String(transport) + ':' + String(token) : '';
+  }
+  return String(value);
+}
+
 async function assertPublishSourceRevisionCurrent(ctx) {
   if (!ctx?.path || ctx.kind !== 'board' || !ctx.board) return true;
   if (!ctx.board.sourceRevision || typeof apiFetch !== 'function') {
@@ -299,8 +314,8 @@ async function assertPublishSourceRevisionCurrent(ctx) {
     const current = await apiFetch('/file?path=' + encodeURIComponent(ctx.path) + '&metadata_only=1', {
       silentError: true,
     });
-    const revision = String(current?.transport_revision || current?.etag || current?.revision || '');
-    if (!revision || revision !== String(ctx.board.sourceRevision)) {
+    const revision = _publishSourceRevision(current?.transport_revision || current?.etag || current?.revision);
+    if (!revision || revision !== _publishSourceRevision(ctx.board.sourceRevision)) {
       return !!_publishContextError('ボードが別の端末で更新されたため、再読込してから公開してください');
     }
     return true;
@@ -381,6 +396,8 @@ function renderPublishSettingsPanel(contextSnapshot) {
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
   const isSinglePanel = ['page', 'entity', 'csv', 'calendar', 'scriptnote'].includes(ctx.kind);
   const isDb = ctx.kind === 'database' || ctx.kind === 'form-app';
+  const isCloudForm = ctx.kind === 'form-app' && typeof MeldexExportSave !== 'undefined'
+    && !!MeldexExportSave.isBrowserDataContext?.();
   return `<section class="gb-section gb-section--boxed" id="publish-settings-panel" data-kind="${esc(ctx.kind)}" data-path="${esc(ctx.path)}">
     <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます', { e2eId: 'publish-single-panel-help' }) : ''}</div>
     <div class="gb-section-desc">対象: ${esc(ctx.label)}${ctx.path ? ' / ' + esc(ctx.path) : ''}</div>
@@ -396,8 +413,10 @@ function renderPublishSettingsPanel(contextSnapshot) {
     </div>
     ${isDb ? `<div class="gb-check-row"><label class="gb-check"><input type="checkbox" id="publish-form-submit-enabled" data-e2e-id="publish-form-submit-enabled" ${cfg.form_submit_enabled ? 'checked' : ''}><span>公開フォーム送信を受け付ける（フォームビューのみ）</span></label></div>` : ''}
     ${isDb ? `
+    ${!isCloudForm ? `
     <label class="gb-field-row"><span class="gb-label">Meldex公開URL</span><input id="publish-server-url" data-e2e-id="publish-server-url" class="gb-input" value="${esc(cfg.server_public_url || '')}" placeholder="https://example.example"></label>
     <label class="gb-field-row"><span class="gb-label">送信先URL</span><input id="publish-submit-url" data-e2e-id="publish-submit-url" class="gb-input" value="${esc(cfg.submit_url || '')}" placeholder="未指定ならMeldex公開URLから生成"></label>
+    ` : ''}
     <label class="gb-field-row"><span class="gb-label">送信トークン</span><input id="publish-form-token" data-e2e-id="publish-form-token" class="gb-input" value="${esc(cfg.form_submit_token || '')}" readonly><button type="button" class="gb-btn gb-btn-sm" id="publish-token-btn" data-e2e-id="publish-token-regenerate">再発行</button></label>
     ` : ''}
   </section>`;

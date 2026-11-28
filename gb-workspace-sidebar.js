@@ -181,7 +181,7 @@
 
   function _init() {
     // デスクトップ付箋の小窓には左サイドバーが無い。ワークスペース取得だけ走らせない。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     renderWorkspaceSidebar();
     window.addEventListener('meldex:workspaces-changed', () => renderWorkspaceSidebar());
   }

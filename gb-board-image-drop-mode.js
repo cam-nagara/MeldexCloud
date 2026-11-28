@@ -7,6 +7,13 @@
   const KEY_MAIN = 'meldex-board-image-drop-mode';
   const KEY_STANDALONE = 'meldex-board-image-drop-mode-standalone';
   let modeChangePromise = null;
+  // The verified bytes are used once for the immediate redraw, never serialized.
+  const relocatedPreviews = new WeakMap();
+  function takeRelocatedImagePreview(node) {
+    const preview = relocatedPreviews.get(node);
+    relocatedPreviews.delete(node);
+    return preview?.src === node?.img ? preview.dataUrl : '';
+  }
 
   function isStandaloneBoardApp() {
     if (!global || typeof document === 'undefined') return false;
@@ -429,9 +436,14 @@
       };
     }
 
-    if (path && !await imagePathExists(path)) {
-      if (!dataUrl) throw new Error('画像ファイルを読み込めませんでした');
-      path = '';
+    let previewDataUrl = dataUrl;
+    if (path) {
+      try {
+        previewDataUrl = await imagePathToDataUrl(path);
+      } catch (error) {
+        if (!dataUrl) throw new Error('画像ファイルを読み込めませんでした');
+        path = '';
+      }
     }
     if (!path && dataUrl) path = await uploadImageDataUrl(node, 0, dataUrl, name);
     if (!path) throw new Error('画像ファイルの場所を取得できませんでした');
@@ -441,6 +453,7 @@
       linkType: 'image',
       imageSourcePath: path,
       text: node?.text || name,
+      previewDataUrl,
     };
   }
 
@@ -485,7 +498,13 @@
     if (!node.text && next.text) node.text = next.text;
     node._imageLoadError = false;
     delete node._imageLoadErrorAt;
-    refreshBoardAfterImageModeChange([node.id].filter(Boolean));
+    if (next.previewDataUrl) relocatedPreviews.set(node, { src: node.img, dataUrl: next.previewDataUrl });
+    if (typeof global.bdRefreshNodesPartial === 'function') {
+      global.bdRefreshNodesPartial([node.id], 'relocate-image', { detailPanel: true });
+      if (typeof global.bdDirty === 'function') global.bdDirty();
+    } else {
+      refreshBoardAfterImageModeChange([node.id].filter(Boolean));
+    }
     if (typeof global.showStatus === 'function') global.showStatus('画像ファイルを再指定しました');
     return true;
   }
@@ -498,5 +517,6 @@
   global.bdImageNodeLinkPath = nodeLinkPath;
   global.bdImageMissingPathLabel = missingImagePathLabel;
   global.bdRelocateImageNode = relocateImageNode;
+  global.bdTakeRelocatedImagePreview = takeRelocatedImagePreview;
   global.bdConvertCurrentBoardImagesForDropMode = convertCurrentBoardImages;
 })(window);

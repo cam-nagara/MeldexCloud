@@ -1,3 +1,61 @@
+  const deadline = Date.now() + PENDING_EDIT_FINALIZATION_WAIT_MS;
+  while (_pendingEditFinalizations.size) {
+    const pending = [..._pendingEditFinalizations].filter(promise => {
+      if (!target?.provider || !normalized) return true;
+      const scope = _pendingEditFinalizationScopes.get(promise);
+      // Unknown scopes remain conservative. Global history/exit callers still wait for all.
+      return !scope?.provider || !scope.path || (scope.provider === target.provider && scope.path === normalized);
+    });
+    if (!pending.length) return;
+    const remaining = deadline - Date.now();
+    // 通信が返らず確定が終わらない場合でも、以後の保存や履歴表示を止め続けない。
+    // 待ちきれなかった記録は未確定のまま残り、次回の保存時に内容の一致で回収される。
+    if (remaining <= 0) return;
+    const settled = Promise.allSettled(pending);
+    await (typeof setTimeout === 'function'
+      ? Promise.race([settled, new Promise(resolve => setTimeout(resolve, remaining))])
+      : settled);
+  }
+}
+
+// 確定が終わる前に画面を閉じようとしたら、ブラウザの離脱確認を出す。
+try {
+  window.addEventListener?.('beforeunload', (event) => {
+    if (!_pendingEditFinalizations.size) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+} catch {}
+
+function _commitCloudFileEdit(prepared, committedRevision) {
+  if (!prepared || prepared.skipped) return Promise.resolve(false);
+  const finalization = _finalizeCloudFileEdit(prepared, committedRevision).then((pending) => {
+    if (pending && typeof showStatus === 'function') {
+      showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
+    }
+    return pending;
+  }).catch(() => true).finally(() => {
+    _pendingEditFinalizations.delete(finalization);
+    _pendingEditFinalizationScopes.delete(finalization);
+  });
+  _pendingEditFinalizationScopes.set(finalization, {provider:prepared.provider,
+    path:_normalizeFolderPath(prepared.payload?.original_relative_path || '')});
+  _pendingEditFinalizations.add(finalization);
+  return Promise.resolve(false);
+}
+
+async function _finalizeCloudFileEdit(prepared, committedRevision) {
+  if (!prepared || prepared.skipped) return false;
+  try {
+    await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
+    const saved = await prepared.adapter.save(prepared.kind, prepared.documentId, {
+      ...prepared.payload, committed: true, committed_at: _nowIso(),
+      committed_revision: String(committedRevision || ''),
+    }, { expectedRevision: prepared.intentRevision || undefined });
+    await _protectSharedEditRevision(prepared.provider, prepared.adapter, saved);
+    return false;
+  } catch {
+    return true;
   }
 }
 
@@ -230,7 +288,7 @@ async function _saveFileVersion(provider, path, options) {
 async function _listFileVersions(provider, path) {
   const normalized = _normalizeFolderPath(path);
   const source = await _resolveEntryHandle(provider, normalized);
-  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  if (!source || source.kind !== 'file') throw Object.assign(new Error(`ファイルが見つかりません: ${normalized}`), { status: 404, code: 'file_missing' });
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
   await _awaitPendingEditFinalizations();
   const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
@@ -573,9 +631,14 @@ async function _undeleteFileVersion(provider, path, token) {
     return file === folder ? '' : (file.startsWith(folder + '/') ? file.slice(folder.length + 1) : file);
   }
 
+  function _isFormCandidateReceiptRelPath(relPath) {
+    return _normalizeFolderPath(relPath).split('/').some(part => part === '_form-candidate-receipts'
+      || /^_form-candidate-[a-f0-9]{64}\.json$/i.test(part));
+  }
+
   function _skipFolderVersionRelPath(relPath) {
     const normalized = _normalizeFolderPath(relPath);
-    return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+    return _isFormCandidateReceiptRelPath(normalized) || FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
   }
 
   async function _versionFileBase64(provider, path) {
@@ -758,6 +821,9 @@ async function _undeleteFileVersion(provider, path, token) {
     for (const file of files) {
       if (file.entry_type === 'directory') continue;
       const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      // Older snapshots may contain a prepared receipt. Never roll operation
+      // completion back together with user contents, or a replay could resurrect data.
+      if (_isFormCandidateReceiptRelPath(relPath)) continue;
       if (seen.has(relPath.toLowerCase())) throw new Error('復元対象のパスが重複しています');
       seen.add(relPath.toLowerCase());
       const path = _joinPath(folderPath, relPath);
@@ -832,69 +898,3 @@ async function _undeleteFileVersion(provider, path, token) {
         committed.push({ plan, revision });
         if (!revision) throw new Error('復元後の更新情報を確認できません');
         const readback = await _readConflictSnapshot(provider, plan.path);
-        if (readback.sha256 !== await _conflictSnapshotSha256(plan.nextBytes)) throw new Error('復元後の内容が一致しません');
-      }
-      await _restoreVersionAnnotations(provider, normalized, meta.annotation_snapshot, options.annotation_revision);
-    } catch (error) {
-      const incomplete = [];
-      for (const { plan, revision } of [...committed].reverse()) {
-        try {
-          if (!revision) throw new Error('更新情報不明');
-          if (plan.bytes === null) await provider.deletePathConditional(plan.path, revision);
-          else await provider.uploadBytesConditional(plan.path, plan.bytes, revision);
-        } catch { incomplete.push(plan.relPath); }
-      }
-      throw Object.assign(new Error(incomplete.length
-        ? `復元を完了できませんでした。元データは復元前版「${backup.version}」に保持しています。再読込してください。`
-        : '復元を完了できなかったため、変更したファイルを元に戻しました。' + (error?.message || '')), { status: Number(error?.status || 500) });
-    }
-    return { ok: true, restored_count: baseline.plans.length, restored_files: baseline.plans.map(plan => plan.relPath) };
-  }
-
-  async function _deleteFolderVersion(provider, folderPath, version) {
-    const { adapter, storageKind, record } = await _findFolderVersionRecord(provider, folderPath, version, false, true);
-    if (!record) throw new Error('フォルダバージョンが見つかりません');
-    const token = _deletedVersionToken();
-    await adapter.save(
-      storageKind,
-      record.documentId,
-      { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
-      { expectedRevision: record.revision },
-    );
-    return { ok: true, token, version: record.payload.version_name };
-  }
-
-  async function _undeleteFolderVersion(provider, folderPath, token) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const safeToken = _safeVersionName(token);
-    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
-    const records = await adapter.listDocuments(storageKind);
-    const record = records.find(row => {
-      const payload = row?.payload || {};
-      return payload.object_type === 'folder'
-        && payload.original_relative_path === normalized
-        && payload.deleted_token === safeToken;
-    });
-    if (!record) throw new Error('削除済みバージョンが見つかりません');
-    await adapter.save(
-      storageKind,
-      record.documentId,
-      { ...record.payload, deleted_at: '', deleted_token: '' },
-      { expectedRevision: record.revision },
-    );
-    return { ok: true, version: record.payload.version_name };
-  }
-
-  window.MeldexFolderVersionProviderOps = Object.freeze({
-    save: (provider, path, options) => _saveFolderVersion(provider, path, options || {}),
-    read: (provider, path, version) => _readFolderVersion(provider, path, version),
-    restoreRevision: async (provider,path,files) => (await _folderRestoreBaseline(provider,path,files)).token,
-  });
-  async function _findDropboxConflictedCopies(provider, limit) {
-    const maxItems = Math.max(1, Math.min(Number(limit || 50), 200));
-    const maxFiles = 2500;
-    const maxDirs = 500;
-    const items = [];
-    let total = 0;
-    let scannedFiles = 0;

@@ -11,6 +11,7 @@
   const SHARED_LIBRARY_KEY = 'meldex.topic-layout-templates.v1';
   const SHARED_LIBRARY_DOCUMENT = 'topic-layout-templates';
   const SHARED_LIBRARY_SCHEMA_VERSION = 1;
+  let _sharedLibraryCommitVersion = 0;
   const IMAGE_EMBED_MAX_BYTES = 500 * 1024;
   const LINE_STYLES = new Set(['none', 'solid', 'dashed', 'dotted', 'double']);
   const SHADOWS = new Set(['none', 'small', 'medium']);
@@ -356,8 +357,13 @@
     return true;
   }
 
+  function _tryCacheSharedTemplates(templates, storage) {
+    try { return { cacheSaved: _cacheSharedTemplates(templates, storage) }; }
+    catch (cacheError) { return { cacheSaved: false, cacheError }; }
+  }
+
   async function _readSharedLibrary(fetcher) {
-    const response = await fetcher(`/personal-preferences/${SHARED_LIBRARY_DOCUMENT}`, { silentError: true });
+    const response = await fetcher(`/personal-preferences/${SHARED_LIBRARY_DOCUMENT}`, { silentError: true, cache: 'no-store', skipBrowseCache: true });
     const payload = object(response?.payload) ? response.payload : {};
     return {
       available: response?.available !== false,
@@ -374,18 +380,23 @@
     const fetcher = _sharedLibraryFetcher(opts.fetcher);
     if (!fetcher) return { available: false, source: 'device-cache', revision: null, templates: cached };
     try {
-      const remote = await _readSharedLibrary(fetcher);
-      if (!remote.available) return { ...remote, source: 'device-cache', templates: loadSharedTemplates(opts.storage) };
-      const latestCached = loadSharedTemplates(opts.storage);
-      // 読込待ちの間に保存・削除した結果を、古い共有応答でキャッシュへ書き戻さない。
-      if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
-        return { ...remote, source: 'device-cache', templates: latestCached };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const commitVersion = _sharedLibraryCommitVersion;
+        const remote = await _readSharedLibrary(fetcher);
+        const latestCached = loadSharedTemplates(opts.storage);
+        // A normal local save can provide the newer result without another read.
+        if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
+          return { ...remote, source: 'device-cache', templates: latestCached };
+        }
+        // A confirmed remote save may have failed to update the local cache.
+        // Discard its older in-flight read; never present it as the saved library.
+        if (commitVersion !== _sharedLibraryCommitVersion) continue;
+        if (!remote.available) return { ...remote, source: 'device-cache', templates: latestCached };
+        const templates = _mergeSharedTemplates(remote.templates, cached)
+          .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
+        return { ...remote, source: 'personal-library', templates, ..._tryCacheSharedTemplates(templates, opts.storage) };
       }
-      // 未同期の端末テンプレートは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
-      const templates = _mergeSharedTemplates(remote.templates, cached)
-        .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
-      _cacheSharedTemplates(templates, opts.storage);
-      return { ...remote, source: 'personal-library', templates };
+      throw new Error('テンプレート一覧の読込中に変更が続きました。もう一度開いてください');
     } catch (error) {
       return { available: false, source: 'device-cache', revision: null, templates: loadSharedTemplates(opts.storage), error };
     }
@@ -447,8 +458,8 @@
       try {
         const saved = await _putSharedLibrary(fetcher, next, remote.revision, remote.deletedNames.filter(item => item !== name));
         if (saved?.available === false) return saveToDevice(next);
-        _cacheSharedTemplates(next, opts.storage);
-        return { saved: true, shared: true, source: 'personal-library', revision: saved?.revision || null, templates: next };
+        _sharedLibraryCommitVersion += 1;
+        return { saved: true, shared: true, source: 'personal-library', revision: saved?.revision || null, templates: next, ..._tryCacheSharedTemplates(next, opts.storage) };
       } catch (error) {
         if (attempt === 0 && _isConflict(error)) continue;
         return { ...saveToDevice(next), error };
@@ -496,6 +507,7 @@
           if (template) deleted.delete(name);
           const saved = await _putSharedLibrary(fetcher, next, remote.revision, [...deleted]);
           if (saved?.available === false) throw new Error('テンプレートの保存先を利用できません');
+          _sharedLibraryCommitVersion += 1;
         } catch (error) {
           if (attempt === 0 && _isConflict(error)) continue;
           throw error;

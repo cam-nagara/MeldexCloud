@@ -506,7 +506,7 @@ function bdContextMenu(e, nodeId) {
         viewSub.item(collapseLabel, () => {
           bdPushUndo();
           nd.collapsed = !nd.collapsed;
-          if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id], 'collapse');
+          if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id, ...bdDescendants(nd.id)], 'collapse');
           else bdRender();
           bdDirty();
         });

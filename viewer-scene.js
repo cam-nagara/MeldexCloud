@@ -15,27 +15,33 @@
   let folderPath = (params.get('folder') || '').replace(/\\/g, '/');
   let pdfPath = params.get('pdf') || '';
   let singleFile = params.get('file') || '';  // 単一ファイル表示
+  // EPUB（DRMなし）。本体の各入口はPDFと同じ経路（?pdf=）で開くため、拡張子で見分ける（viewer-epub.js）。
+  let epubPath = params.get('epub') || '';
   let sheetContextId = params.get('sheetContext') || ''; // iframe再利用の開き直し要求で更新されうる
   const archiveDisplayPath = Utils.archiveDisplayPath;
   if (archiveDisplayPath) {
     if (/\.pdf$/i.test(Utils.archiveMember)) pdfPath = archiveDisplayPath;
+    else if (Utils.isEpubPath(Utils.archiveMember)) epubPath = archiveDisplayPath;
     else singleFile = archiveDisplayPath;
   }
+  ({ pdfPath, singleFile, epubPath } = Utils.normalizeEpubTarget({ pdfPath, singleFile, epubPath }));
   let multiFilePaths = Utils.parseFilesParam(); // 複数ファイル
   // Windows版Meldex Viewerの作業範囲（開いているフォルダの絶対パス）。前後のフォルダ移動で切り替わる。
   let nativeRoot = '';
   let isPdf = false;
+  let isEpub = false;
   let isSingle = false;
   let isMulti = false;
 
   function refreshViewerModeFlags() {
     isPdf = !!pdfPath;
+    isEpub = !isPdf && !!epubPath;
     isSingle = !!singleFile;
     isMulti = multiFilePaths.length > 0;
   }
 
   function hasExplicitViewerTarget() {
-    return !!(folderPath || pdfPath || singleFile || archiveDisplayPath || sheetContextId || multiFilePaths.length);
+    return !!(folderPath || pdfPath || epubPath || singleFile || archiveDisplayPath || sheetContextId || multiFilePaths.length);
   }
 
   function applyInitialOpenPath(path) {
@@ -43,6 +49,7 @@
     if (!value) return false;
     const ext = value.split('?')[0].split('#')[0].split('.').pop().toLowerCase();
     if (ext === 'pdf') pdfPath = value;
+    else if (ext === 'epub') epubPath = value;
     else singleFile = value;
     refreshViewerModeFlags();
     return true;
@@ -101,19 +108,23 @@
   let timer = null;
   let activeLayer = 'A';
   const storedMode = localStorage.getItem('viewer-mode');
-  let mode = ['single', 'spread', 'manga'].includes(storedMode) ? storedMode : 'single';
+  const PageState = window.MeldexViewerPageState;
+  // 表示モード（single=単ページ / spread=見開き）と進む方向（up / down / left / right）。
+  // 進む方向は矢印キー・メニューの表記・見開きの並び順を決める（2026-11-27 利用者の依頼）。
+  let { mode, direction } = PageState.resolve({}, storedMode);
   let firstSide = 'left';
   // 1枚ずらし（見開きの組を全体で1ページずらす）。開いている間だけの表示状態で、保存しない。
   // 開くファイル・表示モード・開始ページを変えたら元へ戻す。
   let pairShift = 0;
-  const PageState = window.MeldexViewerPageState;
-  function leadOffset() { return (PageState.leadingBlank(mode, firstSide) ? 1 : 0) ^ pairShift; }
+  // 見開きで右から左へめくるか（進む方向「左へ」）。最初のページを右に置く。
+  function rightToLeft() { return mode !== 'single' && direction === 'left'; }
+  function leadOffset() { return (PageState.leadingBlank(mode, firstSide, direction) ? 1 : 0) ^ pairShift; }
   function pdfPairStart(index) {
     if (mode === 'single') return index;
     const offset = leadOffset();
     return index < offset ? 0 : offset + Math.floor((index - offset) / 2) * 2;
   }
-  function preferenceIdentity() { return pdfPath || singleFile || folderPath || sheetContextId || 'local'; }
+  function preferenceIdentity() { return pdfPath || epubPath || singleFile || folderPath || sheetContextId || 'local'; }
   function savePageSettings(patch) {
     const ok = PageState.write(preferenceIdentity(), patch);
     window.dispatchEvent(new CustomEvent('viewer-page-settings-save', { detail: { ok } }));
@@ -141,9 +152,21 @@
   function restorePageSettings() {
     pairShift = 0;
     const saved = PageState.read(preferenceIdentity());
-    mode = ['single', 'spread', 'manga'].includes(saved.mode) ? saved.mode : PageState.defaultMode(preferenceIdentity(), storedMode);
-    firstSide = ['left', 'right'].includes(saved.firstSide) ? saved.firstSide : (mode === 'manga' ? 'left' : 'right');
+    const previousDirection = direction;
+    ({ mode, direction } = PageState.resolve(saved, PageState.defaultMode(preferenceIdentity(), storedMode)));
+    firstSide = ['left', 'right'].includes(saved.firstSide) ? saved.firstSide : (direction === 'left' && mode !== 'single' ? 'left' : 'right');
+    syncModeControls();
+    if (previousDirection !== direction) notifyDirection();
+  }
+  function syncModeControls() {
     document.getElementById('sel-mode').value = mode;
+    const directionSelect = document.getElementById('sel-direction');
+    if (directionSelect) directionSelect.value = direction;
+  }
+  // 矢印キーの割り当て・アイコン・ショートカット表記を進む方向へ合わせる（viewer-controls.js が受ける）。
+  function notifyDirection() { window.dispatchEvent(new CustomEvent('viewer-direction-change', { detail: { direction } })); }
+  function pageSettingsPatch(nextMode, nextDirection, nextFirstSide) {
+    return { mode: PageState.storedMode(nextMode, nextDirection), direction: nextDirection, firstSide: nextFirstSide };
   }
   function notifyPageState() { window.dispatchEvent(new CustomEvent('viewer-page-state')); }
   const storedSpeed = Number.parseFloat(localStorage.getItem('viewer-speed') || '3');
@@ -155,7 +178,8 @@
   let zoom = 1;
   let pdfAutoFit = true;
   const storedFit = localStorage.getItem('viewer-fit');
-  let fitMode = ['original_contain', 'contain', 'width', 'height', 'none'].includes(storedFit) ? storedFit : 'original_contain';
+  // 保存した設定がない時は「全体」（2026-11-27 利用者の依頼。以前は「原寸（収める）」）。
+  let fitMode = ['original_contain', 'contain', 'width', 'height', 'none'].includes(storedFit) ? storedFit : 'contain';
   let flipH = false, flipV = false, rotateDeg = 0;
   let pdfDoc = null;
   let showGroupToken = 0;
@@ -166,7 +190,8 @@
   let sheetContextTimer = 0;
   let retryCurrentTarget = null;
 
-  document.getElementById('sel-mode').value = mode;
+  syncModeControls();
+  setFitUI(false);
   document.getElementById('speed').value = speed;
   document.getElementById('speed-label').textContent = speed.toFixed(1) + 's';
   if (!hudVisible) document.getElementById('hud').classList.add('hidden');
@@ -181,6 +206,17 @@
     await prepareNativeInitialTarget();
     if (isPdf) await PdfRenderer.ensurePdfjs();
   })();
+
+  // EPUBの部品。単独版は起動を速くするため、EPUBを開いた時に読む（standalone-native の 'epub'）。
+  async function ensureEpubModule() {
+    if (!window.MeldexViewerEpub && window.MeldexStandaloneNative?.loadFeature) await window.MeldexStandaloneNative.loadFeature('epub');
+    if (!window.MeldexViewerEpub) throw new Error('EPUBを表示する部品を読み込めませんでした');
+    return window.MeldexViewerEpub;
+  }
+  function epubLoadErrorMessage(error) {
+    if (error?.name === 'EpubError') return error.message;
+    return 'EPUBを読み込めませんでした: ' + (error?.message || error);
+  }
 
   function pdfLoadErrorMessage(error) {
     const status = Number(error?.status);
@@ -502,7 +538,47 @@
     restorePageSettings();
     pdfDoc = null;
     renderCache.clear();
-    if (isPdf) {
+    if (!isEpub) window.MeldexViewerEpub?.close?.();
+    if (isEpub) {
+      showViewerLoading('EPUBを読み込み中...');
+      clearViewerContent();
+      try {
+        const Epub = await ensureEpubModule();
+        if (generation !== targetGeneration) return false;
+        const saved = PageState.read(preferenceIdentity());
+        zoom = Number(saved.epubFontScale) > 0 ? Number(saved.epubFontScale) : 1;
+        const opened = await Epub.open(epubPath, { url: Utils.fileRawUrlForPath(epubPath), mode, direction, fontScale: zoom,
+          // 進む方向を保存していないファイルは、本の綴じ方向に合わせる（右綴じ＝左へ、左綴じ＝右へ）。
+          directionFor: book => (PageState.DIRECTIONS.includes(saved.direction) ? direction : (book.rtl ? 'left' : 'right')) });
+        if (generation !== targetGeneration || !opened) return false;
+        items = opened.items;
+        idx = Math.max(0, Epub.currentSpine());
+        if (opened.direction && opened.direction !== direction) {
+          direction = opened.direction;
+          if (!['left', 'right'].includes(saved.firstSide)) firstSide = direction === 'left' && mode !== 'single' ? 'left' : 'right';
+          syncModeControls();
+          notifyDirection();
+        }
+        hideViewerLoading(viewerLoadingToken);
+        updateViewerPositionControls();
+        notifyParentCurrentViewerFile();
+        updateWindowTitle();
+        updateHud();
+        window.MeldexViewerAnnotations?.onSceneChanged?.();
+        window.MeldexStandaloneNative?.markReady();
+        pause();
+        return true;
+      } catch (e) {
+        if (generation !== targetGeneration) return false;
+        const message = epubLoadErrorMessage(e);
+        // DRMのあるEPUB・壊れたEPUBは、何度読み直しても同じなので再試行を出さない。
+        const retryable = !(e?.name === 'EpubError' && ['drm', 'corrupt', 'no_container', 'no_opf', 'bad_opf', 'no_spine', 'empty_spine'].includes(e.code));
+        showViewerStableState('error', message, retryable ? () => retryTarget(generation) : null);
+        document.getElementById('hud-info').textContent = message;
+        window.MeldexStandaloneNative?.markReady();
+        return false;
+      }
+    } else if (isPdf) {
       showViewerLoading('PDFを読み込み中...');
       try {
         const openedPdf = await PdfRenderer.openDocument(Utils.fileRawUrlForPath(pdfPath));
@@ -594,12 +670,15 @@
 
   async function init() {
     await viewerPreparation;
-    _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
+    _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath || epubPath).folder || '';
     // Native folder navigation is requested only when the user uses its buttons.
-    if (!window.MeldexStandaloneNative) await loadSiblingFolders();
+    // PDFはフォルダの兄弟一覧（NASでは時間がかかる）を待たずに開き始める。前後のフォルダの移動は一覧の後で使える。
+    const siblings = window.MeldexStandaloneNative ? null : loadSiblingFolders();
+    if (siblings && !isPdf) await siblings;
     const generation = ++targetGeneration;
     const displayed = await loadResolvedTarget(generation);
-    if (!displayed && !singleFile && !pdfPath && !folderPath) window.MeldexStandaloneNative?.markReady();
+    if (siblings && isPdf) await siblings;
+    if (!displayed && !singleFile && !pdfPath && !epubPath && !folderPath) window.MeldexStandaloneNative?.markReady();
   }
 
   // ============================================================
@@ -629,11 +708,12 @@
     const target = Utils.deriveViewerTargetFromSearchParams(sp);
     folderPath = target.folderPath;
     pdfPath = target.pdfPath;
+    epubPath = target.epubPath || '';
     singleFile = target.singleFile;
     multiFilePaths = target.multiFilePaths;
     sheetContextId = target.sheetContextId;
     refreshViewerModeFlags();
-    _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
+    _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath || epubPath).folder || '';
     _siblingFolders = [];
     _siblingIdx = -1;
     clearTimeout(sheetContextTimer);
@@ -644,7 +724,7 @@
 
   // PDFのページを編集した後に、同じPDFを読み直す。表示モード・倍率・回転は保ち、指定のページの辺りを表示する。
   // 読み直しに失敗したら前の表示のまま知らせる（編集の結果はファイルに保存済み）。
-  async function reloadPdfDocument(nextIndex = idx) {
+  async function reloadPdfDocument(nextIndex = idx, { preserveEditRevision = false } = {}) {
     if (!isPdf || !pdfPath) return false;
     const generation = ++targetGeneration;
     showGroupToken++;
@@ -671,6 +751,8 @@
     } catch (_) {}
     if (previous && previous !== opened) { try { previous.destroy?.(); } catch (_) {} }
     await showGroup(pdfPairStart(idx));
+    if (generation !== targetGeneration) return false;
+    if (!preserveEditRevision) window.dispatchEvent(new CustomEvent('viewer-pdf-document-reloaded', { detail: { path: pdfPath } }));
     notifyPageState();
     return true;
   }
@@ -762,23 +844,68 @@
 
   function currentDisplayOrder() {
     const group = getGroup(idx);
-    return mode === 'manga' && group.length === 2 ? [group[1], group[0]] : group;
+    return rightToLeft() && group.length === 2 ? [group[1], group[0]] : group;
   }
 
   function itemAnnotationPath(item) {
     return !item ? '' : (isPdf ? (item.path || pdfPath || '') + '#page=' + (item.pageNum || idx + 1) : item.path || pdfPath || singleFile || '');
   }
 
+  // 描画済みのPDFページ（キー: ページ番号_倍率）。表示中・先読みしたページを再利用する。
+  // 枚数と画素数の両方に上限を設け、拡大した大きなページでメモリーを使い切らない。
   const renderCache = new Map();
+  const RENDER_CACHE_MAX_PAGES = 8;
+  const RENDER_CACHE_MAX_PIXELS = 48 * 1024 * 1024;
+  function renderCachePixels() {
+    let total = 0;
+    renderCache.forEach(canvas => { total += (canvas.width || 0) * (canvas.height || 0); });
+    return total;
+  }
   function cachePdfCanvas(key, canvas) {
     renderCache.delete(key);
     renderCache.set(key, canvas);
-    while (renderCache.size > 8) {
-      const oldest = renderCache.keys().next().value;
+    while (renderCache.size > RENDER_CACHE_MAX_PAGES
+        || (renderCache.size > 1 && renderCachePixels() > RENDER_CACHE_MAX_PIXELS)) {
+      // 表示中のページは残し、古い順に手放す。
+      const oldest = [...renderCache.keys()].find(entry => !renderCache.get(entry).isConnected && entry !== key)
+        ?? renderCache.keys().next().value;
+      if (oldest === key) break;
       const evicted = renderCache.get(oldest);
       renderCache.delete(oldest);
       if (!evicted.isConnected) window.MeldexViewerTextLayer?.dispose(evicted);
     }
+  }
+  // 同じページを同時に2回描かない（先読み中のページへ移った時は、その描画を待って使う）。
+  const renderInflight = new Map();
+  // 先読み（次・前のページ）。利用者の操作を優先し、別のページへ移ったら取り消す。
+  let prefetchTimer = 0;
+  let prefetchGeneration = 0;
+  const prefetchTasks = new Set();
+  // 本文のページを描いている間は、ページ一覧のサムネイルが待つ（viewer-page-list.js）。
+  let mainPdfRenders = 0;
+  let pdfIdleWaiters = [];
+  function whenPdfIdle() {
+    if (!mainPdfRenders) return Promise.resolve();
+    return new Promise(resolve => pdfIdleWaiters.push(resolve));
+  }
+  function releasePdfIdleWaiters() {
+    if (mainPdfRenders) return;
+    const waiters = pdfIdleWaiters;
+    pdfIdleWaiters = [];
+    waiters.forEach(resolve => resolve());
+  }
+  // keepPages: これから表示するページ番号。その先読みは取り消さず、描き上がりを使う。
+  function cancelPdfPrefetch(keepPages = null) {
+    prefetchGeneration++;
+    clearTimeout(prefetchTimer);
+    prefetchTimer = 0;
+    prefetchTasks.forEach(handle => {
+      if (keepPages?.has(handle.pageNum)) return;
+      handle.cancel();
+      // 取り消した描画を、後から同じページを開く時に使い回さない。
+      renderInflight.delete(handle.key);
+      prefetchTasks.delete(handle);
+    });
   }
 
   function notifyParentCurrentViewerFile() {
@@ -786,7 +913,7 @@
     const item = items.length ? items[Math.max(0, Math.min(items.length - 1, idx))] : null;
     const path = item?.path || item?.url || '';
     if (!path) return;
-    const currentFolder = _currentFolderPath || Utils.splitViewerPath(path).folder || folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
+    const currentFolder = _currentFolderPath || Utils.splitViewerPath(path).folder || folderPath || Utils.splitViewerPath(singleFile || pdfPath || epubPath).folder || '';
     try {
       parent?.postMessage?.({
         type: 'viewer-current-file-changed',
@@ -838,7 +965,9 @@
       updateZoomLabel();
       return;
     }
-    document.getElementById('counter').textContent = items.length ? (idx + 1) + ' / ' + items.length : '0 / 0';
+    document.getElementById('counter').textContent = isEpub && window.MeldexViewerEpub?.isReady?.()
+      ? window.MeldexViewerEpub.positionLabel()
+      : (items.length ? (idx + 1) + ' / ' + items.length : '0 / 0');
     const seekBar = document.getElementById('seek-bar');
     seekBar.min = 0;
     seekBar.step = 1;
@@ -847,22 +976,95 @@
     updateZoomLabel();
   }
 
-  async function renderPdfPage(pageNum) {
-    const key = pageNum + '_' + zoom.toFixed(4);
-    if (renderCache.has(key)) return renderCache.get(key);
-    // 原寸ページサイズをitems[]へキャッシュ（viewer-annotation-scene.jsがmediaWidth/Heightで参照）
-    const pageEntry = items[pageNum - 1];
-    if (pageEntry && (!pageEntry.w || !pageEntry.h)) {
-      const size = await PdfRenderer.getPageNaturalSize(pdfDoc, pageNum);
-      pageEntry.w = size.width; pageEntry.h = size.height;
+  async function renderPdfPage(pageNum, pageZoom = zoom, options = {}) {
+    const key = pageNum + '_' + pageZoom.toFixed(4);
+    if (renderCache.has(key)) {
+      const cached = renderCache.get(key);
+      cachePdfCanvas(key, cached); // 使ったページを新しい側へ
+      return cached;
     }
-    const canvas = await PdfRenderer.renderPageToNewCanvas(pdfDoc, pageNum, zoom);
-    cachePdfCanvas(key, canvas);
-    return canvas;
+    if (renderInflight.has(key)) return renderInflight.get(key);
+    const doc = pdfDoc;
+    const task = (async () => {
+      // 原寸ページサイズをitems[]へキャッシュ（viewer-annotation-scene.jsがmediaWidth/Heightで参照）
+      const pageEntry = items[pageNum - 1];
+      if (pageEntry && (!pageEntry.w || !pageEntry.h)) {
+        const size = await PdfRenderer.getPageNaturalSize(doc, pageNum);
+        pageEntry.w = size.width; pageEntry.h = size.height;
+      }
+      const canvas = await PdfRenderer.renderPageToNewCanvas(doc, pageNum, pageZoom, options);
+      // 取り消した描画・閉じた文書の描画は残さない。
+      if (canvas._viewerRenderCancelled || doc !== pdfDoc) return canvas;
+      cachePdfCanvas(key, canvas);
+      return canvas;
+    })();
+    renderInflight.set(key, task);
+    const settle = () => { if (renderInflight.get(key) === task) renderInflight.delete(key); };
+    task.then(settle, settle);
+    return task;
+  }
+
+  // 表示したページの次と前（読む順）を、手が空いた時に描いておく。次のページへ進んだ時に待たない。
+  function schedulePdfPrefetch() {
+    cancelPdfPrefetch();
+    if (!isPdf || !pdfDoc || items.length < 2) return;
+    const generation = prefetchGeneration;
+    const doc = pdfDoc;
+    prefetchTimer = setTimeout(async () => {
+      prefetchTimer = 0;
+      const current = getGroup(idx);
+      const nextStart = idx + current.length < items.length ? idx + current.length : -1;
+      const prevStart = idx > 0 ? pdfPairStart(idx - 1) : -1;
+      for (const start of [nextStart, prevStart]) {
+        if (start < 0 || generation !== prefetchGeneration || doc !== pdfDoc) return;
+        const group = getGroup(start);
+        try {
+          if (fitMode !== 'none') {
+            await Promise.all(group.map(async i => {
+              if (items[i].w && items[i].h) return;
+              const size = await PdfRenderer.getPageNaturalSize(doc, items[i].pageNum);
+              items[i].w = size.width; items[i].h = size.height;
+            }));
+          }
+          if (generation !== prefetchGeneration || doc !== pdfDoc) return;
+          const pageZoom = pdfAutoFit && fitMode !== 'none' ? computeFitZoomForPdfGroup(group) : zoom;
+          for (const i of group) {
+            if (generation !== prefetchGeneration || doc !== pdfDoc) return;
+            await whenPdfIdle();
+            if (generation !== prefetchGeneration) return;
+            const handle = { pageNum: items[i].pageNum, key: items[i].pageNum + '_' + pageZoom.toFixed(4), cancel: () => {} };
+            prefetchTasks.add(handle);
+            try {
+              await renderPdfPage(items[i].pageNum, pageZoom, { onTask: task => { handle.cancel = () => { try { task.cancel(); } catch (_) {} }; } });
+            } finally { prefetchTasks.delete(handle); }
+          }
+        } catch (error) {
+          // 先読みの失敗は表示に影響させない（実際に開いた時に通常の描画と失敗表示を行う）。
+          console.debug('[viewer] PDF prefetch skipped', error?.message || error);
+        }
+      }
+    }, 150);
   }
 
   async function showGroup(newIdx) {
     if (items.length === 0) return;
+    // EPUBはシークバー・目次から章へ移る（章の中のページ送りは viewer-epub.js）
+    if (isEpub) return window.MeldexViewerEpub?.goToChapter?.(newIdx);
+    if (!isPdf) return showGroupNow(newIdx);
+    // 先読み中の描画は、今から表示するページ以外を取り消して手を空ける。
+    let target = newIdx < 0 ? items.length - 1 : (newIdx >= items.length ? 0 : newIdx);
+    target = pdfPairStart(target);
+    cancelPdfPrefetch(new Set(getGroup(target).map(i => items[i]?.pageNum)));
+    if (++mainPdfRenders === 1) window.dispatchEvent(new CustomEvent('viewer-pdf-busy'));
+    try {
+      return await showGroupNow(newIdx);
+    } finally {
+      mainPdfRenders--;
+      releasePdfIdleWaiters();
+    }
+  }
+
+  async function showGroupNow(newIdx) {
     const token = ++showGroupToken;
     const loadingToken = isViewerLoadingVisible()
       ? viewerLoadingToken
@@ -882,6 +1084,10 @@
     idx = newIdx;
     const group = getGroup(idx);
     if (group.length === 0) return;
+    // 件数表示・シークバー・ページ一覧は、描画の完了を待たずに選んだページへ合わせる。
+    // 大きなスキャンPDFでは1ページの描画に時間がかかり、待つと一覧が古い位置に残っていた
+    // （2026-11-27 利用者の依頼「本文でページを変えたらページ一覧もそのページへ」）。
+    updateViewerPositionControls();
     notifyParentCurrentViewerFile();
     updateWindowTitle();
     if (!isPdf) {
@@ -896,8 +1102,8 @@
         items[i].h = size.height;
       }));
       if (token !== showGroupToken) return;
+      // 倍率はキャッシュのキーに含まれるため、ページを移るたびに描画済みのページを捨てない。
       if (pdfAutoFit) zoom = computeFitZoomForPdfGroup(group);
-      renderCache.clear();
     }
     const target = activeLayer === 'A' ? 'B' : 'A';
     const layer = document.getElementById('layer' + target);
@@ -932,7 +1138,7 @@
     } else {
       const spread = document.createElement('div');
       spread.className = 'spread';
-      const order = mode === 'manga' ? [group[1], group[0]] : group;
+      const order = rightToLeft() ? [group[1], group[0]] : group;
       for (const i of order) {
         if (isPdf) {
           const canvas = await renderPdfPage(items[i].pageNum);
@@ -958,7 +1164,7 @@
       if (media) {
         const spread = document.createElement('div');
         spread.className = 'spread viewer-solitary-page';
-        spread.dataset.side = idx === 0 ? firstSide : (mode === 'manga' ? 'right' : 'left');
+        spread.dataset.side = idx === 0 ? firstSide : (rightToLeft() ? 'right' : 'left');
         const blank = document.createElement('div');
         blank.className = 'viewer-blank-page'; blank.setAttribute('aria-hidden', 'true');
         spread.appendChild(media); spread.appendChild(blank); layer.appendChild(spread);
@@ -1011,6 +1217,7 @@
           .catch(error => console.warn('テキストを読み込めませんでした', error));
       });
       window.MeldexViewerTextLayer?.updateIndicator();
+      if (isPdf) schedulePdfPrefetch();
       if (!isPdf) window.MeldexViewerOcr?.onSceneChanged();
       window.MeldexViewerVideo?.startActiveVideoPlayback?.();
       window.MeldexViewerAudio?.startActiveAudioPlayback?.();
@@ -1054,11 +1261,13 @@
   }
 
   function nextGroup() {
+    if (isEpub) return window.MeldexViewerEpub?.next?.();
     const group = getGroup(idx);
     showGroup(idx + group.length);
   }
   function goToIndex(newIdx) { return showGroup(newIdx); } // シークバー等の直接ジャンプ用
   async function prevGroup() {
+    if (isEpub) return window.MeldexViewerEpub?.prev?.();
     if (items.length === 0) return;
     if (mode === 'single') { showGroup(idx <= 0 ? items.length - 1 : idx - 1); return; }
     if (!isPdf && idx <= 0) {
@@ -1126,12 +1335,12 @@
   // 例: p01, p02-p03, p04-p05 で p02-p03 を表示中に「1枚進む」→ p01-p02, p03-p04, p05 の p03-p04。
   // PDFは組の始まりを規則で決め直すため、ずれを持たないと元の組へ戻っていた。
   function shiftForward() {
-    if (mode === 'single') { nextGroup(); return; }
+    if (mode === 'single' || isEpub) { nextGroup(); return; }
     pairShift ^= 1;
     showGroup(Math.min(items.length - 1, idx + 1));
   }
   function shiftBackward() {
-    if (mode === 'single') { prevGroup(); return; }
+    if (mode === 'single' || isEpub) { prevGroup(); return; }
     pairShift ^= 1;
     showGroup(Math.max(0, idx - 1));
   }
@@ -1174,7 +1383,7 @@
 
   // 表示中の主メディア（見開きは先頭）の基準倍率。寸法がまだ分からない時は 0。
   function currentFitBaseScale() {
-    if (isPdf) return 1;
+    if (isPdf || isEpub) return 1;
     const mediaEl = primaryMediaElement();
     const size = mediaNaturalSize(mediaEl);
     return size ? fitBaseScale(size.w, size.h, !!mediaEl.closest('.spread')) : 0;
@@ -1197,6 +1406,7 @@
   // 上限: 原寸の1600%（フィット時の5倍の方が大きい小さな画像はそちら）。
   function clampZoomMultiplier(requested) {
     const value = Number(requested) || 1;
+    if (isEpub) return Math.max(0.5, Math.min(3, value)); // EPUBの倍率＝文字の大きさ
     if (isPdf) return Math.max(0.2, Math.min(5, value));
     const mediaEl = primaryMediaElement();
     const size = mediaNaturalSize(mediaEl);
@@ -1250,6 +1460,7 @@
 
   function applyFit() {
     pdfAutoFit = true;
+    if (isEpub) return; // EPUBの倍率は文字の大きさ。フィットの計算はしない
     if (isPdf && items.length > 0 && items[0].w) {
       zoom = computeFitZoomForPdfGroup();
       renderCache.clear();
@@ -1290,7 +1501,7 @@
     applyPdfZoomInPlace(computeFitZoomForPdfGroup(group));
   }
 
-  function setFitUI() {
+  function setFitUI(flash = true) {
     // モードごとに異なるアイコンを割り当てる（ビューワー残課題修正計画 2026-08-04
     // 「5. フィット切替ボタンのアイコン」）。
     const fitLabels = {original_contain:'フィット: 原寸（収める）',contain:'フィット: 全体',height:'フィット: 高さ',width:'フィット: 幅',none:'フィット: 原寸'};
@@ -1300,7 +1511,7 @@
     btn.innerHTML = viewerIcon(fitIcons[fitMode] || 'maximize2');
     btn.title = fitLabels[fitMode] || 'フィット';
     btn.setAttribute('aria-label', btn.title);
-    flashStatus(({original_contain:'原寸（収める）',contain:'全体フィット',height:'高さフィット',width:'幅フィット',none:'原寸表示'})[fitMode] || fitMode);
+    if (flash) flashStatus(({original_contain:'原寸（収める）',contain:'全体フィット',height:'高さフィット',width:'幅フィット',none:'原寸表示'})[fitMode] || fitMode);
   }
 
   let flashStatusTimer = 0;
@@ -1331,11 +1542,13 @@
   function updateHud() {
     document.getElementById('hud-info').hidden = !hudVisible;
     const fitLabels = {original_contain:'原寸（収める）',contain:'全体',width:'幅',height:'高さ',none:'原寸'};
-    const info = [isPdf ? 'PDF: ' + pdfPath.split('/').pop() : isSingle ? singleFile.split('/').pop() : '画像: ' + items.length + '枚'];
-    info.push('モード: ' + ({single:'単ページ',spread:'見開き_右へ',manga:'見開き_左へ'}[mode] || mode));
+    const info = [isPdf ? 'PDF: ' + pdfPath.split('/').pop() : isEpub ? 'EPUB: ' + epubPath.split(/[\\/]/).pop() : isSingle ? singleFile.split('/').pop() : '画像: ' + items.length + '枚'];
+    info.push('モード: ' + ({single:'単ページ',spread:'見開き'}[mode] || mode));
+    info.push('進む方向: ' + ({up:'上へ',down:'下へ',left:'左へ',right:'右へ'}[direction] || direction));
     info.push('フィット: ' + (fitLabels[fitMode] || fitMode));
     if (!isPdf) info.push('再生速度: ' + speed.toFixed(1) + 's' + (reversePlay ? ' (逆順)' : ''));
     if (isPdf) info.push('ズーム: ' + Math.round(zoom * 100) + '%');
+    if (isEpub) info.push('文字の大きさ: ' + Math.round(zoom * 100) + '%');
     setHudInfo(info);
     const status = playing ? (reversePlay ? '◀ 逆再生中' : '▶ 再生中') : '⏸ 停止';
     if (flashStatusTimer) flashStatusRestore = status;
@@ -1362,25 +1575,53 @@
 
   function setMode(nextMode) {
     if (!['single', 'spread', 'manga'].includes(nextMode)) return;
-    if (!savePageSettings({ mode: nextMode, firstSide })) {
-      document.getElementById('sel-mode').value = mode;
+    // 旧名 manga（見開き_左へ）は「見開き＋左へ」として受ける（スクリーンショットの位置・外部の呼出し）。
+    const nextDirection = nextMode === 'manga' ? 'left' : direction;
+    if (nextMode === 'manga') nextMode = 'spread';
+    if (!savePageSettings(pageSettingsPatch(nextMode, nextDirection, firstSide))) {
+      syncModeControls();
       return false;
     }
+    const directionChanged = nextDirection !== direction;
     mode = nextMode;
+    direction = nextDirection;
     pairShift = 0;
-    document.getElementById('sel-mode').value = mode;
+    syncModeControls();
+    if (directionChanged) notifyDirection();
     notifyPageState();
+    if (isEpub) { window.MeldexViewerEpub?.setDirection?.(direction); window.MeldexViewerEpub?.setMode?.(mode); updateHud(); return; }
     if (isPdf) applyFit();
     if (refreshCurrentGroupInPlace()) return;
     showGroup(idx);
   }
 
+  function setDirection(nextDirection) {
+    if (!PageState.DIRECTIONS.includes(nextDirection)) return false;
+    if (nextDirection === direction) { syncModeControls(); return true; }
+    if (!savePageSettings(pageSettingsPatch(mode, nextDirection, firstSide))) {
+      syncModeControls();
+      return false;
+    }
+    const orderChanged = mode !== 'single' && (direction === 'left') !== (nextDirection === 'left');
+    direction = nextDirection;
+    pairShift = 0;
+    syncModeControls();
+    notifyDirection();
+    notifyPageState();
+    updateHud();
+    if (isEpub) { window.MeldexViewerEpub?.setDirection?.(direction); return true; }
+    // 見開きの並び順（左右）が変わる時だけ描き直す。上下左右の切替だけなら表示はそのまま。
+    if (orderChanged && !refreshCurrentGroupInPlace()) showGroup(idx);
+    return true;
+  }
+
   function setFirstSide(value) {
     if (!['left', 'right'].includes(value)) return;
-    if (!savePageSettings({ mode, firstSide: value })) return false;
+    if (!savePageSettings(pageSettingsPatch(mode, direction, value))) return false;
     firstSide = value;
     pairShift = 0;
     notifyPageState();
+    if (isEpub) return;
     if (!refreshCurrentGroupInPlace()) showGroup(idx);
   }
 
@@ -1388,6 +1629,8 @@
     if (!['original_contain', 'contain', 'height', 'width', 'none'].includes(nextFit)) return false;
     if (!saveDisplayPreference('viewer-fit', nextFit)) return false;
     fitMode = nextFit;
+    // EPUBのフィットは文字の大きさを標準（100%）へ戻す
+    if (isEpub) { setFitUI(); setZoomAt(null, null, 1); return true; }
     if (nextFit === 'none') zoom = 1;
     renderCache.clear();
     applyFit();
@@ -1420,6 +1663,12 @@
     const oldZoom = zoom;
     const targetZoom = clampZoomMultiplier(requestedZoom);
     if (Math.abs(targetZoom - oldZoom) < 0.0005) return;
+    if (isEpub) {
+      zoom = window.MeldexViewerEpub?.setFontScale?.(targetZoom) ?? targetZoom;
+      updateViewerPositionControls();
+      updateHud();
+      return;
+    }
     const display = document.getElementById('display');
     const point = viewerLogicalPoint(display, clientX, clientY);
     // c = カーソル位置（回転・反転を戻したビューポート論理座標）− #display中心。
@@ -1460,6 +1709,7 @@
   // setOriginal() は fitMode 自体を none に変えるため、ズームリセット用途には使わない。
   function resetZoom() {
     if (items.length === 0) return;
+    if (isEpub) { setZoomAt(null, null, 1); return; }
     if (isPdf) { pdfAutoFit = false; applyPdfZoomInPlace(1); }
     else { zoom = 1; reapplyMediaFitStyle(); }
     resetPan();
@@ -1675,7 +1925,7 @@
   })();
 
   // フォルダナビゲーション（前/次のフォルダ）
-  let _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath).folder || '';
+  let _currentFolderPath = folderPath || Utils.splitViewerPath(singleFile || pdfPath || epubPath).folder || '';
   let _siblingFolders = [];
   let _siblingIdx = -1;
   // Windows版Meldex Viewer（native=1）は開いたファイルのフォルダだけを作業範囲にするため、
@@ -1699,7 +1949,7 @@
 
   function currentViewerPathForFolderNavigation() {
     const item = items.length ? items[Math.max(0, Math.min(items.length - 1, idx))] : null;
-    return item?.path || item?.url || singleFile || pdfPath || folderPath || '';
+    return item?.path || item?.url || singleFile || pdfPath || epubPath || folderPath || '';
   }
 
   function requestParentFolderNavigation(direction) {
@@ -1985,6 +2235,14 @@
   }
   window.addEventListener('viewer-layout-resize', notifyResize);
 
+  // EPUBの表示位置が変わった（ページ送り・章の移動・目次・ハイライトへの移動）。件数表示・シークバー・目次を合わせる。
+  window.addEventListener('viewer-epub-position', event => {
+    if (!isEpub) return;
+    idx = Math.max(0, Math.min(items.length - 1, Number(event.detail?.spine) || 0));
+    updateViewerPositionControls();
+    notifyParentCurrentViewerFile();
+  });
+
   const ready = init();
 
   window.MeldexViewerScene = {
@@ -2000,17 +2258,18 @@
     currentRootPath: () => nativeRoot,
     preferenceIdentity, savePageSettings, getFirstSide: () => firstSide, setFirstSide,
     getFolderPath: () => _currentFolderPath,
-    canListFolder: () => !isPdf && !sheetContextId && !isMulti && !/^(?:blob:|data:|zip:)/i.test(singleFile),
+    canListFolder: () => !isPdf && !isEpub && !sheetContextId && !isMulti && !/^(?:blob:|data:|zip:)/i.test(singleFile),
     ensureItemUrl,
-    getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
-    getPdfDocument: () => pdfDoc, getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
+    getItems: () => items, getIndex: () => idx, getMode: () => mode, getDirection: () => direction, isPdf: () => isPdf,
+    isEpub: () => isEpub, getEpubPath: () => epubPath,
+    getPdfDocument: () => pdfDoc, whenPdfIdle, getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
     getFitMode: () => fitMode, isPdfAutoFit: () => pdfAutoFit, getZoom: () => zoom, getDisplayScale, getPanX: () => panX, getPanY: () => panY,
     getFlipH: () => flipH, getFlipV: () => flipV,
     getRotateDeg: () => rotateDeg, isBgBlur: () => bgBlur, isHudVisible: () => hudVisible,
     getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing, isPlaybackActive,
     isSheetContext: () => !!sheetContextId,
     // 表示状態の変更・その他
-    setMode, setFitMode, cycleFit, zoomIn, zoomOut, zoomAt, setZoomAt, resetZoom,
+    setMode, setDirection, setFitMode, cycleFit, zoomIn, zoomOut, zoomAt, setZoomAt, resetZoom,
     panBy, setPan, setOriginal, toggleFlipH, toggleFlipV, rotate, setRotateDeg,
     toggleBg, toggleHud, toggleFullscreen, setSpeed, setFadeMs, flashStatus, notifyResize,
     // iframe再利用（項目7。プロトコルはviewer-open-request.jsが担当し、本APIは判定/実行のみ）

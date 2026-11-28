@@ -59,6 +59,8 @@
       if (options.startTimeoutMs) startOpts.timeoutMs = options.startTimeoutMs;
       started = options.startMethod === 'GET'
         ? await apiFetch(startPath, { ...(options.startOptions || {}), ...startOpts })
+        : options.startMethod === 'PUT'
+        ? await apiPut(startPath, body || {}, { ...(options.startOptions || {}), ...startOpts })
         : await apiPost(startPath, body || {}, startOpts);
       jobId = String(started?.job_id || '');
     }
@@ -138,6 +140,30 @@
     error.name = 'LongRunningJobError';
     error.jobId = jobId;
     throw error;
+  }
+
+  async function runFileWriteJob(path, body, options = {}) {
+    const requestOptions = { ...options, method: 'PUT', body: JSON.stringify(body) };
+    try {
+      const result = await runBackgroundJob(path + (path.includes('?') ? '&' : '?') + 'background=true', body, {
+        startMethod: 'PUT', startOptions: { ...options, backgroundFileWrite: false },
+        operationProgress: false, cancellable: false, pollIntervalMs: 50,
+      });
+      window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOptions, result);
+      return result;
+    } catch (error) {
+      if (error?.errorStatus) {
+        if (window.MeldexSaveSafety?.enrichError) {
+          window.MeldexSaveSafety.enrichError(error, { detail: error.errorDetail || error.message }, Number(error.errorStatus));
+        } else {
+          error.status = Number(error.errorStatus);
+          error.meldexCode = error.errorDetail?.code || '';
+          error.meldexDetail = error.errorDetail;
+        }
+      }
+      if (!options.silentError) window.MeldexSaveSafety?.reportApiError?.(path, requestOptions, error);
+      throw error;
+    }
   }
 
   function _operationLabel(startPath, options) {
@@ -375,6 +401,7 @@
   window.describeJobFailure = describeJobFailure;
   window.importAttentionValues = importAttentionValues;
   window.runBackgroundJob = runBackgroundJob;
+  window.runFileWriteJob = runFileWriteJob;
   window.formatJobProgress = formatJobProgress;
   window.formatJobEta = formatJobEta;
 })();

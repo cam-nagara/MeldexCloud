@@ -262,7 +262,8 @@ function _snapshotBaseTreeVisibility() {
   // 名前の検索で隠れている行を「フィルタで隠れている」と記録しない。記録すると、検索で開いたフォルダの中の一致が
   // 祖先ごと出なくなっていた（2026-11-22 M-014 フォルダツリー網羅テスト）。検索中に隠れている行は、
   // フィルタだけで決まる見え方を記録する。
-  const searching = typeof _treeSearchQuery !== 'undefined' && !!_treeSearchQuery;
+  const searching = (typeof _treeSearchQuery !== 'undefined' && !!_treeSearchQuery)
+    || (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
   document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
     if (searching && node.style.display === 'none') {
       const d = node._nodeData;
@@ -888,7 +889,7 @@ function toggleSidebarSection(name) {
   _setSidebarSectionExpandedState(name, !collapsed);
   localStorage.setItem('sidebar-section-' + name, collapsed ? 'collapsed' : 'expanded');
   if (name === 'home' && !collapsed && typeof renderHomeFolderTree === 'function') {
-    Promise.resolve().then(() => renderHomeFolderTree({ force: true, reason: 'section-open' })).catch(() => {});
+    return Promise.resolve().then(() => renderHomeFolderTree({ force: true, reason: 'section-open' })).catch(() => {});
   }
 }
 
@@ -1025,7 +1026,7 @@ function _outlinerMediaTypeFromPath(path, type) {
   if (['jpg','jpeg','png','gif','webp','svg','bmp','avif','ico'].includes(ext)) return 'image';
   if (['mp4','mov','avi','webm','mkv','m4v'].includes(ext)) return 'video';
   if (['mp3','wav','ogg','flac','m4a'].includes(ext)) return 'audio';
-  if (ext === 'pdf') return 'pdf';
+  if (ext === 'pdf' || ext === 'epub') return 'pdf'; // EPUBもビューワーの文書の経路で開く
   return type || '';
 }
 
@@ -1033,6 +1034,7 @@ function _outlinerStoredItemType(item) {
   const type = String(item?.type || '');
   const lower = String(item?.path || '').toLowerCase();
   if (type === 'database' || lower.endsWith('.mel-sheet')) return 'database';
+  if (type === 'form-app' || lower.endsWith('.mel-form')) return 'form-app';
   if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
   if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (type === 'board' || lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
@@ -1097,11 +1099,18 @@ async function _openStoredOutlinerItem(item, opts) {
   else if (type === 'entity') { if (typeof selectEntity === 'function') selectEntity(path, openOpts); }
   else if (type === 'page') openPage(name, path, openOpts);
   else if (type === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, name, openOpts); else openPage(name, path, openOpts); }
+  else if (type === 'form-app') {
+    if (typeof openFormApp !== 'function') {
+      if (typeof showStatus === 'function') showStatus('フォームを開けません', true);
+      return false;
+    }
+    return (await openFormApp(path, name, openOpts)) !== false;
+  }
   else if (type === 'board') openBoard(name, path, openOpts);
   else if (type === 'calendar') openCalendarFile(name, path, openOpts);
   else if (type === 'chat') { if (typeof openSavedChat === 'function') openSavedChat(path); else openPage(name, path, openOpts); }
   else if (type === 'image' || type === 'video' || type === 'audio') openMedia(name, path, type, openOpts);
-  else if (type === 'pdf' || (type === 'document' && path.toLowerCase().endsWith('.pdf'))) {
+  else if (type === 'pdf' || (type === 'document' && /\.(?:pdf|epub)$/i.test(path))) {
     if (typeof openViewer === 'function') openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
     else if (typeof openNative === 'function') openNative(path);
   }

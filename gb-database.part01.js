@@ -1023,8 +1023,11 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, 
   const ctx = _dbResolveUndoCtx(dbPath, options);
   const scope = typeof options.historyScope === 'function' ? options.historyScope()
     : typeof options.historyScope === 'string' ? options.historyScope : _dbScope(dbPath);
-  const refresh = async () => {
-    if (typeof options.onHistoryChanged === 'function') await options.onHistoryChanged();
+  const refresh = async result => {
+    if (typeof options.onHistoryChanged === 'function') {
+      if (options.valueProperty) await options.onHistoryChanged({ property: options.valueProperty, entitySnapshot: result?.entity_snapshot });
+      else await options.onHistoryChanged();
+    }
     else if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
   };
   const undoUpdates = { new_value: oldValue };
@@ -1035,9 +1038,10 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, 
   }
   if (options.oldUpdates && typeof options.oldUpdates === 'object') Object.assign(undoUpdates, options.oldUpdates);
   if (options.newUpdates && typeof options.newUpdates === 'object') Object.assign(redoUpdates, options.newUpdates);
+  if (options.requestEntity) { undoUpdates._return_entity = true; redoUpdates._return_entity = true; }
   historyPush(label,
-    async () => { await _apiPutValue(val, undoUpdates); await refresh(); },
-    async () => { await _apiPutValue(val, redoUpdates); await refresh(); },
+    async () => { await refresh(await _apiPutValue(val, undoUpdates)); },
+    async () => { await refresh(await _apiPutValue(val, redoUpdates)); },
     scope
   );
 }

@@ -67,6 +67,12 @@ function bdDrawConns(options) {
     if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDrawConns', _bdDrawPerf, 'no-svg');
     return;
   }
+  const draw = () => _bdDrawConnectionContents(options, svg, _bdDrawPerf);
+  if (typeof bdWithNormalizedBoardUiState === 'function') return bdWithNormalizedBoardUiState(draw);
+  return draw();
+}
+
+function _bdDrawConnectionContents(options, svg, _bdDrawPerf) {
   // defsを保持してpathをクリア + ラベルDOMもクリア
   let defs = svg.querySelector('defs');
   if (!defs) {
@@ -507,7 +513,7 @@ function bdDrawConns(options) {
       if (arrow === 'end' || arrow === 'both') p.setAttribute('marker-end', markerRef);
     }
     svg.appendChild(p);
-    const centerMeta = _bdMeasureConnectionCenter(p, pathData.pathPoints, pathType, pathData.labelPoint);
+    const centerMeta = _bdMeasureConnectionCenter(p, pathData.pathPoints, pathType, pathData.labelPoint, d);
     _bdAppendLineCommentBadge(c, centerMeta.point);
     if (bdIsConnectionSelected(c.id)) {
       const selectionBaseWidth = strokeWidth + 12 / zoom;

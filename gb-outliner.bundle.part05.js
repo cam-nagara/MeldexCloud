@@ -1,3 +1,28 @@
+      // Only an absent legacy endpoint permits a single-item fallback. A token
+      // may already be consumed after a conflict, timeout or uncertain response.
+      if (![404, 405].includes(Number(reason?.status))) {
+        return batchTargets.map(item => {
+          try { options.onFailure?.(item, reason); } catch {}
+          return { status: 'rejected', reason };
+        });
+      }
+    }
+  }
+  const results = [];
+  for (const item of targets) {
+    try {
+      const value = await apiPost('/outliner/delete', {
+        path: item.path,
+        kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        ...(item.assetId ? { assetId: item.assetId } : {}),
+        ...((item.entry_id || item.entryId) ? { expected_entry_id: item.entry_id || item.entryId,
+          expected_entry_name: item.name || undefined } : {}),
+        ...confirmationPayload,
+      }, { silentError: options.silentError === true });
+      results.push({ status: 'fulfilled', value });
+      const trashRef = _outlinerTrashRefFromResponse(value);
+      if (trashRef && typeof options.onSuccess === 'function') {
+        try { options.onSuccess(item, value); } catch {}
       }
     } catch (reason) {
       results.push({ status: 'rejected', reason });
@@ -847,9 +872,18 @@ async function _outlinerSyncFolderChildren(folderPath) {
   if (!container || container.dataset.loaded !== 'true') return true;
   if (container.dataset.virtual === 'true') return false;
   const sortCfg = getSortForFolder(folderPath);
-  const items = await _outlinerFetchFolderListingForConfirm(folderPath, parentNode, {
-    detail: !['manual', 'name'].includes(sortCfg.sort),
-  });
+  // シートの子はSQLiteのエントリ。通常のファイル一覧で照合すると既存トピックを消してしまう。
+  const sheet = parentNode._nodeData?.type === 'database';
+  let items;
+  if (sheet) {
+    const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(folderPath) + '&tree_only=true', { skipBrowseCache: true });
+    if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) return false;
+    items = _outlinerSheetTreeItems(parentNode._nodeData, pivot);
+  } else {
+    items = await _outlinerFetchFolderListingForConfirm(folderPath, parentNode, {
+      detail: !['manual', 'name'].includes(sortCfg.sort),
+    });
+  }
   if (!Array.isArray(items) || !container.isConnected) return false;
   const ordered = sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, folderPath)
     : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
@@ -864,37 +898,3 @@ async function _outlinerSyncFolderChildren(folderPath) {
     if (!item?.path) continue;
     let node = existing.get(item.path);
     if (!node) node = createTreeNodeFromBrowse(item);
-    keep.add(node);
-    const next = previous ? previous.nextSibling : container.firstChild;
-    if (node !== next) container.insertBefore(node, next);
-    previous = node;
-  }
-  existing.forEach(node => {
-    if (keep.has(node)) return;
-    if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(node);
-    node.remove();
-  });
-  return true;
-}
-
-// 複数のフォルダを差分で反映し、どれかが差分で反映できなければツリー全体を読み直す。
-async function _outlinerSyncFoldersOrReload(folderPaths) {
-  const unique = Array.from(new Set((folderPaths || []).map(path => String(path || '')).filter(Boolean)));
-  let ok = unique.length > 0;
-  for (const path of unique) {
-    try { if (!(await _outlinerSyncFolderChildren(path))) ok = false; }
-    catch (error) { console.warn('[outliner] 差分の反映に失敗しました', error); ok = false; }
-  }
-  if (!ok && typeof loadOutliner === 'function') await loadOutliner();
-  await _outlinerRefreshFolderPanelFor(unique);
-  return ok;
-}
-
-function _outlinerParentPath(path) {
-  const value = String(path || '').replace(/[\\/]+$/, '');
-  const cut = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
-  return cut >= 0 ? value.slice(0, cut) : '';
-}
-
-// 保存済みの移動を差分で反映する。失敗した項目の行は動かさず、残りの一覧は後で照合する。
-function _outlinerApplyCommittedMove(oldPath, newPath, name, fileId) {

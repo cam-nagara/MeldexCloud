@@ -75,7 +75,7 @@
     const documentId = text(ref.documentId || ref.document_id);
     return documentId ? { kind: 'document', uid: documentId } : null;
   }
-  async function discoverIdentity(provider, record) {
+  async function discoverIdentity(provider, record, revisionRetry = 0) {
     const direct = explicitIdentity(record);
     if (direct) return direct;
     const targetPath = path(record?.target_path);
@@ -87,6 +87,11 @@
     }
     let read;
     try { read = await provider.readBytesFresh(targetPath); } catch (error) {
+      // provider自身が、読込途中の保存を検出する場合も同じ1回の再試行枠を使う。
+      if (error?.status === 409 && (error?.meldexCode || error?.code) === 'etag_conflict') {
+        if (revisionRetry === 0) return discoverIdentity(provider, record, 1);
+        throw new AnnotationTargetError('アノテート対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
+      }
       // Folder/sheet annotations have no file bytes or document header to
       // migrate. Preserve their legacy reference without probing a download.
       if (error?.code === 'target_is_directory') return null;
@@ -114,6 +119,11 @@
     if (!uid) return null;
     const meta = providerIdentity(await freshStat(provider, targetPath));
     if (!meta.id || !meta.rev || (read.revision && text(read.revision) !== meta.rev)) {
+      // 保存と読取が重なった時だけ1回読み直す。別文書への置換や更新の継続は拒否する。
+      if (revisionRetry === 0 && meta.id && meta.rev && read.revision && text(read.revision) !== meta.rev) {
+        const refreshed = await discoverIdentity(provider, record, 1);
+        if (refreshed?.kind === 'document' && refreshed.uid === uid) return refreshed;
+      }
       throw new AnnotationTargetError('アノテート対象のfresh bytes/revisionが一致しません', 409, 'annotation_target_revision_changed');
     }
     return { kind: 'document', uid };

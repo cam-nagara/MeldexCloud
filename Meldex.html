@@ -135,7 +135,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
   };
 })();
 </script>
-<script src="meldex-cloud-runtime-01.js?v=8c14c732123e2f7d"></script>
+<script src="meldex-cloud-runtime-01.js?v=48f737691b1c8604"></script>
 <script>
 (function () {
   function isHardReloadShortcut(event) {
@@ -250,7 +250,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=41605c3a5bdaec5c"></script><script src="gb-cloud-runtime-config.js?v=9ec70de6d5714a70"></script><script src="meldex-cloud-runtime-04.js?v=0104099845cc71da"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=f0ad5f15228514d1"></script><script src="gb-cloud-runtime-config.js?v=a387e2e521900b80"></script><script src="meldex-cloud-runtime-04.js?v=d03a470eeb08496a"></script>
 
 
 
@@ -332,7 +332,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 
 
-<link rel="stylesheet" href="meldex-cloud-core.css?v=daaac9a625792892">
+<link rel="stylesheet" href="meldex-cloud-core.css?v=193075107929eadf">
 </head>
 <body>
 <div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:var(--bg,#1e1e1e);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
@@ -467,13 +467,13 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <button type="button" class="tb-icon-btn" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-action="meldexUndo()" data-undo-button data-e2e-id="sheet-undo"><span class="ico ico-undo2"></span></button>
     <button type="button" class="tb-icon-btn" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-action="meldexRedo()" data-redo-button data-e2e-id="sheet-redo"><span class="ico ico-redo2"></span></button>
     <div class="sep"></div>
-    <button type="button" class="tb-icon-btn" id="btn-filter" title="フィルタ" aria-label="フィルタ" data-action="showUnifiedFilterModal()" style="position:relative;"><span class="ico ico-filter"></span><span id="filter-badge" class="tb-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
+    <button type="button" class="tb-icon-btn" id="btn-filter" data-toolbar-overflow-priority title="フィルタ" aria-label="フィルタ" data-action="showUnifiedFilterModal()" style="position:relative;"><span class="ico ico-filter"></span><span id="filter-badge" class="tb-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
     <button type="button" class="tb-icon-btn" title="並び替え" aria-label="並び替え" data-action="showDbSortMenu(event)"><span class="ico ico-arrowUpDown"></span></button>
     <div class="sep"></div>
     <button type="button" class="tb-icon-btn" title="公開を更新" aria-label="公開を更新" data-action="publishCurrentDatabaseView()"><span class="ico ico-upload"></span></button>
     <div class="sep"></div>
-    <button type="button" class="tb-icon-btn" data-e2e-id="sheet-reload-current" title="更新（差分を取り込む）" aria-label="更新（差分を取り込む）" data-action="reloadCurrentOpenFile(event)"><span class="ico ico-refreshCw"></span></button>
-    <button type="button" class="tb-icon-btn" title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('database')"><span class="ico ico-search"></span></button>
+    <button type="button" class="tb-icon-btn" data-e2e-id="sheet-reload-current" data-toolbar-overflow-priority title="更新（差分を取り込む）" aria-label="更新（差分を取り込む）" data-action="reloadCurrentOpenFile(event)"><span class="ico ico-refreshCw"></span></button>
+    <button type="button" class="tb-icon-btn" data-toolbar-overflow-priority title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('database')"><span class="ico ico-search"></span></button>
     <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" id="btn-db-detail" title="オプションを開く" aria-label="オプションを開く" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
   </div>
   <div id="rt-toolbar" class="toolbar-group gb-toolbar" style="display:none;">
@@ -687,7 +687,6 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <div class="ft-drag" title="ドラッグで移動"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/></svg></div>
     <button type="button" class="ann-tool active" data-tool="pen" title="ペン (筆圧)" aria-label="ペン"><span class="ico ico-pencil"></span></button>
     <label class="ann-width-control" title="ペンの太さ"><input type="range" id="ann-width-pen" aria-label="ペンの太さ" data-ann-width-tool="pen" min="1" max="16" step="1" value="3"><span id="ann-width-pen-label">3</span></label>
-    <button type="button" class="ann-tool" data-tool="marker" title="マーカー" aria-label="マーカー"><span class="ico ico-highlighter"></span></button>
     <label class="ann-width-control" title="マーカーの太さ"><input type="range" id="ann-width-marker" aria-label="マーカーの太さ" data-ann-width-tool="marker" min="4" max="40" step="1" value="12"><span id="ann-width-marker-label">12</span></label>
     <button type="button" class="ann-tool" data-tool="lasso" title="投げ縄塗り" aria-label="投げ縄塗り"><span class="ico ico-lasso"></span></button>
     <button type="button" class="ann-tool" data-tool="rect" title="矩形塗り" aria-label="矩形塗り"><span class="ico ico-square"></span></button>
@@ -867,7 +866,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
       <input id="rp-ann-search" type="text" aria-label="アノテートを検索" placeholder="検索..." style="flex:1;min-width:120px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
       <select id="rp-ann-view" title="表示" aria-label="表示" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="preview">プレビュー</option><option value="list">リスト</option></select>
       <select id="rp-ann-sort" title="並び替え" aria-label="並び替え" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="modified-desc">更新が新しい順</option><option value="created-desc">作成が新しい順</option><option value="created-asc">作成が古い順</option><option value="path-asc">ファイル名順</option><option value="type-asc">種類順</option><option value="user-asc">ユーザー順</option></select>
-      <select id="rp-ann-type" title="タイプ" aria-label="タイプ" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="stroke">ストローク</option><option value="marker">マーカー</option><option value="highlight">ハイライト</option><option value="lasso">投げ縄</option><option value="rect">矩形塗り</option><option value="sticky">付箋</option><option value="screenshot">スクリーンショット</option></select>
+      <select id="rp-ann-type" title="タイプ" aria-label="タイプ" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="marking">マーキング</option><option value="highlight">ハイライト</option><option value="screenshot">スクリーンショット</option><option value="sticky">付箋</option></select>
       <select id="rp-ann-scope" title="対象ファイル" aria-label="対象ファイル" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="current">現在のファイル</option><option value="all">全ファイル</option></select>
       <select id="rp-ann-status" title="状態" aria-label="状態" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="open">未解決</option><option value="all">全て</option><option value="resolved">解決済み</option><option value="orphan">孤児</option><option value="deleted">削除済み</option></select>
       <select id="rp-ann-user" title="ユーザー" aria-label="ユーザー" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全ユーザー</option></select>
@@ -879,9 +878,9 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div id="rp-history" class="rp-content" style="flex:1;overflow-y:auto;">
     <div class="gb-context-target-header" data-context-target-header="1"><div class="gb-context-target-header__caption">対象</div><div class="gb-context-target-header__name">ファイルが選択されていません</div></div>
     <div style="padding:8px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;align-items:center;gap:4px;">
-      <span style="font-size:13px;font-weight:bold;flex:1;">ヒストリー</span>
-      <button type="button" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="meldexUndo()" data-undo-button data-e2e-id="rp-history-undo"><span class="ico ico-arrowLeftS" style="width:12px;height:12px;"></span> 戻す</button>
-      <button type="button" title="やり直す (Ctrl+Y)" aria-label="やり直す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="meldexRedo()" data-redo-button data-e2e-id="rp-history-redo"><span class="ico ico-arrowRightS" style="width:12px;height:12px;"></span> 進む</button>
+      <span style="font-size:13px;font-weight:bold;flex:1 1 auto;white-space:nowrap;">ヒストリー</span>
+      <button type="button" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;white-space:nowrap;flex:0 0 auto;" data-action="meldexUndo()" data-undo-button data-e2e-id="rp-history-undo"><span class="ico ico-arrowLeftS" style="width:12px;height:12px;"></span> 戻す</button>
+      <button type="button" title="やり直す (Ctrl+Y)" aria-label="やり直す" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;white-space:nowrap;flex:0 0 auto;" data-action="meldexRedo()" data-redo-button data-e2e-id="rp-history-redo"><span class="ico ico-arrowRightS" style="width:12px;height:12px;"></span> 進む</button>
     </div>
     <div id="rp-history-list" style="padding:8px;font-size:12px;"></div>
   </div>
@@ -896,7 +895,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-05.js?v=8f48aec6153ef77d"></script>
+<script src="meldex-cloud-runtime-05.js?v=3b610ac9fa6b00d0"></script>
 
 
 
@@ -989,7 +988,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   try {
     // デスクトップ付箋の小窓は付箋1枚だけを描画する。フォルダツリー・ワークスペース・
     // 前回の表示復元まで走らせると、付箋の数だけ本体の起動処理が重複して起動が詰まる。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) {
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) {
       if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
       window._meldexStartupRestoring = false;
       clearTimeout(bootWatchdog);
@@ -1025,7 +1024,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-06.js?v=3d8a2901625c4a65"></script>
+<script src="meldex-cloud-runtime-06.js?v=306e5c9d8d3e25fa"></script>
 
 
 

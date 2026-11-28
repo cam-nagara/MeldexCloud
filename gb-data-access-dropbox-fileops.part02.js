@@ -496,8 +496,9 @@
       const provider = await _requirePwaProvider('readwrite');
       const now = _nowIso();
       const record = _mergeAnnotationRecord(null, body || {}, { id: _randomId('ann'), now });
-      await _writeAnnotationRecord(provider, record);
-      return { ok: true, id: record.id, created: record.created, modified: record.modified };
+      const saved = await _writeAnnotationRecord(provider, record);
+      return { ok: true, id: record.id, created: record.created, modified: record.modified,
+        ...(body?.return_saved_row === true ? { saved_annotation: _annotationRow(saved) } : {}) };
     }
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -808,20 +809,25 @@
         let content = JSON.stringify({fileType:'meldex-form',schema_version:1,title:shown(labelName),sheet:{path:sheetPath},layout:null,formConfig:{mode:'entry'}},null,2);
         content = titled(content,targetPath);
         if (window.MeldexDocumentIdentity) content = window.MeldexDocumentIdentity.ensureDocumentId(content,'form').text;
+        let formContent = null;
         try {
           await window.MeldexDataAccess.requestJson('/db-metadata?path=' + encodeURIComponent(sheetPath), {
             method: 'PUT', headers, body: { default_form_path: targetPath },
           });
-          await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
-            method: 'PUT', headers, body: { content, create_only: true },
+          const saved = await window.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(targetPath), {
+            method: 'PUT', headers, body: { content, create_only: true, ...(body?.include_form_content === true ? { include_saved_content: true } : {}) },
           });
+          if (body?.include_form_content === true && saved?.etag && typeof saved.saved_content === 'string') {
+            formContent = { path: targetPath, content: saved.saved_content, etag: saved.etag };
+          }
         } catch (error) {
           // A remote write may have committed before its response was lost.
           // Retain the sheet rather than risk deleting a form's answer data.
           error.userMessage = 'フォームの作成を確認できませんでした。シートは「' + sheetPath + '」に残っています。';
           throw error;
         }
-        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath}};
+        return {ok:true,node:{type:'form-app',label:shown(labelName),path:targetPath,companion_paths:[sheetPath]},
+          ...(formContent ? {form_content:formContent} : {})};
       }
       if (type === 'map') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-map');
@@ -933,7 +939,7 @@
         }));
         let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
         await _runPostMutationStep(warnings, 'references', async () => {
-          relocate = await _relocateReferences(provider, oldPath, newPath, true);
+          relocate = await _relocateReferences(provider, oldPath, newPath, true, { sameParentAliases: body?.type === 'database' });
         });
         return { ok: true, new_path: newPath, file_id: _fnvFileId(newPath), relocate, ..._resultWarnings(warnings) };
       }
@@ -944,7 +950,9 @@
         ? await _prepareAnnotationsForPathMutation(provider, {
           action: 'rename', oldPath, newPath: nextPath, isFolder: false,
         }) : [];
-      const scenarioRename = ['scenario', 'scriptnote'].includes(body?.type);
+      // Forms also store their name inside JSON. Use the same conditional write
+      // and rollback as scenarios, preserving the document ID and all other fields.
+      const scenarioRename = ['scenario', 'scriptnote', 'form-app'].includes(body?.type);
       let scenarioSnapshot = null;
       let scenarioContent = '';
       if (scenarioRename) {
@@ -952,7 +960,7 @@
         const original = new TextDecoder('utf-8', { ignoreBOM: true }).decode(scenarioSnapshot.bytes);
         const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
         const doc = JSON.parse(original.replace(/^\uFEFF/, ''));
-        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('シナリオ文書の形式が不正です');
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error(body?.type === 'form-app' ? 'フォーム文書の形式が不正です' : 'シナリオ文書の形式が不正です');
         const hasDisplayTitle = !!titleHelper?.read(original.replace(/^\uFEFF/, ''), oldPath);
         const desiredTitle = displayName || newName;
         if (doc.title === desiredTitle && (!hasDisplayTitle || doc.display_title === desiredTitle)) {
@@ -997,7 +1005,7 @@
       }));
       let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
       await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, oldPath, nextPath, false);
+        relocate = await _relocateReferences(provider, oldPath, nextPath, false, { sameParentAliases: body?.type === 'form-app' });
       });
       return { ok: true, new_path: nextPath, file_id: _fnvFileId(nextPath), relocate,
         ...(scenarioRename ? { etag: await _fileEtag(provider, nextPath) } : {}), ..._resultWarnings(warnings) };

@@ -1,10 +1,12 @@
 (function () {
   const CACHE = window.__MeldexPwaFileUrlCache = window.__MeldexPwaFileUrlCache || {};
   const PATH_MUTATION_HOOKS = window.__MeldexPwaPathMutationHooks = window.__MeldexPwaPathMutationHooks || [];
-  const RAW_URL_RE = /\/(?:api\/)?file-raw\?[^"' )]+/g;
-  const MEDIA_URL_RE = /\/(?:api\/)?media\/file\?[^"' )]+/g;
-  const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"' )]+/g;
-  const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
+  // Inline custom properties may store an unquoted URL immediately before
+  // the CSS declaration separator. Filenames carry punctuation URL-encoded.
+  const RAW_URL_RE = /\/(?:api\/)?file-raw\?[^"'\s);]+/g;
+  const MEDIA_URL_RE = /\/(?:api\/)?media\/file\?[^"'\s);]+/g;
+  const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"'\s);]+/g;
+  const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"'\s);]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
   const ELEMENT_REQUESTS = new WeakMap();
   const THUMBNAIL_FLIGHTS = new Map();
@@ -359,12 +361,178 @@
     return size ? _extractRawPath(pathLike) + '#thumbnail-' + size : '';
   }
 
+  // ---- 縮小表示のまとめ取り（2026-11-26 利用者報告「画像列のサムネイルが何十分も出ない」） ----
+  // 以前は1枚ごとに「親フォルダの一覧（存在確認）・ファイルの確認・縮小表示」の3回を、画像用の枠（同時2本）で
+  // 頼んだ順に送っていた。疑似Dropbox（1回0.4秒）の3000件のシートで、最初の画面に15.8秒、10画面スクロールした先の
+  // 画面に45秒かかり、見えなくなった行の分が先に処理されていた。Dropbox の回数制限に当たると更に何倍にもなる。
+  // ・1回の通信で最大25枚まとめて取る（files/get_thumbnail_batch。版番号も同じ応答で返る）。
+  // ・後から頼まれた分（今見えている画面）を先に送る。画面から外れた分は後回しにする。
+  // ・ファイル名が中身の指紋（_media/blobs/xx/<64桁>）の画像は中身が変わらないので、端末内の控えを確認なしで使う。
+  const THUMB_BATCH_MAX = 25;
+  const THUMB_BATCH_EXTS = /\.(?:jpe?g|png|tiff?|gif|webp|ppm|bmp)$/i;
+  const IMMUTABLE_MEDIA_RE = /(?:^|\/)_media\/(?:blobs|thumbs)\/[0-9a-f]{2}\/[0-9a-f]{64}\.[a-z0-9]+$/i;
+  const THUMB_BATCH_QUEUE = [];
+  let thumbBatchTimer = null;
+  let thumbBatchActive = 0;
+  let thumbBatchSeq = 0;
+
+  function _thumbDimensions(size) {
+    const pixels = Math.max(64, Math.min(1024, Number(size) || 256));
+    return pixels <= 64 ? 'w64h64' : pixels <= 128 ? 'w128h128' : pixels <= 256 ? 'w256h256'
+      : pixels <= 480 ? 'w640h480' : pixels <= 768 ? 'w1024h768' : 'w2048h1536';
+  }
+
+  async function _thumbScope(provider) {
+    const auth = window.MeldexDropboxAuth;
+    const account = await auth?.getCurrentAccount?.(false);
+    if (!account?.account_id) throw new Error('Dropboxへもう一度接続してください');
+    return JSON.stringify([account.account_id, account.root_info || {}, provider?.getVaultPath?.(), auth.getVaultNamespaceKind?.() || 'home']);
+  }
+
+  function _thumbLocation(provider, candidate) {
+    const location = provider._dropboxLocation(candidate);
+    return window.MeldexDropboxAuth?.resolveFileLocation?.(location.path, location.namespaceKind) || location;
+  }
+
+  async function _thumbPersistKey(scope, location, size) {
+    const text = ['thumb-v2', scope, location.namespaceKind || '', location.path, size].join('\n');
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+    return new URL('./__meldex_thumbnail_cache__/' + hash, document.baseURI).href;
+  }
+
+  function _thumbBlobFromBase64(text) {
+    const binary = atob(String(text || ''));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: 'image/png' });
+  }
+
+  function _thumbBatchSupported(provider, normalized) {
+    return !!(_runtime()?.isDropboxMode?.() && typeof window.MeldexDropboxAuth?.apiThumbnailBatch === 'function'
+      && typeof provider?._dropboxLocation === 'function' && THUMB_BATCH_EXTS.test(normalized));
+  }
+
+  function _scheduleThumbBatch() {
+    if (thumbBatchTimer || !THUMB_BATCH_QUEUE.length || thumbBatchActive >= 2) return;
+    // 同じ描画で並ぶ画像をまとめるため、わずかに待ってから送る。
+    thumbBatchTimer = setTimeout(() => { thumbBatchTimer = null; _flushThumbBatch(); }, 30);
+  }
+
+  function _takeThumbBatch() {
+    // 画面に残っている要求を先に、その中では新しい順に。外れたものは後回し（消さない: 戻ってきた時に要る）。
+    const visible = job => !job.element || job.element.isConnected;
+    const order = [...THUMB_BATCH_QUEUE].sort((a, b) => Number(visible(b)) - Number(visible(a)) || b.seq - a.seq);
+    const namespaceKind = order[0].location.namespaceKind || 'home';
+    const picked = order.filter(job => (job.location.namespaceKind || 'home') === namespaceKind).slice(0, THUMB_BATCH_MAX);
+    picked.forEach(job => THUMB_BATCH_QUEUE.splice(THUMB_BATCH_QUEUE.indexOf(job), 1));
+    return { namespaceKind, picked };
+  }
+
+  function _flushThumbBatch() {
+    while (THUMB_BATCH_QUEUE.length && thumbBatchActive < 2) {
+      const { namespaceKind, picked } = _takeThumbBatch();
+      thumbBatchActive += 1;
+      (async () => {
+        let results;
+        try {
+          results = await window.MeldexDropboxAuth.apiThumbnailBatch(picked.map(job => ({
+            path: job.location.path, format: 'png', size: job.dimensions, mode: 'strict',
+          })), { namespaceKind });
+        } catch (error) {
+          picked.forEach(job => job.reject(error));
+          return;
+        }
+        picked.forEach((job, index) => {
+          const entry = results[index];
+          if (entry?.['.tag'] === 'success' && entry.thumbnail) {
+            job.resolve({ blob: _thumbBlobFromBase64(entry.thumbnail), rev: entry.metadata?.rev || '' });
+            return;
+          }
+          const failure = entry?.failure || {};
+          const notFound = /not_found/.test(JSON.stringify(failure));
+          job.reject(Object.assign(new Error(notFound ? 'path/not_found/' : 'thumbnail/' + (failure['.tag'] || 'failed')), { notFound }));
+        });
+      })().finally(() => { thumbBatchActive -= 1; _scheduleThumbBatch(); });
+    }
+  }
+
+  function _queueThumbBatch(location, size, element) {
+    return new Promise((resolve, reject) => {
+      THUMB_BATCH_QUEUE.push({ location, dimensions: _thumbDimensions(size), element, resolve, reject, seq: ++thumbBatchSeq });
+      _scheduleThumbBatch();
+    });
+  }
+
+  async function _ensureBatchedThumbnailUrl(provider, pathLike, normalized, size, options) {
+    const scope = await _thumbScope(provider);
+    const key = _thumbnailCacheKey(pathLike);
+    const immutable = IMMUTABLE_MEDIA_RE.test(normalized);
+    const memory = CACHE[key];
+    if (immutable && memory?.batch && memory.mediaScope === scope) return memory;
+    const candidates = window.MeldexCloudMediaPath?.candidates?.(normalized) || [normalized];
+    let lastError = null;
+    for (const candidate of candidates) {
+      const location = _thumbLocation(provider, candidate);
+      const persistentKey = immutable && globalThis.crypto?.subtle ? await _thumbPersistKey(scope, location, size) : '';
+      const flightKey = persistentKey || JSON.stringify([scope, location.namespaceKind, location.path, size]);
+      let work = THUMBNAIL_FLIGHTS.get(flightKey);
+      const owner = !work;
+      if (owner) {
+        work = (async () => {
+          let cache = null, blob = null, rev = '';
+          if (persistentKey && globalThis.caches) {
+            try {
+              cache = await caches.open('meldex-image-thumbnails-v2');
+              blob = await (await cache.match(persistentKey))?.blob() || null;
+            } catch (_) {}
+          }
+          const retained = !!blob;
+          if (!blob) ({ blob, rev } = await _queueThumbBatch(location, size, options?.element));
+          if (await _thumbScope(provider) !== scope) throw new Error('画像の取得中にDropboxの接続先が変更されました');
+          // 中身の変わる画像は、同じ版なら前の表示を使い回す（画面の作り直しで点滅させない）。
+          const current = CACHE[key];
+          if (!immutable && current?.batch && current.rev === rev && current.mediaScope === scope) return current;
+          if (cache && !retained) {
+            try { await cache.put(persistentKey, new Response(blob, { headers: { 'Content-Type': blob.type || 'image/png' } })); } catch (_) {}
+          }
+          const url = URL.createObjectURL(blob);
+          const next = { path: normalized, cacheKey: key, url, mime: blob.type || 'image/png', size: blob.size, batch: true, rev,
+            identity: 'batch:' + (persistentKey || rev), mediaScope: scope,
+            mediaLocation: JSON.stringify(provider._dropboxLocation(normalized)) };
+          CACHE[key] = next;
+          if (current?.url?.startsWith('blob:') && current.url !== url) URL.revokeObjectURL(current.url);
+          return next;
+        })();
+        THUMBNAIL_FLIGHTS.set(flightKey, work);
+      }
+      try {
+        return await work;
+      } catch (error) {
+        lastError = error;
+        if (!error?.notFound) throw error;
+      } finally {
+        if (owner && THUMBNAIL_FLIGHTS.get(flightKey) === work) THUMBNAIL_FLIGHTS.delete(flightKey);
+      }
+    }
+    throw lastError || new Error('path/not_found/');
+  }
+
   async function _ensureThumbnailUrl(pathLike, options) {
     const normalized = _extractRawPath(pathLike), size = _thumbnailSize(pathLike);
     const provider = await _provider();
     if (!_runtime()?.isDropboxMode?.() || !provider?._mediaCacheRecord
         || !/\.(?:png|jpe?g|webp|bmp|avif|gif|tiff?|ppm|svg|heic|heif)$/i.test(normalized)) {
       return ensureRawUrl(pathLike, options);
+    }
+    if (_thumbBatchSupported(provider, normalized)) {
+      try {
+        return await _ensureBatchedThumbnailUrl(provider, pathLike, normalized, size, options);
+      } catch (error) {
+        // 変換できない画像だけは従来の取り方（原寸から端末内で縮小）へ戻す。通信の失敗はそのまま返す
+        // （1枚ずつの取り直しは回数制限を悪化させる）。
+        if (!/^thumbnail\/(?:unsupported_extension|unsupported_image|conversion_error)/.test(String(error?.message || ''))) throw error;
+      }
     }
     const candidates = window.MeldexCloudMediaPath?.candidates?.(normalized) || [normalized];
     let media, mediaPath, lastError;
@@ -479,7 +647,7 @@
       if (cached && ownsTarget()) _setElementUrlIfChanged(target, prop, cached.url);
       const refresh = () => {
         if (cached && !ownsTarget()) return cached;
-        return ensureDisplayUrl(pathLike).then(info => {
+        return ensureDisplayUrl(pathLike, { element: target }).then(info => {
           if (ownsTarget() && info?.url) _setElementUrlIfChanged(target, prop, info.url);
           return info;
         }).catch(error => {
@@ -579,9 +747,15 @@
     MEDIA_URL_RE.lastIndex = 0;
     THUMB_URL_RE.lastIndex = 0;
     ARCHIVE_FILE_URL_RE.lastIndex = 0;
+    // Custom properties are also persisted as theme settings. Their source
+    // references must survive reload; only rendered CSS uses transient blobs.
+    const sourceValues = Array.from(element.style || [])
+      .filter(name => name.startsWith('--'))
+      .map(name => element.style.getPropertyValue(name).trim());
     const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(MEDIA_URL_RE), ...styleValue.matchAll(THUMB_URL_RE), ...styleValue.matchAll(ARCHIVE_FILE_URL_RE)];
     rawMatches.forEach((match) => {
       const urlText = match[0];
+      if (sourceValues.some(value => value === urlText || value.endsWith(urlText))) return;
       ensureDisplayUrl(urlText).then((info) => {
         const current = element.getAttribute('style') || '';
         if (!current.includes(urlText) || !info?.url) return;

@@ -531,3 +531,19 @@ body.sa-resizing-option-panel * {
   color: var(--ui-accent, var(--accent));
   background: var(--bg3, var(--sa-bg3));
 }
+
+body::before {
+  /* 上端（時刻・電波の表示の裏）に固定した帯。iPhone はこの色で上端を塗る（2026-11-27 黒いグラデーションの修正）。
+     色は画面のいちばん上の帯から読んだ値（MeldexTopEdgeColor）。影・グラデーションは付けない。 */
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--meldex-top-edge-bg, var(--bg, #0b0d10));
+  background-image: none;
+  box-shadow: none;
+  pointer-events: none;
+  z-index: 2147483000;
+}

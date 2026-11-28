@@ -19,6 +19,40 @@ function _sn2HistoryLayoutKey(doc) {
   return _sn2HistoryValueKey(Object.fromEntries(keys.map(key => [key, doc[key]])));
 }
 
+function _sn2HistoryWithoutColumnIconsKey(doc) {
+  const editor = { ...(doc.editor || {}) };
+  const withoutIcon = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const result = { ...value }; delete result.icon;
+    return result;
+  };
+  if (editor.standardColumnSettings !== undefined) {
+    if (!editor.standardColumnSettings || typeof editor.standardColumnSettings !== 'object'
+      || Array.isArray(editor.standardColumnSettings)) return null;
+    const settings = {};
+    for (const [id, value] of Object.entries(editor.standardColumnSettings)) {
+      const style = withoutIcon(value);
+      if (!style) return null;
+      if (Object.keys(style).length) settings[id] = style;
+    }
+    if (Object.keys(settings).length) editor.standardColumnSettings = settings;
+    else delete editor.standardColumnSettings;
+  }
+  if (editor.customColumns !== undefined) {
+    if (!Array.isArray(editor.customColumns)) return null;
+    const columns = editor.customColumns.map(withoutIcon);
+    if (columns.some(column => !column)) return null;
+    editor.customColumns = columns;
+  }
+  return _sn2HistoryLayoutKey({ ...doc, editor });
+}
+
+function _sn2HistoryWithoutColumnLayoutKey(doc) {
+  const editor = { ...(doc.editor || {}) };
+  delete editor.columnWidths; delete editor.columnOrder;
+  return _sn2HistoryLayoutKey({ ...doc, editor });
+}
+
 function _sn2CaptureSnapshotFocus(editor) {
   let focusRowId = null;
   let focusRowIdx = -1;
@@ -209,6 +243,20 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
       const data = createScriptNoteDoc(JSON.parse(snap));
       const rowsOnly = _sn2HistoryLayoutKey(this.doc) === _sn2HistoryLayoutKey(data);
+      const withoutIcons = !rowsOnly ? _sn2HistoryWithoutColumnIconsKey(this.doc) : null;
+      const headerIconsPatched = !rowsOnly && withoutIcons !== null
+        && withoutIcons === _sn2HistoryWithoutColumnIconsKey(data)
+        && _sn2HistoryValueKey(rowsBefore) === _sn2HistoryValueKey(data.rows)
+        && this._restoreColumnHeaderIconSnapshot?.(data) === true;
+      const columnLayoutPatched = !rowsOnly && !headerIconsPatched
+        && _sn2HistoryWithoutColumnLayoutKey(this.doc) === _sn2HistoryWithoutColumnLayoutKey(data)
+        && _sn2HistoryValueKey(rowsBefore) === _sn2HistoryValueKey(data.rows)
+        && this._restoreColumnLayoutSnapshot?.(data) === true;
+      const noneCharacterPaintPatched = !rowsOnly && !headerIconsPatched && !columnLayoutPatched
+        && this._restoreNoneCharacterPaintSnapshot?.(data) === true;
+      const roleBodyPatched = !rowsOnly && !headerIconsPatched && !columnLayoutPatched && !noneCharacterPaintPatched
+        && this._restoreRoleManagementBodySnapshot?.(data) === true;
+      const layoutPatched = headerIconsPatched || columnLayoutPatched || noneCharacterPaintPatched || roleBodyPatched;
       if (rowsOnly) {
         // 残すセルのハンドラーが参照する行と書式も、現在の文書のオブジェクトに保つ。
         const previousById = new Map(rowsBefore.map(row => [row.id, row]));
@@ -217,7 +265,7 @@ Object.assign(ScriptNoteEditor.prototype, {
           return previous && _sn2HistoryValueKey(previous) === _sn2HistoryValueKey(row) ? previous : row;
         });
       }
-      if (!rowsOnly) {
+      if (!rowsOnly && !layoutPatched) {
         this._rebindRoleFilters?.(
           [...(this.doc.scenarioTypes || []), ...(this.doc.characters || [])],
           [...data.scenarioTypes, ...data.characters],
@@ -249,16 +297,16 @@ Object.assign(ScriptNoteEditor.prototype, {
           this._applyScenarioViewFilter?.(this._activeScenarioView(), { render: false });
           this._refreshScenarioViewTabs?.();
         }
-      } else {
+      } else if (!layoutPatched) {
         this.doc.rows = data.rows;
         this._refreshScenarioViewTabs?.();
       }
       // カーソルは、取り消し・やり直しで変わった行へ置く（変わった行が無ければ操作前の位置）。
       const changedFocus = _sn2ChangedRowFocus(rowsBefore, data.rows);
       if (changedFocus) Object.assign(focusState, changedFocus);
-      if (!rowsOnly) this._ensureDefaultChara();
+      if (!rowsOnly && !layoutPatched) this._ensureDefaultChara();
       this._calcCache = null;
-      if (!rowsOnly || !this._renderRowsIncrementally?.(rowsBefore)) this._render();
+      if (!layoutPatched && (!rowsOnly || !this._renderRowsIncrementally?.(rowsBefore))) this._render();
       this._syncAllFromDom();
       if (this._rowSelection instanceof Set) {
         const rowIds = createScriptNoteRowIdSet(this.doc);
@@ -269,7 +317,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (typeof this._updateRowSelectionUI === 'function') this._updateRowSelectionUI();
       this._dirty = true;
       this._scheduleSave();
-      this._refreshDetailPanel();
+      this._refreshDetailPanel({ columnLayoutOnly: layoutPatched });
       this._lastPushedSnap = this._takeSnapshot();
       window.dispatchEvent(new CustomEvent('meldex:scriptnote-history-restored', { detail: { editor: this } }));
     } finally {
@@ -296,7 +344,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     return true;
   },
 
-  _refreshDetailPanel() {
+  _refreshDetailPanel(options = {}) {
     if (document.querySelector('.gb-tool-file-theme [data-file-theme-panel="scriptnote"]')
       && typeof _fsRefreshThemePanels === 'function') _fsRefreshThemePanels('scriptnote');
     const container = document.getElementById('detail-tab-sn2-main');
@@ -313,6 +361,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     } else if (activeTab === 'rowset' && typeof this.renderRowsetPanel === 'function') {
       this.renderRowsetPanel(panel);
     } else {
+      if (options.columnLayoutOnly && this._canReuseRoleManagementPanel?.(panel, options)) return;
       this.renderDetailPanel(panel);
     }
   },

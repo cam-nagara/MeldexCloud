@@ -68,15 +68,18 @@
     }
     return parsed.spec;
   }
-  function refreshTabs() {
+  function refreshTabs(path) {
     const layout = typeof GBLayout !== 'undefined' ? GBLayout : global.GBLayout;
     if (layout?.getAllPanes) {
       for (const pane of layout.getAllPanes(layout.root)) {
+        let changed = false;
         for (const tab of pane.tabs || []) {
+          if (path && !samePath(tab?.path, path)) continue;
+          changed = true;
           const icon = document.querySelector('[data-tab-id="' + global.MeldexEscape.cssIdent(tab.id) + '"] .gb-tab-icon');
           if (icon) icon.innerHTML = render(tabItem(tab), 14, typeof lucide === 'function' ? lucide(tab.icon || 'page', 14) : '');
         }
-        layout.refreshPaneTabs?.(pane.id);
+        if (changed) layout.refreshPaneTabs?.(pane.id);
       }
     }
     if (typeof renderTabs === 'function') renderTabs();
@@ -130,7 +133,22 @@
   // 通常どおり競合として扱う）。本文は変えていないので、編集中の内容はそのまま残る。
   function adoptRevision(path, previousEtag, etag) {
     if (!path || !etag || !previousEtag || etag === previousEtag) return;
-    const same = value => !!value && key(value) === key(path);
+    const canonicalPath = value => {
+      if (global.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true) {
+        const provider = global.MeldexStorageAdapter?.getProvider?.();
+        if (typeof provider?._dropboxLocation === 'function') {
+          try {
+            const location = provider._dropboxLocation(value);
+            return JSON.stringify([location.namespaceKind || 'home', String(location.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()]);
+          } catch (_) { return ''; }
+        }
+      }
+      const resolved = global.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true ? value
+        : (global.GBPathUtils?.resolveForClipboard?.(value, stateValue('vaultPath')) ?? value);
+      return String(resolved || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    };
+    const target = canonicalPath(path);
+    const same = value => !!value && !!target && canonicalPath(value) === target;
     const coordinator = global.MeldexDocumentSaveCoordinator;
     const transport = value => coordinator?.normalizeTransportRevision?.(coordinator.currentTransportName?.(), value) || value;
     const advance = (holder, etagKey, revisionKey) => {
@@ -171,17 +189,9 @@
         : render(node._nodeData, 18, typeof lucide === 'function' ? lucide('file', 18) : '');
     });
     refreshTree();
-    // タブにはアイコンを持たせない（tabItem 参照）。表示はキャッシュから引き直す。
-    // Cache-only refreshes can return an old browse payload. Keep the saved
-    // value authoritative until the reload below completes.
-    try {
-      if (typeof loadOutliner === 'function') await loadOutliner({force: true});
-    } catch (_) {
-      if (typeof showStatus === 'function') showStatus('アイコンを保存しました。表示を更新できなかったため画面を再読込してください', true);
-    }
-    if (scope() !== activeScope) return;
-    refreshTree();
-    cache.set(key(path), spec || '');
+    // アイコン以外の構造は変えていないため、一覧全体を読み直さない。
+    // 次の一覧更新で古い控えが返っても、savedOverridesで保存済みの値を維持する。
+    // タブにはアイコンを持たせず（tabItem参照）、表示をキャッシュから引き直す。
     document.querySelectorAll('.fv-item[data-path]').forEach(element => {
       if (key(element.dataset.path) !== key(path)) return;
       if (element._folderItem) element._folderItem.display_icon = spec || '';
@@ -190,7 +200,8 @@
         typeof fileTypeIcon === 'function' ? fileTypeIcon(element._folderItem?.type || 'page') : '');
     });
     try { await global.MeldexCloudMobileExplorer?.renderCurrent?.({force:true}); } catch (_) {}
-    refreshTabs();
+    if (scope() !== activeScope) return;
+    refreshTabs(path);
     global.dispatchEvent(new CustomEvent('meldex:file-icon-changed', {detail: {path, icon: spec}}));
   }
   // 取り消し・やり直し用: 今の版を読み直してからアイコンを書き換える（失敗は例外にして履歴に任せる）。
@@ -202,8 +213,50 @@
     await refresh(path, result?.icon || '');
     return true;
   }
+  const pendingIconSaves = new Set();
+  const iconPreviews = new WeakMap();
+  function previewIcon(item, anchor, spec, isCurrent) {
+    if (anchor?.classList?.contains('fv-item')) {
+      anchor = anchor.querySelector('.fv-icon') || anchor.querySelector('.fv-thumb');
+    }
+    if (!anchor?.isConnected || !anchor?.classList) return () => {};
+    iconPreviews.get(anchor)?.release(true);
+    const busy = anchor.getAttribute('aria-busy');
+    const token = {path: item.path, scope: scope(), release: null};
+    const size = Number(anchor.querySelector('svg, img')?.getAttribute('width')) || 18;
+    const fallback = typeof uiTypeIconName === 'function' ? uiTypeIconName(item.type) : 'file';
+    let markup = spec ? GBIconAssets.render(spec, size, {contextPath:item.path, className:'gb-file-custom-icon'})
+      : (typeof lucide === 'function' ? lucide(fallback || 'file', size) : '');
+    if (spec && GBIconAssets.parseSpec(spec).type === 'image') {
+      markup = '<span data-file-icon-type="' + global.MeldexEscape.attr(item.type) + '">' + markup + '</span>';
+    }
+    const overlay = document.createElement('span');
+    overlay.className = 'gb-file-icon-preview';
+    overlay.innerHTML = markup;
+    anchor.appendChild(overlay);
+    anchor.setAttribute('aria-busy', 'true');
+    anchor.classList.add('gb-file-icon-pending');
+    iconPreviews.set(anchor, token);
+    token.release = committed => {
+      if (iconPreviews.get(anchor) !== token) return;
+      const ownerPath = anchor.dataset.fileIconPath || anchor.closest('.tree-node')?._nodeData?.path
+        || anchor.closest('.fv-item')?.dataset?.path || item.path;
+      if (committed && isCurrent() && samePath(ownerPath, item.path) && overlay.parentNode === anchor) {
+        anchor.innerHTML = markup;
+      }
+      overlay.remove();
+      if (busy === null) anchor.removeAttribute('aria-busy'); else anchor.setAttribute('aria-busy', busy);
+      anchor.classList.remove('gb-file-icon-pending');
+      iconPreviews.delete(anchor);
+    };
+    return token.release;
+  }
   async function openPicker(item, anchorEl) {
     if (!canEdit(item) || !global.GBIconAssets) return;
+    if (pendingIconSaves.has(key(item.path))) {
+      showStatus('アイコンを保存しています。完了してから変更してください');
+      return;
+    }
     const path = item.path, activeScope = scope();
     const isCurrent = () => scope() === activeScope;
     try {
@@ -217,11 +270,16 @@
       }
       const save = async spec => {
         if (!isCurrent()) return;
+        const pendingKey = key(path);
+        if (pendingIconSaves.has(pendingKey)) return;
         // アイコンの変更を取り消せるようにする（以前は記録が無く Ctrl+Z で戻せなかった: 2026-11-22 M-014 網羅テスト）。
         // 枠は選んだ時点で取り、共通の履歴（ファイルの操作と同じ）へ積む。保存に失敗したら枠を外す。
         const previousIcon = loaded.icon || '';
         const reservation = typeof global.historyReserve === 'function' ? global.historyReserve('アイコンを変更', '') : null;
+        pendingIconSaves.add(pendingKey);
+        let committed = false, finishPreview = () => {};
         try {
+          finishPreview = previewIcon(item, anchorEl, spec, isCurrent);
           let result;
           try {
             result = await apiFetch('/file-icon', {method: 'PUT', headers: {'Content-Type': 'application/json'},
@@ -234,6 +292,7 @@
             if (!saved || (saved.icon || '') !== (spec || '') || !saved.etag || saved.etag === loaded.etag) throw error;
             result = saved;
           }
+          committed = true;
           if (!isCurrent()) { reservation?.cancel(); return; }
           item.display_icon = result.icon || '';
           adoptRevision(path, loaded.etag, result.etag);
@@ -248,6 +307,9 @@
           const busy = error?.payload?.detail?.code === 'write_busy' ? error.payload.detail.message : '';
           showStatus(busy ? 'アイコンを保存できませんでした。' + busy
             : 'アイコンを保存できませんでした。開き直して再試行してください: ' + (error.userMessage || error.message || error), true);
+        } finally {
+          pendingIconSaves.delete(pendingKey);
+          finishPreview(committed);
         }
       };
       GBIconAssets.openPicker({...imageOptions, title: 'ファイルアイコン', anchorEl, current: loaded.icon || '',
@@ -267,7 +329,7 @@
       if (scope() !== activeScope) return;
       if (cache.has(id)) return;
       cache.set(id, data.icon || '');
-      refreshTabs();
+      refreshTabs(item.path);
     }).catch(() => { if (scope() === activeScope && !cache.has(id)) cache.set(id, ''); }).finally(() => pending.delete(id));
   }
   // タブはファイルを開き替えても同じオブジェクトのまま残るため、アイコンをタブ自体に持たせると
@@ -394,6 +456,11 @@
   function syncToolbarIcon(el) {
     watchTitle(el);
     const {item, editable, reason} = toolbarTarget(el);
+    const preview = iconPreviews.get(el);
+    if (preview) {
+      if (preview.scope === scope() && samePath(preview.path, item.path)) return;
+      preview.release(true);
+    }
     if (item.path) prefetch(item);
     const spec = item.path ? (cache.get(key(item.path)) ?? '') : '';
     const signature = [item.type, item.path, spec, editable ? '1' : '0', reason].join('\n');
@@ -453,12 +520,30 @@
   document.addEventListener('error', event => {
     const img = event.target;
     if (!(img instanceof HTMLImageElement) || !img.classList.contains('gb-file-custom-icon')) return;
+    // Cloud版の画像アイコンは、画面に入った時に保存先（Dropbox）から読んだ画像へ差し替える。
+    // タブは画面に入れる前に組み立てるので、その前にブラウザが元のアドレスを直接読みに行って失敗する。
+    // ここで既定のアイコンへ置き換えると差し替えの機会が無くなり、タブだけ表のアイコンのままだった
+    // （2026-11-26 利用者報告。フォルダツリーとスマホのタブでは出ていた）。差し替えを待ち、読めなかった時だけ置き換える。
+    const src = img.getAttribute('src') || '';
+    const files = global.MeldexPwaFileUrl;
+    if (src && !/^(?:blob:|data:)/i.test(src) && global.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+        && typeof files?.applyToElement === 'function' && files.extractPath?.(src)) {
+      if (!img.isConnected || img.dataset.fileIconResolving === '1') return;
+      img.dataset.fileIconResolving = '1';
+      files.applyToElement(img, src).then(info => {
+        if (!/^(?:blob:|data:)/i.test(String(info?.url || '')) && img.isConnected) replaceWithTypeIcon(img);
+      }, () => { if (img.isConnected) replaceWithTypeIcon(img); });
+      return;
+    }
+    replaceWithTypeIcon(img);
+  }, true);
+  function replaceWithTypeIcon(img) {
     const fallback = document.createElement('span');
     const type = img.closest('[data-file-icon-type]')?.dataset.fileIconType || 'user';
     const name = (typeof uiTypeIconName === 'function' && uiTypeIconName(type)) || (type === 'user' ? 'user' : 'file');
     fallback.innerHTML = typeof lucide === 'function' ? lucide(name, Number(img.width) || 18) : '';
     img.replaceWith(fallback);
-  }, true);
+  }
   // フォルダツリー以外（選択ダイアログ・検索結果など）でファイルを並べる時のアイコン。
   // 独自の種別→アイコン表を持つと、シートなどがフォルダツリーと違う絵になる（2026-11-19）。
   // フォルダツリーと同じ判定（拡張子による種別の解決・作品フォルダ・ファイル別アイコン）を使う。
@@ -476,7 +561,7 @@
   global.MeldexFileIcons = {canEdit, remember, render, openPicker, tabIcon, readFields, writeFields, preserve, matchesScope,
     scope, adoptRevision, toolbarIconHtml, syncToolbarIcons, scheduleToolbarSync, itemIconName, itemIconHtml};
   const extensions = global.__MeldexPwaDataAccessExtensions;
-  if (Array.isArray(extensions)) extensions.push(async ({pathname, method, url, body}) => {
+  if (Array.isArray(extensions)) extensions.push(async ({pathname, method, url, body, headers}) => {
     const internals = global.__MeldexPwaDataAccessInternals;
     if (pathname !== '/file-icon' || !['GET','PUT'].includes(method)) return internals?.NOT_HANDLED;
     const provider = await internals._requirePwaProvider(method === 'PUT' ? 'readwrite' : 'read');
@@ -501,7 +586,8 @@
     if (entry.kind === 'directory' && !noteExists) fields.file_icon_metadata_only = true;
     const content = writeFields(loaded.content, fields, note);
     const saved = await global.MeldexDataAccess.requestJson('/file?path=' + encodeURIComponent(note), {
-      method:'PUT',body:{content,if_match_etag:loaded.etag,create_only:!noteExists,_file_icon_write:true,_file_icon_scope:scopeToken},
+      method:'PUT',headers:new Headers(headers || undefined),
+      body:{content,if_match_etag:loaded.etag,create_only:!noteExists,_file_icon_write:true,_file_icon_scope:scopeToken},
     });
     return {...saved,ok:true,icon:spec};
   });

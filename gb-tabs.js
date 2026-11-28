@@ -304,6 +304,15 @@ const GBTabs = (() => {
     const revealed = _ensurePaneVisible(paneId);
     const previousActivePane = GBLayout.activePane;
 
+    // 非表示グループから開く場合は、目的のタブとフォーカスを確定してから
+    // 1回だけ取り付ける。先にグループを描くと旧タブも含めて再取り付けしてしまう。
+    if (opts.forceRender) {
+      if (!opts.preserveActivePane) GBLayout.setActivePane(paneId, { skipCallback: true });
+      GBLayout.render();
+      GBLayout.saveLayout({ immediate: true });
+      return;
+    }
+
     if (alreadyActive) {
       if (revealed) GBLayout.render();
       if (!opts.preserveActivePane && previousActivePane !== paneId) {

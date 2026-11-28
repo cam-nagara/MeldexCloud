@@ -280,14 +280,15 @@ function _applyEntityPropReadOnly(valuesEl) {
 }
 
 function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, options = {}) {
-  const values = filterValues(data.properties[propName] || []);
+  const ownValues = Object.prototype.hasOwnProperty.call(data.properties || {}, propName) ? data.properties[propName] : [];
+  const values = filterValues(ownValues || []);
   const ptc = propTypes[propName];
   // ロールアップ/数式型は保存値でなくその場の計算結果を1つだけ表示する（表セルと同じ見え方）。
   // 未変換の生値が複数残っていても計算結果は1本にまとめ、値が無くても空の計算結果を表示する。
   const isComputedProp = ptc?.type === 'rollup' || ptc?.type === 'formula';
   const renderValues = isComputedProp
     ? [values[0] || { value: '', status: '採用' }]
-    : (ptc?.type === 'image' && values.length === 0)
+    : (['image', 'location'].includes(ptc?.type) && values.length === 0)
       ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
       : values;
   renderValues.forEach(val => {
@@ -338,8 +339,10 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   const effectiveOptions = { ...opts, readOnly };
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
   const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
-  const allProps = Object.keys(data.properties || {}).filter(name => !(data.quick_memo === true && name === '種別'
-    && (data.properties[name] || []).every(item => item.value === 'メモ')));
+  const emptyProperties = Array.isArray(opts.emptyProperties)
+    ? opts.emptyProperties.filter(name => typeof name === 'string' && Object.prototype.hasOwnProperty.call(propTypes, name)) : [];
+  const allProps = [...new Set([...Object.keys(data.properties || {}), ...emptyProperties])].filter(name => !(data.quick_memo === true && name === '種別'
+    && ((data.properties || {})[name] || []).every(item => item.value === 'メモ')));
   const layout = typeof getPropertyLayout === 'function'
     ? getPropertyLayout(parentDb, allProps, { ctx: opts.ctx })
     : { order: getEntryPropOrder(parentDb) || [...allProps].sort(), hidden: [], groups: [] };
@@ -485,7 +488,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
     valuesEl.className = 'entry-prop-values cell-values';
-    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly, historyScope: opts.historyScope, onHistoryChanged: opts.onHistoryChanged });
+    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly, dbPath: opts.ctx?.dbPath || parentDb, ctx: opts.ctx, historyScope: opts.historyScope, onHistoryChanged: opts.onHistoryChanged });
     if (layoutEditMode) {
       const hideBtn = document.createElement('button');
       hideBtn.type = 'button';

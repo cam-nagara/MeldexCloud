@@ -1704,13 +1704,31 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   overflow: hidden; cursor: pointer;
 }
 .rp-ann-preview-card:hover { border-color: var(--annotation-accent); }
+/* カードの見出しは1行（タイプのアイコン・アノテート先・作成者・日時・「…」）。2026-11-27 */
 .rp-ann-preview-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 6px 8px; background: var(--annotation-hover-bg); color: var(--annotation-fg); font-size: 11px;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; min-width: 0;
+  padding: 3px 4px 3px 8px; background: var(--annotation-hover-bg); color: var(--annotation-fg); font-size: 11px;
+  white-space: nowrap;
 }
-.rp-ann-preview-head > span:first-child { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.rp-ann-preview-head > span:first-child { flex-wrap: wrap; }
-.rp-ann-preview-head .rp-ann-preview-meta { flex-basis: 100%; padding: 0; white-space: normal; overflow-wrap: anywhere; }
+.rp-ann-preview-kind { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--annotation-muted-fg); }
+.rp-ann-preview-target { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-ann-preview-head .rp-ann-user-badge { flex: 0 1 auto; min-width: 0; max-width: 7em; overflow: hidden; color: var(--annotation-muted-fg); }
+.rp-ann-preview-head .rp-ann-user-badge-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-ann-preview-time { flex: 0 0 auto; color: var(--annotation-muted-fg); font-size: 10px; font-variant-numeric: tabular-nums; }
+.rp-ann-preview-head .rp-ann-preview-actions { margin-inline-start: auto; }
+/* タイプのタブ。幅が足りない時はラベルを隠してアイコンだけにする（改行しない） */
+.rp-ann-tabs { display: flex; flex-wrap: nowrap; flex-shrink: 0; overflow: hidden; border-bottom: 1px solid var(--border); padding: 0 4px; }
+.rp-ann-tabs .gb-inner-tab { flex: 0 0 auto; white-space: nowrap; }
+.rp-ann-tabs.rp-ann-tabs-compact .gb-inner-tab-label { display: none; }
+.rp-ann-tabs.rp-ann-tabs-compact .gb-inner-tab { flex: 1 1 0; min-width: 0; justify-content: center; }
+.rp-ann-preview-image { display: block; max-width: 100%; max-height: 120px; object-fit: contain; border-radius: 4px; }
+/* 縦書きモード: 本文を縦書きにし、スクリーンショットは回転させず大きく表示する（縦書きの書籍の撮影を読みやすくする） */
+#rp-ann-list.rp-ann-vertical .rp-ann-text-body {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  max-inline-size: 24em; max-block-size: 100%; overflow: auto;
+}
+#rp-ann-list.rp-ann-vertical .rp-ann-sticky-preview { max-height: none; }
+#rp-ann-list.rp-ann-vertical .rp-ann-preview-image { max-height: min(70vh, 640px); width: auto; margin-inline: auto; }
 .rp-ann-preview-card:focus-visible { outline: 2px solid var(--annotation-accent); outline-offset: -2px; }
 .rp-ann-preview-card:has(:focus-visible):not(:focus-visible) { outline: none; }
 .rp-ann-preview-body { padding: 8px; }
@@ -1742,10 +1760,6 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   #rp-ann-list .rp-ann-group-header {
     min-height: 44px;
     box-sizing: border-box;
-  }
-  #rp-ann-list .rp-ann-preview-head {
-    flex-wrap: wrap;
-    row-gap: 4px;
   }
   #rp-ann-list .rp-ann-row-actions,
   #rp-ann-list .rp-ann-preview-actions {

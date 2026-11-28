@@ -62,12 +62,13 @@ function _renderAnnotationPreview() {
   if (ellipseTool || rectTool) {
     const data = ellipseTool ? _annotationEllipseDataFromPoints(ann.currentPath) : _annotationRectDataFromPoints(ann.currentPath);
     data.lineWidth = ann.widths?.pen;
+    data.opacityModel = window.MELDEX_ANNOTATION_OPACITY_MODEL;
     _updateAnnotationShapeEl(preview, ann.tool, data, ann.color, ann.opacity, true);
   }
   else if (ann.tool === 'lasso') {
     preview.setAttribute('points', ann.currentPath.map(p => p.join(',')).join(' '));
     preview.setAttribute('fill', ann.color);
-    preview.setAttribute('fill-opacity', ann.opacity * 0.2);
+    preview.setAttribute('fill-opacity', ann.opacity);
     preview.setAttribute('stroke', ann.color);
     preview.setAttribute('stroke-width', '1');
     preview.setAttribute('stroke-dasharray', '4,4');
@@ -102,8 +103,10 @@ async function _finishAnnotationStroke() {
       : { points: pathPoints, pressures };
   if (shapeTypes.has(type)) strokeData.lineWidth = width;
   else if (type !== 'lasso') strokeData.width = width;
+  // 新しい塗りは色の不透明度だけで描く（半透明を強制しない）
+  if (['lasso', 'rect', 'ellipse-fill'].includes(type) && window.MELDEX_ANNOTATION_OPACITY_MODEL) strokeData.opacityModel = window.MELDEX_ANNOTATION_OPACITY_MODEL;
   const el = shapeTypes.has(type) ? _createAnnotationShapeEl(type, strokeData, color, opacity)
-    : type === 'lasso' ? _createLassoEl(pathPoints, color, opacity)
+    : type === 'lasso' ? _createLassoEl(pathPoints, color, opacity, strokeData)
       : _createStrokeEl(_pointsToSvgPath(pathPoints, pressures, tool === 'pen'), color, opacity, pressures, tool === 'pen', strokeData.width);
   el.dataset.annPending = '1';
   _setAnnotationRenderedTarget(targetPath);

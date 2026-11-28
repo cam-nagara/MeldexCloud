@@ -767,6 +767,104 @@
     return jsonResponse({ results });
   }
 
+  // Desktop's /export/canvas is also used by the board and folder menus.
+  // In browser-data mode read the same saved document through the existing
+  // access adapter, rather than sending a nonexistent HTTP route to the host.
+  async function canvasExportResponse(url, method, init) {
+    if (String(method).toUpperCase() !== 'GET') return jsonResponse({ error: 'GET のみ対応しています' }, 405);
+    const path = url.searchParams.get('path') || '';
+    const format = (url.searchParams.get('format') || 'md').toLowerCase();
+    if (!path || !['md', 'svg', 'html'].includes(format)) return jsonResponse({ error: '未対応の書き出し形式です' }, 400);
+    const record = await awaitCloudOperationWithSignal(window.MeldexDataAccess.requestJson(
+      '/file?path=' + encodeURIComponent(path) + '&raw_text=1',
+      { method: 'GET', signal: init?.signal },
+    ), init?.signal);
+    if (typeof record?.content !== 'string') return jsonResponse({ error: '書き出し元を読み込めませんでした' }, 404);
+    const raw = record.content;
+    let body = raw;
+    let title = path.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'ボード';
+    // Desktop exports just the Markdown body for older .md boards and
+    // the raw text for .mel-board files. Preserve that format contract.
+    if (/\.md$/i.test(path)) {
+      const match = raw.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      if (match) {
+        const fields = window.MeldexCloudFrontmatterLite?.yamlLite?.(match[1]) || {};
+        title = String(fields.title || fields.name || title);
+        body = raw.slice(match[0].length);
+      }
+    }
+    let content = body;
+    if (format === 'html') content = cloudExportHtml(title, body);
+    if (format === 'svg') {
+      const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+      const lines = (body || title || 'Meldex board').split(/\r\n?|\n/).map(line => line.trim()).filter(Boolean).slice(0, 80);
+      if (!lines.length) lines.push(title || 'Meldex board');
+      const height = Math.max(160, 72 + lines.length * 32);
+      const text = lines.map((line, i) => `<text x="32" y="${56 + i * 32}" font-family="system-ui, sans-serif" font-size="16" fill="#1f2937">${escape(Array.from(line).slice(0, 160).join(''))}</text>`).join('');
+      content = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="${height}" viewBox="0 0 960 ${height}"><rect width="100%" height="100%" fill="#f8fafc"/><rect x="20" y="20" width="920" height="${height - 40}" rx="8" fill="#ffffff" stroke="#cbd5e1"/>${text}</svg>`;
+    }
+    const name = Array.from(String(title).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')).slice(0, 160).join('') + '.' + format;
+    const encodedName = encodeURIComponent(name).replaceAll("'", '%27');
+    return new Response(content, {
+      headers: {
+        'Content-Type': format === 'svg' ? 'image/svg+xml; charset=utf-8' : format === 'html' ? 'text/html; charset=utf-8' : 'text/markdown; charset=utf-8',
+        'Content-Disposition': "attachment; filename*=UTF-8''" + encodedName,
+      },
+    });
+  }
+
+  function cloudExportEscape(value) {
+    return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+      .replaceAll('"','&quot;').replaceAll("'",'&#39;');
+  }
+
+  function cloudExportHtml(title, body, table) {
+    const content = table ? '<table><thead><tr>'+table.columns.map(value=>'<th>'+cloudExportEscape(value)+'</th>').join('')
+      + '</tr></thead><tbody>'+table.rows.map(row=>'<tr>'+row.map(value=>'<td>'+cloudExportEscape(value)+'</td>').join('')+'</tr>').join('')+'</tbody></table>'
+      : '<pre>'+cloudExportEscape(body)+'</pre>';
+    return '<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+      + '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">'
+      + '<title>'+cloudExportEscape(title)+'</title><style>body{font-family:system-ui;line-height:1.7;margin:32px}pre,td{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:6px}</style></head><body>'
+      + '<h1>'+cloudExportEscape(title)+'</h1>'+content+'</body></html>';
+  }
+
+  async function folderExportResponse(url, method, init) {
+    if(String(method).toUpperCase()!=='GET')return jsonResponse({error:'GET のみ対応しています'},405);
+    const kind=url.pathname.split('/').pop(), path=url.searchParams.get('path')||'';
+    const format=(url.searchParams.get('format')||(kind==='db'?'csv':'md')).toLowerCase();
+    const formats=kind==='db'?['csv','html','xlsx']:['txt','md','html','docx'];
+    if(!path||!formats.includes(format))return jsonResponse({error:'未対応の書き出し形式です'},400);
+    const read=route=>awaitCloudOperationWithSignal(window.MeldexDataAccess.requestJson(route,{method:'GET',signal:init?.signal}),init?.signal);
+    let title=path.split(/[\\/]/).pop().replace(/\.[^.]+$/,''), content, mime;
+    if(kind==='db') {
+      const [pivot,metadata]=await Promise.all([read('/pivot?path='+encodeURIComponent(path)),read('/db-metadata?path='+encodeURIComponent(path))]);
+      const columns=['名前',...new Set([...Object.keys(metadata.property_types||{}),...(pivot.properties||[])].filter(name=>name&&!name.startsWith('_')&&name!=='名前'))];
+      const display=value=>Array.isArray(value)?value.map(item=>display(item?.value??item)).filter(Boolean).join(' / ')
+        :value&&typeof value==='object'?String(value.label??value.name??value.value??''):String(value??'');
+      const rows=Object.entries(pivot.entities||{}).sort(([a],[b])=>a.toLowerCase().localeCompare(b.toLowerCase()))
+        .map(([name,properties])=>columns.map((column,index)=>index===0?name:display(properties[column])));
+      if(format==='xlsx')content=window.MeldexDocxExport.createSpreadsheet(columns,rows);
+      else if(format==='html'){content=cloudExportHtml(title,'',{columns,rows});mime='text/html; charset=utf-8';}
+      else {const cell=value=>'"'+String(value??'').replaceAll('"','""')+'"';
+        content='\uFEFF'+[columns,...rows].map(row=>row.map(cell).join(',')).join('\r\n')+'\r\n';mime='text/csv; charset=utf-8';}
+    } else {
+      const record=await read('/file?path='+encodeURIComponent(path)+'&raw_text=1');
+      if(typeof record?.content!=='string')return jsonResponse({error:'書き出し元を読み込めませんでした'},404);
+      let body=record.content;
+      if(/\.md$/i.test(path)){
+        const match=body.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+        if(match){const fm=window.MeldexCloudFrontmatterLite?.yamlLite?.(match[1])||{};title=String(fm.title||fm.name||title);body=body.slice(match[0].length);}
+      }
+      if(format==='docx')content=window.MeldexDocxExport.create(title,body,{vertical:['1','true','yes'].includes(url.searchParams.get('vertical'))});
+      else if(format==='html'){content=cloudExportHtml(title,body);mime='text/html; charset=utf-8';}
+      else {content=body;mime=format==='md'?'text/markdown; charset=utf-8':'text/plain; charset=utf-8';}
+    }
+    const filename=String(title||'export').replace(/[<>:"/\\|?*\x00-\x1f]/g,'_')+'.'+format;
+    return new Response(content,{headers:{'Content-Type':mime||content.type,
+      'Content-Disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(filename).replaceAll("'",'%27')}});
+  }
+
   function apiRequestPath(url) {
     const pathname = String(url?.pathname || '');
     const marker = pathname.lastIndexOf('/api');
@@ -779,14 +877,21 @@
     const url = new URL(requestUrl, document.baseURI || window.location.href);
     const isSameOrigin = url.origin === window.location.origin;
     const isApiPath = /\/api(\/|$)/.test(url.pathname);
+    const isCanvasExport = /\/(?:api\/)?export\/canvas$/.test(url.pathname);
+    const isFolderExport = /\/(?:api\/)?export\/(?:note|db)$/.test(url.pathname);
     const requestHeaders = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
     const useNativeE2eHarness = new URLSearchParams(location.search).get('smoke') === '1'
       && requestHeaders.get('X-Meldex-E2E-Native-Fetch') === 'screenshot';
-    if (!isSameOrigin || !isApiPath || useNativeE2eHarness || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    if (!isSameOrigin || (!isApiPath && !isCanvasExport && !isFolderExport) || useNativeE2eHarness || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
 
     try {
+      if (isCanvasExport) {
+        const method = init?.method || (input instanceof Request ? input.method : 'GET');
+        return await canvasExportResponse(url, method, init);
+      }
+      if(isFolderExport)return await folderExportResponse(url,init?.method||(input instanceof Request?input.method:'GET'),init);
       const rawResponse = await providerResponse(url);
       if (rawResponse) return rawResponse;
       const method = init?.method || (input instanceof Request ? input.method : 'GET');

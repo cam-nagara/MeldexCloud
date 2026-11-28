@@ -24,12 +24,12 @@
     complete(key) { if (key) pendingStableCopies.delete(key); },
   });
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '55fe9c295966', parts: { 'meldex-core.bundle.part01.js': 'e3fa06014bf4', 'meldex-core.bundle.part02.js': '3edf59ffd4b7', 'meldex-core.bundle.part03.js': '3d9fac612269', 'meldex-core.bundle.part04.js': '0924e9562c4f', 'meldex-core.bundle.part05.js': '7aa818c68cf4', 'meldex-core.bundle.part06.js': '9b244b4874fc' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '324894b9d77d', parts: { 'gb-app.bundle.part01.js': '527a873de9a7', 'gb-app.bundle.part02.js': '25827e9d48a2', 'gb-app.bundle.part03.js': '30fd9837b5ee', 'gb-app.bundle.part04.js': '6f2b9a95524f', 'gb-app.bundle.part05.js': '4b5091ee2e5f', 'gb-app.bundle.part06.js': 'be60ec27e1c4', 'gb-app.bundle.part07.js': '4f9f32428abd' } },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'fb9e1997dbe2', parts: { 'gb-theme-manager.bundle.part01.js': 'ebd3511355c6', 'gb-theme-manager.bundle.part02.js': '9f350dc0e5f6', 'gb-theme-manager.bundle.part03.js': 'c7abc148525e', 'gb-theme-manager.bundle.part04.js': '198020453e81' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: 'e99808530415', parts: { 'gb-outliner.bundle.part01.js': '44422cf290a3', 'gb-outliner.bundle.part02.js': 'd44fc90862f5', 'gb-outliner.bundle.part03.js': '7066494430ac', 'gb-outliner.bundle.part04.js': 'd5543a48fd64', 'gb-outliner.bundle.part05.js': '834ad5ce271a', 'gb-outliner.bundle.part06.js': 'a9fd2b102648', 'gb-outliner.bundle.part07.js': '6a7bfd901d99', 'gb-outliner.bundle.part08.js': 'd7ea67cc41aa', 'gb-outliner.bundle.part09.js': '70def11116d6' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: 'da221f09318c', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '26133ac4c082', 'gb-data-access-dropbox-fileops.bundle.part02.js': '66ab5a3f90d8', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'e2989dc177f8', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'dd038bef28b3', 'gb-data-access-dropbox-fileops.bundle.part05.js': 'e101b9b50746', 'gb-data-access-dropbox-fileops.bundle.part06.js': '7368951228bd', 'gb-data-access-dropbox-fileops.bundle.part07.js': '5d5277c6b9ae' } },
-    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '122ee69cef45', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '507ed054aca0', 'gb-cloud-mobile-editbar.bundle.part02.js': '0060cd6dcf8a', 'gb-cloud-mobile-editbar.bundle.part03.js': 'f26afc920317' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '91cac197a244', parts: { 'meldex-core.bundle.part01.js': '12aaa7708624', 'meldex-core.bundle.part02.js': '9c7290fbad0f', 'meldex-core.bundle.part03.js': '664fec715c23', 'meldex-core.bundle.part04.js': 'd93bcf9652d7', 'meldex-core.bundle.part05.js': 'ffa2c6665f04', 'meldex-core.bundle.part06.js': '8fd4b9616f85' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '4b00c06bdb97', parts: { 'gb-app.bundle.part01.js': '527a873de9a7', 'gb-app.bundle.part02.js': '25827e9d48a2', 'gb-app.bundle.part03.js': '30fd9837b5ee', 'gb-app.bundle.part04.js': 'e6fcc93d1aac', 'gb-app.bundle.part05.js': 'de98d2d66cd9', 'gb-app.bundle.part06.js': '72920ac8c87c', 'gb-app.bundle.part07.js': '45846309a276', 'gb-app.bundle.part08.js': '89f2f56cbb6a' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '3e0dbf884447', parts: { 'gb-theme-manager.bundle.part01.js': '7035c2a02c41', 'gb-theme-manager.bundle.part02.js': 'd149cbe8b78d', 'gb-theme-manager.bundle.part03.js': 'bb3265108d0e', 'gb-theme-manager.bundle.part04.js': '6f3d4377e559' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: 'eb45586b7f9d', parts: { 'gb-outliner.bundle.part01.js': '44422cf290a3', 'gb-outliner.bundle.part02.js': 'fd5a1522deda', 'gb-outliner.bundle.part03.js': '46e2f9afc3d8', 'gb-outliner.bundle.part04.js': '0845be425688', 'gb-outliner.bundle.part05.js': '865b511dea66', 'gb-outliner.bundle.part06.js': 'b9c8395db87c', 'gb-outliner.bundle.part07.js': 'd40e7fe7aade', 'gb-outliner.bundle.part08.js': '5694d71cb588', 'gb-outliner.bundle.part09.js': '5bdcc065b220' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '44efab50beff', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '26133ac4c082', 'gb-data-access-dropbox-fileops.bundle.part02.js': '3e31a2392783', 'gb-data-access-dropbox-fileops.bundle.part03.js': 'da2059325916', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'ebcbb49c6e46', 'gb-data-access-dropbox-fileops.bundle.part05.js': '477af07996c2', 'gb-data-access-dropbox-fileops.bundle.part06.js': 'ba9180b57763', 'gb-data-access-dropbox-fileops.bundle.part07.js': '160a51ad546a' } },
+    'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '7213634c0919', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '640b71b2bded', 'gb-cloud-mobile-editbar.bundle.part02.js': '0b614ed6d169', 'gb-cloud-mobile-editbar.bundle.part03.js': '524ffaf1afa3' } },
   };
 
   function _resolveChunkUrl(currentScript, chunkName) {
@@ -417,7 +417,7 @@
   const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
   const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
   const THEME_UI_APPLICATIONS_KEY = 'meldex-theme-ui-applications';
-  const THEME_UI_DEFAULTS_VERSION = 4;
+  const THEME_UI_DEFAULTS_VERSION = 6;
   const THEME_UI_AUTO_TONE_KEY = 'meldex-theme-ui-auto-tone';
   const THEME_COLOR_SET_SIZE = 8;
   const DARK_THEME_COLOR_SET = ['#7fb3ff', '#8fd18d', '#f3d26b', '#f28b82', '#caa6ff', '#77d7d0', '#ff9fc7', '#d0d0d0'];
@@ -1356,7 +1356,16 @@
   function _encodeThemeUiApplications(cfg) {
     // Metadata travels with the settings through history, import and sync.
     // Normalization ignores it, so older clients can still read the targets.
-    return JSON.stringify({ ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION });
+    // 自動の合わせ直しで残した「控え」（_previousDefaults）は、後の保存でも消さずに引き継ぐ
+    // （以前は保存のたびに控えが落ち、元の見た目へ戻す手がかりが失われていた。2026-11-27）。
+    const next = { ...cfg, _defaultsVersion: THEME_UI_DEFAULTS_VERSION };
+    if (next._previousDefaults == null) {
+      try {
+        const current = JSON.parse(localStorage.getItem(THEME_UI_APPLICATIONS_KEY) || 'null');
+        if (current && current._previousDefaults != null) next._previousDefaults = current._previousDefaults;
+      } catch {}
+    }
+    return JSON.stringify(next);
   }
 
   function saveThemeUiApplications(cfg, options = {}) {
@@ -1981,6 +1990,18 @@
   // ボードはトピックの色を決めるたびにテーマを探し、そのたびに全テーマを複製・整形していた
   // （2026-11-25 応答時間検査: ボードの長い処理の約4分の1）。
   let _builtInThemeJsonCache = null;
+  // 組み込みテーマごとの「選択中のタブを塗っていた頃」の形（保存値の合わせ直し専用）。
+  const _filledTabsBuiltInSelected = new Map();
+  // v0.7.899〜v0.7.926 の標準（下線が自動＝タブごとに順番の色）の形（同じく合わせ直し専用）。
+  const _sequentialTabsBuiltInSelected = new Map();
+  function _filledTabsSelectedForBuiltIn(themeId) {
+    _builtInThemeJsonList();
+    return _filledTabsBuiltInSelected.get(String(themeId || '')) || null;
+  }
+  function _sequentialTabsSelectedForBuiltIn(themeId) {
+    _builtInThemeJsonList();
+    return _sequentialTabsBuiltInSelected.get(String(themeId || '')) || null;
+  }
   function _builtInThemeJsonList() {
     if (!_builtInThemeJsonCache) {
       _builtInThemeJsonCache = _buildBuiltInThemes().map(theme => [theme.id, JSON.stringify(theme)]);
@@ -2020,10 +2041,22 @@
         }
         if (theme.ui.themeUiApplications['style-calendar']?.selected) theme.ui.themeUiApplications['style-calendar'].selected.fg = 'color:' + theme.ui.cssVars['--accent'];
       }
+      // 選択中のタブ: v0.7.621〜v0.7.895 はアクセント色で塗っていた。利用者の判断（2026-11-27）で塗らない形へ戻す。
+      // 下線はアクセント色一色（2026-11-28）。v0.7.899〜v0.7.926 は下線を「自動」にしていたが、
+      // 自動はタブごとに順番の色になり、初期搭載のダークの見た目ではなかった。
+      // 明るいテーマは白文字と組の塗りを従来どおり保つ。
+      // 過去の標準の形は、保存値の合わせ直し（その形と完全に一致する時だけ）に使うため控える。
+      const filledTabs = {};
+      const sequentialTabs = {};
       for (const id of ['panel-tab', 'inner-tab']) {
         const selected = theme.ui.themeUiApplications[id]?.selected;
-        if (selected) selected.bg = 'var:--ui-accent';
+        if (!selected) continue;
+        filledTabs[id] = { ...selected, bg: 'var:--ui-accent' };
+        sequentialTabs[id] = { ...selected, fg: THEME_UI_VALUE_NONE, bg: THEME_UI_VALUE_NONE, underline: THEME_UI_VALUE_AUTO };
+        if (!isThemeLight(theme)) Object.assign(selected, { bg: THEME_UI_VALUE_NONE, underline: 'var:--ui-accent' });
       }
+      _filledTabsBuiltInSelected.set(theme.id, filledTabs);
+      _sequentialTabsBuiltInSelected.set(theme.id, isThemeLight(theme) ? {} : sequentialTabs);
       // The starter rail uses white icons. Shade only its shipped background;
       // saved custom themes keep their explicit foreground and background.
       const railAccent = normalizeThemeColor(theme.ui.cssVars['--accent'])
@@ -3338,20 +3371,42 @@
     if (!stored || !Object.keys(stored).length) return applications;
     const normalized = normalizeThemeUiApplications(stored);
     if (stored._defaultsVersion === THEME_UI_DEFAULTS_VERSION || themeDef?.builtIn !== true) return normalized;
+    // 組み込みテーマの選択中のタブは、v0.7.621 より前は「塗らない・白文字」、v0.7.621〜v0.7.895 は
+    // 「アクセント色で塗る」、v0.7.899〜v0.7.926 は「塗らない・下線は自動（タブごとに順番の色）」、
+    // 今は「塗らない・白文字・下線はアクセント色一色」（2026-11-28）。
+    // 旧標準と全項目が一致する保存値だけを今の標準へ合わせ直し、1項目でも違えば利用者の選択として残す。
+    // 以前の v0.7.817 は、塗らないタブの保存値を塗る標準へ移しており、利用者の見た目を書き換えていた。
+    const filledTabs = _filledTabsSelectedForBuiltIn(themeDef?.id) || {};
+    const sequentialTabs = _sequentialTabsSelectedForBuiltIn(themeDef?.id) || {};
+    const tabVariants = [null];
+    if (Object.keys(filledTabs).length) {
+      tabVariants.push(filledTabs, Object.fromEntries(Object.entries(filledTabs)
+        .map(([id, selected]) => [id, { ...selected, bg: THEME_UI_VALUE_NONE }])));
+    }
+    if (Object.keys(sequentialTabs).length) tabVariants.push(sequentialTabs);
+    const withTabs = (cfg, variant) => {
+      const next = clone(cfg);
+      for (const [id, selected] of Object.entries(variant || {})) {
+        if (next[id]) next[id].selected = clone(selected);
+      }
+      return next;
+    };
+    // 版4・版5で保存した値は利用者の保存として扱い、その版の標準そのままの形だけを合わせ直す
+    // （版4＝塗る標準、版5＝下線が自動＝順番の色の標準）。
+    if (stored._defaultsVersion === 4 || stored._defaultsVersion === 5) {
+      const former = stored._defaultsVersion === 4 ? filledTabs : sequentialTabs;
+      return Object.keys(former).length
+        && JSON.stringify(normalized) === JSON.stringify(withTabs(applications, former)) ? applications : normalized;
+    }
     const previous = clone(applications);
     previous['folder-panel-folder'].selected.bg = THEME_UI_VALUE_AUTO;
-    const legacyDefaults = [previous];
     // Shipped defaults also used white selected text and an unshaded rail.
     // v3 stamped that snapshot unchanged, so a version number alone cannot
     // prove it was repaired. Match the complete former preset, never individual
     // auto-color fields (which may be genuine user choices).
     const whiteTextDefaults = clone(previous);
     whiteTextDefaults['collapse-button'].selected.bg = 'var:--ui-accent';
-    legacyDefaults.push(whiteTextDefaults);
-    const unshadedTabsDefaults = clone(whiteTextDefaults);
-    unshadedTabsDefaults['panel-tab'].selected.bg = THEME_UI_VALUE_NONE;
-    unshadedTabsDefaults['inner-tab'].selected.bg = THEME_UI_VALUE_NONE;
-    legacyDefaults.push(unshadedTabsDefaults);
+    const formerBases = [previous, whiteTextDefaults];
     // v1/v2 could stamp the original sequential defaults without upgrading them.
     // Treat that exact snapshot like the unversioned original; a current save
     // (including an intentional auto-color choice) is still returned above.
@@ -3360,8 +3415,12 @@
       oldTreeDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
       const treeOnlyDefaults = clone(applications);
       treeOnlyDefaults['folder-tree-folder'].selected.bg = THEME_UI_VALUE_AUTO;
-      legacyDefaults.push(oldTreeDefaults, treeOnlyDefaults, _defaultThemeUiApplications());
+      formerBases.push(oldTreeDefaults, treeOnlyDefaults);
     }
+    const legacyDefaults = formerBases.flatMap(base => tabVariants.map(variant => withTabs(base, variant)));
+    // 今の標準のうち、選択中のタブだけが旧標準の形（v0.7.621〜v0.7.895 の塗り、またはその前の白文字）。
+    tabVariants.slice(1).forEach(variant => legacyDefaults.push(withTabs(applications, variant)));
+    if (stored._defaultsVersion == null || [1, 2].includes(stored._defaultsVersion)) legacyDefaults.push(_defaultThemeUiApplications());
     // Only exact former builtin defaults migrate. Explicit current auto colors
     // and customized legacy applications retain their original values.
     return legacyDefaults.some(legacy => JSON.stringify(normalized) === JSON.stringify(legacy))
@@ -3658,6 +3717,58 @@
   } else {
     applyDefaultTheme(getDefaultThemeId(), { silent: true, preserveStoredThemeUi: true, skipHistory: true });
   }
+})(window);
+
+// ---- スマホの上端（時刻・電波の表示の裏）の色（2026-11-27 利用者報告「画面の上の端に黒いグラデがかかる」） ----
+// iPhone は上端を、ページの指定する上端の色（theme-color）か、上端に固定された帯の色で塗る。上端の色を濃い黒に
+// 固定していたため、アプリの帯と違う色が上から薄くなるグラデーションに見えていた（ライトでは白い帯の上に黒い帯）。
+// 画面のいちばん上にある帯の背景色を読み、上端の色の指定と、上端に固定した帯（各ページのCSSの body::before）へ渡す。
+(function (global) {
+  'use strict';
+  if (typeof document === 'undefined' || global.MeldexTopEdgeColor) return;
+  let queued = false;
+  const clear = color => !color || color === 'transparent' || /^rgba\([^)]*,\s*0\)$/.test(color);
+  function topColor() {
+    const x = Math.round((global.innerWidth || 0) / 2);
+    for (let node = document.elementFromPoint?.(x, 1); node && node !== document.documentElement; node = node.parentElement) {
+      const color = getComputedStyle(node).backgroundColor;
+      if (!clear(color)) return color;
+    }
+    for (const node of [document.body, document.documentElement]) {
+      const color = node ? getComputedStyle(node).backgroundColor : '';
+      if (!clear(color)) return color;
+    }
+    return '';
+  }
+  function sync() {
+    queued = false;
+    const color = topColor();
+    if (!color) return;
+    const root = document.documentElement;
+    // 同じ値なら書かない（監視のある画面で無駄な変更通知を出さない）。
+    if (root.style.getPropertyValue('--meldex-top-edge-bg') !== color) root.style.setProperty('--meldex-top-edge-bg', color);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta && meta.getAttribute('content') !== color) meta.setAttribute('content', color);
+  }
+  function schedule() {
+    if (queued) return;
+    queued = true;
+    // 非表示の画面では描画フレームが来ないことがあるため、タイマーでまとめる。
+    setTimeout(sync, 60);
+  }
+  ['meldex-theme-change', 'resize', 'orientationchange', 'pageshow', 'load'].forEach(name => global.addEventListener(name, schedule));
+  document.addEventListener('meldex-cloud-mobile-viewport', schedule);
+  document.addEventListener('visibilitychange', schedule);
+  // 画面の切替（フォルダツリーの画面・ダイアログ等）で上端の帯が変わる。操作の後に1回だけ読み直す。
+  document.addEventListener('pointerup', () => setTimeout(schedule, 300), true);
+  // 操作を伴わない画面の切替（読み込み後に開くパネル等）にも追従する。上端の帯が出る狭い画面で、表示中だけ。
+  // 読むのは上端の1点だけで、色が変わった時しか書かない。
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && (global.innerWidth || 0) <= 1024) schedule();
+  }, 1500);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', schedule, { once: true });
+  else schedule();
+  global.MeldexTopEdgeColor = { sync: schedule, color: topColor };
 })(window);
 
 ;

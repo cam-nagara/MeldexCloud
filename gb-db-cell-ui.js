@@ -641,15 +641,16 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
 }
 
 function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
+  const returnFocus = e?.target?.closest?.('button, [tabindex]') || e?.currentTarget || e?.target;
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
   menu.setAttribute('role', 'menu');
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
-  const currentDbPath = _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
-  const currentCtx = typeof _dbPaneContextFromEvent === 'function'
+  const currentDbPath = options.dbPath || _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
+  const currentCtx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || null, { dbPath: currentDbPath })
-    : null;
+    : null);
   const _ptc = currentDbPath ? getPropertyTypes(currentDbPath, currentCtx)[propName] : null;
   const lockMsg = _cellUiWriteBlockedMessage(currentCtx)
     || _cellUiColumnLockMessage(currentDbPath, propName, currentCtx);
@@ -846,7 +847,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
       const anchorForRefresh = e?.target || null;
       menu.remove();
       if (typeof startDbLinkCellPick === 'function') {
-        startDbLinkCellPick(val, entityPath, propName, currentDbPath, currentCtx, anchorForRefresh);
+        startDbLinkCellPick(val, entityPath, propName, currentDbPath, currentCtx, anchorForRefresh, options);
       }
     });
     menu.appendChild(changeItem);
@@ -1072,7 +1073,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
     } else if (event.key === 'Escape') {
       event.preventDefault();
       menu.remove();
-      e?.target?.focus?.();
+      returnFocus?.focus?.();
       return;
     } else {
       return;

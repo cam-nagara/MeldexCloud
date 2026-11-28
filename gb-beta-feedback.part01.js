@@ -749,9 +749,22 @@
   }
 
   async function ensureFeedbackSheet(options = {}) {
-    const result = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+    let result = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
       ? await _writeCloudFeedbackSheet()
-      : await _postJson('/beta/feedback-template', {}, false);
+      : await _postJson('/beta/feedback-template' + (options.background === true ? '/jobs?background=true' : ''), {}, false);
+    if (result?.job_id) {
+      const jobId = result.job_id;
+      // 受付を保存完了として扱わない。自動準備も最終結果を待ってから設定を当てる。
+      for (;;) {
+        const job = await _getJson('/jobs/' + encodeURIComponent(jobId) + '?background=true');
+        if (job?.status === 'done') { result = job.result; break; }
+        if (!['queued', 'running', 'cancelling'].includes(job?.status)) {
+          throw new Error(job?.error || 'フィードバック保管シートを準備できませんでした');
+        }
+        await new Promise(resolve => window.setTimeout(resolve, 250));
+      }
+    }
+    if (!result) throw new Error('フィードバック保管シートの準備結果を確認できませんでした');
     if (result?.ok === false) throw new Error(result.error || result.reason || 'フィードバック保管シートを準備できませんでした');
     const dbPath = _applyFeedbackViewConfig(result);
     if (options.open !== false && typeof selectDatabase === 'function') {

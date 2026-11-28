@@ -1,11 +1,13 @@
 /* Dropbox Cloud duplicate/save-as route orchestration continuation. */
-    async function runCloudIdentityCopyOperation(provider, operation, operationId, payload, source, chooseDestination) {
+    async function runCloudIdentityCopyOperation(provider, operation, operationId, payload, source, chooseDestination, options = {}) {
       if (!operationId) throw Object.assign(new Error('operation_id は必須です'), { status: 400 });
       const journal = window.MeldexCloudCopyOperationJournal;
       if (!journal) throw Object.assign(new Error('Cloudファイル操作履歴を利用できません'), { status: 503 });
-      return journal.withFlight(provider, operationId, operation, payload, async identity => {
+      let formContent = null;
+      const savedResult = await journal.withFlight(provider, operationId, operation, payload, async identity => {
         let record = await journal.load(provider, operationId, operation, payload, identity);
         if (record?.state === 'completed') return record.result;
+        const resuming = !!record;
         let destPath = String(record?.intent?.destination || '');
         let destName = _basename(destPath);
         if (!record) {
@@ -43,7 +45,11 @@
           }
           await provider.movePathNoReplace(stagingPath, destPath);
         }
-        let ownership = await _providerObjectIdentity(provider, destPath, null).catch(() => null);
+        // A fresh negative result above needs no second identity lookup before
+        // publication. Concurrent arrivals still fail at atomic no-replace.
+        // Existing/recovered destinations retain the full ownership check.
+        let ownership = destinationExists || stagingCandidates.length === 1
+          ? await _providerObjectIdentity(provider, destPath, null).catch(() => null) : null;
         const ownershipComplete = ownership?.id && (source.kind === 'directory' || ownership?.rev);
         if (ownershipComplete && !record.intent.provider_id && proof) {
           const freshProof = source.kind === 'directory'
@@ -79,6 +85,7 @@
           try {
             transaction = await _copyPathWithIdentityTransaction(
               provider, payload.path, destPath, source.kind, {
+                includeFormContent: options.includeFormContent === true,
                 persistPublishProof: async publishProof => {
                   record.intent = { ...record.intent, publish_proof: publishProof };
                   await journal.updateIntent(provider, operationId, operation, payload, record.intent);
@@ -94,6 +101,7 @@
             throw error;
           }
           ownership = transaction.ownership;
+          formContent = transaction.form_content || null;
           if (!ownership?.id || (source.kind !== 'directory' && !ownership?.rev)) {
             throw new Error('Cloud複製先のprovider identityを確認できません');
           }
@@ -116,11 +124,21 @@
             throw Object.assign(new Error('prepared Cloud folder manifestが後続更新と競合しています'), { status: 409 });
           }
         }
+        if (resuming && options.includeFormContent === true && source.kind === 'file' && /\.mel-form$/i.test(destPath)) {
+          const snapshot = await _readFileSnapshot(provider, destPath);
+          if (!snapshot.etag || snapshot.etag !== ownership.rev) {
+            throw Object.assign(new Error('再開するフォームの本文が保存時のrevisionと一致しません'), { status: 409 });
+          }
+          if (snapshot.bytes.byteLength <= 2 * 1024 * 1024) formContent = {
+            path: destPath, content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(snapshot.bytes), etag: snapshot.etag,
+          };
+        }
         // 実体と公開前の復旧証明を確認済み。後処理中の表示だけを先に通知する。
         try {
           window.dispatchEvent?.(new CustomEvent('meldex:copy-published', { detail: {
             operation_id: operationId, source_path: payload.path, new_path: destPath,
             new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+            ...(formContent ? { form_content: formContent } : {}),
           } }));
         } catch (error) { console.warn('[copy] 公開済みの表示通知に失敗', error); }
         record = await journal.runAftercare(provider, operationId, operation, payload, record, [
@@ -141,6 +159,8 @@
           manifest_digest: record.intent.manifest_digest || '' };
         return journal.complete(provider, operationId, operation, payload, result);
       });
+      // Keep document bytes out of the durable journal; this is a transient response.
+      return formContent ? { ...savedResult, form_content: formContent } : savedResult;
     }
     if (pathname === '/outliner/duplicate' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -159,7 +179,7 @@
         }
         await _directoryHandle(provider, _dirname(destPath), true);
         return { destName, destPath };
-      });
+      }, { includeFormContent: body?.include_form_content === true });
     }
 
     if (pathname === '/outliner/save-as' && method === 'POST') {

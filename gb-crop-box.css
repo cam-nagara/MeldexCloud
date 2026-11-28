@@ -1,0 +1,28 @@
+/* 範囲の切り抜き（トリミング）枠の共通部品（gb-crop-box.js）。UI共通ルール 4.0「範囲を切り抜く枠」。
+   枠はアクセント色の2px、つまみは四隅と辺の中央に置く正方形、外側は暗くする。状態で寸法を変えない。 */
+:root {
+  --ui-crop-box-border: 2px solid var(--accent, #4a8cff);
+  --ui-crop-box-shade: color-mix(in srgb, #000 55%, transparent);
+  --ui-crop-box-handle-size: 10px;
+  --ui-crop-box-z: 900;
+}
+.gb-crop-box-overlay { position: fixed; inset: 0; z-index: var(--ui-crop-box-z); overflow: hidden; cursor: crosshair; touch-action: none; outline: none; }
+.gb-crop-box-page { position: absolute; box-sizing: border-box; outline: 1px dashed color-mix(in srgb, var(--fg, #fff) 60%, transparent); pointer-events: none; }
+.gb-crop-box-rect { position: absolute; box-sizing: border-box; border: var(--ui-crop-box-border); box-shadow: 0 0 0 100vmax var(--ui-crop-box-shade); cursor: move; outline: none; }
+.gb-crop-box-rect:focus-visible { outline: 2px solid var(--fg, #fff); outline-offset: 2px; }
+.gb-crop-box-handle { position: absolute; width: var(--ui-crop-box-handle-size); height: var(--ui-crop-box-handle-size); box-sizing: border-box; background: var(--bg, #fff); border: var(--ui-crop-box-border); }
+.gb-crop-box-handle[data-edge="n"], .gb-crop-box-handle[data-edge="s"] { left: calc(50% - var(--ui-crop-box-handle-size) / 2); cursor: ns-resize; }
+.gb-crop-box-handle[data-edge="e"], .gb-crop-box-handle[data-edge="w"] { top: calc(50% - var(--ui-crop-box-handle-size) / 2); cursor: ew-resize; }
+.gb-crop-box-handle[data-edge*="n"] { top: calc(var(--ui-crop-box-handle-size) / -2); }
+.gb-crop-box-handle[data-edge*="s"] { bottom: calc(var(--ui-crop-box-handle-size) / -2); }
+.gb-crop-box-handle[data-edge*="w"] { left: calc(var(--ui-crop-box-handle-size) / -2); }
+.gb-crop-box-handle[data-edge*="e"] { right: calc(var(--ui-crop-box-handle-size) / -2); }
+.gb-crop-box-handle[data-edge="ne"], .gb-crop-box-handle[data-edge="sw"] { cursor: nesw-resize; }
+.gb-crop-box-handle[data-edge="nw"], .gb-crop-box-handle[data-edge="se"] { cursor: nwse-resize; }
+.gb-crop-box-bar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; max-width: calc(100% - 16px); box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--border, #555); border-radius: 6px; background: var(--bg2, #222); color: var(--fg, #eee); cursor: default; }
+.gb-crop-box-title { white-space: nowrap; }
+.gb-crop-box-bar label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+@media (pointer: coarse) {
+  :root { --ui-crop-box-handle-size: 22px; }
+  .gb-crop-box-bar .gb-btn { min-height: var(--ui-h-touch, 44px); }
+}

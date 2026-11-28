@@ -7,7 +7,7 @@
 
   const ALLOWED = new Set([
     'tabs', 'chat', 'links', 'checkboxes', 'context-menu',
-    'edge-navigation', 'right-sidebar', 'sticky', 'settings', 'annotation',
+    'edge-navigation', 'right-sidebar', 'sticky', 'settings', 'annotation', 'profile',
   ]);
 
   function _visible(selector) {
@@ -152,6 +152,13 @@
       if (typeof openSearchPanel !== 'function') return _unavailable(target, 'ナビゲーションを開けませんでした。');
       openSearchPanel({ surface: 'main' });
       return _handled(target, _visible('#search-panel'));
+    }
+    else if (target === 'profile') {
+      // 常駐アプリのメニュー先頭（ユーザー名）から、設定のマイプロフィールを開く。
+      if (typeof showSettingsModal !== 'function') return _unavailable(target, '設定を開けませんでした。');
+      showSettingsModal({ panel: 'プロフィール' });
+      await _nextFrame();
+      return _handled(target, _visible('.modal-overlay[data-settings-modal="1"] .settings-modal'));
     }
     return _unavailable(target);
   }

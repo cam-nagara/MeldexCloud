@@ -1,5 +1,63 @@
 }
 
+// モバイル: スワイプでサイドバー開閉
+(function() {
+  let touchStartX = 0, touchStartY = 0;
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (window.innerWidth > 768) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (dx > 0 && touchStartX < 40 && !sidebar.classList.contains('open')) {
+      // 左端から右スワイプ → サイドバー開く
+      sidebar.classList.add('open');
+      if (backdrop) {
+        backdrop.classList.add('open');
+        backdrop.style.setProperty('display', 'block', 'important');
+      }
+    } else if (dx < 0 && sidebar.classList.contains('open')) {
+      // 左スワイプ → サイドバー閉じる
+      sidebar.classList.remove('open');
+      if (backdrop) {
+        backdrop.classList.remove('open');
+        backdrop.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }, { passive: true });
+})();
+
+/* ==============================
+   ステータスバー
+   ============================== */
+// メッセージ先頭行をタイトル、残りを本文として安全なDOMへ変換する。
+// 単一行メッセージは従来通り本文だけ、複数行のみ先頭行を強調する。
+function _buildCfDialogBodyNodes(message, idBase) {
+  const text = String(message ?? '');
+  if (!text) return [];
+  const lines = text.split('\n');
+  const entries = lines.length < 2
+    ? [{ text, kind: 'body' }]
+    : [
+        { text: (lines.shift() || '').trim(), kind: 'title' },
+        { text: lines.join('\n').trim(), kind: 'muted' },
+      ];
+  return entries.filter(entry => entry.text).map((entry, index) => {
+    const node = document.createElement('div');
+    node.className = 'gb-confirm-message';
+    node.id = `${idBase}-message-${index}`;
+    node.textContent = entry.text;
+    if (entry.kind === 'title') node.style.fontWeight = '600';
+    if (entry.kind === 'muted') node.style.color = 'var(--ui-fg-muted)';
+    return node;
+  });
+}
+
 // 短い問いかけ用の .gb-confirm 表示を保ちつつ、生成・閉鎖・フォーカス・
 // モバイル変換を GBUI.createModal へ統一する。
 // - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
@@ -840,61 +898,3 @@ async function openBoard(label, path, opts) {
     // 読込後のタブ再構築が取得済みモデルを古いdumpで置き換えないようにする。
     if (!openOpts.skipNavPush
       && typeof navPush === 'function'
-      && typeof GBPaneBridge !== 'undefined'
-      && GBPaneBridge?.initialized) {
-      // ツリーやサブパネルをクリックすると activePane はその補助パネルになる。
-      // 読込前の明示 navPush も、他のファイルと同じ作業パネル選択を通す。
-      requestedPaneId = openOpts.paneId || GBPaneBridge.activateFileOpenPane?.()
-        || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
-      const paneInfo = requestedPaneId
-        && typeof GBLayout !== 'undefined'
-        && typeof GBLayout.findNode === 'function'
-        ? GBLayout.findNode(GBLayout.root, requestedPaneId)
-        : null;
-      requestedPane = paneInfo?.node || null;
-      requestedTabIndex = requestedPane?.activeTabIndex ?? -1;
-      requestedTab = requestedPane?.tabs?.[requestedTabIndex] || null;
-      if (requestedTab) {
-        requestedTabSnapshot = {
-          fields: {
-            type: requestedTab.type,
-            label: requestedTab.label,
-            path: requestedTab.path,
-            state: requestedTab.state,
-            icon: requestedTab.icon,
-          },
-          navHistory: Array.isArray(requestedTab.navHistory) ? [...requestedTab.navHistory] : requestedTab.navHistory,
-          navIndex: requestedTab.navIndex,
-        };
-      }
-      await navPush({ type: 'board', label, path }, requestedPaneId);
-      navPushedBeforeLoad = true;
-      if (requestedPane && typeof getComponentInstance === 'function') {
-        const tab = requestedPane.tabs?.[requestedPane.activeTabIndex] || null;
-        const component = tab ? getComponentInstance(tab.id) : null;
-        mountedBoardLoad = component?._boardLoadPending || null;
-      }
-    }
-    if (!openOpts.skipShowView) showView('board');
-    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-    const opened = mountedBoardLoad
-      ? await mountedBoardLoad
-      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, { ...openOpts, loading }) : true);
-    if (opened === false) {
-      restorePreviousView();
-      return false;
-    }
-    if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});
-    if (!openOpts.skipNavPush && !navPushedBeforeLoad) {
-      const _navEntry = {type:'board', label, path};
-      navPush(_navEntry);
-    }
-    if (!openOpts.skipRecent) addRecent(label, path, 'board');
-    if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-    if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
-    return true;
-  } catch (err) {
-    restorePreviousView();
-    showStatus('ボード読み込みエラー: ' + (err.message || err), true);
-    return false;
-  } finally {

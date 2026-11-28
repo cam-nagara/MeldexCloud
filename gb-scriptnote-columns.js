@@ -56,7 +56,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (this.doc !== ownerDocument || this._readOnly) return;
       // 折り返し時は列幅で各行の大きさが変わるため、段の割り付けをやり直す。
       if (wrapMode && resized) {
-        this._render();
+        if (!this._refreshScriptNoteColumnLayout?.()) this._render();
         this._markDirty();
         return;
       }
@@ -133,7 +133,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (this.doc.editor?.wrapMode) {
       // 折り返し時は段を割り付け直し、同じ境界へフォーカスを戻して続けて調整できるようにする。
       const resizerId = e.currentTarget?.dataset?.e2eId || '';
-      this._render();
+      if (!this._refreshScriptNoteColumnLayout?.()) this._render();
       if (resizerId) this.host?.querySelector(`[data-e2e-id="${resizerId}"]`)?.focus();
     }
     this._markDirty();
@@ -253,8 +253,72 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (next) target.icon = next;
     else delete target.icon;
     this._markDirty();
-    this._render();
+    if (!this._refreshScriptNoteHeaderIcons?.(id)) this._render();
     return true;
+  },
+
+  _refreshScriptNoteHeaderIcons(colId = null) {
+    const cells = [...(this.host?.querySelectorAll?.('.sn2-header-cell[data-col-id]') || [])]
+      .filter(cell => cell.dataset.colId !== '_handle' && (colId == null || cell.dataset.colId === colId));
+    if (!cells.length) return false;
+    let changed = false;
+    cells.forEach(cell => {
+      const spec = this._getScriptNoteColumnIcon(cell.dataset.colId);
+      const old = cell.querySelector(':scope > .sn2-header-icon');
+      if ((!old && !spec) || (old && old._sn2IconSpec === spec)) return;
+      old?.remove();
+      this._prependScriptNoteHeaderIcon(cell, spec);
+      changed = true;
+    });
+    if (!changed) return true;
+    // 行と入力欄は保持し、見出しによって変わる寸法だけ従来の段組みへ反映する。
+    if (this._repackWrapForResize) this._repackWrapForResize();
+    else if (this.doc.editor?.viewMode === 'vertical') {
+      const header = this.host.querySelector('.sn2-header');
+      const z = typeof _getZoom === 'function' ? _getZoom() : 1;
+      const height = header ? header.getBoundingClientRect().height / z : 0;
+      if (height > 0) this.host.querySelectorAll('.sn2-row').forEach(row => { row.style.height = height + 'px'; });
+    }
+    this._adjustRubySpacing?.();
+    const doc = this.doc, host = this.host;
+    const revision = this._headerIconRefreshRevision = (this._headerIconRefreshRevision || 0) + 1;
+    requestAnimationFrame(() => {
+      if (this.doc === doc && this.host === host && host?.isConnected
+        && this._headerIconRefreshRevision === revision) this._repackWrapForResize?.();
+    });
+    return true;
+  },
+
+  _restoreColumnLayoutSnapshot(data) {
+    if (typeof this._refreshScriptNoteColumnLayout !== 'function') return false;
+    const keys = ['columnWidths', 'columnOrder'];
+    const previous = keys.map(key => [key, Object.prototype.hasOwnProperty.call(this.doc.editor, key), this.doc.editor[key]]);
+    keys.forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(data.editor, key)) this.doc.editor[key] = data.editor[key];
+      else delete this.doc.editor[key];
+    });
+    if (this._refreshScriptNoteColumnLayout()) return true;
+    previous.forEach(([key, present, value]) => { if (present) this.doc.editor[key] = value; else delete this.doc.editor[key]; });
+    return false;
+  },
+
+  _restoreColumnHeaderIconSnapshot(data) {
+    if (!this.host?.querySelectorAll?.('.sn2-header-cell[data-col-id]').length) return false;
+    const assignIcon = (target, source) => {
+      if (Object.prototype.hasOwnProperty.call(source, 'icon')) target.icon = source.icon;
+      else delete target.icon;
+    };
+    const incoming = data.editor.standardColumnSettings;
+    if (incoming) {
+      const current = this.doc.editor.standardColumnSettings ||= {};
+      Object.keys(current).forEach(key => { if (!Object.prototype.hasOwnProperty.call(incoming, key)) delete current[key]; });
+      Object.entries(incoming).forEach(([key, source]) => {
+        current[key] ||= {};
+        assignIcon(current[key], source);
+      });
+    } else delete this.doc.editor.standardColumnSettings;
+    (this.doc.editor.customColumns || []).forEach((column, index) => assignIcon(column, data.editor.customColumns[index]));
+    return this._refreshScriptNoteHeaderIcons();
   },
 
   // 列ヘッダーの見出しの前にアイコンを置く（読み上げは列名だけにする）。
@@ -262,6 +326,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const value = typeof spec === 'string' ? spec.trim() : '';
     if (!cell || !value || typeof GBIconAssets === 'undefined' || typeof GBIconAssets.render !== 'function') return null;
     const icon = document.createElement('span');
+    icon._sn2IconSpec = value;
     icon.className = 'sn2-header-icon';
     icon.setAttribute('aria-hidden', 'true');
     icon.dataset.e2eId = `sn2-header-icon-${String(cell.dataset.colId || 'col').replace(/[^a-zA-Z0-9_-]/g, '-')}`;

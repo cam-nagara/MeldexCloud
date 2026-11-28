@@ -16685,17 +16685,21 @@ const GBLayout = (() => {
     // ラベル付き最小72pxでも収まらないタブは、共通の「▼」から選べる。
     if (typeof ResizeObserver === 'function') {
       const updateCompact = () => {
-        tabBar.classList.remove('gb-tabs-shrink', 'gb-tabs-compact');
+        let reset = false;
+        for (const name of ['gb-tabs-shrink', 'gb-tabs-compact']) {
+          if (tabBar.classList.contains(name)) { tabBar.classList.remove(name); reset = true; }
+        }
         // class 変更後のレイアウトを反映させるため強制 reflow
-        void tabsScroll.offsetWidth;
+        if (reset) void tabsScroll.offsetWidth;
         if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
           tabBar.classList.add('gb-tabs-shrink');
         }
         const iconOnly = tabBar.classList.contains('gb-tabs-compact');
         tabsScroll.querySelectorAll('.gb-tab').forEach((tabEl) => {
           const title = tabEl.dataset.tabTitle || tabEl.querySelector('.gb-tab-label')?.textContent || 'タブ';
-          tabEl.title = iconOnly ? title : '';
-          tabEl.setAttribute('aria-label', title);
+          const tooltip = iconOnly ? title : '';
+          if (tabEl.title !== tooltip) tabEl.title = tooltip;
+          if (tabEl.getAttribute('aria-label') !== title) tabEl.setAttribute('aria-label', title);
         });
       };
       const ro = new ResizeObserver(updateCompact);
@@ -16708,7 +16712,7 @@ const GBLayout = (() => {
 
   function refreshPaneTabs(paneId) {
     if (!_layoutEl || !paneId) return false;
-    if (_isMobileLayout() || _maximizedPaneId) return false;
+    if (_maximizedPaneId) return false;
     const currentInfo = _paneMap[paneId];
     const currentPaneEl = currentInfo?.el;
     const currentContentEl = currentInfo?.contentEl;
@@ -20110,13 +20114,13 @@ const GBLayout = (() => {
     return wrap;
   }
 
-  function switchGroup(panelsetNode, newGroupId) {
+  function switchGroup(panelsetNode, newGroupId, options) {
     if (!panelsetNode || !newGroupId) return;
     if (panelsetNode.activeGroupId === newGroupId) return;
     const exists = (panelsetNode.groups || []).some(g => g && g.id === newGroupId);
     if (!exists) return;
     panelsetNode.activeGroupId = newGroupId;
-    if (typeof GBLayout?.render === 'function') GBLayout.render();
+    if (!options?.deferRender && typeof GBLayout?.render === 'function') GBLayout.render();
     if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
   }
 
@@ -21321,6 +21325,15 @@ const GBTabs = (() => {
     pane.activeTabIndex = idx;
     const revealed = _ensurePaneVisible(paneId);
     const previousActivePane = GBLayout.activePane;
+
+    // 非表示グループから開く場合は、目的のタブとフォーカスを確定してから
+    // 1回だけ取り付ける。先にグループを描くと旧タブも含めて再取り付けしてしまう。
+    if (opts.forceRender) {
+      if (!opts.preserveActivePane) GBLayout.setActivePane(paneId, { skipCallback: true });
+      GBLayout.render();
+      GBLayout.saveLayout({ immediate: true });
+      return;
+    }
 
     if (alreadyActive) {
       if (revealed) GBLayout.render();
@@ -22893,7 +22906,11 @@ const GBDocking = (() => {
     const rect = parent.getBoundingClientRect();
     const z = _dockPopupZoom();
     const defaultWidth = _inferDefaultPopupWidth(panelsetNode);
-    const rawW = defaultWidth > 0 ? Math.max(MIN_W, Math.round(defaultWidth)) : Math.max(MIN_W, Math.floor((rect.width / z) * DEFAULT_W_RATIO));
+    let rawW = defaultWidth > 0 ? Math.max(MIN_W, Math.round(defaultWidth)) : Math.max(MIN_W, Math.floor((rect.width / z) * DEFAULT_W_RATIO));
+    // スマートフォン幅では画面の幅いっぱいに開く。既定の狭い幅のままだと、見出し等の文字が
+    // 縦書きのように1〜2文字ずつ折れていた（共通ルール、2026-11-27）。
+    const viewportW = (window.innerWidth || document.documentElement.clientWidth || 0) / z;
+    if (viewportW > 0 && viewportW <= 640) rawW = Math.max(rawW, viewportW - 16);
     const rawH = Math.max(MIN_H, Math.floor((rect.height / z) * DEFAULT_H_RATIO));
     return _clampPopupSize({ w: rawW, h: rawH });
   }
@@ -24290,7 +24307,7 @@ class VersionComponent extends ToolComponent {
             const entity = await apiFetch('/entity?path=' + encodeURIComponent(path), { silentError: true });
             if (this._destroyed || this._loadSeq !== loadSeq || !this.el || state.currentEntityPath !== path) return;
             const parent = String(path).replace(/\\/g, '/').replace(/\/[^/]+$/, '');
-            if (entity?.path === path && Number(entity.revision) >= 1 && parent && parent !== path) {
+            if (entity?.path === path && Number.isInteger(entity.revision) && entity.revision >= 0 && parent && parent !== path) {
               window._meldexEntityVersionTarget = { path, dbPath: parent, sequence: window._selectEntityLoadSeq };
               if (typeof GBLayout !== 'undefined') {
                 const tab = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || []).find(item => item.id === this.tabId);
@@ -30607,7 +30624,7 @@ function bdResolveSelectionUiContext(nodeId, preferredNodeEl) {
   return { root, layer, nodeEl };
 }
 
-function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
+function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl, measuredSize) {
   const node = typeof nodeOrId === 'string'
     ? (typeof bd !== 'undefined' ? bd.nodes.find(n => n.id === nodeOrId) : null)
     : nodeOrId;
@@ -30615,6 +30632,9 @@ function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
   const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncSelectionRectForNode');
+  const isSelected = typeof bd !== 'undefined' && bd.selected && bd.selected.has(node.id);
+  const width = isSelected ? (measuredSize?.width ?? el.offsetWidth) : 0;
+  const height = isSelected ? (measuredSize?.height ?? el.offsetHeight) : 0;
   const safeId = MeldexEscape.cssIdent(node.id);
   let rect = layer.querySelector(`.bd-selection-rect[data-node-id="${safeId}"]`);
   if (!rect) {
@@ -30623,7 +30643,6 @@ function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
     rect.dataset.nodeId = node.id;
     layer.appendChild(rect);
   }
-  const isSelected = typeof bd !== 'undefined' && bd.selected && bd.selected.has(node.id);
   const isEditing = el.classList.contains('bd-editing');
   rect.classList.toggle('is-visible', isSelected);
   rect.classList.toggle('is-editing', isEditing);
@@ -30631,8 +30650,8 @@ function bdSyncSelectionRectForNode(nodeOrId, preferredNodeEl) {
     const offset = 4;
     rect.style.left = `${node.x - offset}px`;
     rect.style.top = `${node.y - offset}px`;
-    rect.style.width = `${el.offsetWidth + offset * 2}px`;
-    rect.style.height = `${el.offsetHeight + offset * 2}px`;
+    rect.style.width = `${width + offset * 2}px`;
+    rect.style.height = `${height + offset * 2}px`;
   }
   bdPerfEnd('bdSyncSelectionRectForNode', started);
   return true;
@@ -30646,7 +30665,8 @@ function bdSyncResizeHandleForNode(nodeOrId, preferredNodeEl) {
   const { layer, nodeEl: el } = bdResolveSelectionUiContext(node.id, preferredNodeEl);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncResizeHandleForNode');
-  bdSyncSelectionRectForNode(node, el);
+  const measuredSize = node.minimized ? null : { width: el.offsetWidth, height: el.offsetHeight };
+  bdSyncSelectionRectForNode(node, el, measuredSize);
   const safeId = MeldexEscape.cssIdent(node.id);
   let handle = layer.querySelector(`.bd-resize[data-node-id="${safeId}"]`);
   if (node.minimized) {
@@ -30662,8 +30682,8 @@ function bdSyncResizeHandleForNode(nodeOrId, preferredNodeEl) {
   }
   const isSelected = typeof bd !== 'undefined' && bd.selected && bd.selected.has(node.id);
   handle.classList.toggle('is-visible', isSelected);
-  handle.style.left = `${node.x + el.offsetWidth}px`;
-  handle.style.top = `${node.y + el.offsetHeight}px`;
+  handle.style.left = `${node.x + measuredSize.width}px`;
+  handle.style.top = `${node.y + measuredSize.height}px`;
   bdPerfEnd('bdSyncResizeHandleForNode', started);
   return true;
 }
@@ -35001,20 +35021,30 @@ function _bdPolylineMidpoint(points) {
   };
 }
 
-function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint) {
+function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint, generatedPath) {
   if (pathType === 'straight' || pathType === 'orthogonal') {
     return _bdPolylineMidpoint(pathPoints);
   }
+  // 自分で生成した同一のSVGパスだけ再利用する。端点・寸法・曲げ方が変わればdも変わる。
+  const key = typeof generatedPath === 'string' && generatedPath ? `${pathType}\n${generatedPath}` : null;
+  const cache = _bdMeasureConnectionCenter._geometryCache ||= new Map();
+  const copy = value => ({ point: { ...value.point }, angle: value.angle });
+  if (key && cache.has(key)) return copy(cache.get(key));
   try {
     const totalLength = pathEl?.getTotalLength?.() || 0;
     if (totalLength > 0) {
       const center = pathEl.getPointAtLength(totalLength / 2);
       const before = pathEl.getPointAtLength(Math.max(0, totalLength / 2 - 1));
       const after = pathEl.getPointAtLength(Math.min(totalLength, totalLength / 2 + 1));
-      return {
+      const measured = {
         point: { x: center.x, y: center.y },
         angle: Math.atan2(after.y - before.y, after.x - before.x) * 180 / Math.PI,
       };
+      if (key && [measured.point.x, measured.point.y, measured.angle].every(Number.isFinite)) {
+        cache.set(key, copy(measured));
+        if (cache.size > 128) cache.delete(cache.keys().next().value);
+      }
+      return measured;
     }
   } catch {}
   return { point: fallbackPoint || { x: 0, y: 0 }, angle: 0 };
@@ -35459,6 +35489,12 @@ function bdDrawConns(options) {
     if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDrawConns', _bdDrawPerf, 'no-svg');
     return;
   }
+  const draw = () => _bdDrawConnectionContents(options, svg, _bdDrawPerf);
+  if (typeof bdWithNormalizedBoardUiState === 'function') return bdWithNormalizedBoardUiState(draw);
+  return draw();
+}
+
+function _bdDrawConnectionContents(options, svg, _bdDrawPerf) {
   // defsを保持してpathをクリア + ラベルDOMもクリア
   let defs = svg.querySelector('defs');
   if (!defs) {
@@ -35899,7 +35935,7 @@ function bdDrawConns(options) {
       if (arrow === 'end' || arrow === 'both') p.setAttribute('marker-end', markerRef);
     }
     svg.appendChild(p);
-    const centerMeta = _bdMeasureConnectionCenter(p, pathData.pathPoints, pathType, pathData.labelPoint);
+    const centerMeta = _bdMeasureConnectionCenter(p, pathData.pathPoints, pathType, pathData.labelPoint, d);
     _bdAppendLineCommentBadge(c, centerMeta.point);
     if (bdIsConnectionSelected(c.id)) {
       const selectionBaseWidth = strokeWidth + 12 / zoom;
@@ -38560,6 +38596,13 @@ function _bdMinimapBounds() {
   const KEY_MAIN = 'meldex-board-image-drop-mode';
   const KEY_STANDALONE = 'meldex-board-image-drop-mode-standalone';
   let modeChangePromise = null;
+  // The verified bytes are used once for the immediate redraw, never serialized.
+  const relocatedPreviews = new WeakMap();
+  function takeRelocatedImagePreview(node) {
+    const preview = relocatedPreviews.get(node);
+    relocatedPreviews.delete(node);
+    return preview?.src === node?.img ? preview.dataUrl : '';
+  }
 
   function isStandaloneBoardApp() {
     if (!global || typeof document === 'undefined') return false;
@@ -38982,9 +39025,14 @@ function _bdMinimapBounds() {
       };
     }
 
-    if (path && !await imagePathExists(path)) {
-      if (!dataUrl) throw new Error('画像ファイルを読み込めませんでした');
-      path = '';
+    let previewDataUrl = dataUrl;
+    if (path) {
+      try {
+        previewDataUrl = await imagePathToDataUrl(path);
+      } catch (error) {
+        if (!dataUrl) throw new Error('画像ファイルを読み込めませんでした');
+        path = '';
+      }
     }
     if (!path && dataUrl) path = await uploadImageDataUrl(node, 0, dataUrl, name);
     if (!path) throw new Error('画像ファイルの場所を取得できませんでした');
@@ -38994,6 +39042,7 @@ function _bdMinimapBounds() {
       linkType: 'image',
       imageSourcePath: path,
       text: node?.text || name,
+      previewDataUrl,
     };
   }
 
@@ -39038,7 +39087,13 @@ function _bdMinimapBounds() {
     if (!node.text && next.text) node.text = next.text;
     node._imageLoadError = false;
     delete node._imageLoadErrorAt;
-    refreshBoardAfterImageModeChange([node.id].filter(Boolean));
+    if (next.previewDataUrl) relocatedPreviews.set(node, { src: node.img, dataUrl: next.previewDataUrl });
+    if (typeof global.bdRefreshNodesPartial === 'function') {
+      global.bdRefreshNodesPartial([node.id], 'relocate-image', { detailPanel: true });
+      if (typeof global.bdDirty === 'function') global.bdDirty();
+    } else {
+      refreshBoardAfterImageModeChange([node.id].filter(Boolean));
+    }
     if (typeof global.showStatus === 'function') global.showStatus('画像ファイルを再指定しました');
     return true;
   }
@@ -39051,6 +39106,7 @@ function _bdMinimapBounds() {
   global.bdImageNodeLinkPath = nodeLinkPath;
   global.bdImageMissingPathLabel = missingImagePathLabel;
   global.bdRelocateImageNode = relocateImageNode;
+  global.bdTakeRelocatedImagePreview = takeRelocatedImagePreview;
   global.bdConvertCurrentBoardImagesForDropMode = convertCurrentBoardImages;
 })(window);
 
@@ -39491,15 +39547,15 @@ function _bdMinimapBounds() {
       nodes.forEach(node => {
         if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(node)) {
           needsFullRender = true;
+          if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(node.id, reason);
         }
-        if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(node.id, reason);
       });
       if (needsFullRender) {
         if (typeof bdRequestFullRender === 'function') bdRequestFullRender(`${reason}-fallback`);
         else if (typeof bdRender === 'function') bdRender();
       }
       if (typeof bdMarkExtrasDirty === 'function') {
-        bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: ids }, reason);
+        bdMarkExtrasDirty({ minimap: true, boardUi: typeof bdSyncBoardUi !== 'function', comments: ids }, reason);
       }
     } finally {
       if (typeof bdEndFastBoardMutation === 'function') bdEndFastBoardMutation();
@@ -39523,6 +39579,12 @@ function _bdMinimapBounds() {
   function addCardSpecs(rawSpecs, point, options) {
     const specs = (Array.isArray(rawSpecs) ? rawSpecs : []).filter(Boolean).slice(0, MAX_ITEMS);
     if (!specs.length || typeof bd === 'undefined' || !Array.isArray(bd.nodes)) return [];
+    const append = () => addCardSpecsWithUi(specs, point, options);
+    return typeof bdWithNormalizedBoardUiState === 'function'
+      ? bdWithNormalizedBoardUiState(append) : append();
+  }
+
+  function addCardSpecsWithUi(specs, point, options) {
     const origin = pastePoint(point);
     const mediaOnly = specs.every(spec => spec.kind === 'image');
     const nodes = specs.map((spec, index) => {
@@ -40078,10 +40140,32 @@ function _bdMinimapBounds() {
     return toHex(a.map((v, i) => v * (1 - t) + b[i] * t));
   }
 
+  let backgroundReadDepth = 0;
+  const backgroundCssValues = new Map();
+
+  function withBoardThemeColorSnapshot(refresh) {
+    if (backgroundReadDepth > 0) return refresh();
+    backgroundReadDepth++;
+    try { return refresh(); }
+    finally {
+      backgroundReadDepth--;
+      backgroundCssValues.clear();
+    }
+  }
+
+  function readBoardThemeCssValue(name, read) {
+    if (backgroundReadDepth > 0 && backgroundCssValues.has(name)) return backgroundCssValues.get(name);
+    const value = typeof read === 'function' ? read()
+      : (typeof global.bdReadRenderCssVar === 'function' ? global.bdReadRenderCssVar(name)
+        : (typeof global.getCssVar === 'function' ? global.getCssVar(name) : ''));
+    if (backgroundReadDepth > 0) backgroundCssValues.set(name, value);
+    return value;
+  }
+
   function boardBackgroundColor() {
     let bg = '';
     try { if (typeof global._bdBoardThemeBackgroundColor === 'function') bg = global._bdBoardThemeBackgroundColor(); } catch (_) { bg = ''; }
-    if (!parseColor(bg) && typeof global.getCssVar === 'function') bg = global.getCssVar('--bd-bg') || global.getCssVar('--bg') || '';
+    if (!parseColor(bg) && typeof global.getCssVar === 'function') bg = readBoardThemeCssValue('--bd-bg') || readBoardThemeCssValue('--bg') || '';
     return parseColor(bg) ? bg : '';
   }
 
@@ -40092,6 +40176,12 @@ function _bdMinimapBounds() {
   }
 
   function themeTone(color, tone, options = {}) {
+    // 背景に依存しない塗り方では、DOM更新後の不要な全体スタイル再計算を起こさない。
+    if (tone === 'plain') return { bgColor: 'transparent', borderColor: 'transparent', textColor: '', lineColor: color };
+    const readable = readableTextColor(color);
+    if (readable && !['tint', 'outline', 'card', 'neutral', 'muted'].includes(tone)) {
+      return { bgColor: color, borderColor: color, textColor: readable, lineColor: color };
+    }
     const bg = options.background || boardBackgroundColor();
     const dark = options.dark != null ? !!options.dark : isDarkColor(bg);
     const base = parseColor(bg) ? bg : (dark ? '#111419' : '#ffffff');
@@ -40101,8 +40191,6 @@ function _bdMinimapBounds() {
         return { bgColor: dark ? mixColor(color, base, 0.72) : mixColor(color, '#ffffff', 0.84), borderColor: color, textColor: ink, lineColor: color };
       case 'outline':
         return { bgColor: dark ? mixColor(color, base, 0.9) : '#ffffff', borderColor: color, textColor: ink, lineColor: color };
-      case 'plain':
-        return { bgColor: 'transparent', borderColor: 'transparent', textColor: '', lineColor: color };
       // 図解カード: 背景になじむ無彩色の面に、役割色を枠・左帯・見出しで出す。
       case 'card':
         return { bgColor: dark ? mixColor('#dfe6f0', base, 0.86) : mixColor('#f1f5f9', base, 0.35), borderColor: color, textColor: dark ? '#d4d4d4' : '#1f2937', lineColor: color };
@@ -40114,7 +40202,7 @@ function _bdMinimapBounds() {
       case 'muted':
         return { bgColor: mixColor(color, base, 0.6), borderColor: mixColor(color, base, 0.45), textColor: ink, lineColor: mixColor(color, base, 0.45) };
       default:
-        return { bgColor: color, borderColor: color, textColor: readableTextColor(color) || ink, lineColor: color };
+        return { bgColor: color, borderColor: color, textColor: readable || ink, lineColor: color };
     }
   }
 
@@ -40166,16 +40254,19 @@ function _bdMinimapBounds() {
   function buildDefaultDepthStyles(baseStyles, emptyDepthLine, board) {
     const palette = getThemeColorSet(board);
     const emptyLine = typeof emptyDepthLine === 'function' ? emptyDepthLine : () => ({});
-    return (Array.isArray(baseStyles) ? baseStyles : []).map((style, index) => {
+    const entries = Array.isArray(baseStyles) ? baseStyles : [];
+    // 同じ一式のカード色・線色では背景の計算を共有し、次の操作では新しい背景を読む。
+    const toneOptions = entries.length ? { background: boardBackgroundColor() || '#ffffff' } : {};
+    return entries.map((style, index) => {
       const rawValue = style && style._themeColorIndex;
       const rawThemeIndex = Number.isFinite(+rawValue) ? +rawValue : index;
       const themeIndex = Math.max(0, Math.floor(rawThemeIndex));
       const color = (style._themeTone ? themeRoleColor(themeIndex, palette) : palette[themeIndex % palette.length]) || style.bgColor || '';
       const line = style?.line && typeof style.line === 'object' ? { ...style.line } : {};
-      const toned = themeTone(color, style._themeTone || 'solid');
+      const toned = themeTone(color, style._themeTone || 'solid', toneOptions);
       const lineIndex = Number.isFinite(+line._themeColorIndex) ? Math.max(0, Math.floor(+line._themeColorIndex)) : themeIndex;
       const lineBase = (style._themeTone ? themeRoleColor(lineIndex, palette) : palette[lineIndex % palette.length]) || color;
-      const lineColor = themeTone(lineBase, line._themeTone || 'solid').lineColor || line.color || '';
+      const lineColor = themeTone(lineBase, line._themeTone || 'solid', toneOptions).lineColor || line.color || '';
       delete line._themeColorIndex;
       delete line._themeTone;
       const next = {
@@ -40390,6 +40481,8 @@ function _bdMinimapBounds() {
   global.bdReadableTextColor = readableTextColor;
   global.bdThemeTone = themeTone;
   global.bdBoardBackgroundColor = boardBackgroundColor;
+  global.bdWithBoardThemeColorSnapshot = withBoardThemeColorSnapshot;
+  global.bdReadBoardThemeCssValue = readBoardThemeCssValue;
   global.bdThemeRoleColor = themeRoleColor;
   global.bdMixColor = mixColor;
   global.bdBuildDefaultDepthStyles = buildDefaultDepthStyles;
@@ -41523,27 +41616,32 @@ function _bdNormalizeDepthLine(raw, _fallback) {
 }
 
 function bdNormalizeDepthStyles(styles) {
-  const defaults = _bdDefaultDepthStyles();
-  const source = Array.isArray(styles) && styles.length ? styles : defaults;
+  // 現在の書式に欠ける値がある時だけ、テーマから既定値を作る。
+  let defaults;
+  const readDefaults = () => defaults || (defaults = _bdDefaultDepthStyles());
+  const source = Array.isArray(styles) && styles.length ? styles : readDefaults();
   const normalized = source.map((entry, index) => {
-    const fallback = defaults[Math.min(index, defaults.length - 1)] || defaults[0];
-    const raw = entry || fallback;
+    const fallback = () => {
+      const values = readDefaults();
+      return values[Math.min(index, values.length - 1)] || values[0];
+    };
+    const raw = entry || fallback();
     const out = {
-      name: raw.name != null ? String(raw.name).trim() : (fallback.name || ''),
+      name: raw.name != null ? String(raw.name).trim() : (fallback().name || ''),
       cardStyleRef: raw.cardStyleRef != null ? _bdNormalizeDepthCardStyleRef(raw.cardStyleRef) : '',
       lineStyleRef: raw.lineStyleRef != null ? String(raw.lineStyleRef) : '',
-      fontSize: Number.isFinite(+raw.fontSize) ? Math.max(8, Math.min(72, +raw.fontSize)) : fallback.fontSize,
-      fontBold: raw.fontBold !== undefined ? !!raw.fontBold : fallback.fontBold,
-      fontItalic: raw.fontItalic !== undefined ? !!raw.fontItalic : !!fallback.fontItalic,
+      fontSize: Number.isFinite(+raw.fontSize) ? Math.max(8, Math.min(72, +raw.fontSize)) : fallback().fontSize,
+      fontBold: raw.fontBold !== undefined ? !!raw.fontBold : fallback().fontBold,
+      fontItalic: raw.fontItalic !== undefined ? !!raw.fontItalic : !!fallback().fontItalic,
       fontFamily: typeof normalizeFontFamilyValue === 'function' ? normalizeFontFamilyValue(raw.fontFamily) : String(raw.fontFamily || ''),
-      width: Number.isFinite(+raw.width) ? Math.max(40, Math.min(600, +raw.width)) : fallback.width,
-      bgColor: raw.bgColor != null ? String(raw.bgColor) : fallback.bgColor,
-      bgOpacity: _bdNormalizeStyleOpacity(raw.bgOpacity, _bdNormalizeStyleOpacity(fallback.bgOpacity, 1)),
-      textColor: raw.textColor != null ? String(raw.textColor) : (fallback.textColor || ''),
-      borderColor: raw.borderColor != null ? String(raw.borderColor) : (fallback.borderColor || ''),
-      borderOpacity: _bdNormalizeStyleOpacity(raw.borderOpacity, _bdNormalizeStyleOpacity(fallback.borderOpacity, 1)),
-      borderWidth: Number.isFinite(+raw.borderWidth) ? Math.max(0, Math.min(20, +raw.borderWidth)) : (Number.isFinite(+fallback.borderWidth) ? +fallback.borderWidth : 0),
-      borderRadius: Number.isFinite(+raw.borderRadius) ? Math.max(0, Math.min(64, +raw.borderRadius)) : (Number.isFinite(+fallback.borderRadius) ? +fallback.borderRadius : 6),
+      width: Number.isFinite(+raw.width) ? Math.max(40, Math.min(600, +raw.width)) : fallback().width,
+      bgColor: raw.bgColor != null ? String(raw.bgColor) : fallback().bgColor,
+      bgOpacity: Number.isFinite(Number(raw.bgOpacity)) ? _bdNormalizeStyleOpacity(raw.bgOpacity) : _bdNormalizeStyleOpacity(fallback().bgOpacity, 1),
+      textColor: raw.textColor != null ? String(raw.textColor) : (fallback().textColor || ''),
+      borderColor: raw.borderColor != null ? String(raw.borderColor) : (fallback().borderColor || ''),
+      borderOpacity: Number.isFinite(Number(raw.borderOpacity)) ? _bdNormalizeStyleOpacity(raw.borderOpacity) : _bdNormalizeStyleOpacity(fallback().borderOpacity, 1),
+      borderWidth: Number.isFinite(+raw.borderWidth) ? Math.max(0, Math.min(20, +raw.borderWidth)) : (Number.isFinite(+fallback().borderWidth) ? +fallback().borderWidth : 0),
+      borderRadius: Number.isFinite(+raw.borderRadius) ? Math.max(0, Math.min(64, +raw.borderRadius)) : (Number.isFinite(+fallback().borderRadius) ? +fallback().borderRadius : 6),
       textStrokeColor: raw.textStrokeColor != null ? String(raw.textStrokeColor) : '',
       textStrokeWidth: Number.isFinite(+raw.textStrokeWidth) ? Math.max(0, Math.min(12, +raw.textStrokeWidth)) : 0,
       shape: raw.shape != null ? _bdNormalizeDepthCardShape(raw.shape) : '',
@@ -41553,12 +41651,12 @@ function bdNormalizeDepthStyles(styles) {
       cloudOffset: Number.isFinite(+raw.cloudOffset) ? Math.max(0, Math.min(1, +raw.cloudOffset)) : 0.5,
       cloudSubWidthRatio: Number.isFinite(+raw.cloudSubWidthRatio) ? Math.max(0, Math.min(100, +raw.cloudSubWidthRatio)) : 0,
       cloudSubHeightRatio: Number.isFinite(+raw.cloudSubHeightRatio) ? Math.max(0, Math.min(100, +raw.cloudSubHeightRatio)) : 0,
-    defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback.defaultText || 'トピック'),
-      line: _bdNormalizeDepthLine(raw.line, fallback.line),
+    defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback().defaultText || 'トピック'),
+      line: _bdNormalizeDepthLine(raw.line),
     };
     return out;
   });
-  return normalized.length ? normalized : defaults.map(style => ({ ...style, line: { ..._bdNormalizeDepthLine(style.line, style.line) } }));
+  return normalized.length ? normalized : readDefaults().map(style => ({ ...style, line: { ..._bdNormalizeDepthLine(style.line, style.line) } }));
 }
 
 function bdEnsureDepthStyles() {
@@ -43667,7 +43765,7 @@ function bdContextMenu(e, nodeId) {
         viewSub.item(collapseLabel, () => {
           bdPushUndo();
           nd.collapsed = !nd.collapsed;
-          if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id], 'collapse');
+          if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id, ...bdDescendants(nd.id)], 'collapse');
           else bdRender();
           bdDirty();
         });
@@ -45033,6 +45131,27 @@ function bdFindNodeDropTargetAtPoint(clientX, clientY, dragIds) {
   const ids = [...new Set((dragIds || []).filter(Boolean))];
   if (!ids.length) return null;
   const idSet = new Set(ids);
+  if (typeof document.elementsFromPoint === 'function') {
+    const excludedIds = new Set(ids);
+    if (typeof bdDescendants === 'function') {
+      ids.forEach(id => bdDescendants(id).forEach(childId => excludedIds.add(childId)));
+    }
+    // Read the hit stack without hiding every selection overlay. Style writes
+    // here otherwise force another board-wide layout on every pointer move.
+    for (const hit of document.elementsFromPoint(clientX, clientY)) {
+      const card = hit.closest?.('.bd-node');
+      if (card) {
+        const nodeId = typeof card.id === 'string' && card.id.startsWith('bdn-') ? card.id.slice(4) : '';
+        if (!nodeId) return null;
+        if (excludedIds.has(nodeId)) continue;
+        return card;
+      }
+      if (hit.closest?.('.bd-resize, .bd-selection-rect')) continue;
+      // A sidebar, modal, or any other real occluder must still block the drop.
+      return null;
+    }
+    return null;
+  }
   const dragEls = ids.map(id => document.getElementById('bdn-' + id)).filter(Boolean);
   const selectionOverlays = typeof document.querySelectorAll === 'function'
     ? [...document.querySelectorAll('.bd-resize, .bd-selection-rect')]
@@ -47582,7 +47701,7 @@ const GBLinkRouter = (() => {
     if (IMAGE_EXTS.includes(e)) return 'image';
     if (VIDEO_EXTS.includes(e)) return 'video';
     if (AUDIO_EXTS.includes(e)) return 'audio';
-    if (e === 'pdf') return 'pdf';
+    if (e === 'pdf' || e === 'epub') return 'pdf'; // EPUBもビューワーの文書の経路（?pdf=）で開く
     return '';
   }
 
@@ -47613,7 +47732,7 @@ const GBLinkRouter = (() => {
     if (lower.endsWith('.mel-sheet')) return 'database';
     if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
-    if (extension === 'pdf') return 'pdf';
+    if (extension === 'pdf' || extension === 'epub') return 'pdf';
     if (extension === 'csv') return 'csv';
     if (extension === 'html' || extension === 'htm') return 'html';
     const media = mediaTypeFromExt(extension);
@@ -47681,7 +47800,7 @@ const GBLinkRouter = (() => {
     else if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) entry = { type: explicitType, label: nextLabel, path: nextPath };
     else if (explicitType === 'folder') entry = { type: 'folder', label: nextLabel, path: nextPath };
     else if (explicitType === 'calendar') entry = { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
-    else if (explicitType === 'pdf' || (explicitType === 'document' && extension === 'pdf')) {
+    else if (explicitType === 'pdf' || (explicitType === 'document' && (extension === 'pdf' || extension === 'epub'))) {
       entry = { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
     } else if (explicitType === 'document') entry = { type: 'page', label: nextLabel, path: nextPath };
     else if (explicitType === 'page') entry = { type: 'page', label: nextLabel, path: nextPath };
@@ -47701,7 +47820,7 @@ const GBLinkRouter = (() => {
     else if (IMAGE_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
     else if (VIDEO_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'video', label: nextLabel, path: nextPath };
     else if (AUDIO_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'audio', label: nextLabel, path: nextPath };
-    else if (extension === 'pdf') entry = { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
+    else if (extension === 'pdf' || extension === 'epub') entry = { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
     else entry = { type: 'page', label: nextLabel, path: nextPath };
 
     return entry;
@@ -48272,7 +48391,7 @@ function _bdInferLinkType(path, explicitType) {
   if (lower.endsWith('.mel-sheet')) return 'database';
   if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (ext === 'md' || ext === 'txt') return 'page';
-  if (ext === 'pdf') return 'pdf';
+  if (ext === 'pdf' || ext === 'epub') return 'pdf'; // EPUBもビューワーの文書の経路で開く
   if (ext === 'csv') return 'csv';
   if (ext === 'html' || ext === 'htm') return 'html';
   if (_bdLinkMediaType(ext)) return _bdLinkMediaType(ext);
@@ -48304,7 +48423,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
   if (explicitType === 'folder') return { type: 'folder', label: nextLabel, path: nextPath };
   if (explicitType === 'calendar') return { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
-  if (explicitType === 'pdf' || (explicitType === 'document' && ext === 'pdf')) {
+  if (explicitType === 'pdf' || (explicitType === 'document' && (ext === 'pdf' || ext === 'epub'))) {
     return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
   }
   if (explicitType === 'document') return { type: 'page', label: nextLabel, path: nextPath };
@@ -48322,7 +48441,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
   if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(ext)) return { type: 'media', mediaType: 'video', label: nextLabel, path: nextPath };
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return { type: 'media', mediaType: 'audio', label: nextLabel, path: nextPath };
-  if (ext === 'pdf') return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
+  if (ext === 'pdf' || ext === 'epub') return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
   if (ext === 'md' || ext === 'json' || !ext) return { type: 'page', label: nextLabel, path: nextPath };
   return { type: 'page', label: nextLabel, path: nextPath };
 }
@@ -48651,6 +48770,10 @@ async function openLinkedPathInMainPane(path, label, options) {
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
   if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
+  // Standalone Board has its own viewer, not the main application's pane layout.
+  if (_bdIsStandaloneBoardSurface() && typeof window._bsaOpenLinkedPathInSidebar === 'function') {
+    return window._bsaOpenLinkedPathInSidebar(entry.path, entry.label || label, { linkType: entry.type || opts.linkType });
+  }
   const paneId = _bdMainPaneIdForLinkedOpen();
   if (!paneId) {
     if (typeof navOpen === 'function') {
@@ -48877,7 +49000,7 @@ function _bdStandaloneViewerUrl(entry) {
   const path = entry?.path || '';
   const mediaType = entry?.mediaType || _bdLinkMediaType(_bdLinkExt(path));
   if (entry?.type === 'media' || mediaType) {
-    if (mediaType === 'pdf' || _bdLinkExt(path) === 'pdf') return 'viewer.html?pdf=' + encodeURIComponent(path);
+    if (mediaType === 'pdf' || _bdLinkExt(path) === 'pdf' || _bdLinkExt(path) === 'epub') return 'viewer.html?pdf=' + encodeURIComponent(path);
     if (mediaType === 'image') return 'viewer.html?file=' + encodeURIComponent(path);
   }
   if (entry?.type === 'html' && entry?.urlExternal) return path;
@@ -50741,7 +50864,6 @@ function bdApplyStylePresetMigration() {
 }
 
 function bdNormalizeCardStyles(styles) {
-  const defaults = _bdBuiltinCardStylesForBoard();
   const base = Array.isArray(styles) && styles.length
     ? styles.map(style => {
         const n = {
@@ -50781,7 +50903,7 @@ function bdNormalizeCardStyles(styles) {
         if (style._default && typeof style._default === 'object') n._default = _bdClone(style._default);
         return n;
       })
-    : _bdClone(defaults);
+    : _bdClone(_bdBuiltinCardStylesForBoard());
   _bdEnsureUniqueStyleIds(base, 'card-style');
   return base;
 }
@@ -50790,33 +50912,35 @@ function bdNormalizeLineStyles(styles) {
   // 保存値に欠けているキーがあれば、id 一致する BD_DEFAULT_LINE_STYLES から補完する。
   // （古い保存ファイルで pathType 等が抜けている場合、定数 'curve' に補完されると
   //  リセット後の BD_DEFAULT 値（'straight' 等）と差が出る問題への対策）
-  const defaults = _bdBuiltinLineStylesForBoard();
+  let defaults;
+  const readDefaults = () => defaults || (defaults = _bdBuiltinLineStylesForBoard());
   const base = Array.isArray(styles) && styles.length
     ? styles.map(style => {
-        const def = (defaults || []).find(d => d && d.id === style.id);
-        const fallbackArrow = def?.arrow ?? 'end';
-        const fallbackPath = def?.pathType ?? 'curve';
+        let foundDefault;
+        const def = () => foundDefault || (foundDefault = (readDefaults() || []).find(d => d && d.id === style.id));
+        const fallbackArrow = () => def()?.arrow ?? 'end';
+        const fallbackPath = () => def()?.pathType ?? 'curve';
         const n = {
           id: style.id || '',
-          name: style.name || def?.name || 'ライン',
-          color: style.color || def?.color || '',
-          colorOpacity: _bdNormalizeStyleOpacity(style.colorOpacity, _bdNormalizeStyleOpacity(def?.colorOpacity, 1)),
+          name: style.name || def()?.name || 'ライン',
+          color: style.color || def()?.color || '',
+          colorOpacity: Number.isFinite(Number(style.colorOpacity)) ? _bdNormalizeStyleOpacity(style.colorOpacity) : _bdNormalizeStyleOpacity(def()?.colorOpacity, 1),
           width: typeof _bdNormalizeLineWidth === 'function'
-            ? _bdNormalizeLineWidth(style.width, Number.isFinite(+def?.width) ? +def.width : 0)
-            : (Number.isFinite(+style.width) ? Math.max(0, Math.min(200, +style.width)) : (Number.isFinite(+def?.width) ? +def.width : 0)),
+            ? _bdNormalizeLineWidth(style.width, Number.isFinite(Number(style.width)) ? 0 : (Number.isFinite(+def()?.width) ? +def().width : 0))
+            : (Number.isFinite(+style.width) ? Math.max(0, Math.min(200, +style.width)) : (Number.isFinite(+def()?.width) ? +def().width : 0)),
           style: style.style === 'dashed'
             ? 'dashed'
-            : (style.style === '' ? '' : (def?.style ?? '')),
+            : (style.style === '' ? '' : (def()?.style ?? '')),
           arrow: ['end', 'start', 'both', ''].includes(style.arrow)
             ? style.arrow
-            : fallbackArrow,
+            : fallbackArrow(),
           pathType: style.pathType === 'free-bezier'
             ? 'curve'
             : style.pathType === 'orthogonal' || style.pathType === 'orthogonal-curve'
               ? 'orthogonal'
               : (style.pathType === 'straight' || style.straight)
                 ? 'straight'
-                : (style.pathType === 'curve' ? 'curve' : (fallbackPath === 'free-bezier' ? 'curve' : fallbackPath === 'orthogonal-curve' ? 'orthogonal' : fallbackPath)),
+                : (style.pathType === 'curve' ? 'curve' : (fallbackPath() === 'free-bezier' ? 'curve' : fallbackPath() === 'orthogonal-curve' ? 'orthogonal' : fallbackPath())),
           // 選択色はボード全体の bd.selectionColor に移行したため、lineStyle からは削除
         };
         // ラベル系 / テキスト系フィールドをスタイルに保持する (bdRenderStyleManager で編集可能なため、
@@ -50840,7 +50964,7 @@ function bdNormalizeLineStyles(styles) {
         if (style._default && typeof style._default === 'object') n._default = _bdClone(style._default);
         return n;
       })
-    : _bdClone(defaults);
+    : _bdClone(readDefaults());
   _bdEnsureUniqueStyleIds(base, 'line-style');
   return base;
 }
@@ -50850,13 +50974,37 @@ function bdNormalizeDisplayFilters(filters) {
 }
 
 let _bdUiStateReadDepth = 0;
+// Cloudの結合スクリプトでは、下の関数がこの初期化より先に呼ばれる。
+// その間は未設定として通常の読取りへ戻せるよう、宣言を先に利用可能にする。
+var _bdUiCssVarReads = null;
+
+function bdReadRenderCssVar(name) {
+  if (typeof getCssVar !== 'function') return '';
+  const root = typeof document !== 'undefined' ? document.documentElement : null;
+  if (!_bdUiCssVarReads || !root?.getAttributeNames || !root?.getAttribute) return getCssVar(name);
+  const stamp = root.getAttributeNames().map(key => `${key}=${root.getAttribute(key)}`).join('\n');
+  if (_bdUiCssVarReads.root !== root || _bdUiCssVarReads.stamp !== stamp) {
+    _bdUiCssVarReads.root = root; _bdUiCssVarReads.stamp = stamp; _bdUiCssVarReads.values.clear();
+  }
+  if (!_bdUiCssVarReads.values.has(name)) _bdUiCssVarReads.values.set(name, getCssVar(name));
+  return _bdUiCssVarReads.values.get(name);
+}
+
 // 同期の表示更新内では正規化を共有し、次の操作へ状態を持ち越さない。
 function bdWithNormalizedBoardUiState(refresh) {
   if (_bdUiStateReadDepth > 0) return refresh();
-  bdEnsureBoardUiState();
-  _bdUiStateReadDepth++;
-  try { return refresh(); }
-  finally { _bdUiStateReadDepth--; }
+  const previousReads = _bdUiCssVarReads;
+  _bdUiCssVarReads = { root: null, stamp: '', values: new Map() };
+  const update = () => {
+    bdEnsureBoardUiState();
+    _bdUiStateReadDepth++;
+    try { return refresh(); }
+    finally { _bdUiStateReadDepth--; }
+  };
+  try {
+    if (typeof bdWithBoardThemeColorSnapshot === 'function') return bdWithBoardThemeColorSnapshot(update);
+    return update();
+  } finally { _bdUiCssVarReads = previousReads; }
 }
 
 function bdEnsureBoardUiState() {
@@ -52259,7 +52407,16 @@ function _bdCanUseBoardDetailTabs() {
 
 function _bdEnsureBoardFileStyleTab() {
   if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
-  if (typeof renderFileStyleTab === 'function') renderFileStyleTab('board');
+  const el = typeof document !== 'undefined' ? document.getElementById?.('detail-tab-file-style') : null;
+  if (el?.hidden) {
+    el.dataset.fileStyleContext = 'board';
+    el._bdBoardFileStyleRefreshPending = true;
+    return;
+  }
+  if (typeof renderFileStyleTab === 'function') {
+    renderFileStyleTab('board');
+    if (el) el._bdBoardFileStyleRefreshPending = false;
+  }
 }
 
 // 課題3 (2026-08-14): 階層別/カード/ラインスタイルのフィールドを編集すると、その値を反映する
@@ -52388,9 +52545,26 @@ function _bdEnsureBoardStyleManagerTabs() {
 
 // グループスタイルタブの「編集するグループ」はタブを作った時のグループ一覧のままだった
 // （グループ化した直後に開いても空で、開き直すまで選べない）。タブへ切り替えた時に作り直す。
+// 非表示だった階層別スタイルとテーマ欄も、開く際に最新の対象へ同期する。
 if (typeof document !== 'undefined' && !window.__bdGroupTabRefreshBound) {
   window.__bdGroupTabRefreshBound = true;
   document.addEventListener('meldex:detail-tab-switched', event => {
+    if (event?.detail?.tab === 'file-style') {
+      const el = document.getElementById('detail-tab-file-style');
+      if (!el?._bdBoardFileStyleRefreshPending || el.hidden || el.dataset?.fileStyleContext !== 'board'
+          || typeof renderFileStyleTab !== 'function') return;
+      if (typeof _bdHasActiveBoardCanvas === 'function' && !_bdHasActiveBoardCanvas()) return;
+      renderFileStyleTab('board');
+      el._bdBoardFileStyleRefreshPending = false;
+      return;
+    }
+    if (event?.detail?.tab === 'board-depth-style') {
+      const el = document.getElementById('detail-tab-board-depth-style');
+      if (!el?._bdDepthSelectionRefreshPending || typeof _bdRenderDepthStyleInPanel !== 'function') return;
+      _bdRenderDepthStyleInPanel(el, _bdLastDepthEditIndex);
+      el._bdDepthSelectionRefreshPending = false;
+      return;
+    }
     if (event?.detail?.tab !== 'board-group-style') return;
     const el = document.getElementById('detail-tab-board-group-style');
     if (!el || typeof bd === 'undefined' || !bd?.path) return;
@@ -53214,12 +53388,16 @@ let _bdLastDetailSelectionKey = null;
 function _bdSyncDepthStyleTabForSelectionChange() {
   const nodeIds = (typeof bd !== 'undefined' && bd.selected) ? [...bd.selected].sort() : [];
   const connIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds().slice().sort() : [];
-  const key = nodeIds.join(',') + '|' + connIds.join(',');
+  const context = typeof bd !== 'undefined' ? [bd.path || '', Number(bd._openSeq) || 0] : ['', 0];
+  const key = JSON.stringify([...context, nodeIds, connIds]);
   if (key === _bdLastDetailSelectionKey) return;
   _bdLastDetailSelectionKey = key;
   const depthEl = document.getElementById('detail-tab-board-depth-style');
   if (depthEl && depthEl.childElementCount > 0 && typeof _bdRenderDepthStyleInPanel === 'function') {
+    depthEl._bdDepthSelectionRefreshPending = true;
+    if (depthEl.hidden) return;
     _bdRenderDepthStyleInPanel(depthEl, _bdLastDepthEditIndex);
+    depthEl._bdDepthSelectionRefreshPending = false;
   }
 }
 
@@ -53288,6 +53466,12 @@ function bdRefreshSelectionDetails(forceEmpty) {
 
 function bdSyncBoardUi(forceEmptyDetail) {
   const started = typeof bdPerfStart === 'function' ? bdPerfStart('bdSyncBoardUi') : 0;
+  const refresh = () => _bdSyncBoardUiContents(forceEmptyDetail, started);
+  if (typeof bdWithNormalizedBoardUiState === 'function') return bdWithNormalizedBoardUiState(refresh);
+  return refresh();
+}
+
+function _bdSyncBoardUiContents(forceEmptyDetail, started) {
   if (typeof state === 'undefined' || state.view === 'board') {
     const selected = bd.nodes.filter(node => bd.selected.has(node.id));
     const targets = selected.map(node => {
@@ -54200,7 +54384,9 @@ function bdAppendNodeImage(div, node) {
     bdSyncNodeImageGeometryAfterLayout(div, node, 'image-error');
   };
   div.appendChild(img);
-  img.src = node.img;
+  // A relocated linked image was just read and verified. Reuse those bytes
+  // for this render only; the saved node keeps its original link URL.
+  img.src = window.bdTakeRelocatedImagePreview?.(node) || node.img;
   window.MeldexImageLoading?.track?.(img, { host: div, label: 'ボードの画像を読み込んでいます', errorMode: 'silent' });
 }
 
@@ -55146,7 +55332,7 @@ function _bdCanvasCssVar(canvas, key) {
 
 function _bdBoardThemeCssVar(canvas, key) {
   return _bdCanvasCssVar(canvas, key)
-    || (typeof getCssVar === 'function' ? (getCssVar(key) || '').trim() : '');
+    || (typeof getCssVar === 'function' ? ((typeof bdReadRenderCssVar === 'function' ? bdReadRenderCssVar(key) : getCssVar(key)) || '').trim() : '');
 }
 
 function _bdClearCanvasBackgroundFileStyleVars(canvasEl) {
@@ -55284,7 +55470,10 @@ function _bdBoardThemeBackgroundColor() {
     : '';
   if (fileStyleBg) return fileStyleBg;
   if (!String(bd?.themeId || '').trim()) {
-    const documentBg = typeof getCssVar === 'function' ? (getCssVar('--bd-bg') || '').trim() : '';
+    const readDocumentBg = () => typeof getCssVar === 'function'
+      ? ((typeof bdReadRenderCssVar === 'function' ? bdReadRenderCssVar('--bd-bg') : getCssVar('--bd-bg')) || '').trim() : '';
+    const documentBg = typeof bdReadBoardThemeCssValue === 'function'
+      ? bdReadBoardThemeCssValue('--bd-bg', readDocumentBg) : readDocumentBg();
     if (documentBg) return documentBg;
   }
   if (typeof MeldexThemeManager === 'undefined' || typeof MeldexThemeManager.getActiveBoardTheme !== 'function') {
@@ -61929,10 +62118,10 @@ const MeldexPublicRuntime = (() => {
       feedback_relay_enabled: !!publishCfg.feedback_relay_enabled,
       feedback_google_url: publishCfg.feedback_google_url || (window.MeldexReleaseConfig?.betaFeedback?.googleWebAppUrl || ''),
       feedback_google_sheet: publishCfg.feedback_google_sheet || (window.MeldexReleaseConfig?.betaFeedback?.feedbackSheetName || 'feedback'),
-      submit_url: publishCfg.submit_url
+      submit_url: publishCfg.intake ? '' : (publishCfg.submit_url
         || (publishCfg.server_public_url
           ? String(publishCfg.server_public_url).replace(/\/+$/, '') + '/api/public-form/submit'
-          : ''),
+          : '')),
       ...(def.runtimeExtras || {}),
     } : {};
     const connectOrigins = [];
@@ -62166,8 +62355,14 @@ const MeldexCloudFormRelay = (() => {
         if (envelope.submission_id !== id) throw new Error('受付番号が異なります');
         const response = await decrypt(binding.channel, envelope);
         if (!binding.token || response.token !== binding.token || response.form_source_id !== binding.sourceId) { result.blocked++; continue; }
-        await io.import({ ...response, source_path: binding.sourcePath, submission_id: id });
-        io.receipt(id); result.imported++;
+        const outcome = await io.import({ ...response, source_path: binding.sourcePath, submission_id: id });
+        if (outcome?.queued) {
+          result.queued = (result.queued || 0) + 1;
+          continue;
+        }
+        io.receipt(id);
+        if (outcome?.replayed) result.replayed = (result.replayed || 0) + 1;
+        else result.imported++;
       } catch (error) { result.failed++; io.onError?.(error, path); }
     }
     return result;
@@ -62179,7 +62374,15 @@ const MeldexCloudFormRelay = (() => {
       write: (path, content) => apiPut('/file?path=' + encodeURIComponent(path), { content, create_only: true }),
       list: async path => {
         try {
-          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true', { silentError: true });
+          const provider = await globalThis.MeldexStorageAdapter?.getProvider?.();
+          if (typeof provider?.refreshMetadata === 'function') {
+            if (await provider.ensureWorkspacePermission?.('read') === false)
+              throw Object.assign(new Error('保存先の読み取り権限がありません'), { status: 403 });
+            // The respondent can create this folder after an earlier empty poll.
+            // Refresh only the intake folder instead of retaining a cached miss.
+            if (!await provider.refreshMetadata(path)) return [];
+          }
+          const items = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true', { silentError: true, skipBrowseCache: true, cache: 'no-store' });
           return Array.isArray(items) ? items : items.items || [];
         } catch (error) { if (error.status === 404) return []; throw error; }
       },
@@ -62231,11 +62434,14 @@ const MeldexCloudFormRelay = (() => {
         if (event.source !== target.popup || event.origin !== target.origin || event.data?.nonce !== target.nonce
           || event.data?.type !== 'meldex-form-intake-result') return;
         if (event.data.ok) { submitViaCloud.pending = null; finish(null, event.data); }
-        else finish(new Error(event.data.error || '回答を保存できませんでした'));
+        else {
+          if (submitViaCloud.pending?.key === payloadKey && event.data.outcome_unknown === true) submitViaCloud.pending.uncertain = true;
+          finish(new Error(event.data.error || '回答を保存できませんでした'));
+        }
       };
       const send = () => {
         if (target.popup.closed) { finish(new Error('受付画面が閉じられました。入力は残っています')); return; }
-        target.popup.postMessage({ type: 'meldex-form-intake', nonce: target.nonce, artifactPath: intake.artifact_path, artifactFolderId: intake.folder_id || '', envelope }, target.origin);
+        target.popup.postMessage({ type: 'meldex-form-intake', nonce: target.nonce, artifactPath: intake.artifact_path, artifactFolderId: intake.folder_id || '', envelope, outcome_unknown: submitViaCloud.pending?.key === payloadKey && submitViaCloud.pending.uncertain === true }, target.origin);
       };
       const timer = setInterval(send, 500), timeout = setTimeout(() => finish(new Error('受付を確認できません。Cloudへのログイン後に再送してください')), 300000);
       window.addEventListener('message', receive); send();
@@ -62263,15 +62469,26 @@ const MeldexCloudFormRelay = (() => {
         const status = document.createElement('p'); status.setAttribute('role', 'status');
         const wrapper = document.createElement('div'); wrapper.append(body, status);
         const send = document.createElement('button'); send.className = 'gb-btn gb-btn-primary'; send.textContent = '回答を送信'; send.dataset.e2eId = 'form-intake-send';
-        let saving = false;
+        let saving = false, uncertain = event.data.outcome_unknown === true;
         const modal = GBUI.createModal({ id: 'form-intake', title: '回答の送信', body: wrapper, footer: send,
-          onBeforeClose: () => !saving, onClose: () => { if (!completed) { reply({ ok: false, error: '送信を取り消しました' }); busy = false; } } });
+          onBeforeClose: () => !saving, onClose: () => {
+            if (!completed) {
+              completed = { ok: false, outcome_unknown: uncertain, error: uncertain
+                ? '送信結果は未確認です。保存されている可能性があります。同じ内容で再試行してください'
+                : '送信を取り消しました' };
+              reply(completed); busy = false;
+            }
+          } });
         send.addEventListener('click', async () => {
           if (saving) return; saving = true; send.disabled = true;
           try {
-            completed = await accept(request, io); reply(completed);
+            completed = await accept(request, { ...io, write: (...args) => {
+              uncertain = true; return io.write(...args);
+            } }); reply(completed);
             status.textContent = '回答を受け付けました。この画面を閉じられます。';
-          } catch (error) { status.textContent = '保存できません: ' + (error.userMessage || error.message) + '。ログイン・共有権限を確認して再試行してください。'; }
+          } catch (error) {
+            status.textContent = '保存できません: ' + (error.userMessage || error.message) + '。ログイン・共有権限を確認して再試行してください。';
+          }
           finally { saving = false; send.disabled = !!completed; }
         });
         modal.open();
@@ -63020,7 +63237,7 @@ async function saveCurrentScriptNoteAs(path, options = {}) {
   const rawSaveResult = await apiPut('/file?path=' + encodeURIComponent(targetPath), {
     content: prepared.text,
     ...(targetExists ? { force_overwrite: true } : { create_only: true }),
-  });
+  }, { backgroundFileWrite: true });
   const documentId = rawSaveResult?.document_id || prepared.documentId || '';
   const saveResult = documentId ? { ...(rawSaveResult || {}), document_id: documentId } : (rawSaveResult || {});
   if (prepared.independentCopy && editor.doc) {
@@ -66289,7 +66506,7 @@ function _sn2StopSep() {
     return toolbar;
   }
 
-  async function refreshValueHistory(scope, entryId, path) {
+  async function refreshValueHistory(scope, entryId, path, change) {
     for (const root of document.querySelectorAll('[data-meldex-entity-detail]')) {
       const controller = root._meldexEntityDetailController;
       const target = controller?.valueHistoryTarget?.();
@@ -66303,9 +66520,13 @@ function _sn2StopSep() {
       const sameControls = () => Array.from(root.querySelectorAll('[data-e2e-id]'))
         .filter(control => control.dataset.e2eId === focusId);
       const focusIndex = focusId ? sameControls().indexOf(focused) : -1;
-      await controller.rerender();
-      // The columns tab is selected asynchronously and may replace its controls once more.
-      await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.flush?.();
+      const propertyRefreshed = !!change?.property && typeof controller.refreshValueProperty === 'function'
+        && await controller.refreshValueProperty(change.property, change.entitySnapshot);
+      if (!propertyRefreshed) {
+        await controller.rerender();
+        // The columns tab is selected asynchronously and may replace its controls once more.
+        await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.flush?.();
+      }
       // Do not steal focus if the user moved elsewhere while the value was loading.
       if (focusIndex >= 0 && (document.activeElement === focused || document.activeElement === document.body)) {
         sameControls()[focusIndex]?.focus({ preventScroll: true });
@@ -66708,13 +66929,53 @@ function _sn2StopSep() {
       const valueHistoryPath = state.path;
       const entityGridOptions = {
         parentDb: parent,
+        emptyProperties: options.emptyProperties,
         propTypes: meta?.property_types || options.propTypes || undefined,
         surface: state.surface,
         topicTabs: true,
         historyScope: options.historyScope,
-        onHistoryChanged: typeof valueHistoryScope === 'string' ? () => refreshValueHistory(valueHistoryScope, entryId, valueHistoryPath) : undefined,
+        onHistoryChanged: typeof valueHistoryScope === 'string' ? change => refreshValueHistory(valueHistoryScope, entryId, valueHistoryPath, change) : undefined,
         readOnly: access.readOnly,
         ctx: options.ctx,
+      };
+      let propertyRefreshSeq = new Map();
+      state.refreshValueProperty = async (property, snapshot) => {
+        const columnsId = window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns';
+        if (state.currentTopicLayoutId && state.currentTopicLayoutId !== columnsId) return false;
+        const card = Array.from(grid.querySelectorAll('.entry-prop-card')).find(el => el.dataset.propName === property);
+        const values = card?.querySelector('.entry-prop-values');
+        if (!values || typeof renderEntityPropValuesInto !== 'function') return false;
+        const seq = (propertyRefreshSeq.get(property) || 0) + 1, baseline = state.data;
+        propertyRefreshSeq.set(property, seq);
+        const normalize = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const currentId = String(baseline?.entry_id || baseline?.id || '');
+        const snapshotId = String(snapshot?.entry_id || snapshot?.id || '');
+        const usableSnapshot = snapshot && normalize(snapshot.path) === normalize(state.path)
+          && (!currentId || snapshotId === currentId) && snapshot.properties && Number.isInteger(snapshot.revision) && snapshot.revision >= Number(baseline?.revision || 0);
+        const fresh = usableSnapshot ? snapshot
+          : await apiFetch('/entity?path=' + encodeURIComponent(state.path), { cache: 'no-store', skipBrowseCache: true });
+        if (state.disposed || !grid.isConnected || !values.isConnected || root.dataset.meldexEntityDetail !== id
+          || seq !== propertyRefreshSeq.get(property) || state.data !== baseline) return true;
+        const props = { ...(state.data?.properties || data.properties || {}), [property]: fresh.properties?.[property] || [] };
+        data.properties = props; state.data.properties = props;
+        // 値だけの変更で本文の入力や保存基準を置き換えない。
+        const bodyUnchanged = !state.saving && Number(fresh.revision ?? 0) >= Number(state.data?.revision || 0) && fresh.page_content != null
+          && String(fresh.page_content) === String(state.editor?.dataset.lastSavedMd || '');
+        if (bodyUnchanged) {
+          for (const target of new Set([data, state.data])) {
+            if (fresh.revision != null) target.revision = fresh.revision;
+            if (fresh.freetext_etag) target.freetext_etag = fresh.freetext_etag;
+          }
+          if (state.editor && fresh.revision != null) state.editor.dataset.lastSavedRevision = String(fresh.revision);
+          if (state.editor && fresh.freetext_etag) state.editor.dataset.lastSavedEtag = fresh.freetext_etag;
+        }
+        const nextValues = values.cloneNode(false);
+        renderEntityPropValuesInto(nextValues, property, data, state.path, entityGridOptions.propTypes || {}, {
+          ...entityGridOptions, dbPath: options.ctx?.dbPath || parent,
+          readOnly: entityGridOptions.readOnly || root.dataset.readOnly === '1',
+        });
+        values.replaceWith(nextValues);
+        return true;
       };
       state.selectTopicLayout = async (layoutId, selection = {}) => {
         // Mounting the outer columns panel must retain the default form inside it.
@@ -66996,7 +67257,7 @@ function _sn2StopSep() {
       get editor() { return state.editor; },
       valueHistoryTarget() { return { path: state.path, entryId: state.valueHistoryEntryId || '', connected: root.isConnected && !state.disposed,
         scope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope }; },
-      flush, dispose, rerender, ready: null,
+      flush, dispose, rerender, refreshValueProperty: (property, snapshot) => state.refreshValueProperty?.(property, snapshot) || false, ready: null,
     };
     controller.ready = Promise.resolve(previousDispose).catch(() => false).then(saved => {
       if (saved === false) return false;
@@ -67455,6 +67716,8 @@ function _sn2StopSep() {
       if (options.startTimeoutMs) startOpts.timeoutMs = options.startTimeoutMs;
       started = options.startMethod === 'GET'
         ? await apiFetch(startPath, { ...(options.startOptions || {}), ...startOpts })
+        : options.startMethod === 'PUT'
+        ? await apiPut(startPath, body || {}, { ...(options.startOptions || {}), ...startOpts })
         : await apiPost(startPath, body || {}, startOpts);
       jobId = String(started?.job_id || '');
     }
@@ -67534,6 +67797,30 @@ function _sn2StopSep() {
     error.name = 'LongRunningJobError';
     error.jobId = jobId;
     throw error;
+  }
+
+  async function runFileWriteJob(path, body, options = {}) {
+    const requestOptions = { ...options, method: 'PUT', body: JSON.stringify(body) };
+    try {
+      const result = await runBackgroundJob(path + (path.includes('?') ? '&' : '?') + 'background=true', body, {
+        startMethod: 'PUT', startOptions: { ...options, backgroundFileWrite: false },
+        operationProgress: false, cancellable: false, pollIntervalMs: 50,
+      });
+      window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOptions, result);
+      return result;
+    } catch (error) {
+      if (error?.errorStatus) {
+        if (window.MeldexSaveSafety?.enrichError) {
+          window.MeldexSaveSafety.enrichError(error, { detail: error.errorDetail || error.message }, Number(error.errorStatus));
+        } else {
+          error.status = Number(error.errorStatus);
+          error.meldexCode = error.errorDetail?.code || '';
+          error.meldexDetail = error.errorDetail;
+        }
+      }
+      if (!options.silentError) window.MeldexSaveSafety?.reportApiError?.(path, requestOptions, error);
+      throw error;
+    }
   }
 
   function _operationLabel(startPath, options) {
@@ -67771,6 +68058,7 @@ function _sn2StopSep() {
   window.describeJobFailure = describeJobFailure;
   window.importAttentionValues = importAttentionValues;
   window.runBackgroundJob = runBackgroundJob;
+  window.runFileWriteJob = runFileWriteJob;
   window.formatJobProgress = formatJobProgress;
   window.formatJobEta = formatJobEta;
 })();
@@ -74967,6 +75255,10 @@ function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
         .then(() => true)
         .catch((error) => {
           console.warn('[Meldex] シート表示設定を保存できませんでした', error);
+          if (!state.superseded && _dbViewConfigBackendSavePayloads.get(key) === state && typeof showStatus === 'function') {
+            const reason = error?.userMessage || error?.message || '';
+            showStatus('シートの表示設定を保存できませんでした' + (reason ? ': ' + reason : ''), true);
+          }
           return false;
         })
     ))
@@ -76302,7 +76594,7 @@ function _sn2MapRenamedFilePath(current, oldPath, newPath) {
   const to = norm(newPath);
   if (!cur || !from || !to) return null;
   const lower = value => value.toLowerCase();
-  const isAbs = value => /^(?:[a-z]:\/|\/)/i.test(value);
+  const isAbs = value => /^(?:[a-z]:\/|\/|__dropbox_root__\/[^/]+(?:\/|$))/i.test(value);
   // 同じ表記どうし
   if (lower(cur) === lower(from)) return { path: to, exact: true };
   if (lower(cur).startsWith(lower(from) + '/')) return { path: to + cur.slice(from.length), exact: false };
@@ -76740,6 +77032,10 @@ class ScriptNoteComponent extends ToolComponent {
     this.el.dataset.fileReadOnly = locked ? 'true' : 'false';
     const title = this.el.querySelector?.('#title-input');
     const layout = this.el.querySelector?.('#scenario-note-layout-select');
+    // 電話幅ではタイトル用ツールバーが隠れるため、表示中のビュー選択欄にも同じ鍵の印を出す。
+    const viewSelect = this.el.querySelector?.('.gb-view-tabs-select');
+    if (viewSelect && viewSelect.dataset.lockBadgePath !== path) window.MeldexFileLockBadge?.apply?.(viewSelect, path);
+    viewSelect?._fileLockBadgeEl?.classList?.add('sn2-mobile-lock-badge');
     if (title) title.disabled = locked;
     if (layout) layout.disabled = locked;
     const mutationActions = new Set([
@@ -80959,6 +81255,8 @@ function historyMarkFileEffects(entry, effects) {
   if (!entry || !effects) return entry;
   const clean = (list) => (Array.isArray(list) ? list : []).map(p => String(p || '')).filter(Boolean);
   entry.fileEffects = { undoDeletes: clean(effects.undoDeletes), redoDeletes: clean(effects.redoDeletes) };
+  const owner = String(effects.undoCompanionOwner || '');
+  if (owner && entry.fileEffects.undoDeletes.some(path => _historySameFile(path, owner))) entry.fileEffects.undoCompanionOwner = owner;
   return entry;
 }
 
@@ -80994,6 +81292,9 @@ function _historyEntryDeletesOtherFile(entry, direction, scope) {
   const paths = entry?.fileEffects?.[direction === 'undo' ? 'undoDeletes' : 'redoDeletes'] || [];
   if (!paths.length) return false;
   const own = _historyScopeFilePath(scope);
+  // 新規フォームと同時に作った回答先だけを、フォーム側から一緒に取り消す。
+  const companionOwner = direction === 'undo' && entry?.fileEffects?.undoCompanionOwner;
+  if (own && companionOwner && _historySameFile(companionOwner, own) && paths.some(path => _historySameFile(path, own))) return false;
   return paths.some(path => !own || !_historySameFile(path, own));
 }
 
@@ -81878,7 +82179,13 @@ function _meldexMapTabHistoryScope(tab) {
 }
 
 function _meldexFormAppTabHistoryScope(tab) {
-  const path = String(tab?.path || tab?.state?.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  let path = String(tab?.path || tab?.state?.formPath || '');
+  if (path && typeof MeldexRuntimeAdapter !== 'undefined' && MeldexRuntimeAdapter.isBrowserDataMode?.() === false
+      && typeof state !== 'undefined' && state.vaultPath && window.GBPathUtils?.isAbsolute && window.GBPathUtils?.join
+      && window.GBPathUtils.isAbsolute(state.vaultPath) && !window.GBPathUtils.isAbsolute(path)) {
+    path = window.GBPathUtils.join(state.vaultPath, path);
+  }
+  path = path.replace(/\\/g, '/').replace(/^\/+/, '');
   return path ? `form-app:${path}` : '';
 }
 
@@ -92292,17 +92599,18 @@ async function _addDropboxOutlinerRootFromSettings() {
 
 async function _restoreOutlinerRootsSettingsSnapshot(snapshot) {
   const normalized = _normalizeOutlinerRootsSettingsSnapshot(snapshot);
-  await apiPut('/vault', { path: normalized.vaultPath || '' });
+  const dropbox = window.MeldexRuntimeAdapter?.isDropboxMode?.() === true;
+  if (!dropbox) await apiPut('/vault', { path: normalized.vaultPath || '' });
   // baseRoots: この呼び出し元（Undo/Redo）が最後に把握していた一覧を基準として送る
   // （saveOutlinerRootsと同じ理由。台帳合流分のrootをUndo/Redoで消す操作でも
   // 正しく削除印が付くようにするため）。
   await apiPut('/outliner-roots', { roots: normalized.roots, baseRoots: _outlinerRootsBaseline });
   _outlinerRootsBaseline = _cloneOutlinerRootsBaseline(normalized.roots);
-  if (typeof state !== 'undefined') state.vaultPath = normalized.vaultPath || '';
+  if (!dropbox && typeof state !== 'undefined') state.vaultPath = normalized.vaultPath || '';
   _outlinerRoots = normalized.roots.map(root => ({ ...root }));
   renderOutlinerRootsSettings();
   const workEl = document.getElementById('sb-work');
-  if (workEl) {
+  if (workEl && !dropbox) {
     const label = normalized.vaultName || normalized.vaultPath.split(/[\\/]/).pop() || '';
     workEl.textContent = normalized.vaultPath ? ('ソースフォルダ: ' + label) : '';
   }
@@ -94881,8 +95189,10 @@ function settingsThemeApplyBulkDecoration(prop, value) {
 function settingsThemeOpenBulkDecoration(button) {
   if (_settingsThemeIsReadonlyElement(button)) { _settingsThemePromptDuplicateForEdit(); return; }
   const extra = document.createElement('label');
-  extra.className = 'gb-field-row';
-  extra.innerHTML = '行間 <input type="number" class="gb-input" min="50" max="400" step="1" placeholder="個別" aria-label="行間を一括設定" data-e2e-id="settings-theme-bulk-line-height"> %';
+  // 書式ポップアップの他の項目と同じ組（項目名＋入力＋単位）にする。設定行（項目名128px・折り返さない）を
+  // 使うと幅の狭いポップアップで「行間」が縦に折れ、単位がはみ出していた（2026-11-27）。
+  extra.className = 'gb-fmt-popup-group';
+  extra.innerHTML = '<span class="gb-fmt-popup-label">行間</span><input type="number" class="gb-input gb-fmt-num" min="50" max="400" step="1" placeholder="個別" aria-label="行間を一括設定" data-e2e-id="settings-theme-bulk-line-height"><span class="gb-fmt-popup-label">%</span>';
   extra.querySelector('input').addEventListener('change', event => {
     if (event.target.value) settingsThemeApplyBulkDecoration('lineHeight', Number(event.target.value));
   });
@@ -97617,6 +97927,8 @@ function _isSettingsLocalVaultPath(path) {
 }
 
 async function _syncSettingsVaultPathFromOutlinerRoots(roots) {
+  // Dropbox treats the workspace independently of desktop vault selection.
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return true;
   const localVisible = Array.isArray(roots)
     ? roots.find(root => root && root.visible && _isSettingsLocalVaultPath(root.path))
     : null;
@@ -98455,7 +98767,10 @@ function _restoreSettingsDialogStorageAfterHistory(keys) {
   if (keys.some(key => key.startsWith('meldex-a11y-'))) {
     window.MeldexAccessibility?.applyPreferences?.();
   }
-  if (keys.some(key => key === 'editor-theme' || key === 'editor-theme-name' || key.startsWith('meldex-theme-'))) {
+  if (keys.some(key => ['editor-theme', 'editor-theme-name', 'meldex-default-theme-id', 'meldex-custom-themes'].includes(key) || key.startsWith('meldex-theme-'))) {
+    // Storage undo can remove the newly selected custom theme entirely. Apply
+    // the restored preset before its saved overrides, clearing obsolete vars.
+    window.MeldexThemeManager?.refreshThemeSettingsAfterExternalChange?.(keys);
     if (typeof loadColorSettings === 'function') loadColorSettings();
   }
   if (keys.some(key => _SETTINGS_PROFILE_KEYS.includes(key))) {
@@ -99801,8 +100116,12 @@ function _settingsThemeBoardSetVar(key, value) {
   if (value == null || value === '') document.documentElement.style.removeProperty(key);
   else document.documentElement.style.setProperty(key, String(value));
   if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
-  if (typeof bd !== 'undefined' && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyBoardThemeRuntime === 'function') MeldexThemeManager.applyBoardThemeRuntime(bd);
-  if (typeof _bdApplyCurrentBoardBackground === 'function') _bdApplyCurrentBoardBackground();
+  // Runtime already paints the canvas background along with the theme vars.
+  if (typeof bd !== 'undefined' && typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.applyBoardThemeRuntime === 'function') {
+    const canvas = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas') : document.getElementById('bd-canvas');
+    const world = typeof bdGetBoardElement === 'function' ? bdGetBoardElement('world') : document.getElementById('bd-world');
+    MeldexThemeManager.applyBoardThemeRuntime(bd, canvas, world);
+  } else if (typeof _bdApplyCurrentBoardBackground === 'function') _bdApplyCurrentBoardBackground();
 }
 
 function settingsThemeBoardToggleShadow(input) {
@@ -99862,6 +100181,18 @@ function settingsThemeBoardChooseBgImage() {
         input.remove();
         return;
       }
+      const overlay = document.querySelector('[data-e2e-id="settings-dialog-overlay"]');
+      if (overlay?.__settingsMaintenanceBusy || overlay?.getAttribute('aria-busy') === 'true') { input.remove(); return; }
+      const boardPath = bd.path;
+      const previousImage = document.documentElement.style.getPropertyValue('--bd-bg-image');
+      const previousDirty = !!window._settingsThemeDirty;
+      const roots = [...new Set([overlay, panel?.closest?.('[role="dialog"]') || panel].filter(Boolean))];
+      const controls = [...new Set(roots.flatMap(root => [...root.querySelectorAll('input, select, textarea, button')]))];
+      const disabled = controls.map(control => control.disabled);
+      if (overlay) overlay.__settingsMaintenanceBusy = true;
+      controls.forEach(control => { control.disabled = true; });
+      let previewUrl = '', uploadedUrl = '';
+      if (typeof showStatus === 'function') showStatus('背景画像を読み込んでいます...');
       try {
         const reader = new FileReader();
         const dataUrl = await new Promise((resolve, reject) => {
@@ -99869,8 +100200,18 @@ function settingsThemeBoardChooseBgImage() {
           reader.onerror = () => reject(reader.error);
           reader.readAsDataURL(file);
         });
+        if (bd.path !== boardPath || panel && !panel.isConnected) throw new Error('背景画像の設定先が変わりました');
+        // The draft previews local bytes immediately; settings cannot commit
+        // until the durable image path replaces these temporary bytes.
+        // A raw data URI contains a semicolon and is not a valid unquoted
+        // custom-property value. A scoped object URL is safe for this draft.
+        previewUrl = URL.createObjectURL(file);
+        _settingsThemeBoardSetVar('--bd-bg-image', previewUrl);
+        // Let the selected image reach the screen before upload bookkeeping
+        // and its workspace refreshes can consume the next frame.
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const dir = (() => {
-          const p = String(bd.path || '');
+          const p = String(boardPath || '');
           const i = p.lastIndexOf('/');
           return i >= 0 ? p.substring(0, i) : '';
         })();
@@ -99880,13 +100221,24 @@ function settingsThemeBoardChooseBgImage() {
           body: JSON.stringify({ data: dataUrl, filename: file.name || 'background.png' }),
         });
         if (!res?.ok || !res.path) throw new Error('upload failed');
-        const url = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-        _settingsThemeBoardSetVar('--bd-bg-image', url);
+        if (bd.path !== boardPath || panel && !panel.isConnected) throw new Error('背景画像の設定先が変わりました');
+        uploadedUrl = window.MeldexResourceUrl?.fileRaw?.(res.path)
+          || API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
+        _settingsThemeBoardSetVar('--bd-bg-image', uploadedUrl);
         // パネル再描画
         _settingsThemeRefreshBoardExtras();
         if (typeof showStatus === 'function') showStatus('背景画像を設定しました');
       } catch {
+        const current = document.documentElement.style.getPropertyValue('--bd-bg-image');
+        if (previewUrl && (current === previewUrl || uploadedUrl && current === uploadedUrl)) {
+          _settingsThemeBoardSetVar('--bd-bg-image', previousImage);
+          if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(previousDirty);
+        }
         if (typeof showStatus === 'function') showStatus('背景画像の設定に失敗しました', true);
+      } finally {
+        controls.forEach((control, index) => { control.disabled = disabled[index]; });
+        if (overlay) overlay.__settingsMaintenanceBusy = false;
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
       }
     }
     input.remove();
@@ -101886,7 +102238,7 @@ async function preparePublishContextSnapshot(snapshot) {
     contextPolicy: 'saved-active-board',
     openSeq,
     documentKey,
-    sourceRevision: String(bd.lastSavedTransportRevision || bd.lastSavedEtag || ''),
+    sourceRevision: _publishSourceRevision(bd.lastSavedTransportRevision || bd.lastSavedEtag),
     activeBoardViewId: String(bd.activeBoardViewId || snapshot.viewId || ''),
     document: bdToMd(),
     canvasHtml,
@@ -101977,6 +102329,21 @@ async function assertPublishAllowedForContext(ctx) {
 }
 if (typeof window !== 'undefined') window.assertPublishAllowedForContext = assertPublishAllowedForContext;
 
+// Keep the transport namespace and actual revision token when the file API
+// returns an object; coercing an object with String() loses both.
+function _publishSourceRevision(value) {
+  if (!value) return '';
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  if (coordinator?.normalizeTransportRevision && coordinator?.currentTransportName)
+    return coordinator.normalizeTransportRevision(coordinator.currentTransportName(), value);
+  if (typeof value === 'object') {
+    const transport = value.transport || value.kind;
+    const token = value.token || value.revision || value.etag;
+    return transport && token ? String(transport) + ':' + String(token) : '';
+  }
+  return String(value);
+}
+
 async function assertPublishSourceRevisionCurrent(ctx) {
   if (!ctx?.path || ctx.kind !== 'board' || !ctx.board) return true;
   if (!ctx.board.sourceRevision || typeof apiFetch !== 'function') {
@@ -101986,8 +102353,8 @@ async function assertPublishSourceRevisionCurrent(ctx) {
     const current = await apiFetch('/file?path=' + encodeURIComponent(ctx.path) + '&metadata_only=1', {
       silentError: true,
     });
-    const revision = String(current?.transport_revision || current?.etag || current?.revision || '');
-    if (!revision || revision !== String(ctx.board.sourceRevision)) {
+    const revision = _publishSourceRevision(current?.transport_revision || current?.etag || current?.revision);
+    if (!revision || revision !== _publishSourceRevision(ctx.board.sourceRevision)) {
       return !!_publishContextError('ボードが別の端末で更新されたため、再読込してから公開してください');
     }
     return true;
@@ -102068,6 +102435,8 @@ function renderPublishSettingsPanel(contextSnapshot) {
   // 単一パネル種別は「表ビュー/フォーム」設定を持たない
   const isSinglePanel = ['page', 'entity', 'csv', 'calendar', 'scriptnote'].includes(ctx.kind);
   const isDb = ctx.kind === 'database' || ctx.kind === 'form-app';
+  const isCloudForm = ctx.kind === 'form-app' && typeof MeldexExportSave !== 'undefined'
+    && !!MeldexExportSave.isBrowserDataContext?.();
   return `<section class="gb-section gb-section--boxed" id="publish-settings-panel" data-kind="${esc(ctx.kind)}" data-path="${esc(ctx.path)}">
     <div class="gb-section-title">${lucide('globe',14)} 公開${isSinglePanel ? ' ' + fieldHelp('現在表示中の内容がそのまま静的HTMLとして出力されます', { e2eId: 'publish-single-panel-help' }) : ''}</div>
     <div class="gb-section-desc">対象: ${esc(ctx.label)}${ctx.path ? ' / ' + esc(ctx.path) : ''}</div>
@@ -102083,8 +102452,10 @@ function renderPublishSettingsPanel(contextSnapshot) {
     </div>
     ${isDb ? `<div class="gb-check-row"><label class="gb-check"><input type="checkbox" id="publish-form-submit-enabled" data-e2e-id="publish-form-submit-enabled" ${cfg.form_submit_enabled ? 'checked' : ''}><span>公開フォーム送信を受け付ける（フォームビューのみ）</span></label></div>` : ''}
     ${isDb ? `
+    ${!isCloudForm ? `
     <label class="gb-field-row"><span class="gb-label">Meldex公開URL</span><input id="publish-server-url" data-e2e-id="publish-server-url" class="gb-input" value="${esc(cfg.server_public_url || '')}" placeholder="https://example.example"></label>
     <label class="gb-field-row"><span class="gb-label">送信先URL</span><input id="publish-submit-url" data-e2e-id="publish-submit-url" class="gb-input" value="${esc(cfg.submit_url || '')}" placeholder="未指定ならMeldex公開URLから生成"></label>
+    ` : ''}
     <label class="gb-field-row"><span class="gb-label">送信トークン</span><input id="publish-form-token" data-e2e-id="publish-form-token" class="gb-input" value="${esc(cfg.form_submit_token || '')}" readonly><button type="button" class="gb-btn gb-btn-sm" id="publish-token-btn" data-e2e-id="publish-token-regenerate">再発行</button></label>
     ` : ''}
   </section>`;
@@ -103653,6 +104024,26 @@ async function resetLayoutToDefault() {
     const children = _nodeChildrenContainer(node);
     const toggle = node?.querySelector?.(':scope > .tree-node-row .tree-toggle');
     if (!children || children.dataset.loaded === 'true' || toggle?.dataset.expanded !== 'true') return;
+    if (typeof MutationObserver === 'function') {
+      await new Promise(resolve => {
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timeout);
+          observer.disconnect();
+          resolve();
+        };
+        const check = () => {
+          if (!node.isConnected || toggle.dataset.expanded !== 'true' || children.dataset.loaded === 'true') finish();
+        };
+        const observer = new MutationObserver(check);
+        const timeout = setTimeout(finish, 1500);
+        observer.observe(node.parentElement || node, { attributes: true, attributeFilter: ['data-loaded', 'data-expanded'], childList: true, subtree: true });
+        check();
+      });
+      return;
+    }
     for (let i = 0; i < 30; i++) {
       await _sleep(50);
       if (!node.isConnected || toggle.dataset.expanded !== 'true' || children.dataset.loaded === 'true') return;
@@ -103689,6 +104080,25 @@ async function resetLayoutToDefault() {
     }
   }
 
+  async function _ensureHomeFolderForReveal(path) {
+    const home = typeof _homeFolderPath === 'string' ? _normalizePath(_homeFolderPath) : '';
+    const target = _normalizePath(path);
+    const body = document.getElementById('body-home');
+    if (!home || !target.startsWith(home + '/') || !body) return false;
+    try {
+      if (body.classList.contains('collapsed')) {
+        if (typeof toggleSidebarSection !== 'function') return false;
+        await toggleSidebarSection('home');
+      } else if (body.dataset.loaded !== 'true' || !_findTreeNodeExact(target)) {
+        if (typeof renderHomeFolderTree !== 'function') return false;
+        await renderHomeFolderTree({ reason: 'reveal-home-target' });
+      }
+      return body.dataset.loaded === 'true';
+    } catch {
+      return false;
+    }
+  }
+
   async function _expandTreeToPath(path) {
     for (const candidate of _candidateRevealPaths(path)) {
       let exact = _findTreeNodeExact(candidate);
@@ -103696,7 +104106,15 @@ async function resetLayoutToDefault() {
         await _expandTreeNodeAncestors(exact);
         return exact;
       }
-      for (const prefix of _pathPrefixes(candidate)) {
+      const prefixes = _pathPrefixes(candidate);
+      let start = 0;
+      for (let index = prefixes.length - 1; index >= 0; index--) {
+        if (_findTreeNodeExact(prefixes[index])) {
+          start = index;
+          break;
+        }
+      }
+      for (const prefix of prefixes.slice(start)) {
         const node = _findTreeNodeExact(prefix);
         if (!node) continue;
         await _expandTreeNode(node);
@@ -103751,6 +104169,7 @@ async function resetLayoutToDefault() {
       return false;
     }
     await _ensureOutlinerLoadedIfEmpty();
+    await _ensureHomeFolderForReveal(path);
     let expandedNode = await _expandTreeToPath(path);
     if (!expandedNode && typeof refreshOutliner === 'function') {
       // 新規作成や改名の直後は、表示中の枝がまだ古い場合がある。
@@ -104087,6 +104506,10 @@ async function resetLayoutToDefault() {
 
     if (state.nodeByPath) state.nodeByPath.set(path, { row, selectRow, isFile, expand: null });
 
+    if (isFile && state.selectSheetTopics && folder.type === 'database') {
+      return _attachSheetTopics(node, row, toggle, root, { path, name }, depth, state, selectRow, activate);
+    }
+
     if (isFile) {
       row.addEventListener('click', () => selectRow());
       row.addEventListener('dblclick', () => { selectRow(); activate(); });
@@ -104202,6 +104625,161 @@ async function resetLayoutToDefault() {
     node.appendChild(row);
     node.appendChild(children);
     if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
+    return node;
+  }
+
+  // selectSheetTopics: シートの行の下にトピック（シートの行）を並べ、トピックも選べるようにする。
+  // トピックの一覧はシートの名前解決と同じ取得経路（_getRelationMap / /pivot）を使う。
+  async function _loadSheetTopics(sheetPath) {
+    if (typeof _getRelationMap === 'function') {
+      const map = await _getRelationMap(sheetPath);
+      return Object.entries(map?.idToName || {}).map(([id, name]) => ({ id, name }));
+    }
+    const data = await apiFetch('/pivot?path=' + encodeURIComponent(sheetPath));
+    return Object.keys(data?.entities || {}).map(name => ({ id: String(data.entities[name]?._id || name), name }));
+  }
+
+  function _topicSelection(root, sheet, topic) {
+    return {
+      ..._selectionFor(root, sheet.path, sheet.name, 'topic', 'topic'),
+      sheetName: sheet.name,
+      topicName: topic.name,
+      topicId: topic.id || topic.name,
+    };
+  }
+
+  function _attachSheetTopics(node, row, toggle, root, sheet, depth, state, selectRow, activate) {
+    row.setAttribute('aria-expanded', 'false');
+    toggle.style.visibility = '';
+    const children = document.createElement('div');
+    children.className = 'gb-folder-picker-children';
+    children.style.display = 'none';
+    children.dataset.loaded = '0';
+    const setExpanded = open => {
+      children.style.display = open ? '' : 'none';
+      row.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.title = open ? '折りたたむ' : '展開';
+      toggle.setAttribute('aria-label', `${sheet.name}${open ? 'を折りたたむ' : 'のトピックを表示'}`);
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.innerHTML = _icon(open ? 'chevronDown' : 'chevronRight', 16);
+      if (typeof replaceIcons === 'function') replaceIcons(toggle);
+    };
+    const message = (text, isError) => {
+      const el = document.createElement('div');
+      el.textContent = text;
+      el.className = isError ? 'gb-folder-picker-message is-error' : 'gb-folder-picker-message';
+      el.style.setProperty('--gb-picker-depth', String(depth + 1));
+      return el;
+    };
+    const expand = async () => {
+      const open = children.style.display === 'none';
+      setExpanded(open);
+      if (!open || children.dataset.loaded === '1') return;
+      children.dataset.loaded = '1';
+      children.replaceChildren(message('トピックを読み込み中...'));
+      try {
+        const topics = (await (state.loadSheetTopics || _loadSheetTopics)(sheet.path))
+          .filter(topic => topic && String(topic.name || '').trim())
+          .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ja'));
+        children.replaceChildren();
+        if (!topics.length) {
+          children.appendChild(message('このシートにトピックはありません'));
+          return;
+        }
+        topics.forEach(topic => children.appendChild(_createTopicNode(root, sheet, topic, depth + 1, state)));
+        state.applyTreeView?.();
+      } catch (_) {
+        children.dataset.loaded = '0';
+        children.replaceChildren(message('トピックを読み込めませんでした。', true));
+      }
+    };
+    if (state.nodeByPath) {
+      const entry = state.nodeByPath.get(sheet.path);
+      if (entry) {
+        entry.expand = expand;
+        // 前回のトピックを初期選択する時は、表示位置合わせ（revealPath）でシート自体を選び直さない
+        entry.selectRow = automatic => {
+          if (automatic && state.initialTopic) return;
+          selectRow(automatic);
+        };
+      }
+    }
+    row.addEventListener('click', event => {
+      if (event.target === toggle || toggle.contains(event.target)) return;
+      selectRow();
+    });
+    row.addEventListener('dblclick', () => { selectRow(); activate(); });
+    row.addEventListener('keydown', event => {
+      const expanded = children.style.display !== 'none';
+      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+        event.preventDefault();
+        if ((event.key === 'ArrowRight') !== expanded) expand();
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectRow();
+        if (event.key === 'Enter') activate();
+      }
+    });
+    toggle.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      expand();
+    });
+    node.appendChild(row);
+    node.appendChild(children);
+    if (!state.userSelected && _normalizePath(state.initialPath) === sheet.path && !state.initialTopic) selectRow(true);
+    if (state.initialTopic && _normalizePath(state.initialPath) === sheet.path) expand();
+    return node;
+  }
+
+  function _createTopicNode(root, sheet, topic, depth, state) {
+    const node = document.createElement('div');
+    node.className = 'gb-folder-picker-node';
+    const row = document.createElement('div');
+    row.className = 'gb-folder-picker-row';
+    row.dataset.gbPickerKind = 'file';
+    row.dataset.gbPickerName = String(topic.name || '').toLocaleLowerCase('ja');
+    row.dataset.gbPickerPath = (sheet.path + '/' + topic.name).toLocaleLowerCase('ja');
+    row.dataset.gbPickerTopic = String(topic.name || '');
+    row.dataset.path = sheet.path;
+    row.dataset.e2eId = `gb-folder-picker-topic:${sheet.path}#${topic.name}`;
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('aria-level', String(depth + 1));
+    row.setAttribute('aria-selected', 'false');
+    row.tabIndex = 0;
+    row.style.setProperty('--gb-picker-depth', String(depth));
+    const spacer = document.createElement('span');
+    spacer.className = 'gb-folder-picker-toggle';
+    spacer.style.visibility = 'hidden';
+    row.appendChild(spacer);
+    const icon = document.createElement('span');
+    icon.className = 'gb-folder-picker-icon';
+    icon.innerHTML = _icon('fileText', 18);
+    row.appendChild(icon);
+    const label = document.createElement('span');
+    label.className = 'gb-folder-picker-label';
+    label.textContent = topic.name;
+    row.appendChild(label);
+    row.title = `${sheet.name} / ${topic.name}`;
+    const selectRow = (automatic = false) => {
+      if (!automatic) state.userSelected = true;
+      state.selected = _topicSelection(root, sheet, topic);
+      _markSelectedAcross(state, row);
+      _setCurrentPathText(state.current, `${_rowLabelText(state.selected)} / ${topic.name}`);
+      state.onSelect?.(state.selected, { automatic });
+    };
+    row.addEventListener('click', () => selectRow());
+    row.addEventListener('dblclick', () => { selectRow(); state.onActivate?.(state.selected); });
+    row.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      selectRow();
+      if (event.key === 'Enter') state.onActivate?.(state.selected);
+    });
+    node.appendChild(row);
+    if (!state.userSelected && state.initialTopic === topic.name && _normalizePath(state.initialPath) === sheet.path) {
+      selectRow(true);
+    }
     return node;
   }
 
@@ -104322,6 +104900,9 @@ async function resetLayoutToDefault() {
       roots: null,
       selectFolders: options.selectFolders !== false,
       fileFilter: typeof options.fileFilter === 'function' ? options.fileFilter : null,
+      selectSheetTopics: !!(options.selectFiles && options.selectSheetTopics),
+      loadSheetTopics: typeof options.loadSheetTopics === 'function' ? options.loadSheetTopics : null,
+      initialTopic: String(options.initialTopic || ''),
       onSelect: typeof options.onSelect === 'function' ? options.onSelect : null,
       onActivate: typeof options.onActivate === 'function' ? options.onActivate : null,
     };
@@ -107635,6 +108216,7 @@ async function resetLayoutToDefault() {
       if (inputEl) inputEl.value = '';
       return;
     }
+    const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
     try {
       if (file.size > PUREREF_MAX_BYTES) {
         setStatus('PureRefファイルが大きすぎます。256MB以下に分割してから取り込んでください。', true);
@@ -107661,6 +108243,11 @@ async function resetLayoutToDefault() {
         onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件', defaultPhase: '画像を取り込み中' }), false),
       });
       if (!data.image_count) throw new Error('画像を検出できませんでした。PureRefで画像を書き出してから取り込んでください。');
+      if (data.board_path && !data.skipped && typeof pushCreatedOutlinerItemHistory === 'function') {
+        // Only the new document is reversible. Keep checkpointed images and
+        // the original PureRef file intact for retries and other references.
+        pushCreatedOutlinerItemHistory({ path: data.board_path, kind: 'file' }, 'PureRefの取り込み', { scope: historyScope });
+      }
       resultStatus(`PureRef取り込み完了: 画像${data.image_count}件 / ${data.board_path || ''}`, data);
       if (typeof reloadOutlinerTree === 'function') reloadOutlinerTree();
     } catch (err) {
@@ -110017,7 +110604,7 @@ async function resetLayoutToDefault() {
   }
 
   function _init() {
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     start();
   }
 
@@ -118452,14 +119039,15 @@ function _applyEntityPropReadOnly(valuesEl) {
 }
 
 function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, options = {}) {
-  const values = filterValues(data.properties[propName] || []);
+  const ownValues = Object.prototype.hasOwnProperty.call(data.properties || {}, propName) ? data.properties[propName] : [];
+  const values = filterValues(ownValues || []);
   const ptc = propTypes[propName];
   // ロールアップ/数式型は保存値でなくその場の計算結果を1つだけ表示する（表セルと同じ見え方）。
   // 未変換の生値が複数残っていても計算結果は1本にまとめ、値が無くても空の計算結果を表示する。
   const isComputedProp = ptc?.type === 'rollup' || ptc?.type === 'formula';
   const renderValues = isComputedProp
     ? [values[0] || { value: '', status: '採用' }]
-    : (ptc?.type === 'image' && values.length === 0)
+    : (['image', 'location'].includes(ptc?.type) && values.length === 0)
       ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
       : values;
   renderValues.forEach(val => {
@@ -118510,8 +119098,10 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   const effectiveOptions = { ...opts, readOnly };
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
   const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
-  const allProps = Object.keys(data.properties || {}).filter(name => !(data.quick_memo === true && name === '種別'
-    && (data.properties[name] || []).every(item => item.value === 'メモ')));
+  const emptyProperties = Array.isArray(opts.emptyProperties)
+    ? opts.emptyProperties.filter(name => typeof name === 'string' && Object.prototype.hasOwnProperty.call(propTypes, name)) : [];
+  const allProps = [...new Set([...Object.keys(data.properties || {}), ...emptyProperties])].filter(name => !(data.quick_memo === true && name === '種別'
+    && ((data.properties || {})[name] || []).every(item => item.value === 'メモ')));
   const layout = typeof getPropertyLayout === 'function'
     ? getPropertyLayout(parentDb, allProps, { ctx: opts.ctx })
     : { order: getEntryPropOrder(parentDb) || [...allProps].sort(), hidden: [], groups: [] };
@@ -118657,7 +119247,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
     valuesEl.className = 'entry-prop-values cell-values';
-    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly, historyScope: opts.historyScope, onHistoryChanged: opts.onHistoryChanged });
+    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly, dbPath: opts.ctx?.dbPath || parentDb, ctx: opts.ctx, historyScope: opts.historyScope, onHistoryChanged: opts.onHistoryChanged });
     if (layoutEditMode) {
       const hideBtn = document.createElement('button');
       hideBtn.type = 'button';
@@ -133189,6 +133779,28 @@ function bdRemoveCardTail(cardEl, node) {
     const values = slots.filter(Boolean).map(slot => slot.color).filter(Boolean);
     return values.length ? values : (global.PALETTE_COLORS || ['#e4bd60', '#90bc83', '#7eacd1', '#c48080']).slice(0, 8);
   }
+  // ハイライトの色は共通カラーパレットで選ぶ（不透明度つき）。最後に使った色を次のハイライトに使う。
+  // 色に不透明度を含め、以前の「42%に薄める」は印（opacityModel）のない以前のハイライトだけに使う（2026-11-27）。
+  const OPACITY_MODEL = 'color-alpha-v1';
+  const COLOR_KEY = 'meldex-annotation-highlight-color';
+  function currentColor() {
+    try { const saved = localStorage.getItem(COLOR_KEY); if (saved && CSS.supports('color', saved)) return saved; } catch {}
+    const base = colors()[0] || '#e4bd60';
+    return typeof global._annotationColorWithAlpha === 'function' ? global._annotationColorWithAlpha(base, 0.4) : base;
+  }
+  function rememberColor(color) {
+    if (!color || color === 'transparent') return;
+    try { localStorage.setItem(COLOR_KEY, color); } catch {}
+  }
+  // 共通カラーパレットで色を選び、閉じた時に1回だけ呼び出し元へ返す（選ばずに閉じたら返さない）。
+  function pickColor(x, y, onPicked) {
+    if (typeof global.openColorPalette !== 'function') return false;
+    const anchor = { getBoundingClientRect: () => ({ left: x, right: x, top: y, bottom: y, width: 0, height: 0, x, y }) };
+    let picked = '';
+    global.openColorPalette(anchor, currentColor(), color => { if (color && color !== 'transparent') picked = color; },
+      { allowTransparent: false, onClose: () => { if (picked) { rememberColor(picked); onPicked(picked); } } });
+    return true;
+  }
   function textNodes(block) {
     const nodes = [], walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
       acceptNode: n => n.parentElement?.closest('._nl-id,.cmt-badge,.cmt-line-badge,button,[aria-hidden=true]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
@@ -133300,20 +133912,25 @@ function bdRemoveCardTail(cardEl, node) {
         || (anchor.kind === 'note' && rangeFor(surface.host.querySelector('[data-editor-local-id=page-content],#page-content'), anchor, cache));
       if (!range) continue;
       const color = CSS.supports('color', item.color) ? item.color : colors()[0];
-      if (!groups.has(color)) groups.set(color, []);
-      groups.get(color).push(range); state.ranges.set(item.id, range);
+      const group = (data.opacityModel === OPACITY_MODEL ? 'alpha|' : 'legacy|') + color;
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(range); state.ranges.set(item.id, range);
     }
     const rules = [];
-    for (const [color, ranges] of groups) {
+    for (const [group, ranges] of groups) {
       const key = 'meldex-highlight-' + (++serial);
+      const [model, color] = [group.slice(0, group.indexOf('|')), group.slice(group.indexOf('|') + 1)];
       CSS.highlights.set(key, new Highlight(...ranges)); state.keys.push(key);
-      rules.push(`::highlight(${key}) { background-color: color-mix(in srgb, ${color} 42%, transparent); color: inherit; }`);
+      // 新しいハイライトは色（不透明度を含む）のとおり、以前のハイライトは従来どおり42%に薄める
+      const background = model === 'alpha' ? color : `color-mix(in srgb, ${color} 42%, transparent)`;
+      rules.push(`::highlight(${key}) { background-color: ${background}; color: inherit; }`);
     }
     state.style.textContent = rules.join('\n');
   }
   async function create(context, color) {
     const { surface, range, text, anchor } = context;
-    const pending = { id: 'pending-' + (++serial), type: 'highlight', color, data: { text, textAnchor: anchor, clientRequestId: crypto.randomUUID() } };
+    rememberColor(color);
+    const pending = { id: 'pending-' + (++serial), type: 'highlight', color, data: { text, textAnchor: anchor, opacityModel: OPACITY_MODEL, clientRequestId: crypto.randomUUID() } };
     const scope = historyScope();
     const reservation = historyReserve('アノテート: ハイライト追加', scope, surface.path);
     if (!states.has(surface.id)) render(surface, []);
@@ -133325,7 +133942,7 @@ function bdRemoveCardTail(cardEl, node) {
           : anchor.line ? { kind: 'note_line', id: anchor.line } : undefined;
       const row = { type: 'highlight', target_path: surface.path, target_kind: 'text_range', body: text,
         user: typeof getUsername === 'function' ? getUsername() : 'anonymous',
-        color, opacity: 0.42, data: pending.data, target_ref: { file: surface.path, container,
+        color, opacity: 1, data: pending.data, target_ref: { file: surface.path, container,
           anchorSchema: 'meldex-text-anchor-v1', startOffset: anchor.start, endOffset: anchor.end, snippet: text,
           prefix: anchor.prefix, suffix: anchor.suffix } };
       const result = await apiPost('/annotations', row);
@@ -133393,11 +134010,13 @@ function bdRemoveCardTail(cardEl, node) {
       if (menu?.dataset.annotationHighlightMenu) return;
       if (!menu && document.querySelector('[data-annotation-highlight-menu]')) return;
       const rect = menu?.getBoundingClientRect();
-      const opened = global.MeldexContextMenuUI.openAt({ menu, x: event.clientX, y: event.clientY,
+      const x = event.clientX, y = event.clientY;
+      const opened = global.MeldexContextMenuUI.openAt({ menu, x, y,
         anchorRect: rect ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.top } : undefined,
-        ariaLabel: '選択範囲', items: [{ label: 'ハイライト', icon: 'highlighter', items: colors().map((color, index) => ({
-          label: 'テーマカラー ' + (index + 1), icon: 'square', color, action: () => void create(context, color),
-        })) }, ...(menu ? [{ type: 'separator' }] : [])] });
+        ariaLabel: '選択範囲', items: [
+          { label: 'ハイライト', icon: 'highlighter', color: currentColor(), e2eId: 'annotation-highlight-create', action: () => void create(context, currentColor()) },
+          { label: 'ハイライトの色...', icon: 'palette', e2eId: 'annotation-highlight-pick-color', action: () => pickColor(x, y, color => void create(context, color)) },
+          ...(menu ? [{ type: 'separator' }] : [])] });
       opened.dataset.annotationHighlightMenu = '1';
     };
   }
@@ -133410,7 +134029,7 @@ function bdRemoveCardTail(cardEl, node) {
     event.preventDefault();
     setTimeout(decorate, 0);
   }, true);
-  global.GBAnnotationHighlights = { colors, capture, create, mutate, render, dispose, parse, rangeFor, prepareMenu,
+  global.GBAnnotationHighlights = { colors, currentColor, rememberColor, pickColor, capture, create, mutate, render, dispose, parse, rangeFor, prepareMenu,
     reveal(surface, item) { const range = states.get(surface.id)?.ranges.get(item.id); if (!range?.startContainer.isConnected) return false; indicate(range); return true; },
   };
 })(window);
@@ -134138,6 +134757,15 @@ function _configureTrayAnnotationHostFromLocation() {
 function _isTrayAnnotationHost() {
   return !!_trayAnnotationHost;
 }
+// 常駐アプリが出すデスクトップのアノテートバー（gb-tray-annotation-bar.js）。付箋の小窓と同じく
+// 本体の起動処理（フォルダツリー・ワークスペース・チャット等）を走らせない。
+function _isTrayAnnotationBarHost() {
+  try {
+    return new URLSearchParams(window.location.search || '').get('tray_annotation_bar') === '1';
+  } catch {
+    return false;
+  }
+}
 function _trayAnnotationApiFetch(path, options) {
   if (_isTrayAnnotationHost() && typeof _origApiFetch === 'function') {
     return _origApiFetch(path, options);
@@ -134356,8 +134984,11 @@ function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail, scope
   return true;
 }
 
-async function _pushAnnotationCreateHistory(annId, label, detail, scopeOverride) {
-  const after = await _fetchAnnotationHistoryRow(annId);
+async function _pushAnnotationCreateHistory(annId, label, detail, scopeOverride, savedRow) {
+  const committed = savedRow && String(savedRow.id || '') === String(annId || '')
+    && typeof savedRow.modified === 'string' && savedRow.modified
+    && typeof savedRow.type === 'string' && typeof savedRow.target_path === 'string';
+  const after = committed ? _normalizeAnnotationHistoryRow(savedRow) : await _fetchAnnotationHistoryRow(annId);
   return _pushAnnotationHistory(label || 'アノテート: 作成', null, after, detail, scopeOverride);
 }
 
@@ -134531,9 +135162,10 @@ function toggleAnnotation() {
 
 // ツール選択（アノテーションツールバー内）
 const _ANN_TOOL_GROUPS = {
+  // マーカーは撤去した（2026-11-27）。透かしたい線は色の不透明度で描く。ハイライトは描画ツールではなく、
+  // 選んだ文字に付ける別のボタン（#ann-highlight-selection）にした。ペンだけなのでメニューは出さない。
   stroke: [
     { tool: 'pen', label: 'ペン', icon: 'pencil' },
-    { tool: 'marker', label: 'マーカー', icon: 'highlighter' },
   ],
   line: [
     // 折れ線のアイコンは spline（曲線。折れ線を表せていなかった）から activity
@@ -134566,6 +135198,8 @@ function _applyAnnotationGroupButtonIcon(button, group, member) {
 }
 
 function _annotationSelectTool(tool, sourceButton) {
+  // 以前のマーカー・描画ツールだった頃のハイライト（保存したツールの状態・古い常駐パレット）はペンとして扱う
+  if (tool === 'marker' || tool === 'highlight') tool = 'pen';
   if (tool !== 'sticky' && typeof _discardEmptyAnnotationDrafts === 'function') _discardEmptyAnnotationDrafts('tool-change');
   ann.tool = tool;
   document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(button => {
@@ -134624,8 +135258,24 @@ function _initAnnotationToolGroups() {
   const fill = toolbar?.querySelector('[data-tool="lasso"]');
   const rectFill = toolbar?.querySelector('[data-tool="rect"]');
   if (!toolbar || !pen || !fill) return;
-  pen.dataset.annToolGroup = 'stroke';
+  // ストロークはペンだけなので、メニューを出さずペンを直接選ぶボタンにする
+  if (_ANN_TOOL_GROUPS.stroke.length > 1) pen.dataset.annToolGroup = 'stroke';
   marker?.remove();
+  // ハイライト: 選んでいる文字に付ける（描画ツールではない）。アイコンは以前のマーカーのもの。
+  if (!toolbar.querySelector('#ann-highlight-selection')) {
+    const highlight = document.createElement('button');
+    highlight.type = 'button';
+    highlight.id = 'ann-highlight-selection';
+    highlight.className = 'ann-tool';
+    highlight.dataset.annAction = 'highlight-selection';
+    highlight.dataset.e2eId = 'annotation-highlight-selection';
+    highlight.setAttribute('aria-label', 'ハイライト');
+    highlight.setAttribute('aria-disabled', 'true');
+    highlight.classList.add('disabled');
+    highlight.innerHTML = typeof lucide === 'function' ? lucide('highlighter', 14) : '';
+    const after = pen.nextElementSibling?.classList.contains('ann-width-control') ? pen.nextElementSibling : pen;
+    after.after(highlight);
+  }
   const line = document.createElement('button');
   line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = _ANN_TOOL_GROUPS.line[0].tool; line.dataset.annToolGroup = 'line';
   fill.before(line);
@@ -134633,7 +135283,7 @@ function _initAnnotationToolGroups() {
   rectFill?.remove();
   // 初期表示アイコン・ラベルは各グループの既定メンバー（先頭要素）に合わせる。
   // ペン/囲い塗りボタンは data-tool が既に既定メンバーと一致しているのでそのまま使う。
-  _applyAnnotationGroupButtonIcon(pen, 'stroke', _ANN_TOOL_GROUPS.stroke[0]);
+  if (pen.dataset.annToolGroup) _applyAnnotationGroupButtonIcon(pen, 'stroke', _ANN_TOOL_GROUPS.stroke[0]);
   _applyAnnotationGroupButtonIcon(line, 'line', _ANN_TOOL_GROUPS.line[0]);
   _applyAnnotationGroupButtonIcon(fill, 'fill', _ANN_TOOL_GROUPS.fill[0]);
 }
@@ -134863,6 +135513,7 @@ function _initTrayAnnotationPaletteHost() {
     '[data-action*="openRightPanelTab"]',
     '#ann-view-lock-btn',
     '[data-action="annClear()"]',
+    '#ann-highlight-selection', // 撮影画像には選べる文字が無い
   ]) toolbar.querySelector(selector)?.remove();
   const separators = [...toolbar.children].filter(el => (
     el.tagName === 'DIV' && el.style.width === '1px' && !el.classList.contains('ft-drag')
@@ -135000,11 +135651,11 @@ function _createStrokeEl(pathD, color, opacity, pressures, isPen, width) {
   return path;
 }
 
-function _createLassoEl(points, color, opacity) {
+function _createLassoEl(points, color, opacity, data) {
   const poly = document.createElementNS(_annSvgNS, 'polygon');
   poly.setAttribute('points', points.map(p => p.join(',')).join(' '));
   poly.setAttribute('fill', color);
-  poly.setAttribute('fill-opacity', opacity * 0.4);
+  poly.setAttribute('fill-opacity', typeof _annotationFillOpacity === 'function' ? _annotationFillOpacity(data, opacity, false) : opacity * 0.4);
   poly.setAttribute('stroke', color);
   poly.setAttribute('stroke-width', '1');
   poly.setAttribute('stroke-opacity', opacity);
@@ -135109,12 +135760,13 @@ function _renderAnnotationPreview() {
   if (ellipseTool || rectTool) {
     const data = ellipseTool ? _annotationEllipseDataFromPoints(ann.currentPath) : _annotationRectDataFromPoints(ann.currentPath);
     data.lineWidth = ann.widths?.pen;
+    data.opacityModel = window.MELDEX_ANNOTATION_OPACITY_MODEL;
     _updateAnnotationShapeEl(preview, ann.tool, data, ann.color, ann.opacity, true);
   }
   else if (ann.tool === 'lasso') {
     preview.setAttribute('points', ann.currentPath.map(p => p.join(',')).join(' '));
     preview.setAttribute('fill', ann.color);
-    preview.setAttribute('fill-opacity', ann.opacity * 0.2);
+    preview.setAttribute('fill-opacity', ann.opacity);
     preview.setAttribute('stroke', ann.color);
     preview.setAttribute('stroke-width', '1');
     preview.setAttribute('stroke-dasharray', '4,4');
@@ -135149,8 +135801,10 @@ async function _finishAnnotationStroke() {
       : { points: pathPoints, pressures };
   if (shapeTypes.has(type)) strokeData.lineWidth = width;
   else if (type !== 'lasso') strokeData.width = width;
+  // 新しい塗りは色の不透明度だけで描く（半透明を強制しない）
+  if (['lasso', 'rect', 'ellipse-fill'].includes(type) && window.MELDEX_ANNOTATION_OPACITY_MODEL) strokeData.opacityModel = window.MELDEX_ANNOTATION_OPACITY_MODEL;
   const el = shapeTypes.has(type) ? _createAnnotationShapeEl(type, strokeData, color, opacity)
-    : type === 'lasso' ? _createLassoEl(pathPoints, color, opacity)
+    : type === 'lasso' ? _createLassoEl(pathPoints, color, opacity, strokeData)
       : _createStrokeEl(_pointsToSvgPath(pathPoints, pressures, tool === 'pen'), color, opacity, pressures, tool === 'pen', strokeData.width);
   el.dataset.annPending = '1';
   _setAnnotationRenderedTarget(targetPath);
@@ -135277,7 +135931,7 @@ function _updateRectFillEl(rect, data, color, opacity, preview) {
   rect.setAttribute('height', Math.max(1, Number(data?.height) || 0));
   rect.setAttribute('fill', color);
   const normalizedOpacity = _normalizeAnnotationOpacity(opacity, 1);
-  rect.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+  rect.setAttribute('fill-opacity', String(typeof _annotationFillOpacity === 'function' ? _annotationFillOpacity(data, normalizedOpacity, preview) : normalizedOpacity * (preview ? 0.2 : 0.4)));
   rect.setAttribute('stroke', color);
   rect.setAttribute('stroke-width', '1');
   rect.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -135310,7 +135964,7 @@ function _updateAnnotationShapeEl(el, type, data, color, opacity, preview) {
     el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
   }
   el.setAttribute('fill', outlined ? 'none' : color);
-  el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+  el.setAttribute('fill-opacity', outlined ? '0' : String(typeof _annotationFillOpacity === 'function' ? _annotationFillOpacity(data, normalizedOpacity, preview) : normalizedOpacity * (preview ? 0.2 : 0.4)));
   el.setAttribute('stroke', color);
   el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || ann.widths?.pen || 3)));
   el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -135404,6 +136058,7 @@ if (typeof _initTrayAnnotationHost === 'function') {
 window.GBAnnotationSurfaces = (() => {
   const surfaces = new Map();
   let selected = null, scheduled = false, revealRevision = 0;
+  let clearing = false;
   const enabled = () => typeof GBLayout !== 'undefined' && !!document.getElementById('main-area') && !_isTrayAnnotationHost();
   const isOpen = () => enabled() && ann.active;
   const scope = s => 'annotation:' + _normalizeAnnotationTargetPath(s.path) + '#' + s.id;
@@ -135498,6 +136153,10 @@ window.GBAnnotationSurfaces = (() => {
     for (const [id, info] of Object.entries(typeof GBLayout !== 'undefined' ? GBLayout.paneMap || {} : {})) {
       const node = info.node || GBLayout.findNode?.(GBLayout.root, id)?.node;
       const tab = node?.tabs?.[node.activeTabIndex];
+      if (tab?.type === 'form-app') {
+        const app = typeof getComponentInstance === 'function' ? getComponentInstance(tab.id) : null;
+        if (!app?.surface?.isConnected || app.path !== tab.path) continue;
+      }
       // 対象外のフォルダ等では寸法を読まない。大量カードの追加直後に不要な全体配置を確定させない。
       if (tab && _ANNOTATION_TARGET_VIEW_TYPES.has(tab.type) && visible(info.contentEl)) {
         out.push({ id, host: info.contentEl, tab });
@@ -135571,7 +136230,7 @@ window.GBAnnotationSurfaces = (() => {
     _positionFloatingToolbar(toolbar, document.querySelector('.gb-dock-rail-annotate'));
     toolbar.classList.add('visible'); document.body.classList.add('ann-toolbar-active');
     _refreshAnnFloatingViewLockButton({ force: true });
-    broadcast(); return true;
+    broadcast(); scheduleHighlightSync(); return true;
   }
   function close() {
     ann.active = false;
@@ -135580,23 +136239,42 @@ window.GBAnnotationSurfaces = (() => {
     document.querySelectorAll('[data-annotation-selected]').forEach(el => el.removeAttribute('data-annotation-selected'));
     broadcast(); return true;
   }
+  async function navigateHistory(direction) {
+    const s = selected;
+    if (!s) return false;
+    await s.bridge?.flush?.();
+    return direction === 'undo' ? historyUndo(activeScope(s, 'undo')) : historyRedo(activeScope(s, 'redo'));
+  }
   async function clear() {
     const s = selected;
-    if (!s || s.readOnly) return false;
+    if (!s || s.readOnly || clearing) return false;
     if (s.iframe) { return s.iframe.contentWindow.MeldexViewerAnnotationScene?.clearAll({ confirmed: true }); }
-    if (!await cfConfirm('この画面のアノテートをすべて削除しますか？')) return false;
-    await s.bridge.flush();
-    let before;
-    try { before = await apiFetch(_annotationTargetFetchUrl(s.path)); }
-    catch { showStatus('アノテートを読み込めませんでした', true); return false; }
-    const rows = before.filter(item => !['comment', 'note', 'sticky'].includes(item.type) || _isStandaloneAnnotationNoteItem(item, _parseAnnotationData(item)));
-    const results = await Promise.allSettled(rows.map(item => apiDelete('/annotations/' + encodeURIComponent(item.id))));
-    const deleted = rows.filter((_, i) => results[i].status === 'fulfilled');
-    _pushAnnotationBatchHistory('アノテート: 全削除', deleted, [], s.path, scope(s));
-    s.mutation++; await reload(s);
-    if (deleted.length !== rows.length) { showStatus('アノテートを一部削除できませんでした', true); return false; }
-    showStatus('アノテートを全削除しました');
-    return true;
+    const button = document.querySelector('#ann-toolbar [data-action="annClear()"]');
+    clearing = true;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    showStatus('アノテートを削除しています...');
+    try {
+      await s.bridge.flush();
+      let before;
+      try { before = await apiFetch(_annotationTargetFetchUrl(s.path)); }
+      catch { showStatus('アノテートを読み込めませんでした', true); return false; }
+      const rows = before.filter(item => !['comment', 'note', 'sticky'].includes(item.type) || _isStandaloneAnnotationNoteItem(item, _parseAnnotationData(item)));
+      // Every row shares one durable store revision. Concurrent deletes can
+      // conflict with each other; retain partial history while saving in order.
+      const deleted = [];
+      for (const item of rows) {
+        try { await apiDelete('/annotations/' + encodeURIComponent(item.id)); deleted.push(item); }
+        catch { /* Report the incomplete batch after preserving its history. */ }
+      }
+      _pushAnnotationBatchHistory('アノテート: 全削除', deleted, [], s.path, scope(s));
+      s.mutation++; await reload(s);
+      if (deleted.length !== rows.length) { showStatus('アノテートを一部削除できませんでした', true); return false; }
+      showStatus('アノテートを全削除しました');
+      return true;
+    } finally {
+      clearing = false;
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    }
   }
   const observe = () => {
     new MutationObserver(() => {
@@ -135606,6 +136284,74 @@ window.GBAnnotationSurfaces = (() => {
     }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-cloud-readonly', 'data-cloud-quota-blocked'] });
     sync();
   };
+  // 描いた線・塗りの上の右クリック: 共通メニューの「色...」から共通カラーパレット（不透明度つき）で色を変える。
+  function strokeAt(s, clientX, clientY) {
+    if (!s || s.iframe || !s.bridge?.layer || s.bridge.svg.style.visibility === 'hidden') return null;
+    const layer = s.bridge.layer, ctm = layer.getScreenCTM?.();
+    if (!ctm) return null;
+    const point = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+    const tolerance = 6 / (Math.hypot(ctm.a, ctm.b) || 1);
+    for (const el of [...layer.querySelectorAll('[data-ann-id]')].reverse()) {
+      if (el.classList.contains('ann-preview')) continue;
+      const parts = el.matches('path,polygon,rect,ellipse') ? [el] : [...el.querySelectorAll('path,polygon,rect,ellipse')];
+      if (parts.some(part => _coreAnnotationElementHit(part, point.x, point.y, tolerance))) return el;
+    }
+    return null;
+  }
+  // 本文側の右クリックメニュー（document で受ける）より先に判定するため window の捕捉段階で受ける。
+  window.addEventListener('contextmenu', e => {
+    if (!enabled() || e.defaultPrevented) return;
+    const s = fromElement(e.target);
+    if (!s || s.readOnly) return;
+    const el = strokeAt(s, e.clientX, e.clientY);
+    if (!el || !window.MeldexContextMenuUI?.openAt) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    select(s);
+    const x = e.clientX, y = e.clientY;
+    window.MeldexContextMenuUI.openAt({ x, y, ariaLabel: 'アノテート', items: [
+      { label: '色...', ariaLabel: '色...', icon: 'palette', e2eId: 'annotation-stroke-recolor',
+        action: () => void window.GBAnnotationRecolor.open({ id: el.dataset.annId, targetPath: s.path, scope: window.GBAnnotationRecolor.currentScope(),
+          anchor: window.GBAnnotationRecolor.anchorAt(x, y), preview: row => _paintAnnotationRecolorPreview(el, row),
+          refresh: () => { s.mutation++; void reload(s); } }) },
+    ] });
+  }, true);
+  // ツールバーの「ハイライト」: 選んでいる文字に付ける（描画ツールではない）。ノート等の本文の選択か、
+  // ビューワー（PDFの文字層・OCRの認識結果）の選択がある時だけ押せる。無い時は理由をツールチップで示す。
+  const HIGHLIGHT_NO_TEXT = 'ハイライトは選択した文字に付けます。文字を選んでから押してください（文字の無い画像やスキャンしたPDFには、マーキングの矩形塗りを使います）';
+  function highlightTarget() {
+    const context = window.GBAnnotationHighlights?.capture?.();
+    if (context) return { context };
+    if (selected?.iframe && selected.hasText && !selected.readOnly) return { frame: selected };
+    return null;
+  }
+  function syncHighlightButton() {
+    const button = document.getElementById('ann-highlight-selection');
+    if (!button || !enabled()) return;
+    const ready = ann.active && !!highlightTarget();
+    if (button.getAttribute('aria-disabled') !== String(!ready)) button.setAttribute('aria-disabled', String(!ready));
+    button.classList.toggle('disabled', !ready);
+    const title = ready ? 'ハイライト — 選んだ文字にツールバーの色でハイライトを付けます' : HIGHLIGHT_NO_TEXT;
+    if (button.title !== title) button.title = title;
+  }
+  let highlightSyncTimer = 0;
+  const scheduleHighlightSync = () => { clearTimeout(highlightSyncTimer); highlightSyncTimer = setTimeout(syncHighlightButton, 80); };
+  document.addEventListener('selectionchange', () => { if (ann.active) scheduleHighlightSync(); });
+  document.addEventListener('pointerdown', e => {
+    if (e.target.closest?.('#ann-highlight-selection')) e.preventDefault(); // 押しても文字の選択を外さない
+  }, true);
+  document.addEventListener('click', e => {
+    const button = e.target.closest?.('#ann-highlight-selection');
+    if (!button) return;
+    e.preventDefault();
+    const target = button.getAttribute('aria-disabled') === 'true' ? null : highlightTarget();
+    if (!target) { showStatus(HIGHLIGHT_NO_TEXT, true); return; }
+    if (target.context) void window.GBAnnotationHighlights.create(target.context, ann.color);
+    else {
+      try { target.frame.iframe.contentWindow?.MeldexViewerHighlights?.highlightTextSelection?.(ann.color); }
+      catch { showStatus('ハイライトを付けられませんでした', true); }
+    }
+    scheduleHighlightSync();
+  });
   document.addEventListener('pointerdown', e => { if (e.target.closest?.('[data-undo-button],[data-redo-button]')) return; const s = fromElement(e.target); if (s) select(s); }, true);
   document.addEventListener('focusin', e => { if (e.target.closest?.('[data-undo-button],[data-redo-button]')) return; const s = fromElement(e.target); if (s) select(s); }, true);
   document.addEventListener('keydown', e => {
@@ -135626,6 +136372,11 @@ window.GBAnnotationSurfaces = (() => {
     if (e.data?.type === 'viewer-ann-open-menu') {
       if (e.data.targetPath) s.path = String(e.data.targetPath);
       select(s); if (!ann.active) toggle(s.host); else broadcast();
+    }
+    if (e.data?.type === 'viewer-ann-text-selection') {
+      s.hasText = !!e.data.hasText;
+      if (s.hasText) select(s);
+      scheduleHighlightSync();
     }
     if (['viewer-ann-pointer-target', 'viewer-ann-state-changed'].includes(e.data?.type)) {
       const pathChanged = e.data.targetPath && s.path !== String(e.data.targetPath);
@@ -135651,7 +136402,7 @@ window.GBAnnotationSurfaces = (() => {
     }
   });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', observe, { once: true }); else observe();
-  return { enabled, isOpen, sync, toggle, close, broadcast, clear,
+  return { enabled, isOpen, sync, toggle, close, broadcast, clear, syncHighlightButton,
     usesHistory: () => isOpen() || !!selected?.iframe,
     forElement: fromElement,
     captureTargets: () => { sync(); return [...surfaces.values()]; },
@@ -135662,16 +136413,17 @@ window.GBAnnotationSurfaces = (() => {
       const documentPath = path.replace(/(\.pdf)#page=\d+$/i, '$1');
       const same = value => samePath(value, path);
       sync();
+      const sceneHas = s => { try { return !!s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path); } catch { return false; } };
       const find = () => [selected, ...surfaces.values()].filter(Boolean).find(s => same(s.path)
         || s.iframe && samePath(s.sourcePath, documentPath)
-        || s.iframe?.contentWindow?.MeldexViewerAnnotationScene?.findSceneByPath?.(path));
+        || sceneHas(s));
       let s = find();
       if (!s) {
         if (selected?.id === 'gb-subpanel-inner-pane' && window.GBSubPanel) {
           await openLinkedPathInRightSidebar(documentPath, documentPath.split(/[\\/]/).pop(), { sourceEl: document.activeElement });
         } else {
           if (selected?.id && GBLayout.paneMap[selected.id]) GBLayout.setActivePane(selected.id);
-          if (/\.(?:pdf|png|jpe?g|gif|webp|bmp)$/i.test(documentPath)) openMedia(documentPath.split(/[\\/]/).pop(), documentPath, /\.pdf$/i.test(documentPath) ? 'pdf' : 'image');
+          if (/\.(?:pdf|epub|png|jpe?g|gif|webp|bmp)$/i.test(documentPath)) openMedia(documentPath.split(/[\\/]/).pop(), documentPath, /\.(?:pdf|epub)$/i.test(documentPath) ? 'pdf' : 'image');
           else await jumpToAnnotation(documentPath);
         }
         while (performance.now() < deadline) {
@@ -135687,7 +136439,9 @@ window.GBAnnotationSurfaces = (() => {
         const viewer = s.iframe.contentWindow;
         while (performance.now() < deadline) {
           if (revision !== revealRevision || !s.host.isConnected) return true;
-          if (viewer?.MeldexViewerHighlights?.reveal(item)) return true;
+          // 開いた直後のビューワーは読み込み中の文書（別origin扱い）の間があり、参照すると例外になる。待って再試行する。
+          try { if (viewer?.MeldexViewerHighlights?.reveal(item)) return true; }
+          catch (error) { if (error?.name !== 'SecurityError') throw error; }
           await new Promise(resolve => setTimeout(resolve, 25));
         }
         showStatus('アノテートの位置が見つかりませんでした', true); return true;
@@ -135722,9 +136476,56 @@ window.GBAnnotationSurfaces = (() => {
     target: () => selected,
     historyScopeFor: (direction, surface = selected) => surface ? activeScope(surface, direction === 'redo' ? 'redo' : 'undo') : '',
     documentHistoryScope: (surface = selected) => surface ? documentScope(surface) : '',
-    undo: () => selected ? historyUndo(activeScope(selected, 'undo')) : false,
-    redo: () => selected ? historyRedo(activeScope(selected, 'redo')) : false,
+    undo: () => navigateHistory('undo'),
+    redo: () => navigateHistory('redo'),
   };
+})();
+
+/* 描いた後の色の変更。共通カラーパレットを開き、選んでいる間は見た目だけ変え、閉じた時に1回保存して
+   元に戻す／やり直し・ヒストリーへ1件残す。以前のマーカーと塗りは、この時に色の不透明度で描く形へ移す。 */
+window.GBAnnotationRecolor = (() => {
+  // ハイライトの追加と同じ履歴の置き場（アノテートツールを開いている時はその画面、閉じている時は開いている本文）
+  const currentScope = () => {
+    if (window.GBAnnotationSurfaces?.usesHistory?.()) return window.GBAnnotationSurfaces.historyScope();
+    return window.GBEditorHost?.get()?.historyScope?.() ?? (typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '');
+  };
+  const anchorAt = (x, y) => ({ getBoundingClientRect: () => ({ left: x, right: x, top: y, bottom: y, width: 0, height: 0, x, y }) });
+  async function open({ id, targetPath, scope = currentScope(), anchor, preview, refresh, label = 'アノテート: 色' }) {
+    let before = null;
+    try { before = await _fetchAnnotationHistoryRow(id); } catch {}
+    if (!before) { showStatus('アノテートが見つかりません', true); return false; }
+    if (typeof openColorPalette !== 'function') return false;
+    const initial = _annotationRecolorInitialColor(before);
+    let picked = '';
+    return new Promise(resolve => {
+      openColorPalette(anchor, initial, color => {
+        if (!color || color === 'transparent') return;
+        picked = color;
+        preview?.({ ...before, ..._annotationRecolorUpdate(before, color) });
+      }, { allowTransparent: false, onClose: async () => {
+        if (!picked || picked === initial) { refresh?.(); resolve(false); return; }
+        const path = targetPath || before.target_path;
+        const reservation = typeof historyReserve === 'function' ? historyReserve(label, scope, path) : null;
+        try {
+          const update = _annotationRecolorUpdate(before, picked);
+          const result = await apiPut('/annotations/' + encodeURIComponent(id), { ...update, expected_modified: before.modified });
+          const modified = result?.modified || before.modified;
+          const after = { ...before, ...update, modified, modified_at: modified };
+          if (reservation) reservation.capture(() => _pushAnnotationHistory(label, before, after, path, scope));
+          else _pushAnnotationHistory(label, before, after, path, scope);
+          resolve(true);
+        } catch (error) {
+          reservation?.cancel();
+          showStatus('アノテートの色を保存できませんでした: ' + (error?.message || error), true);
+          resolve(false);
+        } finally {
+          refresh?.();
+          if (typeof loadRpAnnotationList === 'function') void loadRpAnnotationList();
+        }
+      } });
+    });
+  }
+  return { open, anchorAt, currentScope };
 })();
 // Audit-P2 H-7: document キャプチャで UI 要素の click/change をガードする
 // スクロールコンテナ内のインタラクティブ要素のみ対象（タブバー・ヘッダー等は除外）。
@@ -136889,7 +137690,7 @@ async function loadAnnotations() {
         return;
       } else if (item.type === 'lasso') {
         if (data.points) {
-          const el = _createLassoEl(data.points, item.color, item.opacity);
+          const el = _createLassoEl(data.points, item.color, item.opacity, data);
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }
@@ -137081,11 +137882,29 @@ async function openAnnotationManager() {
   if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
 }
 
+// 画像・PDF・動画・音声のアノテートはビューワーで開く（ノートとして開くと
+// 「内容を受け付けられませんでした」になる。2026-11-27 報告）。PDFの「#page=N」は外す。
+function _annotationViewerMediaTarget(targetPath) {
+  const documentPath = String(targetPath || '').replace(/(\.pdf)#page=\d+$/i, '$1');
+  const router = typeof GBLinkRouter !== 'undefined' ? GBLinkRouter : window.GBLinkRouter;
+  let type = '';
+  if (router && typeof router.mediaTypeFromExt === 'function' && typeof router.ext === 'function') {
+    type = router.mediaTypeFromExt(router.ext(documentPath));
+  } else if (/\.pdf$/i.test(documentPath)) type = 'pdf';
+  else if (/\.(?:png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(documentPath)) type = 'image';
+  return type ? { path: documentPath, type } : null;
+}
+
 function jumpToAnnotation(targetPath) {
   // ターゲットパスからビューを推定して移動
   document.querySelector('.modal-overlay')?.remove();
   if (!targetPath) {
     showStatus('アノテートの対象ファイルが見つかりません', true);
+    return;
+  }
+  const media = _annotationViewerMediaTarget(targetPath);
+  if (media && typeof openMedia === 'function') {
+    openMedia(media.path.split(/[\\/]/).pop(), media.path, media.type);
     return;
   }
   if (targetPath === 'calendar:panel') {
@@ -146762,7 +147581,7 @@ function hideBoardNoteTab() {
       if (!body) return out;
       yamlSplitInline(body).forEach((part) => {
         const pair = yamlPair(part);
-        if (pair) out[pair.key] = yamlScalar(pair.raw);
+        if (pair) Object.defineProperty(out, pair.key, { value: yamlScalar(pair.raw), enumerable: true, writable: true, configurable: true });
       });
       return out;
     }
@@ -147147,7 +147966,7 @@ function hideBoardNoteTab() {
         if (!pair) { markLossy(); index += 1; continue; }
         // 重複キーはデスクトップ版（yaml.safe_load）と同じく後勝ち。
         const result = readValue(pair.rest, index, col, true);
-        out[pair.key] = result.value;
+        Object.defineProperty(out, pair.key, { value: result.value, enumerable: true, writable: true, configurable: true });
         index = result.index;
       }
       return { value: out, index };
@@ -152338,7 +153157,7 @@ function hideBoardNoteTab() {
     }
     // デスクトップ付箋の小窓でも自動送信タイマーが動くと、付箋の枚数だけ外部カレンダーへの
     // 自動送信が並走する。実行中フラグはウィンドウ単位なので窓をまたいだ二重送信は防げない。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && !_pmCloudCanExportAttendance()) return;
     if (window.__meldexProductionExternalSyncTimer) return;
     const startupTimer = setTimeout(() => _pmAutoProductionExternalSync().catch(() => {}), 15000);
@@ -159857,7 +160676,7 @@ function hideBoardNoteTab() {
     { label: 'ボード', icon: 'presentation', type: 'board' },
     { label: 'カレンダー', icon: 'calendarPlus', type: 'calendar' },
   ];
-  const DESKTOP_BACKED_TOOL_TYPES = new Set(['page', 'database', 'board', 'calendar', 'csv']);
+  const DESKTOP_BACKED_TOOL_TYPES = new Set(['page', 'database', 'board', 'calendar', 'csv', 'scriptnote']);
   const EDITBAR_ITEMS = [
     { id: 'bold', label: '太字', icon: 'bold', action: () => _execTextCommand('bold') },
     { id: 'italic', label: '斜体', icon: 'italic', action: () => _execTextCommand('italic') },
@@ -159904,7 +160723,8 @@ function hideBoardNoteTab() {
     { id: 'filters', label: '表示フィルタ', icon: 'filter', action: () => _boardOpenFilters() },
   ];
   const ANNOTATION_ITEMS = [
-    { id: 'stroke', label: 'ストローク', icon: 'pencil', group: 'stroke' },
+    // マーカーを撤去し、ストロークはペンだけになったので直接ペンを選ぶ（2026-11-27）。ハイライトは長押しメニューから
+    { id: 'stroke', label: 'ペン', icon: 'pencil', tool: 'pen' },
     // 初期アイコンは本体側 _ANN_TOOL_GROUPS.line[0] と同じ activity（折れ線）に揃える。
     // _ensureAnnotationBar() 直後の _syncAnnotationBarState() で選択中ツールに追従する。
     { id: 'line', label: 'ライン', icon: 'activity', group: 'line' },
@@ -159917,6 +160737,7 @@ function hideBoardNoteTab() {
     { id: 'color', label: '色', icon: 'palette', action: () => _openAnnotationColor() },
     { id: 'visibility', label: '表示', icon: 'eye', action: () => _toggleAnnotationVisibility() },
     { id: 'list', label: '一覧', icon: 'squarePen', action: () => _openToolPanel('annotation') },
+    { id: 'clear', label: '全削除', icon: 'trash2', action: event => _clearAnnotationSurface(event) },
     { id: 'close', label: '閉じる', icon: 'x', action: () => _closeAnnotationToolbar() },
   ];
   // 本体（gb-annotations）の _ANN_TOOL_GROUPS と同じ内容のフォールバック。本体側が
@@ -159924,7 +160745,7 @@ function hideBoardNoteTab() {
   // 追従させるため、本体側と同じアイコン名を持たせる（アノテートフロートパレット改修計画
   // 2026-08-13 §1-2）。
   const ANNOTATION_GROUP_FALLBACK = {
-    stroke: [{ tool: 'pen', label: 'ペン', icon: 'pencil' }, { tool: 'marker', label: 'マーカー', icon: 'highlighter' }],
+    stroke: [{ tool: 'pen', label: 'ペン', icon: 'pencil' }],
     line: [{ tool: 'polyline', label: '折れ線', icon: 'activity' }, { tool: 'ellipse-line', label: '円形', icon: 'circle' }, { tool: 'rect-line', label: '矩形', icon: 'square' }],
     fill: [{ tool: 'lasso', label: '囲い塗り', icon: 'lasso' }, { tool: 'ellipse-fill', label: '円形塗り', icon: 'circle' }, { tool: 'rect', label: '矩形塗り', icon: 'square' }],
   };
@@ -160068,7 +160889,7 @@ function hideBoardNoteTab() {
   }
 
   function _openToolPanel(type) {
-    if (type === 'annotation' && typeof window.openRightPanelTab === 'function') return _callGlobal('openRightPanelTab', type, document.getElementById('cloud-mobile-main-button'));
+    if ((type === 'annotation' || type === 'history') && typeof window.openRightPanelTab === 'function') return _callGlobal('openRightPanelTab', type, document.getElementById('cloud-mobile-main-button'));
     if (_openPaneTool(type)) return true;
     return _callGlobal('openRightPanelTab', type);
   }
@@ -160315,7 +161136,7 @@ function hideBoardNoteTab() {
       ];
     }
     if (toolType === 'scriptnote') {
-      return [
+      const toolbarItems = [
         { id: 'reveal-in-folder-tree', label: 'フォルダツリーで表示', icon: 'folderTree', action: () => _callGlobal('revealCurrentInFolderTree', 'scriptnote', null) },
         { id: 'duplicate-file', label: 'ファイルを複製', icon: 'copy', action: () => _callGlobal('_duplicateCurrentFile', 'scriptnote') },
         { id: 'open', label: '開く', icon: 'folderOpen', action: () => _callGlobal('showScriptNoteOpenModal') },
@@ -160341,6 +161162,15 @@ function hideBoardNoteTab() {
         { id: 'save-template', label: 'テンプレートを登録', icon: 'save', action: () => _runScriptNoteToolbarAction('saveTemplate') },
         { id: 'manage-templates', label: 'テンプレートを管理', icon: 'listChecks', action: () => _runScriptNoteToolbarAction('manageTemplates') },
       ];
+      // 電話用のツールバー操作に、通常幅と同じ共通メニュー・子メニューも残す。
+      const desktopItems = _desktopToolMenuItemsForMobile(toolType);
+      const labelKey = item => String(item?.label || '').replace(/[.…]+$/, '').trim();
+      const controls = toolbarItems.map(item => {
+        const canonical = desktopItems.find(other => labelKey(other) === labelKey(item));
+        // 電話用の並びと識別名を保ち、同名操作の処理・表示名・権限は共通メニューへ合わせる。
+        return canonical ? { ...canonical, id: item.id } : item;
+      });
+      return _withoutDuplicateMenuLabels(controls, desktopItems);
     }
     const desktopItems = _desktopToolMenuItemsForMobile(toolType);
     // ノートのツールバーもスマホでは隠れる。読込と目次を同じ処理へ接続する。
@@ -160759,6 +161589,23 @@ function hideBoardNoteTab() {
     document.getElementById('btn-overlay-toggle')?.click?.();
     _syncAnnotationBarState();
     return true;
+  }
+
+  async function _clearAnnotationSurface(event) {
+    const button = event?.currentTarget;
+    if (button?.disabled) return false;
+    if (typeof window.annClear !== 'function') {
+      if (typeof showStatus === 'function') showStatus('アノテートを削除できませんでした', true);
+      return false;
+    }
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    try { return await window.annClear(); }
+    catch {
+      if (typeof showStatus === 'function') showStatus('アノテートを削除できませんでした', true);
+      return false;
+    } finally {
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    }
   }
 
   function _closeAnnotationToolbar() {
@@ -166271,12 +167118,8 @@ async function _apiPutValue(valObj, updates) {
         });
       }
     } catch {}
-    try {
-      const ptc = dbPath && valObj.property && typeof getPropertyTypes === 'function'
-        ? getPropertyTypes(dbPath)?.[valObj.property]
-        : null;
-      if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
-    } catch {}
+    // 画像の参照は削除・GCの入口で永続データから再確認する。
+    // 値保存ごとの全保存先走査は、保存後の画面更新を妨げるため行わない。
     if (updates.new_rich_html !== undefined) {
       if (updates.new_rich_html) valObj.rich_html = updates.new_rich_html;
       else delete valObj.rich_html;
@@ -166323,13 +167166,16 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
   return _dbQueueEntryMutation(entityPath, mutationDbPath, async (latestEntityPath) => {
     const writeEntityPath = latestEntityPath || entityPath;
     const key = writeEntityPath.endsWith('.md') ? 'entry_path' : 'folder_path';
-    const body = { [key]: writeEntityPath, property: propName, value, status, note: note || '' };
+    let body = { [key]: writeEntityPath, property: propName, value, status, note: note || '' };
     if (richHtml) body.rich_html = richHtml;
     if (extra && typeof extra === 'object') {
+      if (extra.entry_id || extra.expected_entry_id) body.expected_entry_id = String(extra.expected_entry_id || extra.entry_id);
+      if (extra.operation_id) body.operation_id = String(extra.operation_id);
       if (Array.isArray(extra.relations)) body.relations = extra.relations;
       if (Array.isArray(extra.published_in)) body.published_in = extra.published_in;
       if (extra.link && typeof extra.link === 'object') body.link = { ...extra.link };
       if (extra.created) body.created = extra.created;
+      if (extra._return_entity === true) body._return_entity = true;
       const baseRevision = Number(extra.baseRevision ?? extra.base_revision ?? extra.entryRevision ?? extra.revision);
       if (Number.isInteger(baseRevision) && baseRevision >= 0) body.baseRevision = baseRevision;
     }
@@ -166338,9 +167184,35 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     const usableRevisions = [requestedRevision, latestRevision]
       .filter(revision => Number.isInteger(revision) && revision >= 0);
     if (usableRevisions.length) body.baseRevision = Math.max(...usableRevisions);
-    const cellBase = typeof _dbCellBaseForSave === 'function' ? _dbCellBaseForSave(writeEntityPath, propName) : null;
+    let cellBase = typeof _dbCellBaseForSave === 'function' ? _dbCellBaseForSave(writeEntityPath, propName) : null;
     if (cellBase) body.cell_base = cellBase;
-    const res = await apiPost('/value', body);
+    const retry = extra?._candidateAddRetry;
+    if (retry && typeof retry === 'object') {
+      const intent = { ...body }; delete intent.baseRevision; delete intent.cell_base; delete intent._return_entity;
+      const signature = JSON.stringify(intent);
+      if (retry.body) {
+        if (retry.signature !== signature) throw Object.assign(new Error('前の保存結果を確認できていません。先に同じ内容で再試行してください'), {status:409});
+        body = JSON.parse(JSON.stringify(retry.body));
+        cellBase = body.cell_base || null;
+      } else {
+        body.operation_id = body.operation_id || 'form-candidate-' + crypto.randomUUID();
+        retry.body = JSON.parse(JSON.stringify(body)); retry.signature = signature; retry.ambiguous = false;
+      }
+    }
+    let res;
+    try {
+      res = await apiPost('/value', body);
+    } catch (error) {
+      // These responses prove that the write was rejected before any mutation.
+      // Network loss and conflicts retain the exact request, including its cell base.
+      if (retry) {
+        if (!retry.ambiguous && [400,403,422,423].includes(Number(error?.status))) {
+          delete retry.body; delete retry.signature; delete retry.ambiguous;
+        } else retry.ambiguous = true;
+      }
+      throw error;
+    }
+    if (retry) {delete retry.body; delete retry.signature; delete retry.ambiguous;}
     if (cellBase) {
       try {
         // 追加は保存先のセルの末尾へ1件足す。画面の一覧は追加中の印が付いたままのことがあるので使わず、
@@ -166371,12 +167243,7 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
         });
       }
     } catch {}
-    try {
-      const ptc = dbPath && propName && typeof getPropertyTypes === 'function'
-        ? getPropertyTypes(dbPath)?.[propName]
-        : null;
-      if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
-    } catch {}
+    // 候補追加も、画像削除・GC側の永続データの参照確認を正本とする。
     window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
       owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
       structural: structuralSave,
@@ -174681,32 +175548,31 @@ async function applyPropertyType(propName, root, options = {}) {
   return config;
 }
 
-function testFormula(root) {
-  const scope = _ptResolveRoot(root);
-  const src = _ptGet('pt-formula-src', scope)?.value || '';
-  const resultEl = _ptGet('pt-formula-result', scope);
-  if (!resultEl) return;
-  if (!src.trim()) { resultEl.textContent = ''; return; }
-  if (typeof _ptUpdateFormulaPreview === 'function') _ptUpdateFormulaPreview(scope);
-  // 最初のエントリでテスト
+// 数式を先頭のトピックで計算する（数式の列設定の結果表示）。
+function _ptEvaluateFormulaForEditor(scope, src) {
   const { dbPath, pivotData } = _ptState(scope);
   const data = pivotData || state.pivotData;
-  if (!data || !data.entities) { resultEl.textContent = 'データがありません'; return; }
+  if (!data || !data.entities) return { message: 'データがありません' };
   const firstEntity = Object.keys(data.entities)[0];
-  if (!firstEntity) { resultEl.textContent = 'トピックがありません'; return; }
+  if (!firstEntity) return { message: 'トピックがありません' };
   const entityData = data.entities[firstEntity];
+  const entityLabel = (typeof _dbEntityDisplayName === 'function' ? _dbEntityDisplayName(firstEntity, entityData) : '') || firstEntity;
   let result;
   try {
     result = formulaEvalForEntity(src, entityData, { propTypes: getPropertyTypes(dbPath), dbPath });
   } catch (e) {
     result = { error: e?.message || String(e) };
   }
-  if (result.error) {
-    const loc = Number.isFinite(result.errorPos) ? '（位置 ' + (result.errorPos + 1) + '）' : '';
-    resultEl.innerHTML = '<span style="color:var(--red);">エラー' + loc + ': ' + esc(result.error) + '</span>';
-  } else {
-    resultEl.innerHTML = '<span style="color:var(--green);">' + esc(firstEntity) + ' → ' + esc(String(result.value)) + '</span>';
-  }
+  return { ...result, entityLabel };
+}
+
+// 結果は入力に合わせて自動で計算する。この関数は今すぐ計算し直す入口として残す。
+function testFormula(root) {
+  const scope = _ptResolveRoot(root);
+  const textarea = _ptGet('pt-formula-src', scope);
+  if (!textarea) return;
+  if (typeof _ptBindFormulaEditor === 'function') _ptBindFormulaEditor(scope);
+  textarea.__meldexFormulaEditor?.evaluateNow?.();
 }
 
 function _ptFormulaProps(root) {
@@ -174717,34 +175583,7 @@ function _ptFormulaProps(root) {
   return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
 }
 
-function _ptFormulaTemplates() {
-  return [
-    { label: 'if', snippet: 'if(prop("状態") == "完了", "完了", "未完了")' },
-    { label: '日時差', snippet: 'dateBetween(now(), prop("開始日時"), "days")' },
-    { label: '表示形式', snippet: 'format(prop("数値"), "#,##0.00")' },
-  ];
-}
-
-function _ptBuildFormulaOptionsHtml(current, root) {
-  const props = _ptFormulaProps(root);
-  const propButtons = props.length
-    ? props.map(p => '<button type="button" class="pt-small-btn" data-formula-prop="' + esc(p) + '">prop("' + esc(_formulaPropLiteral(p, '"')) + '")</button>').join('')
-    : '<span class="pt-hint">利用可能な列がありません</span>';
-  const templateButtons = _ptFormulaTemplates()
-    .map(t => '<button type="button" class="pt-small-btn" data-formula-template="' + esc(t.snippet) + '">' + esc(t.label) + '</button>')
-    .join('');
-  return `<div class="field"><label>数式（Notion互換構文） ${fieldHelp('使用可能: prop("名前"), if, let/lets, and, or, not, empty, contains, replace, floor, round, mod, toNumber, format, year, month, day, dateBetween, dateSubtract, now, +, -, *, /, >, <, ==, !=')}</label>
-    <textarea id="pt-formula-src" class="pt-formula-textarea" rows="8">${esc(current.formula||'')}</textarea>
-    <div class="pt-formula-tools" aria-label="数式テンプレート">${templateButtons}</div>
-    <div class="pt-formula-props" aria-label="列候補">${propButtons}</div>
-    <pre id="pt-formula-preview" class="pt-formula-preview" aria-label="数式シンタックスプレビュー"></pre>
-  </div>
-  <div class="field">
-    <button data-action="testFormula(this.closest('[data-pt-root]'))" class="pt-small-btn">テスト</button>
-    <span id="pt-formula-result" class="pt-hint"></span>
-  </div>`;
-}
-
+// 入力欄のカーソル位置へ文字を入れる（AI自動生成の指示文でも使う）。
 function _ptInsertFormulaText(textarea, text) {
   if (!textarea) return;
   const start = textarea.selectionStart ?? textarea.value.length;
@@ -174756,64 +175595,20 @@ function _ptInsertFormulaText(textarea, text) {
   textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function _ptFormulaTokenClass(token) {
-  if (token.type === 'str') return 'string';
-  if (token.type === 'num') return 'number';
-  if (token.type === 'bool') return 'boolean';
-  if (token.type === 'id') return 'identifier';
-  return 'operator';
-}
-
-function _ptHighlightFormula(src) {
-  if (!src) return '';
-  if (typeof formulaTokenize !== 'function') return esc(src);
-  let tokens = [];
-  try {
-    tokens = formulaTokenize(src);
-  } catch {
-    return esc(src);
-  }
-  let cursor = 0;
-  let html = '';
-  tokens.forEach(token => {
-    const start = Number.isFinite(token.pos) ? token.pos : cursor;
-    const end = Number.isFinite(token.end) ? token.end : start + String(token.value || '').length;
-    if (start > cursor) html += esc(src.slice(cursor, start));
-    html += '<span class="pt-formula-token pt-formula-token-' + _ptFormulaTokenClass(token) + '">' + esc(src.slice(start, end)) + '</span>';
-    cursor = end;
-  });
-  if (cursor < src.length) html += esc(src.slice(cursor));
-  return html;
-}
-
-function _ptUpdateFormulaPreview(root) {
-  const scope = _ptResolveRoot(root);
-  const textarea = _ptGet('pt-formula-src', scope);
-  const preview = _ptGet('pt-formula-preview', scope);
-  if (!textarea || !preview) return;
-  try {
-    preview.innerHTML = _ptHighlightFormula(textarea.value || '');
-  } catch {
-    preview.textContent = textarea.value || '';
-  }
+// 数式の列設定（gb-db-formula-editor.js）。入力欄は1行の全幅、列と関数は検索できる一覧から選ぶ。
+function _ptBuildFormulaOptionsHtml(current, root) {
+  return MeldexFormulaEditor.html(current);
 }
 
 function _ptBindFormulaEditor(root) {
   const scope = _ptResolveRoot(root);
   const textarea = _ptGet('pt-formula-src', scope);
-  if (!textarea || textarea.dataset.formulaEditorBound) return;
-  textarea.dataset.formulaEditorBound = '1';
-  textarea.addEventListener('input', () => _ptUpdateFormulaPreview(scope));
-  scope.querySelectorAll('[data-formula-prop]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const prop = btn.dataset.formulaProp || '';
-      _ptInsertFormulaText(textarea, 'prop("' + _formulaPropLiteral(prop, '"') + '")');
-    });
+  if (!textarea || textarea.__meldexFormulaEditor) return;
+  const host = textarea.closest('.pt-formula-editor') || scope;
+  textarea.__meldexFormulaEditor = MeldexFormulaEditor.bind(host, {
+    getProps: () => _ptFormulaProps(scope),
+    evaluate: (src) => _ptEvaluateFormulaForEditor(scope, src),
   });
-  scope.querySelectorAll('[data-formula-template]').forEach(btn => {
-    btn.addEventListener('click', () => _ptInsertFormulaText(textarea, btn.dataset.formulaTemplate || ''));
-  });
-  _ptUpdateFormulaPreview(scope);
 }
 
 function showDbPropertySettingsForColumn(dbPath, propName, opts) {
@@ -176317,6 +177112,487 @@ function _ptFuriganaLeftColumn(scope, propName) {
   return left && left !== '__entity__' ? left : '';
 }
 ;
+
+;
+
+/* === gb-db-formula-editor.js === */
+;
+/*
+ * gb-db-formula-editor.js — シートの数式タイプの列設定（2026-11-27 全面見直し）。
+ *
+ * 利用者報告: 列の多いシート（約80列）で、数式の入力欄が幅14pxに潰れ、右に列名のボタンが何十行も並んで
+ * 使い物にならなかった（設定欄の共通の「項目名と値を1行に並べる」形に、入力欄・ボタン群・見本をまとめて
+ * 入れていたため）。表計算ソフトの数式バーを手本に、次の形へ作り直した。
+ *   - 数式の入力欄は1行の全幅。下端のつまみで高さを広げられる。
+ *   - 列は「列を挿入」から検索して選ぶ。入力中も prop(" に続けて列名の候補が出る。
+ *   - 関数は「関数を挿入」から分類つきの一覧で選ぶ。入力中も関数名の候補が出る。
+ *   - カーソルのある関数の引数の並びを入力欄の下に出す（今の引数を強調）。
+ *   - 結果は入力に合わせて自動で計算し、読める大きさで出す。エラーは何文字目かと日本語の説明つき。
+ *
+ * 部品: 候補 = MeldexInputSuggest、一覧の枠 = MeldexFilterPopup、検索欄 = MeldexSearchField、補足 = fieldHelp。
+ * 保存は従来どおり列設定の自動保存（#pt-formula-src の値）に任せる。
+ */
+(function (global) {
+  'use strict';
+
+  const FUNCTIONS = [
+    { group: '論理', name: 'if', args: ['条件', '真のとき', '偽のとき'], desc: '条件で値を分ける' },
+    { group: '論理', name: 'and', args: ['条件1', '条件2'], desc: 'すべて真なら真' },
+    { group: '論理', name: 'or', args: ['条件1', '条件2'], desc: 'どれかが真なら真' },
+    { group: '論理', name: 'not', args: ['条件'], desc: '真と偽を入れ替える' },
+    { group: '論理', name: 'empty', args: ['値'], desc: '空なら真' },
+    { group: '文字', name: 'contains', args: ['文字列', '探す文字'], desc: '文字を含むか' },
+    { group: '文字', name: 'replace', args: ['文字列', '置き換える文字', '新しい文字'], desc: '文字を置き換える' },
+    { group: '文字', name: 'concat', args: ['値1', '値2', '…'], desc: '文字をつなげる' },
+    { group: '文字', name: 'length', args: ['文字列'], desc: '文字数' },
+    { group: '文字', name: 'format', args: ['値', '"書式"'], desc: '表示形式を整える（例 "#,##0.00"）' },
+    { group: '数値', name: 'round', args: ['数値'], desc: '四捨五入' },
+    { group: '数値', name: 'floor', args: ['数値'], desc: '切り捨て' },
+    { group: '数値', name: 'ceil', args: ['数値'], desc: '切り上げ' },
+    { group: '数値', name: 'abs', args: ['数値'], desc: '絶対値' },
+    { group: '数値', name: 'mod', args: ['割られる数', '割る数'], desc: '割った余り' },
+    { group: '数値', name: 'min', args: ['値1', '値2', '…'], desc: '最小値' },
+    { group: '数値', name: 'max', args: ['値1', '値2', '…'], desc: '最大値' },
+    { group: '数値', name: 'toNumber', args: ['値'], desc: '数値にする' },
+    { group: '日付', name: 'now', args: [], desc: '今の日時' },
+    { group: '日付', name: 'year', args: ['日時'], desc: '年' },
+    { group: '日付', name: 'month', args: ['日時'], desc: '月' },
+    { group: '日付', name: 'day', args: ['日時'], desc: '日' },
+    { group: '日付', name: 'dateBetween', args: ['日時1', '日時2', '"days"'], desc: '2つの日時の差（日数・月数など）' },
+    { group: '日付', name: 'dateAdd', args: ['日時', '数', '"days"'], desc: '日時を進める' },
+    { group: '日付', name: 'dateSubtract', args: ['日時', '数', '"days"'], desc: '日時を戻す' },
+    { group: 'その他', name: 'prop', args: ['"列名"'], desc: '列の値' },
+    { group: 'その他', name: 'let', args: ['名前', '値', '式'], desc: '値に名前を付けて式で使う' },
+    { group: 'その他', name: 'lets', args: ['名前1', '値1', '…', '式'], desc: '複数の値に名前を付ける' },
+  ];
+  const BY_NAME = new Map(FUNCTIONS.map(fn => [fn.name, fn]));
+  const GROUPS = ['論理', '文字', '数値', '日付', 'その他'];
+
+  const HELP = '列の値を使って計算します。列は prop("列名") で書き、「列」「関数」から選んで入れられます。入力中も候補が出ます（↑↓で選んでEnter）。';
+
+  function escHtml(value) {
+    if (typeof global.esc === 'function') return global.esc(value);
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  }
+
+  function icon(name, size) {
+    return typeof global.lucide === 'function' ? global.lucide(name, size) : '';
+  }
+
+  function propLiteral(name) {
+    return typeof global._formulaPropLiteral === 'function'
+      ? global._formulaPropLiteral(name, '"')
+      : String(name || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  function signatureText(fn) {
+    return fn.name + '(' + fn.args.join(', ') + ')';
+  }
+
+  function matches(text, query) {
+    if (global.MeldexSearchField?.matches) return global.MeldexSearchField.matches(text, query);
+    return String(text).toLowerCase().includes(String(query).toLowerCase());
+  }
+
+  function html(current) {
+    const help = typeof global.fieldHelp === 'function' ? global.fieldHelp(HELP) : '';
+    return `<div class="pt-formula-editor" data-e2e-id="pt-formula-editor">
+      <div class="pt-formula-head">
+        <label class="pt-formula-label" for="pt-formula-src">数式 ${help}</label>
+        <span class="pt-formula-head-actions">
+          <button type="button" class="gb-btn gb-btn-sm pt-formula-insert" data-e2e-id="pt-formula-insert-prop" aria-haspopup="dialog" aria-expanded="false">${icon('columns', 14)}<span>列</span></button>
+          <button type="button" class="gb-btn gb-btn-sm pt-formula-insert" data-e2e-id="pt-formula-insert-fn" aria-haspopup="dialog" aria-expanded="false">${icon('sigma', 14)}<span>関数</span></button>
+        </span>
+      </div>
+      <textarea id="pt-formula-src" class="pt-formula-textarea" rows="5" spellcheck="false" autocomplete="off" aria-describedby="pt-formula-signature pt-formula-result">${escHtml(current?.formula || '')}</textarea>
+      <div id="pt-formula-signature" class="pt-formula-signature" aria-live="polite"></div>
+      <pre id="pt-formula-preview" class="pt-formula-preview" aria-label="数式の色分け表示"></pre>
+      <div class="pt-formula-result-box">
+        <span class="pt-formula-result-label">結果</span>
+        <div id="pt-formula-result" class="pt-formula-result" aria-live="polite"></div>
+      </div>
+    </div>`;
+  }
+
+  // ---- 字句の解析（候補・引数表示・不明な列の確認に使う） ----
+  function tokens(src) {
+    if (typeof global.formulaTokenize !== 'function') return null;
+    try { return global.formulaTokenize(src); } catch (_) { return null; }
+  }
+
+  // 文字列の途中か（前にある " の数で判断。\" は数えない）
+  function insideString(before) {
+    let inside = false;
+    for (let i = 0; i < before.length; i++) {
+      if (before[i] === '\\' && inside) { i++; continue; }
+      if (before[i] === '"') inside = !inside;
+    }
+    return inside;
+  }
+
+  // カーソル位置を囲む関数呼び出しと、何番目の引数か。
+  function enclosingCall(src, caret) {
+    const toks = tokens(src.slice(0, caret)) || tokensLenient(src.slice(0, caret));
+    const stack = [];
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i];
+      if (t.type === 'op' && t.value === '(') {
+        const prev = toks[i - 1];
+        stack.push({ name: prev && prev.type === 'id' ? prev.value : '', arg: 0 });
+      } else if (t.type === 'op' && t.value === ')') {
+        stack.pop();
+      } else if (t.type === 'op' && t.value === ',' && stack.length) {
+        stack[stack.length - 1].arg += 1;
+      }
+    }
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].name) return stack[i];
+    }
+    return null;
+  }
+
+  // 閉じていない文字列があっても、手前までの字句を返す。
+  function tokensLenient(src) {
+    let text = src;
+    if (insideString(text)) text += '"';
+    return tokens(text) || [];
+  }
+
+  function referencedProps(src) {
+    const toks = tokens(src);
+    if (!toks) return [];
+    const names = [];
+    for (let i = 0; i + 2 < toks.length; i++) {
+      if (toks[i].type === 'id' && toks[i].value === 'prop' && toks[i + 1].value === '(' && toks[i + 2].type === 'str') {
+        names.push(toks[i + 2].value);
+      }
+    }
+    return names;
+  }
+
+  function unknownFunctionPos(src, name) {
+    const toks = tokens(src) || [];
+    const hit = toks.find((t, i) => t.type === 'id' && t.value === name && toks[i + 1]?.value === '(');
+    return hit ? hit.pos : null;
+  }
+
+  // ---- エラーの日本語化 ----
+  function translateError(message) {
+    const text = String(message || '');
+    let m;
+    if (text === 'Unterminated string') return '「"」が閉じていません';
+    if (text === 'Invalid number') return '数値の書き方が正しくありません';
+    if (text === 'Unexpected end') return '式が途中で終わっています';
+    if (text === 'Expected ,') return '「,」で区切ってください';
+    if ((m = /^Expected (.+) but got (.+)$/.exec(text))) {
+      return m[2] === 'EOF' ? `「${m[1]}」が足りません` : `「${m[1]}」が必要なところに「${m[2]}」があります`;
+    }
+    if ((m = /^Unexpected token: (.*)$/.exec(text))) return `「${m[1]}」はここに書けません`;
+    if ((m = /^Unknown function: (.*)$/.exec(text))) return `関数「${m[1]}」はありません`;
+    if ((m = /^Circular formula reference: (.*)$/.exec(text))) return `数式の列「${m[1]}」が自分自身を参照しています`;
+    return text;
+  }
+
+  // ---- 色分け表示（エラーの位置に印） ----
+  function tokenClass(token) {
+    if (token.type === 'str') return 'string';
+    if (token.type === 'num') return 'number';
+    if (token.type === 'bool') return 'boolean';
+    if (token.type === 'id') return 'identifier';
+    return 'operator';
+  }
+
+  function highlight(src, errorPos) {
+    const hasError = Number.isFinite(errorPos);
+    const mark = (text) => '<span class="pt-formula-error-mark">' + (text ? escHtml(text) : '&nbsp;') + '</span>';
+    const plain = (from, to) => {
+      if (to <= from) return '';
+      if (hasError && errorPos >= from && errorPos < to) {
+        return escHtml(src.slice(from, errorPos)) + mark(src[errorPos]) + escHtml(src.slice(errorPos + 1, to));
+      }
+      return escHtml(src.slice(from, to));
+    };
+    const toks = tokens(src);
+    let out = '';
+    if (!toks) {
+      out = plain(0, src.length);
+    } else {
+      let cursor = 0;
+      toks.forEach(token => {
+        const start = Number.isFinite(token.pos) ? token.pos : cursor;
+        const end = Number.isFinite(token.end) ? token.end : start + String(token.value || '').length;
+        out += plain(cursor, start);
+        const inner = hasError && errorPos >= start && errorPos < end ? mark(src.slice(start, end)) : escHtml(src.slice(start, end));
+        out += '<span class="pt-formula-token pt-formula-token-' + tokenClass(token) + '">' + inner + '</span>';
+        cursor = end;
+      });
+      out += plain(cursor, src.length);
+    }
+    if (hasError && errorPos >= src.length) out += mark('');
+    return out;
+  }
+
+  // ---- 一覧から選ぶ（列・関数） ----
+  function openPicker(anchor, kind, ctl) {
+    if (!global.MeldexFilterPopup?.open) return;
+    const textarea = ctl.textarea;
+    const selection = { start: textarea.selectionStart ?? textarea.value.length, end: textarea.selectionEnd ?? textarea.value.length };
+    const content = document.createElement('div');
+    content.className = 'pt-formula-picker-body';
+    const list = document.createElement('div');
+    list.className = 'pt-formula-picker-list';
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', kind === 'prop' ? '列' : '関数');
+
+    const pick = (insertText, caretOffset) => {
+      global.MeldexFilterPopup.close(false);
+      ctl.insert(insertText, selection, caretOffset);
+    };
+
+    const itemButton = (labelText, detailText, attrs, onPick) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-context-menu-item pt-formula-picker-item';
+      button.setAttribute('role', 'option');
+      Object.entries(attrs).forEach(([key, value]) => button.setAttribute(key, value));
+      const label = document.createElement('span');
+      label.className = 'pt-formula-picker-label';
+      label.textContent = labelText;
+      button.appendChild(label);
+      if (detailText) {
+        const detail = document.createElement('span');
+        detail.className = 'pt-formula-picker-detail';
+        detail.textContent = detailText;
+        button.appendChild(detail);
+      }
+      button.addEventListener('click', onPick);
+      return button;
+    };
+
+    const renderList = (query) => {
+      list.replaceChildren();
+      if (kind === 'prop') {
+        const props = ctl.getProps().filter(name => matches(name, query));
+        props.forEach(name => list.appendChild(itemButton(name, '', { 'data-formula-prop': name }, () => pick('prop("' + propLiteral(name) + '")'))));
+        if (!props.length) list.appendChild(emptyRow(query ? '一致する列はありません' : '列はありません'));
+        return;
+      }
+      let shown = 0;
+      GROUPS.forEach(group => {
+        const fns = FUNCTIONS.filter(fn => fn.group === group && matches(fn.name + ' ' + fn.desc + ' ' + fn.args.join(' '), query));
+        if (!fns.length) return;
+        const head = document.createElement('div');
+        head.className = 'gb-context-menu-label pt-formula-picker-group';
+        head.textContent = group;
+        list.appendChild(head);
+        fns.forEach(fn => {
+          shown += 1;
+          list.appendChild(itemButton(signatureText(fn), fn.desc, { 'data-formula-fn': fn.name }, () => pick(fn.name + '()', fn.name.length + 1)));
+        });
+      });
+      if (!shown) list.appendChild(emptyRow('一致する関数はありません'));
+    };
+
+    const emptyRow = (text) => {
+      const row = document.createElement('div');
+      row.className = 'gb-context-menu-label pt-formula-picker-empty';
+      row.textContent = text;
+      return row;
+    };
+
+    const search = global.MeldexSearchField?.create
+      ? global.MeldexSearchField.create({
+        placeholder: kind === 'prop' ? '列を検索' : '関数を検索（例: 日数、切り捨て）',
+        e2eId: kind === 'prop' ? 'pt-formula-prop-search' : 'pt-formula-fn-search',
+        onInput: renderList,
+      })
+      : null;
+    if (search) {
+      content.appendChild(search.element);
+      search.input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing) {
+          event.preventDefault();
+          list.querySelector('.pt-formula-picker-item')?.click();
+        } else if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          list.querySelector('.pt-formula-picker-item')?.focus();
+        }
+      });
+    }
+    list.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      const items = [...list.querySelectorAll('.pt-formula-picker-item')];
+      const index = items.indexOf(document.activeElement);
+      if (index < 0) return;
+      event.preventDefault();
+      const next = event.key === 'ArrowDown' ? items[index + 1] : items[index - 1];
+      if (next) next.focus();
+      else if (event.key === 'ArrowUp') search?.input.focus();
+    });
+    content.appendChild(list);
+    renderList('');
+    const popup = global.MeldexFilterPopup.open(anchor, kind === 'prop' ? '列を挿入' : '関数を挿入', content);
+    popup?.classList.add('pt-formula-picker');
+    search?.input.focus();
+  }
+
+  // ---- 入力中の候補 ----
+  function suggestions(ctl, value, caret) {
+    const before = value.slice(0, caret);
+    const propMatch = /prop\(\s*"((?:[^"\\]|\\.)*)$/.exec(before);
+    if (propMatch) {
+      const partial = propMatch[1].replace(/\\(.)/g, '$1');
+      const props = ctl.getProps();
+      const starts = props.filter(name => partial && matches(name.slice(0, partial.length), partial));
+      const rest = props.filter(name => !starts.includes(name) && matches(name, partial));
+      const items = [...starts, ...rest];
+      if (items.length === 1 && items[0] === partial && value.slice(caret).startsWith('")')) return null;
+      const from = caret - propMatch[1].length;
+      let to = caret;
+      const after = value.slice(caret);
+      const closing = /^(?:(?:[^"\\\n]|\\.)*)"\s*\)?/.exec(after);
+      if (closing) to = caret + closing[0].length;
+      return { from, to, items: items.map(name => ({ label: name, insert: propLiteral(name) + '")' })) };
+    }
+    if (insideString(before)) return null;
+    const idMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
+    if (!idMatch) return null;
+    const partial = idMatch[1];
+    const lower = partial.toLowerCase();
+    const fns = FUNCTIONS.filter(fn => fn.name.toLowerCase().startsWith(lower) && fn.name !== partial);
+    if (!fns.length) return null;
+    const after = value.slice(caret);
+    const tail = /^[A-Za-z0-9_]*/.exec(after)[0];
+    const hasParen = after.slice(tail.length).startsWith('(');
+    return {
+      from: caret - partial.length,
+      to: caret + tail.length,
+      items: fns.map(fn => ({
+        label: fn.name,
+        detail: fn.desc,
+        insert: hasParen ? fn.name : fn.name + '()',
+        caret: fn.name.length + 1,
+      })),
+    };
+  }
+
+  function bind(root, options = {}) {
+    const textarea = root?.querySelector?.('#pt-formula-src');
+    if (!textarea || textarea.dataset.formulaEditorBound) return null;
+    textarea.dataset.formulaEditorBound = '1';
+    const preview = root.querySelector('#pt-formula-preview');
+    const result = root.querySelector('#pt-formula-result');
+    const signature = root.querySelector('#pt-formula-signature');
+    let timer = 0;
+
+    const ctl = {
+      textarea,
+      getProps: () => (typeof options.getProps === 'function' ? options.getProps() : []).map(String),
+      insert(text, selection, caretOffset) {
+        const start = selection?.start ?? textarea.selectionStart ?? textarea.value.length;
+        const end = selection?.end ?? textarea.selectionEnd ?? start;
+        const selected = textarea.value.slice(start, end);
+        let insertText = text;
+        let caret = start + (Number.isFinite(caretOffset) ? caretOffset : text.length);
+        // 関数を選んだ時に選択中の文字があれば、それを最初の引数にする（表計算ソフトと同じ）。
+        if (Number.isFinite(caretOffset) && selected && text.endsWith('()')) {
+          insertText = text.slice(0, -1) + selected + ')';
+          caret = start + insertText.length;
+        }
+        textarea.value = textarea.value.slice(0, start) + insertText + textarea.value.slice(end);
+        textarea.focus();
+        textarea.setSelectionRange(caret, caret);
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      },
+    };
+
+    function updateSignature() {
+      if (!signature) return;
+      const caret = textarea.selectionStart ?? textarea.value.length;
+      const call = enclosingCall(textarea.value, caret);
+      const fn = call ? BY_NAME.get(call.name) : null;
+      if (!fn) { signature.replaceChildren(); return; }
+      const parts = [document.createTextNode(fn.name + '(')];
+      const lastIndex = fn.args.length - 1;
+      fn.args.forEach((arg, index) => {
+        if (index) parts.push(document.createTextNode(', '));
+        const span = document.createElement('span');
+        span.className = 'pt-formula-signature-arg';
+        const variadicHit = fn.args[lastIndex] === '…' && index === lastIndex - 1 && call.arg >= index;
+        if (call.arg === index || variadicHit) span.classList.add('active');
+        span.textContent = arg;
+        parts.push(span);
+      });
+      parts.push(document.createTextNode(')'));
+      const desc = document.createElement('span');
+      desc.className = 'pt-formula-signature-desc';
+      desc.textContent = fn.desc;
+      parts.push(desc);
+      signature.replaceChildren(...parts);
+    }
+
+    function evaluateNow() {
+      timer = 0;
+      const src = textarea.value || '';
+      const outcome = src.trim() && typeof options.evaluate === 'function' ? options.evaluate(src) : null;
+      let errorPos = null;
+      if (result) {
+        result.classList.remove('is-error', 'is-warning');
+        if (!src.trim()) {
+          result.textContent = '';
+        } else if (!outcome) {
+          result.textContent = '';
+        } else if (outcome.message) {
+          result.textContent = outcome.message;
+        } else if (outcome.error) {
+          const unknownFn = /^Unknown function: (.*)$/.exec(outcome.error);
+          errorPos = Number.isFinite(outcome.errorPos) ? outcome.errorPos : (unknownFn ? unknownFunctionPos(src, unknownFn[1]) : null);
+          const where = Number.isFinite(errorPos) ? (errorPos + 1) + '文字目: ' : '';
+          result.textContent = 'エラー（' + where + translateError(outcome.error) + '）';
+          result.classList.add('is-error');
+        } else {
+          const known = new Set(ctl.getProps());
+          const missing = referencedProps(src).filter(name => !known.has(name));
+          const value = outcome.value === '' || outcome.value == null ? '（空）' : String(outcome.value);
+          const label = outcome.entityLabel ? outcome.entityLabel + ' → ' : '';
+          result.textContent = label + value;
+          if (missing.length) {
+            const warn = document.createElement('div');
+            warn.className = 'pt-formula-result-warning';
+            warn.textContent = [...new Set(missing)].map(name => '列「' + name + '」がありません').join('／');
+            result.appendChild(warn);
+            result.classList.add('is-warning');
+          }
+        }
+      }
+      if (preview) preview.innerHTML = highlight(src, errorPos);
+    }
+
+    function scheduleEvaluate() {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(evaluateNow, 150);
+    }
+
+    root.querySelector('[data-e2e-id="pt-formula-insert-prop"]')?.addEventListener('click', event => openPicker(event.currentTarget, 'prop', ctl));
+    root.querySelector('[data-e2e-id="pt-formula-insert-fn"]')?.addEventListener('click', event => openPicker(event.currentTarget, 'fn', ctl));
+    global.MeldexInputSuggest?.attach(textarea, {
+      ariaLabel: '数式の候補',
+      getSuggestions: (value, caret) => suggestions(ctl, value, caret),
+    });
+    textarea.addEventListener('input', () => { updateSignature(); scheduleEvaluate(); });
+    ['keyup', 'click', 'focus'].forEach(type => textarea.addEventListener(type, updateSignature));
+    evaluateNow();
+    return { evaluateNow, updateSignature };
+  }
+
+  global.MeldexFormulaEditor = Object.freeze({
+    html,
+    bind,
+    translateError,
+    highlight,
+    functions: () => FUNCTIONS.map(fn => ({ ...fn, args: [...fn.args] })),
+  });
+})(window);
 
 ;
 
@@ -178973,6 +180249,8 @@ async function _dbLinkCommitValue(args) {
     closeInlineEditorShell, refreshCellDisplayNow, restoreCellPos, anchorEl, historySteps,
   } = args || {};
   const anchor = anchorEl || td || null;
+  const historyOptions = { historyScope: typeof args?.historyScope === 'function' ? args.historyScope() : args?.historyScope,
+    onHistoryChanged: args?.onHistoryChanged };
   const oldValue = existing?.value || '';
   const oldLink = existing?.link && typeof existing.link === 'object' ? { ...existing.link } : null;
   const normalizedLink = _dbLinkDescriptor({ value: newPath, link: newLink });
@@ -179002,11 +180280,18 @@ async function _dbLinkCommitValue(args) {
       const refreshedLocally = typeof refreshCellDisplayNow === 'function' ? refreshCellDisplayNow([], newPath) : false;
       if (typeof restoreCellPos === 'function') restoreCellPos();
       await _apiPutValue(existing, { new_value: newPath, new_link: normalizedLink });
-      if (!refreshedLocally && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
+      if (!refreshedLocally && typeof historyOptions.onHistoryChanged !== 'function' && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
       if (typeof _dbUndoValue === 'function') {
         _dbUndoValue('リンク: ' + oldValue + ' → ' + newPath, existing, oldValue, newPath, undefined, undefined, {
-          dbPath, ctx, oldUpdates: { new_link: oldLink }, newUpdates: { new_link: normalizedLink },
+          dbPath, ctx, ...historyOptions, oldUpdates: { new_link: oldLink }, newUpdates: { new_link: normalizedLink },
         });
+      }
+      if (typeof historyOptions.onHistoryChanged === 'function') {
+        try { await historyOptions.onHistoryChanged(); }
+        catch (error) {
+          if (typeof showStatus === 'function') showStatus('リンクは保存済みですが表示を更新できません: ' + (error?.message || error), true);
+          return true;
+        }
       }
       if (typeof showStatus === 'function') showStatus('リンクを設定しました');
     } catch (e) {
@@ -179022,7 +180307,7 @@ async function _dbLinkCommitValue(args) {
         existing.value = oldValue;
       }
       if (oldLink) existing.link = oldLink; else delete existing.link;
-      if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
+      if (typeof historyOptions.onHistoryChanged !== 'function' && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       return false;
     }
@@ -179112,7 +180397,7 @@ async function _dbLinkFetchWebTitle(target) {
   } catch (_) { return ''; }
 }
 
-function _dbLinkShowEditor(initial, anchorEl) {
+function _dbLinkShowEditor(initial, anchorEl, options = {}) {
   const current = _dbLinkDescriptor(initial || '');
   return new Promise(resolve => {
     if (!globalThis.GBUI?.createModal) {
@@ -179163,6 +180448,7 @@ function _dbLinkShowEditor(initial, anchorEl) {
       returnFocus: anchorEl || undefined,
       closeOnEsc: true,
       closeOnOverlay: true,
+      onBeforeClose: () => !submitting,
       onClose: () => {
         if (resolved) return;
         resolved = true;
@@ -179230,14 +180516,28 @@ function _dbLinkShowEditor(initial, anchorEl) {
       }
       submitting = true;
       saveButton.disabled = true;
-      if (kind.value === 'web' && (labelWasAutomatic || !label.value.trim())) {
-        status.textContent = 'ページ名を取得しています…';
-        const fetchedTitle = await _dbLinkFetchWebTitle(targetValue);
-        if (fetchedTitle) label.value = fetchedTitle;
+      try {
+        if (kind.value === 'web' && (labelWasAutomatic || !label.value.trim())) {
+          status.textContent = 'ページ名を取得しています…';
+          const fetchedTitle = await _dbLinkFetchWebTitle(targetValue);
+          if (fetchedTitle) label.value = fetchedTitle;
+        }
+        if (!modalApi.modal.isConnected) return;
+        const descriptor = _dbLinkDescriptor({ value: targetValue, link: {
+          version: 1, kind: kind.value, target: targetValue, label: label.value.trim(),
+        } });
+        if (typeof options.onSave === 'function' && await options.onSave(descriptor) === false) {
+          status.textContent = '保存できませんでした。入力を確認して再試行してください';
+          return;
+        }
+        submitting = false;
+        finish(descriptor, 'save');
+      } catch (error) {
+        status.textContent = '保存に失敗: ' + (error?.message || error);
+      } finally {
+        submitting = false;
+        saveButton.disabled = false;
       }
-      finish(_dbLinkDescriptor({ value: targetValue, link: {
-        version: 1, kind: kind.value, target: targetValue, label: label.value.trim(),
-      } }), 'save');
     };
     saveButton.addEventListener('click', submit);
     cancelButton.addEventListener('click', () => finish(null, 'cancel'));
@@ -179527,18 +180827,19 @@ async function moveDbMultiLinkValue(val, entityPath, propName, dbPath, ctx, dire
 }
 
 // 既存値がある状態からの「リンク先を変更」（値コンテキストメニューから呼ばれる）
-async function startDbLinkCellPick(val, entityPath, propName, dbPath, ctx, anchorEl) {
-  const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
+async function startDbLinkCellPick(val, entityPath, propName, dbPath, ctx, anchorEl, options = {}) {
+  const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName, ctx) : null;
   if (lockMsg) { if (typeof showStatus === 'function') showStatus(lockMsg); return; }
-
-  const edited = await _dbLinkShowEditor(val || '', anchorEl);
-  if (!edited) return;
-  await _dbLinkCommitValue({
-    entityPath, propName, dbPath, ctx,
-    existing: (val?.file ? val : null),
-    newPath: edited.target,
-    newLink: edited,
-    anchorEl: anchorEl || null,
+  const historyOptions = {
+    historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+    onHistoryChanged: options.onHistoryChanged,
+  };
+  await _dbLinkShowEditor(val || '', anchorEl, {
+    onSave: edited => _dbLinkCommitValue({
+      entityPath, propName, dbPath, ctx, ...historyOptions,
+      existing: (val?.file ? val : null),
+      newPath: edited.target, newLink: edited, anchorEl: anchorEl || null,
+    }),
   });
 }
 
@@ -186143,15 +187444,16 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
 }
 
 function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
+  const returnFocus = e?.target?.closest?.('button, [tabindex]') || e?.currentTarget || e?.target;
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
   menu.setAttribute('role', 'menu');
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
-  const currentDbPath = _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
-  const currentCtx = typeof _dbPaneContextFromEvent === 'function'
+  const currentDbPath = options.dbPath || _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
+  const currentCtx = options.ctx || (typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || null, { dbPath: currentDbPath })
-    : null;
+    : null);
   const _ptc = currentDbPath ? getPropertyTypes(currentDbPath, currentCtx)[propName] : null;
   const lockMsg = _cellUiWriteBlockedMessage(currentCtx)
     || _cellUiColumnLockMessage(currentDbPath, propName, currentCtx);
@@ -186348,7 +187650,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
       const anchorForRefresh = e?.target || null;
       menu.remove();
       if (typeof startDbLinkCellPick === 'function') {
-        startDbLinkCellPick(val, entityPath, propName, currentDbPath, currentCtx, anchorForRefresh);
+        startDbLinkCellPick(val, entityPath, propName, currentDbPath, currentCtx, anchorForRefresh, options);
       }
     });
     menu.appendChild(changeItem);
@@ -186574,7 +187876,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
     } else if (event.key === 'Escape') {
       event.preventDefault();
       menu.remove();
-      e?.target?.focus?.();
+      returnFocus?.focus?.();
       return;
     } else {
       return;
@@ -187856,14 +189158,19 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const imageReturnFocus = () => document.querySelector(`[data-e2e-id="${MeldexEscape.cssIdent(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
+    const imageReturnFocus = () => {
+      const target = document.querySelector(`[data-e2e-id="${MeldexEscape.cssIdent(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
+      if (target.isConnected) target.style.display = '';
+      return target;
+    };
+    const imageOptions = { ...options, dbPath, ctx: valueCtx, returnFocus: imageReturnFocus };
     const imageManager = propTypeConfig.type === 'image' && typeof showImageGalleryModal === 'function'
-      ? () => showImageGalleryModal(entityPath, propName, val, propTypeConfig, { returnFocus: imageReturnFocus })
+      ? () => showImageGalleryModal(entityPath, propName, val, propTypeConfig, imageOptions)
       : null;
-    _showValueContextMenu(e, val, entityPath, propName, imageManager ? {
-      onAddCandidate: () => showImageGalleryModal(entityPath, propName, { value: '' }, propTypeConfig, { returnFocus: imageReturnFocus }),
+    _showValueContextMenu(e, val, entityPath, propName, { ...options, dbPath, ctx: valueCtx, ...(imageManager ? {
+      onAddCandidate: () => showImageGalleryModal(entityPath, propName, { value: '' }, propTypeConfig, imageOptions),
       onManageImage: imageManager,
-    } : {});
+    } : {}) });
   });
   row.appendChild(moreBtn);
   row.addEventListener('mouseenter', () => { moreBtn.style.display = ''; });
@@ -190188,7 +191495,9 @@ function _imagePropLockMessage(entityPath, propName) {
   return dbPath && typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
 }
 
-async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
+async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc, saveOptions = {}) {
+  const writeOptions = { ...saveOptions,
+    historyScope: typeof saveOptions.historyScope === 'function' ? saveOptions.historyScope() : saveOptions.historyScope };
   const options = _imagePropOptions(ptc);
   const current = parseImagePropertyValue(val?.value);
   const accepted = Array.from(files || []).filter(file => _isAcceptedAttachmentFile(file, options.accept));
@@ -190241,7 +191550,10 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
       console.warn('[image-property] upload failed:', err);
     }
   }
-  if (added > 0) await saveImagePropertyItems(entityPath, propName, val, current);
+  if (added > 0) {
+    if (typeof writeOptions.saveItems === 'function') await writeOptions.saveItems(current);
+    else await saveImagePropertyItems(entityPath, propName, val, current, writeOptions);
+  }
   if (failed > 0) {
     const message = added > 0
       ? `一部の画像を追加できませんでした（成功 ${added} 件 / 失敗 ${failed} 件）`
@@ -190252,7 +191564,9 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
   return current;
 }
 
-async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
+async function importImagePropertyNodes(event, entityPath, propName, val, ptc, saveOptions = {}) {
+  const writeOptions = { ...saveOptions,
+    historyScope: typeof saveOptions.historyScope === 'function' ? saveOptions.historyScope() : saveOptions.historyScope };
   if (typeof MeldexDnD === 'undefined' || typeof MeldexDnD.resolveDropData !== 'function') return null;
   const resolved = await MeldexDnD.resolveDropData(event, 'node');
   const payload = resolved?.payload;
@@ -190294,7 +191608,8 @@ async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
     }
   }
   if (added) {
-    await saveImagePropertyItems(entityPath, propName, val, current);
+    if (typeof writeOptions.saveItems === 'function') await writeOptions.saveItems(current);
+    else await saveImagePropertyItems(entityPath, propName, val, current, writeOptions);
     MeldexDnD.completeDrop?.(resolved);
   } else {
     MeldexDnD.failDrop?.(resolved);
@@ -190304,17 +191619,25 @@ async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
   return current;
 }
 
-async function saveImagePropertyItems(entityPath, propName, val, items) {
+async function saveImagePropertyItems(entityPath, propName, val, items, options = {}) {
   const newValue = stringifyImagePropertyValue(items);
   const oldValue = typeof val?.value === 'string'
     ? val.value
     : stringifyImagePropertyValue(parseImagePropertyValue(val?.value));
-  const dbPath = _imagePropDbPathForEntity(entityPath);
+  const dbPath = options.dbPath || options.ctx?.dbPath || _imagePropDbPathForEntity(entityPath);
+  const requestEntity = globalThis.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true;
+  const candidateRetry = options._candidateAddRetry || (options._candidateAddRetry = {});
+  const responseOptions = { ...(requestEntity ? { _return_entity: true } : {}),
+    ...(val?.entry_id ? { entry_id: val.entry_id } : {}) };
+  let savedResult;
+  const historyOptions = { dbPath, ctx: options.ctx, entityPath, valueProperty: propName, requestEntity,
+    historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+    onHistoryChanged: options.onHistoryChanged };
   const isExistingValue = !!(val && val.file && (val.candidate_index != null || _imagePropNormalizePath(val.file) !== _imagePropNormalizePath(entityPath)));
   if (isExistingValue) {
-    await _apiPutValue(val, { new_value: newValue });
+    savedResult = await _apiPutValue(val, { new_value: newValue, ...responseOptions });
     if (oldValue !== newValue && typeof _dbUndoValue === 'function') {
-      _dbUndoValue(`画像変更: ${propName}`, val, oldValue, newValue, undefined, undefined, { dbPath, entityPath });
+      _dbUndoValue(`画像変更: ${propName}`, val, oldValue, newValue, undefined, undefined, historyOptions);
     }
     val.value = newValue;
   } else {
@@ -190337,22 +191660,27 @@ async function saveImagePropertyItems(entityPath, propName, val, items) {
       }
       return currentRef;
     };
-    applyCreatedResult(await _apiPostValue(entityPath, propName, newValue, status, ''));
+    savedResult = await _apiPostValue(entityPath, propName, newValue, status, '', undefined, { ...responseOptions, _candidateAddRetry: candidateRetry });
+    applyCreatedResult(savedResult);
     if (currentRef && typeof historyPush === 'function') {
-      const historyScope = typeof _dbScope === 'function' ? _dbScope(dbPath) : `db:${dbPath || ''}`;
+      const historyScope = typeof historyOptions.historyScope === 'string' ? historyOptions.historyScope
+        : typeof _dbScope === 'function' ? _dbScope(dbPath) : `db:${dbPath || ''}`;
       const deleteCurrent = async () => {
+        let result;
         if (currentRef.candidate_index != null) {
-          await _apiPutValue(currentRef, { _delete: true });
+          result = await _apiPutValue(currentRef, { _delete: true, ...responseOptions });
         } else if (currentRef.file && _imagePropNormalizePath(currentRef.file) !== _imagePropNormalizePath(entityPath)) {
           await apiPost('/outliner/delete', { path: currentRef.file });
         }
-        await apiPost('/media/rebuild-refs', {}).catch(() => {});
-        if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
+        if (typeof historyOptions.onHistoryChanged === 'function') await historyOptions.onHistoryChanged({ property: propName, entitySnapshot: result?.entity_snapshot });
+        else if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, options.ctx, { silent: true });
       };
+      const redoRetry = {};
       const recreate = async () => {
-        applyCreatedResult(await _apiPostValue(entityPath, propName, newValue, status, ''));
-        await apiPost('/media/rebuild-refs', {}).catch(() => {});
-        if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
+        const result = await _apiPostValue(entityPath, propName, newValue, status, '', undefined, { ...responseOptions, entry_id: currentRef?.entry_id || responseOptions.entry_id, _candidateAddRetry: redoRetry });
+        applyCreatedResult(result);
+        if (typeof historyOptions.onHistoryChanged === 'function') await historyOptions.onHistoryChanged({ property: propName, entitySnapshot: result?.entity_snapshot });
+        else if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, options.ctx, { silent: true });
       };
       historyPush(`画像候補追加: ${propName}`, deleteCurrent, recreate, historyScope);
     }
@@ -190362,8 +191690,14 @@ async function saveImagePropertyItems(entityPath, propName, val, items) {
       val.status = status;
     }
   }
-  apiPost('/media/rebuild-refs', {}).catch(() => {});
-  if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(document.activeElement, entityPath, propName);
+  // 画像削除・GCのAPIは永続データから参照を取り直す。
+  // 値の変更や履歴のたびに保存先全体を走査して、画面更新を待たせない。
+  if (typeof historyOptions.onHistoryChanged === 'function') {
+    try { await historyOptions.onHistoryChanged({ property: propName, entitySnapshot: savedResult?.entity_snapshot }); }
+    catch (error) {
+      if (typeof showStatus === 'function') showStatus('画像は保存済みですが表示を更新できません: ' + (error?.message || error), true);
+    }
+  } else if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(document.activeElement, entityPath, propName);
   else if (state.currentDbPath && typeof selectDatabase === 'function') selectDatabase(state.currentDbPath, undefined, { silent: true });
 }
 
@@ -190502,11 +191836,11 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
       const beforeCount = parseImagePropertyValue(val?.value).length;
       const internal = Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node');
       const updated = internal
-        ? await importImagePropertyNodes(e, entityPath, propName, val, ptc)
-        : await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc);
+        ? await importImagePropertyNodes(e, entityPath, propName, val, ptc, options)
+        : await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc, options);
       if (!updated || updated.length <= beforeCount) return;
       showStatus('画像を追加しました');
-      if (dbPath) selectDatabase(dbPath, undefined, { silent: true });
+      if (dbPath && typeof options.onHistoryChanged !== 'function') selectDatabase(dbPath, options.ctx, { silent: true });
     } catch (err) {
       showStatus(err?.message || '画像追加に失敗しました', true);
     }
@@ -190526,7 +191860,11 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
 
 function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}) {
   const options = _imagePropOptions(ptc);
+  const saveOptions = { ...modalOptions, _candidateAddRetry: {},
+    historyScope: typeof modalOptions.historyScope === 'function' ? modalOptions.historyScope() : modalOptions.historyScope };
+  const dbPath = saveOptions.dbPath || saveOptions.ctx?.dbPath || _imagePropDbPathForEntity(entityPath);
   let items = parseImagePropertyValue(val?.value);
+  let pendingItems = null;
   const lockMsg = _imagePropLockMessage(entityPath, propName);
   const canEdit = !lockMsg;
   let busy = false;
@@ -190559,9 +191897,26 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     initialFocus: '[data-e2e-id="image-gallery-add"]',
     returnFocus: returnFocus || undefined,
     onBeforeClose: () => {
-      if (!busy) return true;
-      if (typeof showStatus === 'function') showStatus('画像を保存しています。完了後に閉じてください', true);
-      return false;
+      if (busy) {
+        if (typeof showStatus === 'function') showStatus('画像を保存しています。完了後に閉じてください', true);
+        return false;
+      }
+      if (saveOptions._candidateAddRetry.body) {
+        if (typeof cfConfirm !== 'function') return false;
+        return Promise.resolve(cfConfirm('保存されている可能性があります。再試行せずに編集を終了し、現在の保存内容を読み直しますか？')).then(async confirmed => {
+          if (!confirmed) return false;
+          setBusy(true);
+          try {
+            if (typeof saveOptions.onHistoryChanged === 'function') await saveOptions.onHistoryChanged({ property: propName });
+            else await selectDatabase(dbPath, saveOptions.ctx, { silent: true });
+            showStatus('現在の保存内容を読み直しました。保存の成否は確認してください', true);
+          } catch (error) { showStatus('保存結果は未確認です。表示を更新できません: ' + (error?.userMessage || error?.message || error), true); }
+          finally { setBusy(false); }
+          return true;
+        });
+      }
+      return !pendingItems || (typeof cfConfirm === 'function'
+        ? cfConfirm('保存できていない画像の変更を破棄して閉じますか？') : false);
     },
   });
   const overlay = modalApi.overlay;
@@ -190575,9 +191930,13 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
   const list = overlay.querySelector('#gb-img-gallery-list');
   const fileInput = overlay.querySelector('#gb-img-file-input');
   const countEl = overlay.querySelector('.gb-section-desc');
+  const saveError = GBUI.createInlineError({ message: '', onRetry: () => pendingItems && saveNextItems(pendingItems) });
+  saveError.dataset.e2eId = 'image-gallery-save-error';
+  list.before(saveError);
   if (fileInput) fileInput.disabled = !canEdit;
   const setBusy = (nextBusy) => {
     busy = nextBusy === true;
+    saveError.setBusy(busy);
     overlay.dataset.imageGalleryBusy = busy ? '1' : '0';
     overlay.querySelectorAll('.gb-image-gallery-card input, .gb-image-gallery-card button').forEach((control) => {
       control.disabled = busy || !canEdit && control.title !== '開き方を選ぶ';
@@ -190670,14 +192029,16 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     setBusy(busy);
   };
   const saveNextItems = async (nextItems) => {
-    const prevItems = _imagePropCloneItems(items);
     setBusy(true);
     try {
-      await saveImagePropertyItems(entityPath, propName, val, nextItems);
+      await saveImagePropertyItems(entityPath, propName, val, nextItems, saveOptions);
       items = _imagePropCloneItems(nextItems);
+      pendingItems = null;
+      saveError.setMessage('');
     } catch (err) {
-      items = prevItems;
-      showStatus(err?.message || '画像列の保存に失敗しました', true);
+      items = _imagePropCloneItems(nextItems);
+      pendingItems = _imagePropCloneItems(nextItems);
+      saveError.setMessage('画像を保存できませんでした。変更はこの画面に保持しています。' + (err?.message || ''));
     } finally {
       setBusy(false);
     }
@@ -190690,7 +192051,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     }
     setBusy(true);
     try {
-      items = await uploadImagePropertyFiles(files, entityPath, propName, val, ptc);
+      items = await uploadImagePropertyFiles(files, entityPath, propName, val, ptc, { ...saveOptions, saveItems: saveNextItems });
     } catch (err) {
       showStatus(err?.message || '画像追加に失敗しました', true);
     } finally {
@@ -190710,7 +192071,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     if (!internal) { await addFiles(e.dataTransfer.files); return; }
     if (!canEdit) { if (lockMsg) showStatus(lockMsg, true); return; }
     setBusy(true);
-    try { items = await importImagePropertyNodes(e, entityPath, propName, val, ptc) || items; }
+    try { items = await importImagePropertyNodes(e, entityPath, propName, val, ptc, { ...saveOptions, saveItems: saveNextItems }) || items; }
     finally { setBusy(false); render(); }
   });
   render();
@@ -190873,7 +192234,7 @@ if (typeof window !== 'undefined') {
   }
 
   function tabTitle(tab) {
-    const label = tab?.querySelector?.('.view-tab-label, .gb-tab-label, .tab-label');
+    const label = tab?.querySelector?.('.view-tab-label, .gb-view-tab-label, .gb-tab-label, .tab-label');
     return String(tab?.dataset?.tabTitle || tab?.getAttribute?.('aria-label') ||
       tab?.getAttribute?.('title') || label?.textContent || tab?.textContent || 'タブ').trim() || 'タブ';
   }
@@ -191121,7 +192482,8 @@ if (typeof window !== 'undefined') {
     if (tablist.classList?.contains('gb-production-list-switch') || tablist.closest?.('.gb-production-list-switch')) return;
     // Sheet/board view bars already provide their own phone select and menu.
     // Adding a second dropdown also collects hidden menu text into its label.
-    const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select');
+    const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select')
+      || tablist.closest?.('.gb-view-tabs')?.querySelector('select.gb-view-tabs-select');
     // A tab-styled toolbar may wrap a semantic tablist plus an add button.
     // Convert the inner list so the toolbar's other controls remain visible.
     const nestedTablist = tablist.classList?.contains('gb-pane-tabs')
@@ -191912,7 +193274,9 @@ if (typeof window !== 'undefined') {
     let session = viewSessions.get(owner);
     if (!session || session.dbPath !== dbPath) {
       const linkedEntry = ctx?.formApp?._embeddedEntryPath || '';
-      const initial = normalPath(linkedEntry.replace(/\/[^/]+$/, '')) === normalPath(dbPath) ? linkedEntry : '';
+      const base = typeof state !== 'undefined' ? state.vaultPath : '';
+      const comparable = path => normalPath(globalThis.GBPathUtils?.resolveForClipboard?.(path, base) || path);
+      const initial = comparable(linkedEntry).replace(/\/[^/]+$/, '') === comparable(dbPath) ? linkedEntry : '';
       session = { dbPath, path: initial, continuous: false, created: new Map() }; viewSessions.set(owner, session);
     }
     const nav = document.createElement('div'); nav.className = 'gb-form-record-nav'; root.appendChild(nav);
@@ -192002,11 +193366,11 @@ if (typeof window !== 'undefined') {
           if (ctx?.formApp?._embeddedEntryPath) {
             // A topic form edits the enclosing record. Do not recursively mount
             // that topic's linked files inside its own form application.
-            renderEntityPropsGridInto(panel, data, path, { parentDb: dbPath, propTypes, ctx,
+            renderEntityPropsGridInto(panel, data, path, { parentDb: dbPath, propTypes, ctx, emptyProperties: cfg.fields,
               topicTabs: true, readOnly: access.readOnly || ctx?.readOnly });
           } else {
             const hint = document.createElement('p'); hint.textContent = '既存トピックの編集には共通レイアウトを選択してください。'; panel.appendChild(hint);
-            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly,
+            await MeldexEntityDetail.mount({ root: panel, path, surface: 'main', readOnly: access.readOnly, ctx, emptyProperties: cfg.fields,
               historyScope: () => ctx?.formApp?._historyScope?.() || (typeof _dbViewConfigHistoryScope === 'function' ? _dbViewConfigHistoryScope(dbPath) : 'db:' + dbPath),
             }).ready;
           }
@@ -192140,25 +193504,20 @@ if (typeof window !== 'undefined') {
     row.appendChild(button('テンプレートから追加', async event => {
       const anchor = event.currentTarget;
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
-      const known = new Set(layouts.map(layout => layout.id));
       const data = { properties: Object.fromEntries(Object.keys(propTypes).map(name => [name, []])) };
-      _elShowAddLayoutMenu(anchor, { grid: root, dbPath, entityPath: '', pivotData: data, options: { ctx }, layoutId: 'columns', rerender() {
-        const added = _elGetState(dbPath).layouts.find(layout => !known.has(layout.id));
-        if (added) bind(added.id, true);
-      } });
+      _elShowAddLayoutMenu(anchor, { grid: root, dbPath, entityPath: '', pivotData: data, options: { ctx }, layoutId: 'columns',
+        commitLayout(layout) {
+          return saveActiveFormConfig(dbPath, { ...cfg, ...model().forLayout(layout), layoutId: layout.id }, ctx, { layoutToAdd: layout, activateLayout: true });
+        }, rerender() { renderDbFormView(ctx); } });
     }, identity('template')));
     row.appendChild(button('現在の項目から配置を作成', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
-      let id;
-      _elMutateState(dbPath, 'フォーム: 共通レイアウトを作成', '', state => {
-        id = _elGenId('form');
-        const fields = cfg.fields || [];
-        state.layouts.push(_elNormalizeLayout({ id, name: _elMakeDuplicateName('フォーム', state.layouts),
+      const id = _elGenId('form'), fields = cfg.fields || [];
+      const layout = _elNormalizeLayout({ id, name: _elMakeDuplicateName('フォーム', _elGetState(dbPath).layouts),
           canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) }, formConfig: clone(cfg),
           cells: fields.map((prop, index) => ({ id: _elGenId('field'), type: 'field', prop, x: 20, y: 20 + index * 140, w: 940, h: 120 })),
-        }));
-      }, { ctx, historyScope: sheetHistoryScope() });
-      bind(id, true);
+        });
+      if (saveActiveFormConfig(dbPath, { ...cfg, ...model().forLayout(layout), layoutId: id }, ctx, { layoutToAdd: layout })) renderDbFormView(ctx);
     }, identity('create')));
     if (cfg.layoutId) row.appendChild(button('配置を編集', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
@@ -192525,6 +193884,10 @@ const MeldexSheetLocation = (() => {
     const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath), ctx = options.ctx || _valueEditorContext(entityPath, anchor, dbPath);
     try { editable(anchor, dbPath, propName, ctx); } catch (error) { showStatus(error.message, true); return; }
     if (anchor._locationDialog) { anchor._locationDialog.modal.focus(); return; }
+    const focusOwner = anchor.closest?.('.entry-prop-card, .el-cell');
+    const focusKey = anchor.dataset?.e2eId;
+    const returnFocus = () => focusOwner?.isConnected && focusKey
+      ? focusOwner.querySelector('[data-e2e-id="' + CSS.escape(focusKey) + '"]') || anchor : anchor;
     const entityName = anchor.closest?.('tr[data-entity-name]')?.dataset.entityName;
     const entity = ctx?.pivotData?.entities?.[entityName];
     let projected = null;
@@ -192537,11 +193900,22 @@ const MeldexSheetLocation = (() => {
     try { if (val) old = D().parse(val.value, val.link); } catch (_) {
       try { if (JSON.parse(val.value)?.fileType === 'meldex-location') { showStatus('この場所は未対応の形式です。対応するMeldexで開いてください', true); return; } } catch (_) {}
     }
-    let active = true, saving = false, request = 0, mapDoc = null;
+    const historyScope = typeof options.historyScope === 'function' ? options.historyScope()
+      : typeof options.historyScope === 'string' ? options.historyScope
+      : typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : 'db:' + dbPath;
+    const closeOptions = typeof historyScope === 'string' && historyScope.startsWith('form-app:') ? { animate: false } : undefined;
+    const requestEntity = globalThis.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true;
+    const candidateRetry = {}, redoRetry = {};
+    const responseOptions = requestEntity ? { _return_entity: true } : {};
+    const historyOptions = { dbPath, ctx, historyScope, onHistoryChanged: options.onHistoryChanged, valueProperty: propName, requestEntity };
+    const refresh = result => typeof options.onHistoryChanged === 'function'
+      ? options.onHistoryChanged({ property: propName, entitySnapshot: result?.entity_snapshot })
+      : selectDatabase(dbPath, ctx || undefined, { silent: true });
+    let active = true, saving = false, saved = false, request = 0, mapDoc = null;
     let link = val?.link ? { ...val.link } : null, mapId = old?.map_id || null, featureId = old?.feature_id || null;
     const save = button('場所を保存', async () => {
       if (saving) return;
-      saving = true; save.disabled = true; dialog.body.inert = true; request++;
+      saving = true; save.disabled = true; dialog.body.inert = true; request++; saveError.replaceChildren();
       try {
         editable(anchor, dbPath, propName, ctx);
         if (![x, y].every(input => input.value.trim() && input.reportValidity())) throw new Error('2つの座標を入力してください');
@@ -192558,47 +193932,68 @@ const MeldexSheetLocation = (() => {
         editable(anchor, dbPath, propName, ctx);
         saving = true; save.disabled = true;
         const metadata = link ? { ...link, type: 'file', fileType: 'map' } : null;
-        const refresh = () => selectDatabase(dbPath, ctx || undefined, { silent: true });
+        let savedResult;
         if (projected) {
           const candidate = { value, status: getStatusEnabled(dbPath) ? '案' : '採用', note: '', candidate_id: MeldexMapDocument.id(), ...(metadata ? { link: metadata } : {}) };
-          await _apiPutValue(projected, { _append_candidate: candidate });
+          savedResult = await _apiPutValue(projected, { _append_candidate: candidate, ...responseOptions });
           let ref = { ...projected, _topicCandidateList: true, _topicCandidateOriginal: candidate, candidate_id: candidate.candidate_id, value };
-          historyPush('場所を追加: ' + propName, async () => { await _apiPutValue(ref, { _delete: true }); await refresh(); }, async () => {
+          historyPush('場所を追加: ' + propName, async () => { await refresh(await _apiPutValue(ref, { _delete: true, ...responseOptions })); }, async () => {
             const next = { ...candidate, candidate_id: MeldexMapDocument.id() };
-            await _apiPutValue(projected, { _append_candidate: next });
-            ref = { ...ref, candidate_id: next.candidate_id, _topicCandidateOriginal: next }; await refresh();
-          }, _dbScopeForPath(dbPath));
+            const result = await _apiPutValue(projected, { _append_candidate: next, ...responseOptions });
+            ref = { ...ref, candidate_id: next.candidate_id, _topicCandidateOriginal: next }; await refresh(result);
+          }, historyScope);
         } else if (val?._topicCanonicalOnly && !val._topicCandidateList) {
           const previous = val.value;
           const candidate = { value, status: val.status || '採用', note: val.note || '', candidate_id: MeldexMapDocument.id(), ...(metadata ? { link: metadata } : {}) };
           const next = [candidate];
-          await _apiPutValue(val, { new_value: next, _expected_value: previous });
+          savedResult = await _apiPutValue(val, { new_value: next, _expected_value: previous, ...responseOptions });
           historyPush('場所を設定: ' + propName,
-            async () => { await _apiPutValue(val, { new_value: previous, _expected_value: next }); await refresh(); },
-            async () => { await _apiPutValue(val, { new_value: next, _expected_value: previous }); await refresh(); }, _dbScopeForPath(dbPath));
-        } else if (val) {
+            async () => { await refresh(await _apiPutValue(val, { new_value: previous, _expected_value: next, ...responseOptions })); },
+            async () => { await refresh(await _apiPutValue(val, { new_value: next, _expected_value: previous, ...responseOptions })); }, historyScope);
+        } else if (val && val.file && (val.candidate_index != null
+          || String(val.file).replace(/\\/g, '/') !== String(entityPath).replace(/\\/g, '/'))) {
           const previous = val.value, previousLink = val.link ? { ...val.link } : null;
-          await _apiPutValue(val, { new_value: value, new_link: metadata });
+          savedResult = await _apiPutValue(val, { new_value: value, new_link: metadata, ...responseOptions });
           val.value = value; if (metadata) val.link = metadata; else delete val.link;
           _dbUndoValue('場所を変更: ' + propName, val, previous, value, undefined, undefined,
-            { dbPath, ctx, oldUpdates: { new_link: previousLink }, newUpdates: { new_link: metadata } });
+            { ...historyOptions, oldUpdates: { new_link: previousLink }, newUpdates: { new_link: metadata } });
         } else {
           const status = getStatusEnabled(dbPath) ? '案' : '採用';
-          const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata });
+          const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata, ...responseOptions, entry_id: val?.entry_id, _candidateAddRetry: candidateRetry });
+          savedResult = result;
           let ref = { file: result.path || result.file, entry_path: entityPath, property: propName,
             candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id };
-          historyPush('場所を追加: ' + propName, async () => { await _apiPutValue(ref, { _delete: true }); await refresh(); }, async () => {
-            const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata });
-            ref = { ...ref, file: result.path || result.file, candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id }; await refresh();
-          }, typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : 'db:' + dbPath);
+          historyPush('場所を追加: ' + propName, async () => { await refresh(await _apiPutValue(ref, { _delete: true, ...responseOptions })); }, async () => {
+            const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata, ...responseOptions, entry_id: ref.entry_id, _candidateAddRetry: redoRetry });
+            ref = { ...ref, file: result.path || result.file, candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id }; await refresh(result);
+          }, historyScope);
         }
-        saving = false; dialog.close('saved'); await refresh(); showStatus('場所を保存しました');
-      } catch (error) { message.textContent = error.userMessage || error.message; }
+        saved = true; saving = false; await dialog.close('saved', closeOptions);
+        try { await refresh(savedResult); showStatus('場所を保存しました'); }
+        catch (error) { showStatus('場所は保存済みですが表示を更新できません: ' + (error?.userMessage || error?.message || error), true); }
+      } catch (error) { saveError.replaceChildren(GBUI.createInlineError({
+        message: '場所を保存できません。入力は保持しています。' + (error?.userMessage || error?.message || error), onRetry: () => save.onclick() })); }
       finally { saving = false; save.disabled = false; dialog.body.inert = false; }
     });
+    const draftKey = () => JSON.stringify([label.value, system.value, x.value, y.value, link, mapId, featureId]);
+    let baseline = null;
     const cancel = button('キャンセル', () => dialog.close('cancel'));
-    const dialog = GBUI.createModal({ title: '場所を編集 — ' + propName, footer: [cancel, save], returnFocus: () => anchor,
-      onBeforeClose: () => !saving, onClose: () => { active = false; request++; delete anchor._locationDialog; } });
+    const dialog = GBUI.createModal({ title: '場所を編集 — ' + propName, footer: [cancel, save], returnFocus,
+      onBeforeClose: () => {
+        if (saving) return false;
+        if (candidateRetry.body) {
+          if (typeof cfConfirm !== 'function') return false;
+          return Promise.resolve(cfConfirm('保存されている可能性があります。再試行せずに編集を終了し、現在の保存内容を読み直しますか？')).then(async confirmed => {
+            if (!confirmed) return false;
+            saving = true; save.disabled = true; dialog.body.inert = true;
+            try { await refresh(); showStatus('現在の保存内容を読み直しました。保存の成否は確認してください', true); }
+            catch (error) { showStatus('保存結果は未確認です。表示を更新できません: ' + (error?.userMessage || error?.message || error), true); }
+            finally { saving = false; save.disabled = false; dialog.body.inert = false; }
+            return true;
+          });
+        }
+        return saving ? false : saved || baseline === draftKey()
+        || (typeof cfConfirm === 'function' ? cfConfirm('保存していない場所の変更を破棄して閉じますか？') : false); }, onClose: () => { active = false; request++; delete anchor._locationDialog; } });
     anchor._locationDialog = dialog;
     const field = (caption, value = '', type = 'text') => {
       const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
@@ -192645,7 +194040,8 @@ const MeldexSheetLocation = (() => {
     x.oninput = y.oninput = () => { featureId = null; feature.value = ''; };
     system.onchange = () => { request++; link = null; mapId = featureId = null; mapDoc = null; mapPath.value = ''; x.value = y.value = ''; fillFeatures(); sync(); };
     const message = document.createElement('p'); message.setAttribute('role', 'status'); message.textContent = '創作座標には参照先マップが必要です。マップの地点を選ぶと、その地点の移動に追従します。'; dialog.body.appendChild(message);
-    sync(); fillFeatures(); dialog.open(); label.focus();
+    const saveError = document.createElement('div'); dialog.body.appendChild(saveError);
+    sync(); fillFeatures(); baseline = draftKey(); dialog.open(); label.focus();
     if (link?.path) {
       const token = ++request;
       apiFetch('/file?path=' + encodeURIComponent(link.path)).then(loaded => {
@@ -192957,6 +194353,7 @@ const MeldexMapRelations = (() => {
   const SHARED_LIBRARY_KEY = 'meldex.topic-layout-templates.v1';
   const SHARED_LIBRARY_DOCUMENT = 'topic-layout-templates';
   const SHARED_LIBRARY_SCHEMA_VERSION = 1;
+  let _sharedLibraryCommitVersion = 0;
   const IMAGE_EMBED_MAX_BYTES = 500 * 1024;
   const LINE_STYLES = new Set(['none', 'solid', 'dashed', 'dotted', 'double']);
   const SHADOWS = new Set(['none', 'small', 'medium']);
@@ -193302,8 +194699,13 @@ const MeldexMapRelations = (() => {
     return true;
   }
 
+  function _tryCacheSharedTemplates(templates, storage) {
+    try { return { cacheSaved: _cacheSharedTemplates(templates, storage) }; }
+    catch (cacheError) { return { cacheSaved: false, cacheError }; }
+  }
+
   async function _readSharedLibrary(fetcher) {
-    const response = await fetcher(`/personal-preferences/${SHARED_LIBRARY_DOCUMENT}`, { silentError: true });
+    const response = await fetcher(`/personal-preferences/${SHARED_LIBRARY_DOCUMENT}`, { silentError: true, cache: 'no-store', skipBrowseCache: true });
     const payload = object(response?.payload) ? response.payload : {};
     return {
       available: response?.available !== false,
@@ -193320,18 +194722,23 @@ const MeldexMapRelations = (() => {
     const fetcher = _sharedLibraryFetcher(opts.fetcher);
     if (!fetcher) return { available: false, source: 'device-cache', revision: null, templates: cached };
     try {
-      const remote = await _readSharedLibrary(fetcher);
-      if (!remote.available) return { ...remote, source: 'device-cache', templates: loadSharedTemplates(opts.storage) };
-      const latestCached = loadSharedTemplates(opts.storage);
-      // 読込待ちの間に保存・削除した結果を、古い共有応答でキャッシュへ書き戻さない。
-      if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
-        return { ...remote, source: 'device-cache', templates: latestCached };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const commitVersion = _sharedLibraryCommitVersion;
+        const remote = await _readSharedLibrary(fetcher);
+        const latestCached = loadSharedTemplates(opts.storage);
+        // A normal local save can provide the newer result without another read.
+        if (_templateFingerprint(latestCached) !== _templateFingerprint(cached)) {
+          return { ...remote, source: 'device-cache', templates: latestCached };
+        }
+        // A confirmed remote save may have failed to update the local cache.
+        // Discard its older in-flight read; never present it as the saved library.
+        if (commitVersion !== _sharedLibraryCommitVersion) continue;
+        if (!remote.available) return { ...remote, source: 'device-cache', templates: latestCached };
+        const templates = _mergeSharedTemplates(remote.templates, cached)
+          .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
+        return { ...remote, source: 'personal-library', templates, ..._tryCacheSharedTemplates(templates, opts.storage) };
       }
-      // 未同期の端末テンプレートは残し、削除・改名済みの名前だけは古いキャッシュから復活させない。
-      const templates = _mergeSharedTemplates(remote.templates, cached)
-        .filter(item => !remote.deletedNames.includes(String(item.layout?.name || '').trim()));
-      _cacheSharedTemplates(templates, opts.storage);
-      return { ...remote, source: 'personal-library', templates };
+      throw new Error('テンプレート一覧の読込中に変更が続きました。もう一度開いてください');
     } catch (error) {
       return { available: false, source: 'device-cache', revision: null, templates: loadSharedTemplates(opts.storage), error };
     }
@@ -193393,8 +194800,8 @@ const MeldexMapRelations = (() => {
       try {
         const saved = await _putSharedLibrary(fetcher, next, remote.revision, remote.deletedNames.filter(item => item !== name));
         if (saved?.available === false) return saveToDevice(next);
-        _cacheSharedTemplates(next, opts.storage);
-        return { saved: true, shared: true, source: 'personal-library', revision: saved?.revision || null, templates: next };
+        _sharedLibraryCommitVersion += 1;
+        return { saved: true, shared: true, source: 'personal-library', revision: saved?.revision || null, templates: next, ..._tryCacheSharedTemplates(next, opts.storage) };
       } catch (error) {
         if (attempt === 0 && _isConflict(error)) continue;
         return { ...saveToDevice(next), error };
@@ -193442,6 +194849,7 @@ const MeldexMapRelations = (() => {
           if (template) deleted.delete(name);
           const saved = await _putSharedLibrary(fetcher, next, remote.revision, [...deleted]);
           if (saved?.available === false) throw new Error('テンプレートの保存先を利用できません');
+          _sharedLibraryCommitVersion += 1;
         } catch (error) {
           if (attempt === 0 && _isConflict(error)) continue;
           throw error;
@@ -198163,6 +199571,29 @@ async function openMapApp(path, label, options = {}) {
 ;
 /* First-class Meldex form. Definitions belong to this tab; records to its sheet. */
 class FormAppComponent extends ToolComponent {
+  static prepareOpenRead(path) {
+    const target = String(path || '').trim();
+    if (!target || FormAppComponent._pendingCopyCommits?.has(target) || FormAppComponent._copyOpen?.has(target)) return null;
+    const settle = run => {
+      try { return Promise.resolve(run()).then(value => ({ value }), error => ({ error })); }
+      catch (error) { return Promise.resolve({ error }); }
+    };
+    const read = { path: target,
+      file: settle(() => apiFetch('/file?path=' + encodeURIComponent(target))),
+      access: settle(() => MeldexEntityDetail.resolveReadOnly(target, false)),
+    };
+    let hint = null;
+    if (typeof forEachComponent === 'function') forEachComponent(component => {
+      if (!hint && component instanceof FormAppComponent && component.path === target && component.store?.doc?.sheet?.path
+          && !component.store.dirty && !component.store.pending) hint = component;
+    });
+    if (hint) {
+      read.sheetSource = MeldexFormDocument.clone(hint.store.doc.sheet);
+      read.sheet = settle(() => hint._readSheet(read.sheetSource));
+    }
+    (FormAppComponent._preparedOpenReads ||= new WeakSet()).add(read);
+    return read;
+  }
   create() {
     this.el = document.createElement('section');
     this.el.className = 'gb-form-app';
@@ -198193,6 +199624,7 @@ class FormAppComponent extends ToolComponent {
   // 形式は共通の解決表 _meldexFormAppTabHistoryScope と一致させる。
   _historyScope() {
     if (this._embedded) return 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath);
+    if (typeof _meldexFormAppTabHistoryScope === 'function') return _meldexFormAppTabHistoryScope({ path: this.path || this._tab()?.path, state: this.state });
     const path = String(this.path || this._tab()?.path || this.state.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     return path ? 'form-app:' + path : '';
   }
@@ -198200,11 +199632,16 @@ class FormAppComponent extends ToolComponent {
   _tab() { return (GBLayout.findNode(GBLayout.root, this.paneId)?.node || GBLayout.paneMap?.[this.paneId]?.node)?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
-    this._syncDetailPanel();
-    if ((this._embedded || this.paneId === GBLayout.activePane) && typeof historySetScope === 'function') historySetScope(this._historyScope());
     const tab = this._tab();
     const path = tab?.path || this.state.formPath;
-    if (path && path !== this.path) this.ready = this.load(path);
+    if (!path || path === this.path && this.store && this.surface?.isConnected && !this.el?.inert) this._syncDetailPanel();
+    if ((this._embedded || this.paneId === GBLayout.activePane) && typeof historySetScope === 'function'
+      && (typeof _historyActiveScope === 'undefined' || _historyActiveScope !== this._historyScope())) historySetScope(this._historyScope());
+    if (path && path !== this.path) {
+      const copyOpen = FormAppComponent._copyOpen?.get(path);
+      FormAppComponent._copyOpen?.delete(path);
+      this.ready = this.load(path, { copyOpen });
+    }
     else if (!path && !this.store) {
       this.el.textContent = tab?.state?.pendingCreate ? '作成しています…' : 'フォームを新規作成するか、フォルダツリーから開いてください。';
       if (!tab?.state?.pendingCreate) this.el.appendChild(this._button('フォームを作成', async () => {
@@ -198217,6 +199654,12 @@ class FormAppComponent extends ToolComponent {
     }
   }
   async load(path, options = {}) {
+    const tab = typeof GBLayout !== 'undefined' ? this._tab() : null;
+    const prepared = tab?._formOpenRead;
+    if (tab && Object.prototype.hasOwnProperty.call(tab, '_formOpenRead')) delete tab._formOpenRead;
+    const trustedRead = FormAppComponent._preparedOpenReads?.has(prepared);
+    if (trustedRead) FormAppComponent._preparedOpenReads.delete(prepared);
+    const openRead = trustedRead && prepared.path === path && !options.copyOpen ? prepared : null;
     const generation = ++this._generation;
     if (this.path && path !== this.path && !await this.flush()) return false;
     if (this.store?.pending) await this.store.pending;
@@ -198225,31 +199668,86 @@ class FormAppComponent extends ToolComponent {
     if (options.discardDraft) this._removeOwnDraft();
     this.path = path;
     this.store = null;
+    if (this.el.inert) {
+      this.el.inert = false;
+      this.el.removeAttribute('aria-busy');
+    }
     this.el.textContent = 'フォームを読み込んでいます…';
     try {
-      const [loaded, access] = await Promise.all([
-        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, this._embeddedReadOnly === true),
-      ]);
+      const preloaded = options.copyOpen?.file;
+      const commitReady = options.copyOpen?.commitReady || FormAppComponent._pendingCopyCommits?.get(path);
+      let copyCommitted = !commitReady;
+      const copyReady = commitReady ? Promise.resolve(commitReady).then(result => {
+        if (result?.error) return result;
+        copyCommitted = true;
+        return {};
+      }) : Promise.resolve({});
+      let settledAccess;
+      const unwrap = result => { if (result.error) throw result.error; return result.value; };
+      const readAccess = openRead ? openRead.access.then(unwrap).then(value => this._embeddedReadOnly === true ? { ...value, readOnly: true } : value)
+        : MeldexEntityDetail.resolveReadOnly(path, this._embeddedReadOnly === true);
+      const accessReady = Promise.all([readAccess, copyReady])
+        .then(([value, commit]) => (settledAccess = commit.error ? { error: commit.error } : { value }), error => (settledAccess = { error }));
+      const hasSavedCopy = preloaded?.path === path && typeof preloaded.content === 'string' && preloaded.etag;
+      const loaded = hasSavedCopy ? preloaded : openRead ? unwrap(await openRead.file) : await apiFetch('/file?path=' + encodeURIComponent(path));
       if (generation !== this._generation || !this.el) return false;
       const doc = MeldexFormDocument.parse(loaded.content);
       this._mode = null;
       this._pendingSheetSwitch = false;
       this._referenceRenames = [];
-      this.definitionReadOnly = !!access.readOnly;
+      this.definitionReadOnly = true;
       const store = this.store = new MeldexFormDocument.Store(doc, loaded.etag, async (content, etag) => {
+        if (!copyCommitted || commitReady?.abandoned) throw new Error('フォームの複製処理が確定していないため、保存できません');
         const target = this.path;
         const access = await MeldexEntityDetail.resolveReadOnly(target, false);
+        if (commitReady?.abandoned) throw new Error('接続先が変わったため、保存を中止しました');
         if (access.readOnly) throw new Error('フォームは読み取り専用です');
         return apiPut('/file?path=' + encodeURIComponent(target), { content, if_match_etag: etag });
       }, () => this._changed());
       const cached = this._readDraft();
+      let sheetLoaded = false;
+      const previewSheet = hasSavedCopy && options.copyOpen?.previewData && options.copyOpen.isCurrent?.();
+      // A successful copy already supplies its saved definition. Show that
+      // content while checking edit access, with every interaction blocked.
+      if (hasSavedCopy && !cached) {
+        await this._loadSheet(previewSheet ? { ...options.copyOpen, ready: Promise.resolve({ data: options.copyOpen.previewData }) } : options.copyOpen);
+        if (generation !== this._generation || !this.el) return false;
+        sheetLoaded = !previewSheet;
+        if (!settledAccess || previewSheet) {
+          this.ctx.writeBlocked = true;
+          this.el.inert = true;
+          this.el.setAttribute('aria-busy', 'true');
+          this._render();
+        }
+      }
+      const checkedAccess = await accessReady;
+      if (generation !== this._generation || !this.el) return false;
+      if (checkedAccess.error) throw checkedAccess.error;
+      if (commitReady?.abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      if (previewSheet) {
+        await this._loadSheet(options.copyOpen, { preserveContextUntilReady: true });
+        if (generation !== this._generation || !this.el) return false;
+        sheetLoaded = true;
+      }
+      if (commitReady?.abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      this.definitionReadOnly = !!checkedAccess.value.readOnly;
+      if (this.el.inert) {
+        this.ctx.writeBlocked = false;
+        this.el.inert = false;
+        this.el.removeAttribute('aria-busy');
+      }
       const recover = cached && !this.definitionReadOnly && await cfConfirm('保存できていないフォームの下書きを復元しますか？');
       if (generation !== this._generation || !this.el) return false;
       if (recover) {
-        // Preserve its base revision, so recovery cannot overwrite remote edits.
-        store.doc = MeldexFormDocument.parse(cached.doc);
-        store.etag = cached.etag; store.revision++;
         this._recoveredDraft = cached.recovery;
+        const recovered = MeldexFormDocument.parse(cached.doc);
+        if (JSON.stringify(recovered) !== JSON.stringify(store.doc)) {
+          // Preserve its base revision and record recovery itself, even after
+          // a restart has removed all earlier editing history.
+          store.etag = cached.etag;
+          this._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, recovered); });
+          clearTimeout(this._saveTimer);
+        }
       }
       this.state = { ...this.state, formPath: path, label: doc.display_title || doc.title };
       if (this._tab()) this._tab().state = { ...this._tab().state, ...this.state };
@@ -198260,11 +199758,18 @@ class FormAppComponent extends ToolComponent {
         if (generation !== this._generation || this.store !== store) return false;
       }
       if (this._pendingSheetSwitch) this._blockSheetSwitch(store.doc.sheet.path);
-      else await this._loadSheet();
+      else if (!sheetLoaded) await this._loadSheet(options.copyOpen, { openRead });
       if (generation !== this._generation) return false;
       this._render(); this._changed();
+      // Mount annotation geometry after the first content frame, rather than
+      // measuring a loading placeholder and forcing layout twice on each open.
+      globalThis.requestAnimationFrame?.(() => requestAnimationFrame(() => {
+        if (generation !== this._generation || !this.el?.isConnected) return;
+        window.GBAnnotationSurfaces?.sync?.();
+        if (hasSavedCopy) this._syncDetailPanel();
+      }));
       this._scheduleResponseIntake();
-      this._syncDetailPanel();
+      if (!hasSavedCopy || !globalThis.requestAnimationFrame) this._syncDetailPanel();
       if (this.store.dirty && !this.definitionReadOnly && !this._pendingSheetSwitch) {
         clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => this.store.save(), 250);
@@ -198272,9 +199777,14 @@ class FormAppComponent extends ToolComponent {
       return true;
     } catch (error) {
       if (generation !== this._generation || !this.el) return false;
+      if (this.el.inert) {
+        this.el.inert = false;
+        this.el.removeAttribute('aria-busy');
+      }
       this.el.replaceChildren();
       const message = document.createElement('p'); message.textContent = 'フォームを開けません: ' + (error.userMessage || error.message);
       this.el.append(message, this._button('再読込', () => this.load(path)));
+      this._syncDetailPanel();
       return false;
     }
   }
@@ -198291,13 +199801,24 @@ class FormAppComponent extends ToolComponent {
   _readDraft() {
     const candidates = [];
     try {
+      const prefix = this._draftPrefix();
+      const nativeScope = typeof _meldexFormAppTabHistoryScope === 'function'
+        && typeof MeldexRuntimeAdapter !== 'undefined' && MeldexRuntimeAdapter.isBrowserDataMode?.() === false
+        ? _meldexFormAppTabHistoryScope({ path: this.path }) : '';
+      const matchesKey = key => {
+        if (key === prefix || key?.startsWith(prefix + ':')) return true;
+        if (!nativeScope || !key?.startsWith('meldex-form-draft:')) return false;
+        const path = key.slice('meldex-form-draft:'.length), separator = path.lastIndexOf(':');
+        const matches = value => _meldexFormAppTabHistoryScope({ path: value }) === nativeScope;
+        return matches(path) || separator > 1 && matches(path.slice(0, separator));
+      };
       const live = new Set();
       if (typeof forEachComponent === 'function') forEachComponent(component => {
-        if (component !== this && component.path === this.path && component.el) live.add(component._draftKey?.());
+        if (component !== this && component.el) live.add(component._draftKey?.());
       });
       for (let index = 0; index < localStorage.length; index++) {
         const key = localStorage.key(index);
-        if (live.has(key) || key !== this._draftPrefix() && !key?.startsWith(this._draftPrefix() + ':')) continue;
+        if (live.has(key) || !matchesKey(key)) continue;
         try {
           const raw = localStorage.getItem(key), draft = JSON.parse(raw);
           if (!draft?.doc || !draft.etag) continue;
@@ -198319,8 +199840,15 @@ class FormAppComponent extends ToolComponent {
       if (this.titleElement.title !== title) this.titleElement.title = title;
     }
     try {
-      if (this.store.dirty) localStorage.setItem(this._draftKey(), JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }));
-      else this._removeOwnDraft();
+      if (this.store.dirty) {
+        // 保存待ちや再試行の通知で、古い入力の日時を進めない。実際の保存結果は読み戻して確かめる。
+        const key = this._draftKey(), content = JSON.stringify({ doc: this.store.doc, etag: this.store.etag });
+        const previous = this._draftWriteCache;
+        const draft = previous?.key === key && previous.content === content ? previous
+          : { key, content, raw: JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }) };
+        this._draftWriteCache = draft;
+        if (typeof localStorage.getItem !== 'function' || localStorage.getItem(key) !== draft.raw) localStorage.setItem(key, draft.raw);
+      } else { this._removeOwnDraft(); this._draftWriteCache = null; }
     } catch (_) { /* beforeunload and flush still guard the in-memory draft. */ }
     let statusText = this.store.error
       ? '保存できません: ' + (this.store.error.userMessage || this.store.error.message)
@@ -198359,7 +199887,7 @@ class FormAppComponent extends ToolComponent {
         // Undoing a design edit must never revive a revoked publication.
         if (owner.doc.publish) restored.publish = MeldexFormDocument.clone(owner.doc.publish);
         else delete restored.publish;
-        for (const [from, to] of app._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
+        for (const [from, to] of app._referenceRenames || []) restored.sheet.path = app._mapReferenceRename(restored.sheet.path, from, to);
         if (restored.sheet.path === owner.doc.sheet.path) restored.sheet = MeldexFormDocument.clone(owner.doc.sheet);
         else if (restored.publish?.form_submit_enabled) restored.publish = { ...restored.publish,
           form_submit_enabled: false, form_submit_token: crypto.randomUUID().replace(/-/g, '') };
@@ -198389,7 +199917,8 @@ class FormAppComponent extends ToolComponent {
   // 期待どおり（取り消しなら操作の直後、やり直しなら取り消しの直後）の時だけ引き継ぐ。
   static _liveForHistory(scope, ownerPath, expected) {
     if (!scope || !ownerPath || !expected) return null;
-    const norm = value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const norm = value => typeof _meldexFormAppTabHistoryScope === 'function'
+      ? _meldexFormAppTabHistoryScope({ path: value }) : String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
     const comparable = doc => {
       const copy = MeldexFormDocument.clone(doc || {});
       delete copy.title; delete copy.display_title; delete copy.meldex;
@@ -198403,36 +199932,139 @@ class FormAppComponent extends ToolComponent {
       const store = app?.store;
       if (!app?.el || !store || app.definitionReadOnly || store.dirty || store.pending) continue;
       if (norm(app.path) !== norm(ownerPath) || app._historyScope() !== scope) continue;
+      if (expected.meldex?.document_id && expected.meldex.document_id !== store.doc.meldex?.document_id) continue;
       if (comparable(store.doc) === want) return app;
     }
     return null;
   }
-  async _loadSheet() {
+  static async copyWithPreview(path, copyOpen, { historyPending } = {}) {
+    const route = '/outliner/duplicate', body = { path, include_form_content: true };
+    const ids = window.MeldexStableCopyOperationIds;
+    const prepared = ids?.prepare?.(route, body) || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+    const origin = typeof state !== 'undefined' ? state.vaultPath : '';
+    let abandoned = false, previewPath = '', commitReady, settleCommit, previewReady;
+    const finish = error => {
+      settleCommit?.(error ? { error } : {});
+      if (!error && commitReady) {
+        const clear = () => { if (FormAppComponent._pendingCopyCommits?.get(previewPath) === commitReady) FormAppComponent._pendingCopyCommits.delete(previewPath); };
+        if (commitReady.historyReady) Promise.resolve(commitReady.historyReady).then(clear, clear); else clear();
+      }
+    };
+    const abandon = () => {
+      abandoned = true;
+      if (commitReady) commitReady.abandoned = true;
+      finish(new Error('接続先が変わったため、複製の表示を中止しました'));
+      if (commitReady && FormAppComponent._pendingCopyCommits?.get(previewPath) === commitReady) FormAppComponent._pendingCopyCommits.delete(previewPath);
+    };
+    const published = event => {
+      const detail = event.detail || {}, file = detail.form_content;
+      if (abandoned || previewPath || detail.operation_id !== prepared.body.operation_id || detail.source_path !== path
+        || !detail.new_path || file?.path !== detail.new_path || typeof file.content !== 'string' || !file.etag) return;
+      if ((typeof state !== 'undefined' ? state.vaultPath : '') !== origin) { abandon(); return; }
+      previewPath = detail.new_path;
+      commitReady = new Promise(resolve => { settleCommit = resolve; });
+      commitReady.historyReady = historyPending;
+      (FormAppComponent._pendingCopyCommits ||= new Map()).set(previewPath, commitReady);
+      try {
+        previewReady = Promise.resolve(navOpen({ type: 'form-app', path: previewPath, label: detail.new_name || 'フォーム' },
+          { forceNewTab: true, formCopyOpen: { ...copyOpen, file, commitReady } })).catch(() => false);
+      } catch (_) { previewReady = Promise.resolve(false); }
+    };
+    window.addEventListener('meldex:copy-published', published);
+    window.addEventListener('meldex:dropbox-auth-session-changed', abandon);
+    window.addEventListener('meldex:mode-changed', abandon);
+    try {
+      const result = await apiPost(route, prepared.body);
+      if (abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      if (result?.ok === false) throw new Error('フォームの複製を確定できません');
+      finish();
+      await previewReady;
+      if (abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      ids?.complete?.(prepared.key);
+      return { ...result, form_previewed: !!previewPath };
+    } catch (error) {
+      finish(error);
+      await previewReady;
+      throw error;
+    } finally {
+      window.removeEventListener('meldex:copy-published', published);
+      window.removeEventListener('meldex:dropbox-auth-session-changed', abandon);
+      window.removeEventListener('meldex:mode-changed', abandon);
+    }
+  }
+  static prepareCopyOpen(path, { preloadSheet = true } = {}) {
+    const activeTab = typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined' ? GBTabs.getActiveTab(GBLayout.activePane) : null;
+    const active = activeTab && typeof getComponentInstance === 'function' ? getComponentInstance(activeTab.id) : null;
+    const matches = app => app?.path === path && app.store && typeof app._readSheet === 'function' && typeof app.flush === 'function';
+    const app = matches(active) ? active : [...document.querySelectorAll('.gb-form-app')].map(el => el._gbFormApp).find(matches);
+    if (!app) return null;
+    const source = MeldexFormDocument.clone(app.store.doc.sheet);
+    const generation = app._generation, owner = app.ctx, key = JSON.stringify(source);
+    // A copy can contend with the mutation locks used by a fresh pivot read. Start
+    // that read after publication, while showing only the existing definition
+    // schema. Answers are loaded afresh before any interaction is enabled.
+    const previewData = preloadSheet && !app.sheetError
+      && !owner?.destroyed && !owner?.writeBlocked && owner?.dbPath && owner.dbMetadata && owner.pivotData
+      ? MeldexFormDocument.clone({ dbPath: owner.dbPath, dbMetadata: owner.dbMetadata,
+        pivotData: { ...owner.pivotData, entities: {} }, readOnly: !!owner.readOnly }) : null;
+    const read = () => app._readSheet(source).then(data => ({ data }), error => ({ error }));
+    let ready = preloadSheet && !previewData ? read() : null;
+    return { source, previewData,
+      flush: async () => app.path === path && await app.flush() && app.path === path,
+      isCurrent: () => !!app.el && app._generation === generation && app.ctx === owner
+        && !owner?.destroyed && !owner?.writeBlocked && !app._sourceMoved && JSON.stringify(app.store?.doc.sheet) === key,
+      get ready() {
+        if (!preloadSheet) return null;
+        return ready ||= previewData && globalThis.requestAnimationFrame
+          ? new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(read())))) : read();
+      } };
+  }
+  async _readSheet(source) {
+    if (!source.path) return {};
+    let path = source.path;
+    const browserData = globalThis.MeldexExportSave?.isBrowserDataContext?.();
+    const identity = browserData ? source.cloud_id : source.id;
+    if (identity) {
+      const resolved = await apiFetch('/file-path?id=' + encodeURIComponent(identity) + '&hint=' + encodeURIComponent(source.path), { silentError: true });
+      if (!resolved?.path) throw new Error('シートの識別番号を確認できません');
+      path = resolved.path;
+    }
+    const [metadata, pivot, access] = await Promise.all([
+      apiFetch('/db-metadata?path=' + encodeURIComponent(path)),
+      apiFetch('/pivot?path=' + encodeURIComponent(path)),
+      MeldexEntityDetail.resolveReadOnly(path, false),
+    ]);
+    return { dbPath: path, dbMetadata: metadata, pivotData: pivot, readOnly: !!access.readOnly };
+  }
+  async _loadSheet(copyOpen, { preserveContextUntilReady = false, openRead = null } = {}) {
     this.sheetError = '';
     this._sourceMoved = false;
     const source = this.store.doc.sheet;
-    if (this.ctx) { this.ctx.destroyed = true; this.ctx.writeBlocked = true; }
-    this.ctx = { paneId: this.paneId, tabId: this.tabId, containerEl: this.el, dbPath: source.path, filter: 'disabled', formApp: this };
-    const ctx = this.ctx;
-    if (!source.path) return;
+    const previous = this.ctx;
+    const ctx = { paneId: this.paneId, tabId: this.tabId, containerEl: this.el, dbPath: source.path, filter: 'disabled', formApp: this, writeBlocked: !!this.el?.inert };
+    const current = () => preserveContextUntilReady ? this.ctx === previous && !previous?.destroyed : this.ctx === ctx && !ctx.destroyed;
+    const activate = () => {
+      if (previous) { previous.destroyed = true; previous.writeBlocked = true; }
+      this.ctx = ctx;
+    };
+    if (!preserveContextUntilReady) activate();
+    if (!source.path) { if (preserveContextUntilReady) activate(); return; }
     try {
-      let path = source.path;
-      const browserData = globalThis.MeldexExportSave?.isBrowserDataContext?.();
-      const identity = browserData ? source.cloud_id : source.id;
-      if (identity) {
-        const resolved = await apiFetch('/file-path?id=' + encodeURIComponent(identity) + '&hint=' + encodeURIComponent(source.path), { silentError: true });
-        if (!resolved?.path) throw new Error('シートの識別番号を確認できません');
-        if (resolved?.path) path = resolved.path;
-      }
-      const [metadata, pivot, access] = await Promise.all([
-        apiFetch('/db-metadata?path=' + encodeURIComponent(path)),
-        apiFetch('/pivot?path=' + encodeURIComponent(path)),
-        MeldexEntityDetail.resolveReadOnly(path, false),
-      ]);
-      if (this.ctx !== ctx || ctx.destroyed) return;
-      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly || this._embeddedReadOnly === true;
-      if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(path, pivot);
-    } catch (error) { if (this.ctx === ctx) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
+      let data;
+      if (openRead?.sheet && JSON.stringify(openRead.sheetSource) === JSON.stringify(source)) {
+        const result = await openRead.sheet;
+        if (result.error) throw result.error;
+        data = result.value;
+      } else if (copyOpen?.ready && copyOpen.isCurrent?.() && JSON.stringify(copyOpen.source) === JSON.stringify(source)) {
+        const result = await copyOpen.ready;
+        if (result.error) throw result.error;
+        data = result.data;
+      } else data = await this._readSheet(source);
+      if (!current()) return;
+      Object.assign(ctx, data, { readOnly: !!data.readOnly || this._embeddedReadOnly === true });
+      if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(data.dbPath, data.pivotData);
+    } catch (error) { if (current()) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
+    finally { if (preserveContextUntilReady && current()) activate(); }
   }
   getLayout() { return this.store?.doc.layout; }
   getConfig(props, propTypes) {
@@ -198688,7 +200320,8 @@ class FormAppComponent extends ToolComponent {
         const result = await MeldexDbTopicLayoutStyle.saveSharedTemplateToLibrary(template);
         if (!result.saved) throw new Error('同名のテンプレートがあります。別の名前で登録してください');
         this._recordTemplateRegistration(template);
-        status.textContent = result.shared === false ? 'この端末に登録しました。共有先が利用できるときに他の端末へ同期できます。' : 'テンプレートに登録しました';
+        status.textContent = result.shared === false ? 'この端末に登録しました。共有先が利用できるときに他の端末へ同期できます。'
+          : result.cacheSaved === false ? 'テンプレートに登録しました。この端末への控えは保存できませんでした。' : 'テンプレートに登録しました';
         if (this.store === store && this.el?.isConnected) {
           const select = this.el.querySelector('[data-form-templates]');
           if (select) { select.replaceChildren(new Option(this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択', '')); this._presetOptions(select); }
@@ -198715,6 +200348,17 @@ class FormAppComponent extends ToolComponent {
         } },
       }, this.ctx.dbPath, layout.id, render);
     }; this._designRender = render; render();
+  }
+  async _openSheet() {
+    const path = this.ctx?.dbPath;
+    if (!path) return false;
+    const paneId = typeof _getFileOpenPane === 'function' ? _getFileOpenPane(GBLayout.activePane) : GBLayout.activePane;
+    const store = this.store, generation = this._generation;
+    const activeTabId = GBTabs.getActiveTab(paneId)?.id;
+    if (!await this.flush() || !this.el || this.store !== store || this._generation !== generation ||
+        this.ctx?.dbPath !== path || GBTabs.getActiveTab(paneId)?.id !== activeTabId) return false;
+    const label = this.ctx.dbMetadata?.display_title || path.split(/[\\/]/).pop();
+    return GBTabs.addTab(paneId, label, 'pivot', path, { dbPath: path }, { preferTargetPane: true });
   }
   _render() {
     if (!this.el || !this.store) return;
@@ -198763,7 +200407,7 @@ class FormAppComponent extends ToolComponent {
     select.disabled = this.definitionReadOnly; select.addEventListener('change', () => this._chooseSheet().catch(error => showStatus(error.message, true)));
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
-      bar.appendChild(textButton('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
+      bar.appendChild(textButton('シートを開く', () => this._openSheet()));
       const templateButton = iconButton('テンプレート', 'layoutTemplate', event => this._openTemplatePicker(event.currentTarget));
       templateButton.dataset.e2eId = `form-${this.tabId}-templates`;
       templateButton.disabled = this.definitionReadOnly;
@@ -198788,9 +200432,11 @@ class FormAppComponent extends ToolComponent {
     this.retry = this._button('保存を再試行', () => this._saveDefinitionAndSheet()); saveBar.appendChild(this.retry);
     this.exportDraft = this._button('下書きを書き出す', () => {
       const url = URL.createObjectURL(new Blob([JSON.stringify(this.store.doc, null, 2)], { type: 'application/json' }));
-      const link = document.createElement('a'); link.href = url;
-      link.download = (GBPathUtils.displayTitle.storageName(this.store.doc.title || 'フォーム')) + '.mel-form';
-      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      try {
+        const link = document.createElement('a'); link.href = url;
+        link.download = (GBPathUtils.displayTitle.storageName(this.store.doc.title || 'フォーム')) + '.mel-form';
+        link.click();
+      } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
     }); saveBar.appendChild(this.exportDraft);
     if (this.definitionReadOnly) saveBar.appendChild(document.createTextNode('（フォーム定義は読み取り専用）'));
     this.surface = document.createElement('div'); this.surface.className = 'form-view gb-form-app-surface'; this.el.appendChild(this.surface);
@@ -198809,7 +200455,8 @@ class FormAppComponent extends ToolComponent {
     const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
     if (!target) return false;
     target.scrollIntoView?.({ block: 'center' });
-    target.querySelector('input,textarea,select,[tabindex]')?.focus?.({ preventScroll: true });
+    const input = target.matches?.('input,textarea,select') ? target : target.querySelector('input,textarea,select,[tabindex]');
+    input?.focus?.({ preventScroll: true });
     return true;
   }
   async flush() {
@@ -198840,7 +200487,11 @@ class FormAppComponent extends ToolComponent {
         if (this.store !== store || this._generation !== generation) return;
         if (result?.failed || result?.blocked) {
           if (this.status) this.status.textContent = '未反映の回答があります。保存先・共有権限・受付設定を確認してください。';
+        } else if (result?.queued && this.status) {
+          this.status.textContent = (result.imported ? '回答を' + result.imported + '件取り込みました。' : '')
+            + '回答' + result.queued + '件は受付待ちです。保存先を編集できる状態になると再試行します。';
         } else if (result?.imported && this.status) this.status.textContent = '回答を' + result.imported + '件取り込みました。参照先シートで確認できます。';
+        else if (result?.replayed && this.status) this.status.textContent = '受領済みの回答を確認しました。';
       } catch (error) { if (this.store === store && this._generation === generation && this.status) this.status.textContent = '回答を取り込めません: ' + (error.userMessage || error.message); }
       if (this.store !== store || this._generation !== generation) return;
       if (this.el) this._responseTimer = setTimeout(run, 30000);
@@ -198858,8 +200509,10 @@ class FormAppComponent extends ToolComponent {
     // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
     if (!path) { window.GBOptionTargetContext?.clear?.('form-new'); return; }
     if (typeof _syncDetailPanel === 'function') {
-      return Promise.resolve(_syncDetailPanel(this.state.label || 'フォーム', path, 'form-app')).then(result => {
-        if (result === false || !this._ownsDetailPanel()) return result;
+      if (this._detailSyncInFlight?.path === path) return this._detailSyncInFlight.promise;
+      const pending = { path };
+      pending.promise = Promise.resolve(_syncDetailPanel(this.state.label || 'フォーム', path, 'form-app')).then(result => {
+        if (result === false || !this._ownsDetailPanel() || path !== (this.path || this._tab()?.path || this.state.formPath)) return result;
         this._renderFieldInspector();
         if (this.paneId === GBLayout.activePane && typeof switchDetailTab === 'function' && typeof _resolveDetailTabForType === 'function') {
           // 利用者が別のタブ（プロパティ等）を選んでいる時は切り替えない。何も選ばれていない時か、表示されないタブの時だけ。
@@ -198868,7 +200521,11 @@ class FormAppComponent extends ToolComponent {
           if (!current || (currentButton && currentButton.hidden)) switchDetailTab(_resolveDetailTabForType('form-app', 'form-field'));
         }
         return result;
+      }).finally(() => {
+        if (this._detailSyncInFlight === pending) this._detailSyncInFlight = null;
       });
+      this._detailSyncInFlight = pending;
+      return pending.promise;
     }
     window.GBOptionTargetContext?.set({ path, kind:'form-app', fileType:'form-app' }, 'form-open');
   }
@@ -198904,7 +200561,7 @@ class FormAppComponent extends ToolComponent {
     root.appendChild(list);
     const annotate = this._button('アノテートを追加', event => {
       const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
-      window.CommentBadges?.addCommentHere?.({ targetKind: 'form_field', filePath: this.path, targetRef: { file: this.path, field }, snapshot: field }, { anchorEl: target || event.currentTarget });
+      window.CommentBadges?.addCommentHere?.({ targetKind: 'form_field', filePath: this.path, targetRef: { file: this.path, field }, snapshot: field }, { anchorEl: target || event.currentTarget, retainOnFailure: true, returnSavedRow: true });
     });
     annotate.dataset.e2eId = 'form-field-add-annotation';
     root.appendChild(annotate);
@@ -198920,6 +200577,27 @@ class FormAppComponent extends ToolComponent {
   _commitFocusedControl() {
     const control = document.activeElement;
     if (this.el?.contains(control) && control.matches('input,textarea,select,[contenteditable=true]')) control.blur();
+  }
+  _mapReferenceRename(path, oldPath, newPath) {
+    const direct = _mapRenamedPath(path, oldPath, newPath);
+    if (direct === path && typeof MeldexRuntimeAdapter !== 'undefined' && MeldexRuntimeAdapter.isBrowserDataMode?.() === true) {
+      const provider = typeof MeldexStorageAdapter !== 'undefined' ? MeldexStorageAdapter.getProvider?.() : null;
+      if (typeof provider?._dropboxLocation !== 'function') return direct;
+      try {
+        const current = provider._dropboxLocation(path), before = provider._dropboxLocation(oldPath), after = provider._dropboxLocation(newPath);
+        const normalized = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const from = normalized(before.path), value = normalized(current.path);
+        if (current.namespaceKind !== before.namespaceKind || before.namespaceKind !== after.namespaceKind) return direct;
+        if (value.toLowerCase() === from.toLowerCase() || value.toLowerCase().startsWith(from.toLowerCase() + '/'))
+          return normalized(newPath) + value.slice(from.length);
+      } catch (_) { /* Unknown roots cannot establish that the reference moved. */ }
+      return direct;
+    }
+    if (direct !== path || typeof MeldexRuntimeAdapter === 'undefined' || MeldexRuntimeAdapter.isBrowserDataMode?.() !== false
+      || typeof GBPathUtils === 'undefined' || typeof GBPathUtils.resolveForClipboard !== 'function') return direct;
+    const canonical = value => String(GBPathUtils.resolveForClipboard(value, typeof state !== 'undefined' ? state.vaultPath : '')).replace(/\\/g, '/').replace(/\/+$/, '');
+    const current = canonical(path), mapped = _mapRenamedPath(current, canonical(oldPath), canonical(newPath));
+    return mapped === current ? path : mapped;
   }
   onPathRename(oldPath, newPath, options) {
     if (!this.path || !this.store) return;
@@ -198937,9 +200615,13 @@ class FormAppComponent extends ToolComponent {
       this._changed();
     }
     const source = this.store.doc.sheet.path;
-    const movedSource = _mapRenamedPath(source, oldPath, newPath);
+    const movedSource = this._mapReferenceRename(source, oldPath, newPath);
     if (source && source !== movedSource) {
-      this._update(doc => { doc.sheet.path = movedSource; }, { history: false });
+      // Relocation owns the persisted reference. Mirror it without creating a
+      // user edit or racing that write with an automatic definition save.
+      const doc = MeldexFormDocument.clone(this.store.doc);
+      doc.sheet.path = movedSource;
+      this.store.doc = doc;
       // Keep any typed values on screen, but never write them to the old path.
       if (this.ctx) this.ctx.writeBlocked = true;
       this._sourceMoved = true; this._changed();
@@ -198956,10 +200638,30 @@ class FormAppComponent extends ToolComponent {
   }
 }
 registerToolComponent('form-app', { cls: FormAppComponent, icon: 'clipboardList', label: 'フォーム', multi: true, requiresViewLock: true });
+if (typeof window !== 'undefined') for (const event of ['meldex:dropbox-auth-session-changed', 'meldex:mode-changed']) {
+  window.addEventListener?.(event, () => {
+    for (const pending of FormAppComponent._pendingCopyCommits?.values() || []) pending.abandoned = true;
+    FormAppComponent._pendingCopyCommits?.clear();
+  });
+}
+if (typeof historyRegisterSnapshotProvider === 'function') historyRegisterSnapshotProvider('form-app:', {
+  prepare: async scope => {
+    const scopeFor = path => typeof _meldexFormAppTabHistoryScope === 'function'
+      ? _meldexFormAppTabHistoryScope({ path }) : 'form-app:' + String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const pending = [...(FormAppComponent._pendingCopyCommits?.entries() || [])].find(([path]) => scopeFor(path) === scope)?.[1];
+    if (!pending) return true;
+    if ((await pending)?.error || pending.abandoned) return false;
+    await pending.historyReady;
+    return !pending.abandoned;
+  },
+});
 
 async function openFormApp(path, label, options = {}) {
   const paneId = options.paneId || (typeof getScriptNoteTargetPaneId === 'function' ? getScriptNoteTargetPaneId() : GBLayout.activePane);
-  const tabId = GBTabs.addTab(paneId, label || 'フォーム', 'form-app', path, { formPath: path, label: label || 'フォーム' }, options);
+  let tabId;
+  if (options.formCopyOpen) (FormAppComponent._copyOpen ||= new Map()).set(path, options.formCopyOpen);
+  try { tabId = GBTabs.addTab(paneId, label || 'フォーム', 'form-app', path, { formPath: path, label: label || 'フォーム' }, options); }
+  finally { FormAppComponent._copyOpen?.delete(path); }
   if (!tabId) return false;
   if (typeof navPush === 'function' && !options.skipNavPush) navPush({ type: 'form-app', path, label: label || 'フォーム' }, paneId);
   if (!options.skipSaveLastView && typeof saveLastView === 'function') saveLastView({ type: 'form-app', path, label: label || 'フォーム' });
@@ -199726,7 +201428,11 @@ async function openFormApp(path, label, options = {}) {
     button.className = `gb-context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
     button.setAttribute('role', 'menuitem');
     if (item.ariaLabel) button.setAttribute('aria-label', String(item.ariaLabel));
-    button.disabled = item.disabled === true;
+    // 使えない理由（title）を持つ項目は、ツールチップを出せるよう aria-disabled で無効にし、押しても何もしない
+    const reasonOnly = item.disabled === true && !!item.title;
+    button.disabled = item.disabled === true && !reasonOnly;
+    if (reasonOnly) button.setAttribute('aria-disabled', 'true');
+    if (item.title) button.title = String(item.title);
     if (item.e2eId) button.dataset.e2eId = String(item.e2eId);
     if (item.icon && typeof global.lucide === 'function') {
       const icon = document.createElement('span');
@@ -199762,7 +201468,7 @@ async function openFormApp(path, label, options = {}) {
       _onHover(button, () => {
         _hoverItem(menu, _closeSubmenu);
       });
-      button.addEventListener('click', () => { close(); item.action?.(); });
+      button.addEventListener('click', () => { if (reasonOnly) return; close(); item.action?.(); });
     }
     menu.appendChild(button);
   }
@@ -206054,8 +207760,11 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, 
   const ctx = _dbResolveUndoCtx(dbPath, options);
   const scope = typeof options.historyScope === 'function' ? options.historyScope()
     : typeof options.historyScope === 'string' ? options.historyScope : _dbScope(dbPath);
-  const refresh = async () => {
-    if (typeof options.onHistoryChanged === 'function') await options.onHistoryChanged();
+  const refresh = async result => {
+    if (typeof options.onHistoryChanged === 'function') {
+      if (options.valueProperty) await options.onHistoryChanged({ property: options.valueProperty, entitySnapshot: result?.entity_snapshot });
+      else await options.onHistoryChanged();
+    }
     else if (dbPath) await selectDatabase(dbPath, ctx, { silent: true });
   };
   const undoUpdates = { new_value: oldValue };
@@ -206066,9 +207775,10 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, 
   }
   if (options.oldUpdates && typeof options.oldUpdates === 'object') Object.assign(undoUpdates, options.oldUpdates);
   if (options.newUpdates && typeof options.newUpdates === 'object') Object.assign(redoUpdates, options.newUpdates);
+  if (options.requestEntity) { undoUpdates._return_entity = true; redoUpdates._return_entity = true; }
   historyPush(label,
-    async () => { await _apiPutValue(val, undoUpdates); await refresh(); },
-    async () => { await _apiPutValue(val, redoUpdates); await refresh(); },
+    async () => { await refresh(await _apiPutValue(val, undoUpdates)); },
+    async () => { await refresh(await _apiPutValue(val, redoUpdates)); },
     scope
   );
 }
@@ -211570,6 +213280,13 @@ function saveActiveFormConfig(dbPath, formConfig, ctx, options = {}) {
   if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig, options);
   if (ctx && typeof _cellUiWriteBlockedMessage === 'function' && _cellUiWriteBlockedMessage(ctx)) return false;
   const config = getDbViewConfig(dbPath);
+  if (options.layoutToAdd) {
+    config.entityLayouts = [...(config.entityLayouts || []), options.layoutToAdd];
+    if (options.activateLayout) {
+      config.entityTabOrder = [...(config.entityTabOrder || ['columns']), options.layoutToAdd.id];
+      config.currentEntityTab = options.layoutToAdd.id;
+    }
+  }
   if (options.shared !== false && formConfig.layoutId && globalThis.MeldexDbFormModel) {
     const layout = config.entityLayouts?.find(item => item.id === formConfig.layoutId);
     if (layout) {
@@ -214128,11 +215845,14 @@ function _kanbanAdoptedValueForWrite(values) {
    ギャラリービュー
    ============================== */
 function _dbViewSurfaceEl(ctx, selector, id) {
+  const belongsHere = element => element && (!element.classList?.contains('gb-form-app-surface')
+    || (ctx?.containerEl && element.closest?.('.gb-form-app') === ctx.containerEl));
   if (ctx && ctx.containerEl) {
-    const scoped = ctx.containerEl.querySelector(selector);
+    const scoped = [...ctx.containerEl.querySelectorAll(selector)].find(belongsHere);
     if (scoped) return scoped;
   }
-  return document.getElementById(id) || document.querySelector(selector);
+  const byId = document.getElementById(id);
+  return (belongsHere(byId) && byId) || [...document.querySelectorAll(selector)].find(belongsHere) || null;
 }
 
 function _galleryImageSrcFromValue(rawValue, dbPath, entityName) {
@@ -219611,7 +221331,7 @@ function _elAddPresetLayout(context, template) {
   if (!_elCanMutateGrid(context.grid, context.options)) return;
   const api = globalThis.MeldexDbTopicLayoutStyle;
   let imported;
-  _elMutateState(context.dbPath, 'トピックレイアウト: テンプレートから追加', template.layout.name, state => {
+  const add = state => {
     const source = JSON.parse(JSON.stringify(template));
     if (state.layouts.some(item => item.name === source.layout.name)) {
       source.layout.name = _elMakeDuplicateName(source.layout.name, state.layouts);
@@ -219621,7 +221341,13 @@ function _elAddPresetLayout(context, template) {
     state.layouts.push(imported.layout);
     state.tabOrder.push(imported.layout.id);
     state.currentTab = imported.layout.id;
-  }, _elRestoreOption(context.grid, context.rerender));
+  };
+  if (typeof context.commitLayout === 'function') {
+    add(_elGetState(context.dbPath));
+    if (!imported?.added || context.commitLayout(imported.layout) === false) return;
+  } else {
+    _elMutateState(context.dbPath, 'トピックレイアウト: テンプレートから追加', template.layout.name, add, _elRestoreOption(context.grid, context.rerender));
+  }
   if (!imported?.added) return;
   _elSession(context.grid, context.entityPath).tab = imported.layout.id;
   context.rerender?.();
@@ -220862,7 +222588,7 @@ function _elPropIconHtml(propName, propTypes, size) {
   return '';
 }
 
-async function _elRefreshFormValueHistory(ctx, propName) {
+async function _elRefreshFormValueHistory(ctx, propName, snapshot) {
   const runtime = globalThis.MeldexDbFormRuntime;
   if (typeof runtime?.historyScope !== 'function') return ctx.rerender?.();
   const normalize = path => String(path || '').replace(/\\/g, '/');
@@ -220880,11 +222606,17 @@ async function _elRefreshFormValueHistory(ctx, propName) {
     const live = canvas._elContext;
     if (!canvas.isConnected || !live?.grid?.isConnected || !matches(live)) continue;
     const before = JSON.stringify(ownValues(live.data));
-    const fresh = await apiFetch('/entity?path=' + encodeURIComponent(live.entityPath), { silentError: true, skipBrowseCache: true, cache: 'no-store' });
-    if (!canvas.isConnected || !live.grid.isConnected || !matches(live) || JSON.stringify(ownValues(live.data)) !== before) continue;
+    const usableSnapshot = snapshot && normalize(snapshot.path) === normalize(live.entityPath)
+      && (!entryId(live.data) || entryId(snapshot) === entryId(live.data))
+      && snapshot.properties && Number.isInteger(snapshot.revision) && snapshot.revision >= Number(live.data?.revision || 0);
+    const fresh = usableSnapshot ? snapshot
+      : await apiFetch('/entity?path=' + encodeURIComponent(live.entityPath), { silentError: true, skipBrowseCache: true, cache: 'no-store' });
+    if (!canvas.isConnected || !live.grid.isConnected || !matches(live)) continue;
+    const currentValues = JSON.stringify(ownValues(live.data));
+    if (currentValues !== before && currentValues !== JSON.stringify(ownValues(fresh))) continue;
     if (!live.data.properties) live.data.properties = {};
     Object.defineProperty(live.data.properties, propName, { value: Array.isArray(ownValues(fresh)) ? ownValues(fresh) : [], enumerable: true, writable: true, configurable: true });
-    if (fresh.revision != null) { live.data.revision = fresh.revision; live.options?.onRevision?.(fresh.revision); }
+    if (fresh.revision != null && Number(fresh.revision) >= Number(live.data.revision || 0)) { live.data.revision = fresh.revision; live.options?.onRevision?.(fresh.revision); }
     for (const cell of live.layout.cells.filter(cell => cell.type === 'field' && cell.prop === propName)) {
       const body = canvas.querySelector('.el-cell[data-cell-id="' + CSS.escape(cell.id) + '"] .el-cell-body');
       if (!body || body.querySelector('[data-form-dirty="true"],.value-input,.cell-inline-input,.cell-inline-select,.cell-date-editor,[contenteditable="true"]')) continue;
@@ -220931,7 +222663,7 @@ function _elBuildFieldCellContent(cell, ctx) {
         dbPath: ctx.options?.ctx?.dbPath || ctx.dbPath, ctx: ctx.options?.ctx,
         historyScope: formConfig && typeof globalThis.MeldexDbFormRuntime?.historyScope === 'function'
           ? () => globalThis.MeldexDbFormRuntime.historyScope(ctx) : ctx.options?.historyScope,
-        onHistoryChanged: ctx.options?.onHistoryChanged || (formConfig ? () => _elRefreshFormValueHistory(ctx, propName) : undefined),
+        onHistoryChanged: ctx.options?.onHistoryChanged || (formConfig ? change => _elRefreshFormValueHistory(ctx, propName, change?.entitySnapshot) : undefined),
       });
     } else {
       const values = Array.isArray(ctx.data.properties[propName]) ? ctx.data.properties[propName] : [];
@@ -221312,27 +223044,74 @@ function _elShowImageCellPopup(anchorBtn, ctx, existingCell) {
   uploadBtn.className = 'el-tab-menu-item';
   uploadBtn.dataset.e2eId = 'entity-layout-image-upload';
   uploadBtn.innerHTML = (typeof lucide === 'function' ? lucide('image', 13) : '') + '<span>画像をアップロード</span>';
+  const uploadStatus = document.createElement('div');
+  uploadStatus.className = 'gb-muted';
+  uploadStatus.dataset.e2eId = 'entity-layout-image-upload-status';
+  uploadStatus.setAttribute('role', 'status');
+  uploadStatus.hidden = true;
+  const retryUpload = document.createElement('button');
+  retryUpload.type = 'button'; retryUpload.className = 'el-tab-menu-item';
+  retryUpload.dataset.e2eId = 'entity-layout-image-upload-retry';
+  retryUpload.textContent = '再試行'; retryUpload.hidden = true;
+  let selectedFile = null, uploading = false;
+  const uploadPreview = document.createElement('img');
+  uploadPreview.className = 'el-image-upload-preview'; uploadPreview.hidden = true;
+  uploadPreview.dataset.e2eId = 'entity-layout-image-upload-preview';
+  uploadPreview.width = 160; uploadPreview.height = 120;
+  let previewUrl = '';
+  const releasePreview = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = ''; uploadPreview.removeAttribute('src'); uploadPreview.hidden = true;
+  };
+  const positionUploadPopup = () => {
+    if (typeof positionPopup === 'function') positionPopup(popup, anchorBtn.getBoundingClientRect(), { gap: 4 });
+    else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(popup);
+  };
+  const uploadSelected = async () => {
+    if (uploading || !selectedFile) return;
+    if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
+    const file = selectedFile;
+    uploading = true; uploadBtn.disabled = true; retryUpload.disabled = true; iconBtn.disabled = true;
+    popup.dataset.imageUploadBusy = '1';
+    uploadStatus.hidden = false; retryUpload.hidden = true;
+    uploadStatus.className = 'gb-muted';
+    uploadStatus.textContent = file.name + ' を追加しています…';
+    try {
+      const meta = await _elUploadLayoutImage(file, ctx);
+      if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) {
+        throw new Error('編集できない状態に変わったため、画像を配置しませんでした。編集できる状態に戻して再試行してください');
+      }
+      applyImage({ source: 'upload', path: meta.path || '', url: meta.url || '', spec: '', alt: meta.filename || file.name });
+      close();
+      if (typeof showStatus === 'function') showStatus('画像を設定しました');
+    } catch (error) {
+      uploadStatus.className = 'el-cell-missing';
+      uploadStatus.textContent = file.name + ' を追加できません: ' + (error?.message || error);
+      retryUpload.hidden = false;
+      positionUploadPopup();
+      if (typeof showStatus === 'function') showStatus('画像のアップロードに失敗しました: ' + (error?.message || error), true);
+    } finally {
+      uploading = false; popup.dataset.imageUploadBusy = '0';
+      uploadBtn.disabled = false; retryUpload.disabled = false; iconBtn.disabled = false;
+    }
+  };
+  retryUpload.addEventListener('click', uploadSelected);
   uploadBtn.addEventListener('click', () => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/png,image/jpeg,image/gif,image/webp';
-    input.addEventListener('change', async () => {
+    input.addEventListener('change', () => {
       const file = input.files && input.files[0];
-      if (!file) return;
-      if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
-      close();
-      try {
-        const meta = await _elUploadLayoutImage(file, ctx);
-        if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
-        applyImage({ source: 'upload', path: meta.path || '', url: meta.url || '', spec: '', alt: meta.filename || file.name });
-        if (typeof showStatus === 'function') showStatus('画像を設定しました');
-      } catch (error) {
-        if (typeof showStatus === 'function') showStatus('画像のアップロードに失敗しました: ' + (error?.message || error), true);
-      }
+      if (!file || uploading) return;
+      releasePreview(); selectedFile = file;
+      previewUrl = URL.createObjectURL(file); uploadPreview.src = previewUrl;
+      uploadPreview.alt = file.name; uploadPreview.hidden = false;
+      positionUploadPopup(); void uploadSelected();
     });
     input.click();
   });
   popup.appendChild(uploadBtn);
+  popup.append(uploadPreview, uploadStatus, retryUpload);
 
   const iconBtn = document.createElement('button');
   iconBtn.type = 'button';
@@ -221369,6 +223148,8 @@ function _elShowImageCellPopup(anchorBtn, ctx, existingCell) {
   }
 
   const close = _elAttachPopupCommon(popup, anchorBtn);
+  const cleanupUploadPopup = popup._cleanup;
+  popup._cleanup = () => { selectedFile = null; releasePreview(); cleanupUploadPopup?.(); };
 }
 
 /* レイアウト用画像のアップロード。画像型列と同じ /media/upload（sheet_pathスコープ）を使い、
@@ -232108,7 +233889,8 @@ function _syncLegacyRightPanelTargetHeaders() {
   const context = path ? { targets: [{ path, kind: 'file', label: _rpAnnotationFileLabel({ target_path: path }) }] } : targetContext;
   const surface = window.GBAnnotationSurfaces?.target();
   const caption = surface ? (surface.id === 'gb-subpanel-inner-pane' || surface.host.closest('#gb-subpanel-content') ? '対象 サブ' : '対象 メイン') : undefined;
-  const pdfPage = /\.pdf#page=(\d+)$/i.exec(path)?.[1];
+  // PDFは全ページを一覧にするので、見出しにはページを出さない（カードに各ページを出す）
+  const pdfPage = _rpAnnotationWholePdfListing(path) ? '' : /\.pdf#page=(\d+)$/i.exec(path)?.[1];
   window.GBOptionTargetContext?.renderHeader?.(annotation, context, { caption: pdfPage ? `${caption || '対象'} ・ ${pdfPage}ページ` : caption });
 }
 
@@ -232280,7 +234062,8 @@ async function loadRpAnnotationList(options = {}) {
   list.innerHTML = '<div style="padding:12px;text-align:center;color:var(--fg2);font-size:12px;">読み込み中...</div>';
   const viewMode = document.getElementById('rp-ann-view')?.value || localStorage.getItem('rp-ann-view-mode') || 'preview';
   const sortMode = document.getElementById('rp-ann-sort')?.value || localStorage.getItem('rp-ann-sort-mode') || 'modified-desc';
-  const typeFilter = document.getElementById('rp-ann-type')?.value || '';
+  const typeFilter = _rpNormalizeAnnotationTypeTab(document.getElementById('rp-ann-type')?.value || '');
+  _syncRpAnnotationTypeTabs(typeFilter);
   const scopeFilter = document.getElementById('rp-ann-scope')?.value || 'current';
   _syncLegacyRightPanelTargetHeaders();
   const statusFilter = document.getElementById('rp-ann-status')?.value || 'open';
@@ -232298,7 +234081,10 @@ async function loadRpAnnotationList(options = {}) {
   }
   const currentTarget = scopeFilter === 'current' ? _resolveRpAnnotationCurrentTarget() : '';
   let targetFilter = _readRpAnnotationTargetFilter(searchEl);
-  const currentTargetCandidates = scopeFilter === 'current' ? _rpAnnotationCurrentTargetCandidates(currentTarget) : [];
+  // PDFはページごとに保存している。本体（デスクトップ）では「現在のファイル」をPDF全体（全ページ）で一覧にする。
+  const wholePdf = scopeFilter === 'current' && _rpAnnotationWholePdfListing(currentTarget);
+  const listTarget = wholePdf ? _rpAnnotationPdfBase(currentTarget) : currentTarget;
+  const currentTargetCandidates = scopeFilter === 'current' ? _rpAnnotationCurrentTargetCandidates(listTarget) : [];
   const snapshotKey = JSON.stringify([scopeFilter, currentTargetCandidates]);
   const generation = typeof _gbAppApiFetchCacheGeneration === 'number' ? _gbAppApiFetchCacheGeneration : -1;
   const snapshot = options.reuseItems && _rpAnnotationListSnapshot?.key === snapshotKey &&
@@ -232314,7 +234100,7 @@ async function loadRpAnnotationList(options = {}) {
     return;
   }
   if (scopeFilter === 'current' && currentTarget && !targetFilter?.targetPath) {
-    targetFilter = { targetPath: currentTarget, targetPathCandidates: currentTargetCandidates };
+    targetFilter = { targetPath: listTarget, targetPathCandidates: currentTargetCandidates, wholePdf };
   }
   try {
     let items = [];
@@ -232327,7 +234113,7 @@ async function loadRpAnnotationList(options = {}) {
       const queries = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
         ? currentTargetCandidates : currentTargetCandidates.slice(0, 1);
       const pages = await Promise.all(queries.map(candidate =>
-        apiFetch('/annotations?' + _RP_ANNOTATION_LIST_QUERY + '&target=' + encodeURIComponent(candidate), requestOptions)));
+        apiFetch('/annotations?' + _RP_ANNOTATION_LIST_QUERY + (wholePdf ? '&pages=1' : '') + '&target=' + encodeURIComponent(candidate), requestOptions)));
       for (const rows of pages) {
         (rows || []).forEach(row => {
           if (row?.id && !byId.has(row.id)) byId.set(row.id, row);
@@ -232350,7 +234136,7 @@ async function loadRpAnnotationList(options = {}) {
       return true;
     });
     if (typeFilter) {
-      filtered = filtered.filter(a => a.uiKind === typeFilter);
+      filtered = filtered.filter(a => _rpAnnotationMatchesTypeTab(a, typeFilter));
     }
     if (userFilter) {
       filtered = filtered.filter(a => String(a.user || '') === userFilter);
@@ -232455,6 +234241,14 @@ function _rpCalendarTargetCandidates() {
   return [...candidates];
 }
 
+function _rpAnnotationPdfBase(path) {
+  return String(path || '').replace(/(\.pdf)#page=\d+$/i, '$1');
+}
+
+function _rpAnnotationWholePdfListing(target) {
+  return /\.pdf(?:#page=\d+)?$/i.test(String(target || '')) && !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+}
+
 function _rpAnnotationCurrentTargetCandidates(currentTarget) {
   if (_rpIsCalendarPanelTarget(currentTarget)) return _rpCalendarTargetCandidates();
   return _rpAnnotationTargetCandidates(currentTarget);
@@ -232465,6 +234259,8 @@ function _rpTargetContainerFilter(kind, ref) {
   if (kind === 'board_card') return { kind, id: ref?.cardId || '' };
   if (kind === 'board_line') return { kind, id: ref?.lineId || '' };
   if (kind === 'sheet_cell') return { kind, entryId: ref?.entryId || '', colId: ref?.colId || '' };
+  // トピック全体を対象にした時は、そのトピックのセル内の選択範囲コメントも含める
+  if (kind === 'sheet_entry') return { kind: 'sheet_cell', entryId: ref?.entryId || '' };
   if (kind === 'calendar_event') return { kind, id: ref?.eventId || ref?.id || '' };
   return null;
 }
@@ -232481,7 +234277,8 @@ function _rpRefMatches(filterRef, actualRef) {
 function _rpAnnotationMatchesTargetFilter(annotation, filter) {
   if (Array.isArray(filter.annotationIds) && !filter.annotationIds.includes(annotation.id)) return false;
   const ref = annotation.target_ref || {};
-  const targetPath = ref.file || annotation.target_path || '';
+  const rawTargetPath = ref.file || annotation.target_path || '';
+  const targetPath = filter.wholePdf ? _rpAnnotationPdfBase(rawTargetPath) : rawTargetPath;
   const targetCandidates = Array.isArray(filter.targetPathCandidates) && filter.targetPathCandidates.length
     ? filter.targetPathCandidates
     : (filter.targetPath ? [filter.targetPath] : []);
@@ -232516,7 +234313,7 @@ function _renderRpAnnotationEmptyState(list, options = {}) {
     deleted: '削除済み',
     all: 'すべて',
   })[options.status || 'open'] || (options.status || '未解決');
-  const typeText = options.type || 'すべて';
+  const typeText = options.type ? _rpAnnotationTypeTabLabel(options.type) : 'すべて';
   detail.textContent = `現在対象: ${targetText} / スコープ: ${options.scope || 'current'} / 状態: ${statusText} / 種類: ${typeText}`;
   wrap.appendChild(detail);
   if (options.query) {
@@ -232569,7 +234366,9 @@ function _normalizeAnnotationRow(a) {
 function _rpAnnotationUiKind(a) {
   const type = a?.type || '';
   const data = a?.data || {};
-  if (type === 'highlight' || data.highlight) return 'highlight';
+  // ハイライトは選んだ文字に付けたもの（文字の範囲を持つ）。以前に範囲のドラッグで付けた矩形（文字なし）は
+  // マーキング（矩形塗り）として表示する（表示と色の変更・削除はそのまま。2026-11-27）
+  if (type === 'highlight' || (data.highlight && Array.isArray(data.boxes) && data.boxes.length)) return 'highlight';
   if (type === 'screenshot') return 'screenshot';
   if (type === 'sticky') return 'sticky';
   const isSticky = ['comment', 'note', 'sticky'].includes(type)
@@ -232598,6 +234397,129 @@ function _rpAnnotationTypeLabel(kind) {
 function _rpAnnotationIcon(kind, size) {
   const icon = ({ stroke: 'pencil', marker: 'highlighter', highlight: 'highlighter', lasso: 'lasso', rect: 'square', comment: 'messageSquareText', sticky: 'stickyNote', screenshot: 'camera' })[kind] || 'messageSquare';
   return typeof lucide === 'function' ? lucide(icon, size || 14) : '';
+}
+
+// アノテート管理のタブ（2026-11-27）。マーキング＝ストローク・図形・投げ縄・矩形塗り
+// （旧マーカーも含む）。値は #rp-ann-type に保持し、他の画面からの絞り込み指定と共用する。
+const _RP_ANNOTATION_TYPE_TABS = [
+  { value: '', label: '全タイプ', icon: 'layers' },
+  { value: 'comment', label: 'コメント', icon: 'messageSquareText' },
+  { value: 'marking', label: 'マーキング', icon: 'pencil' },
+  { value: 'highlight', label: 'ハイライト', icon: 'highlighter' },
+  { value: 'screenshot', label: 'スクリーンショット', icon: 'camera' },
+  { value: 'sticky', label: '付箋', icon: 'stickyNote' },
+];
+const _RP_ANNOTATION_TYPE_TAB_KEY = 'rp-ann-type-tab';
+const _RP_ANNOTATION_WRITING_KEY = 'rp-ann-writing-mode';
+
+function _rpNormalizeAnnotationTypeTab(value) {
+  const raw = String(value || '');
+  // 以前の絞り込みの値（ストローク・マーカー・投げ縄・矩形塗り）はマーキングへ読み替える
+  if (['stroke', 'marker', 'lasso', 'rect', 'marking'].includes(raw)) return 'marking';
+  return _RP_ANNOTATION_TYPE_TABS.some(tab => tab.value === raw) ? raw : '';
+}
+
+function _rpAnnotationTypeTabLabel(value) {
+  return _RP_ANNOTATION_TYPE_TABS.find(tab => tab.value === _rpNormalizeAnnotationTypeTab(value))?.label || 'すべて';
+}
+
+function _rpAnnotationMatchesTypeTab(a, value) {
+  const tab = _rpNormalizeAnnotationTypeTab(value);
+  if (!tab) return true;
+  const kind = a?.uiKind || '';
+  if (tab === 'marking') return !['comment', 'highlight', 'screenshot', 'sticky'].includes(kind);
+  return kind === tab;
+}
+
+function _syncRpAnnotationTypeTabs(value) {
+  const bar = document.getElementById('rp-ann-tabs');
+  if (!bar) return;
+  const tab = _rpNormalizeAnnotationTypeTab(value);
+  bar.querySelectorAll('[data-rp-ann-type-tab]').forEach(button => {
+    const active = button.dataset.rpAnnTypeTab === tab;
+    button.classList.toggle('gb-inner-tab-active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.tabIndex = active ? 0 : -1;
+  });
+}
+
+function _rpAnnotationWritingMode() {
+  try { return localStorage.getItem(_RP_ANNOTATION_WRITING_KEY) === 'vertical' ? 'vertical' : 'horizontal'; } catch { return 'horizontal'; }
+}
+
+function _applyRpAnnotationWritingMode(mode) {
+  const vertical = mode === 'vertical';
+  document.getElementById('rp-ann-list')?.classList.toggle('rp-ann-vertical', vertical);
+  const select = document.getElementById('rp-ann-writing');
+  if (select && select.value !== (vertical ? 'vertical' : 'horizontal')) select.value = vertical ? 'vertical' : 'horizontal';
+}
+
+// タブ列。幅が足りない時は改行せず、ラベルを隠してアイコンだけにする（タブ共通の方針）。
+function _installRpAnnotationTypeTabs() {
+  const list = document.getElementById('rp-ann-list');
+  if (!list || document.getElementById('rp-ann-tabs')) return;
+  const tabs = _RP_ANNOTATION_TYPE_TABS.map(entry => {
+    const iconHtml = typeof lucide === 'function' ? lucide(entry.icon, 14) : '';
+    const iconNode = document.createElement('span');
+    iconNode.innerHTML = iconHtml;
+    const button = window.GBUI?.createTab
+      ? window.GBUI.createTab({ kind: 'inner', label: entry.label, icon: iconNode.firstElementChild || iconNode })
+      : Object.assign(document.createElement('button'), { type: 'button', className: 'gb-inner-tab', textContent: entry.label });
+    button.dataset.rpAnnTypeTab = entry.value;
+    button.dataset.e2eId = 'rp-ann-tab-' + (entry.value || 'all');
+    button.title = entry.label;
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-label', entry.label);
+    button.addEventListener('click', () => {
+      const select = document.getElementById('rp-ann-type');
+      if (select) {
+        if (![...select.options].some(option => option.value === entry.value)) select.add(new Option(entry.label, entry.value));
+        select.value = entry.value;
+      }
+      try { localStorage.setItem(_RP_ANNOTATION_TYPE_TAB_KEY, entry.value); } catch {}
+      const search = document.getElementById('rp-ann-search');
+      if (search) delete search.dataset.targetFilter;
+      loadRpAnnotationList({ reuseItems: true });
+    });
+    return button;
+  });
+  const bar = window.GBUI?.createTabBar ? window.GBUI.createTabBar(tabs) : document.createElement('div');
+  if (!window.GBUI?.createTabBar) { bar.className = 'gb-tabbar'; tabs.forEach(tab => bar.appendChild(tab)); }
+  bar.id = 'rp-ann-tabs';
+  bar.classList.add('rp-ann-tabs');
+  bar.setAttribute('role', 'tablist');
+  bar.setAttribute('aria-label', 'アノテートのタイプ');
+  bar.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const all = [...bar.querySelectorAll('[data-rp-ann-type-tab]')];
+    const index = all.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? all.length - 1
+      : (index + (event.key === 'ArrowRight' ? 1 : -1) + all.length) % all.length;
+    all[next].focus();
+    all[next].click();
+  });
+  list.before(bar);
+  const fit = () => {
+    bar.classList.remove('rp-ann-tabs-compact');
+    // 隠れた分を scrollWidth が数えない画面があるため、タブの幅の合計で判定する
+    const needed = [...bar.children].reduce((sum, tab) => sum + tab.getBoundingClientRect().width, 0);
+    const available = bar.getBoundingClientRect().width - (parseFloat(getComputedStyle(bar).paddingLeft) || 0) - (parseFloat(getComputedStyle(bar).paddingRight) || 0);
+    if (needed > available + 1) bar.classList.add('rp-ann-tabs-compact');
+  };
+  if (typeof ResizeObserver === 'function') new ResizeObserver(fit).observe(bar);
+  requestAnimationFrame(fit);
+  const select = document.getElementById('rp-ann-type');
+  if (select) {
+    const current = _rpNormalizeAnnotationTypeTab(select.value);
+    select.replaceChildren(..._RP_ANNOTATION_TYPE_TABS.map(entry => new Option(entry.label, entry.value)));
+    let saved = '';
+    try { saved = _rpNormalizeAnnotationTypeTab(localStorage.getItem(_RP_ANNOTATION_TYPE_TAB_KEY) || ''); } catch {}
+    select.value = current || saved;
+  }
+  _syncRpAnnotationTypeTabs(select?.value || '');
+  _applyRpAnnotationWritingMode(_rpAnnotationWritingMode());
 }
 
 function _stripRpAnnotationHtml(html) {
@@ -232895,37 +234817,88 @@ function _buildRpAnnotationPreviewCard(a) {
   card.tabIndex = 0;
   card.dataset.annCardId = a.id || '';
   card.dataset.e2eId = 'rp-ann-card-' + (a.id || 'unknown');
+  card.dataset.annKind = a.uiKind || '';
   card.addEventListener('keydown', event => { if (event.target === card && ['Enter', ' '].includes(event.key)) { event.preventDefault(); _jumpFromRpAnnotation(a); } });
   card.addEventListener('click', () => { if (_rpAnnotationDragSkipClick(card)) return; _jumpFromRpAnnotation(a); });
-  const head = document.createElement('div');
-  head.className = 'rp-ann-preview-head';
-  head.innerHTML = `<span>${_rpAnnotationIcon(a.uiKind, 14)} ${esc(_rpAnnotationTypeLabel(a.uiKind))}</span><span class="rp-ann-preview-actions"></span>`;
-  _appendRpAnnotationActions(head.querySelector('.rp-ann-preview-actions'), a);
+  card.append(_buildRpAnnotationPreviewHead(a));
   const body = document.createElement('div');
   body.className = 'rp-ann-preview-body';
   body.appendChild(_buildRpAnnotationPreviewBody(a));
-  const meta = document.createElement('span');
-  meta.className = 'rp-ann-preview-meta';
-  meta.appendChild(_rpAnnotationMeta(a));
-  head.firstElementChild.appendChild(meta);
-  card.append(head, body);
+  card.append(body);
   _installRpAnnotationDrag(card, a);
   return card;
+}
+
+// アノテート先の表示名（ファイル名・PDFのページ・シートのトピック名・状態）。
+function _rpAnnotationTargetText(a) {
+  const rawPath = a.target_ref?.file || a.target_path || '';
+  const parts = [_rpAnnotationFileLabel(a)];
+  const pdfPage = /\.pdf#page=(\d+)$/i.exec(rawPath)?.[1] || (a.data?.pageIndex != null && /\.pdf$/i.test(rawPath) ? String(Number(a.data.pageIndex) + 1) : '');
+  if (pdfPage) parts.push(`${pdfPage}ページ`);
+  if (a.target_kind === 'sheet_entry' && a.target_ref?.entryId) parts.push(String(a.target_ref.entryId));
+  const flags = [a.resolved ? '解決済み' : '', a.orphan ? '孤児' : '', a.deleted ? '削除済み' : ''].filter(Boolean);
+  return parts.join(' · ') + (flags.length ? ` (${flags.join('・')})` : '');
+}
+
+// カードの見出しに出す短い日時。今年は「月/日 時:分」、それ以外は年も付ける。全体はツールチップへ。
+function _rpAnnotationShortTime(a) {
+  const raw = a.modified_at || a.created_at || '';
+  const date = raw ? new Date(raw) : null;
+  if (!date || !Number.isFinite(date.getTime())) return '';
+  const pad = value => String(value).padStart(2, '0');
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const day = `${date.getMonth() + 1}/${date.getDate()}`;
+  return date.getFullYear() === new Date().getFullYear() ? `${day} ${clock}` : `${date.getFullYear()}/${day} ${clock}`;
+}
+
+// 見出しは1行: タイプのアイコン・アノテート先・作成者・日時・右端の「…」。
+// 幅が足りない時はアノテート先を省略記号で縮め、2行へ折り返さない。
+function _buildRpAnnotationPreviewHead(a) {
+  const head = document.createElement('div');
+  head.className = 'rp-ann-preview-head';
+  const typeLabel = _rpAnnotationTypeLabel(a.uiKind);
+  const kind = document.createElement('span');
+  kind.className = 'rp-ann-preview-kind';
+  kind.innerHTML = _rpAnnotationIcon(a.uiKind, 14);
+  kind.setAttribute('role', 'img');
+  kind.setAttribute('aria-label', typeLabel);
+  kind.title = typeLabel;
+  const targetText = _rpAnnotationTargetText(a);
+  const target = document.createElement('span');
+  target.className = 'rp-ann-preview-target';
+  target.textContent = targetText;
+  const time = document.createElement('span');
+  time.className = 'rp-ann-preview-time';
+  time.textContent = _rpAnnotationShortTime(a);
+  const fullTime = _rpAnnotationTime(a, 'modified') || _rpAnnotationTime(a, 'created');
+  const actions = document.createElement('span');
+  actions.className = 'rp-ann-preview-actions';
+  head.append(kind, target);
+  const badge = _rpAnnotationUserBadge(a.user);
+  if (badge) head.append(badge);
+  head.append(time, actions);
+  const summary = [typeLabel, targetText, a.user || '', fullTime].filter(Boolean).join(' · ');
+  target.title = summary;
+  time.title = summary;
+  if (badge) badge.title = summary;
+  _appendRpAnnotationActions(actions, a);
+  return head;
 }
 
 function _buildRpAnnotationPreviewBody(a) {
   if (a.uiKind === 'highlight' && a.data?.thumbnail) {
     const preview = document.createElement('div');
+    preview.className = 'rp-ann-highlight-preview';
     const image = document.createElement('img'); image.src = a.data.thumbnail; image.alt = 'ハイライトした範囲';
-    image.style.cssText = 'max-width:100%;max-height:120px;object-fit:contain';
-    if (a.data.text) { const quote = document.createElement('div'); quote.textContent = a.data.text; preview.append(quote); }
+    image.className = 'rp-ann-preview-image';
+    if (a.data.text) { const quote = document.createElement('div'); quote.className = 'rp-ann-highlight-quote rp-ann-text-body'; quote.textContent = a.data.text; preview.append(quote); }
     preview.append(image); return preview;
   }
   if (a.uiKind === 'screenshot') return _buildRpScreenshotPreview(a);
   if (['stroke', 'marker', 'lasso', 'rect'].includes(a.uiKind)) return _buildRpStrokePreview(a);
   if (a.uiKind === 'sticky') return _buildRpStickyPreview(a);
   const el = document.createElement('div');
-  el.className = 'rp-ann-comment-preview';
+  el.className = 'rp-ann-comment-preview rp-ann-text-body';
   el.textContent = _rpAnnotationPreviewText(a) || '(空)';
   return el;
 }
@@ -232939,14 +234912,9 @@ function _buildRpScreenshotPreview(a) {
     return wrap;
   }
   const img = document.createElement('img');
-  img.className = 'rp-ann-screenshot-thumb';
+  img.className = 'rp-ann-screenshot-thumb rp-ann-preview-image';
   img.src = _rpAnnotationFileRawUrl(imagePath);
   img.alt = a.data?.source_file || imagePath.split(/[\\/]/).pop() || 'スクリーンショット';
-  img.style.maxWidth = '100%';
-  img.style.maxHeight = '120px';
-  img.style.borderRadius = '4px';
-  img.style.objectFit = 'contain';
-  img.style.display = 'block';
   img.onerror = () => {
     img.style.display = 'none';
     const fallback = document.createElement('div');
@@ -232963,7 +234931,7 @@ function _buildRpScreenshotPreview(a) {
 
 function _buildRpStickyPreview(a) {
   const note = document.createElement('div');
-  note.className = 'rp-ann-sticky-preview';
+  note.className = 'rp-ann-sticky-preview rp-ann-text-body';
   note.style.background = a.color || '#c48080';
   const html = a.data?.html || '';
   if (html && typeof _sanitizeAnnotationHtml === 'function') note.innerHTML = _sanitizeAnnotationHtml(html);
@@ -232971,7 +234939,89 @@ function _buildRpStickyPreview(a) {
   return note;
 }
 
+const _RP_ANN_IMAGE_TARGET_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif)$/i;
+const _RP_SVG_NS = 'http://www.w3.org/2000/svg';
+
+// ビューワーで画像へ描いた描線・図形は、描いた範囲の画像を下敷きにして縮小表示する。
+// 座標が画像の画素（media-pixel-v1）で保存されている時だけ対象にする（古い形式は描線だけ）。
+function _buildRpImageBackedShapePreview(a) {
+  const data = a.data || {};
+  const imagePath = String(a.target_ref?.file || a.target_path || '');
+  const mediaWidth = Number(data.mediaWidth), mediaHeight = Number(data.mediaHeight);
+  if (!_RP_ANN_IMAGE_TARGET_RE.test(imagePath) || data.coordinateSpace !== 'media-pixel-v1'
+      || !(mediaWidth > 0) || !(mediaHeight > 0)) return null;
+  const color = a.color || '#ffeb3b';
+  const lineWidth = Math.max(1, Number(data.width) || Number(data.lineWidth) || 4);
+  const points = (Array.isArray(data.points) ? data.points : [])
+    .map(p => [Number(p?.[0]), Number(p?.[1])]).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  let shape = null, box = null;
+  if (data.cx != null && data.rx != null) {
+    const cx = Number(data.cx) || 0, cy = Number(data.cy) || 0, rx = Math.abs(Number(data.rx) || 0), ry = Math.abs(Number(data.ry) || 0);
+    shape = document.createElementNS(_RP_SVG_NS, 'ellipse');
+    Object.entries({ cx, cy, rx, ry }).forEach(([k, v]) => shape.setAttribute(k, String(v)));
+    box = [cx - rx, cy - ry, cx + rx, cy + ry];
+  } else if (data.x != null && data.width != null && !points.length) {
+    const x = Number(data.x) || 0, y = Number(data.y) || 0, w = Math.abs(Number(data.width) || 0), h = Math.abs(Number(data.height) || 0);
+    shape = document.createElementNS(_RP_SVG_NS, 'rect');
+    Object.entries({ x, y, width: w, height: h }).forEach(([k, v]) => shape.setAttribute(k, String(v)));
+    box = [x, y, x + w, y + h];
+  } else if (points.length >= 2) {
+    const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+    box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    shape = document.createElementNS(_RP_SVG_NS, a.uiKind === 'lasso' ? 'polygon' : 'path');
+    if (a.uiKind === 'lasso') shape.setAttribute('points', points.map(p => p.join(',')).join(' '));
+    else shape.setAttribute('d', 'M ' + points.map(p => p.join(' ')).join(' L '));
+  }
+  if (!shape || !box) return null;
+  const filled = a.uiKind === 'lasso' || a.uiKind === 'rect' || /fill/.test(String(a.type || ''));
+  shape.setAttribute('fill', filled ? color : 'none');
+  if (filled) shape.setAttribute('fill-opacity', _rpAnnotationPreviewFillOpacity(a));
+  shape.setAttribute('stroke', color);
+  shape.setAttribute('stroke-width', String(a.uiKind === 'rect' ? Math.max(2, lineWidth / 2) : lineWidth));
+  shape.setAttribute('stroke-opacity', a.uiKind === 'marker' ? '0.5' : String(a.opacity || 1));
+  shape.setAttribute('stroke-linecap', a.uiKind === 'marker' ? 'butt' : 'round');
+  shape.setAttribute('stroke-linejoin', 'round');
+  // 描いた範囲の周りも少し見せ、カードの横長の比率に合わせて画像の内側へ収める。
+  const pad = Math.max(lineWidth * 2, Math.max(box[2] - box[0], box[3] - box[1]) * 0.15, 24);
+  let x0 = box[0] - pad, y0 = box[1] - pad, x1 = box[2] + pad, y1 = box[3] + pad;
+  const aspect = 120 / 58;
+  if ((x1 - x0) / (y1 - y0) < aspect) { const grow = ((y1 - y0) * aspect - (x1 - x0)) / 2; x0 -= grow; x1 += grow; }
+  else { const grow = ((x1 - x0) / aspect - (y1 - y0)) / 2; y0 -= grow; y1 += grow; }
+  const fit = (lo, hi, max) => {
+    const size = Math.min(hi - lo, max);
+    const start = Math.min(Math.max(lo, 0), Math.max(0, max - size));
+    return [start, size];
+  };
+  const [vx, vw] = fit(x0, x1, mediaWidth), [vy, vh] = fit(y0, y1, mediaHeight);
+  const svg = document.createElementNS(_RP_SVG_NS, 'svg');
+  svg.setAttribute('viewBox', [vx, vy, Math.max(1, vw), Math.max(1, vh)].map(v => Number(v.toFixed(2))).join(' '));
+  svg.setAttribute('aria-hidden', 'true');
+  // 共通の描線表示は overflow:visible。下敷きの画像が枠の外へはみ出さないよう切り取る。
+  svg.style.overflow = 'hidden';
+  const image = document.createElementNS(_RP_SVG_NS, 'image');
+  image.setAttribute('href', _rpAnnotationFileRawUrl(imagePath.replace(/#.*$/, '')));
+  image.setAttribute('x', '0');
+  image.setAttribute('y', '0');
+  image.setAttribute('width', String(mediaWidth));
+  image.setAttribute('height', String(mediaHeight));
+  image.setAttribute('preserveAspectRatio', 'none');
+  svg.append(image, shape);
+  const wrap = document.createElement('div');
+  wrap.className = 'rp-ann-stroke-preview rp-ann-stroke-preview-image';
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+// カードの縮小表示の塗り。新しい塗りは色の不透明度だけ、以前の塗りは従来どおり薄く描く。
+function _rpAnnotationPreviewFillOpacity(a) {
+  return typeof _annotationUsesColorAlpha === 'function' && _annotationUsesColorAlpha(a?.data)
+    ? String(typeof _normalizeCoreAnnotationOpacity === 'function' ? _normalizeCoreAnnotationOpacity(a.opacity, 1) : 1)
+    : '0.22';
+}
+
 function _buildRpStrokePreview(a) {
+  const imageBacked = _buildRpImageBackedShapePreview(a);
+  if (imageBacked) return imageBacked;
   const points = Array.isArray(a.data?.points) ? a.data.points : [];
   const wrap = document.createElement('div');
   wrap.className = 'rp-ann-stroke-preview';
@@ -232984,7 +235034,7 @@ function _buildRpStrokePreview(a) {
     rect.setAttribute('width', '88');
     rect.setAttribute('height', '38');
     rect.setAttribute('fill', a.color || '#ffeb3b');
-    rect.setAttribute('fill-opacity', '0.22');
+    rect.setAttribute('fill-opacity', _rpAnnotationPreviewFillOpacity(a));
     rect.setAttribute('stroke', a.color || '#ffeb3b');
     rect.setAttribute('stroke-width', '2');
     svg.appendChild(rect);
@@ -233011,7 +235061,7 @@ function _buildRpStrokePreview(a) {
     const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
     poly.setAttribute('points', scaled.map(p => p.map(v => v.toFixed(1)).join(',')).join(' '));
     poly.setAttribute('fill', a.color || '#ffeb3b');
-    poly.setAttribute('fill-opacity', '0.22');
+    poly.setAttribute('fill-opacity', _rpAnnotationPreviewFillOpacity(a));
     poly.setAttribute('stroke', a.color || '#ffeb3b');
     poly.setAttribute('stroke-width', '2');
     svg.appendChild(poly);
@@ -233162,11 +235212,17 @@ function _appendRpAnnotationActionItems(container, a) {
     container.append(source);
   }
   if (a.uiKind === 'highlight') {
+    // ハイライトの色も共通カラーパレット（不透明度つき）で選ぶ。閉じた時に1回保存する。
     const color = _rpAnnotationActionButton('palette', 'ハイライトの色を変更');
+    color.dataset.rpAnnAction = 'highlight-color';
     color.addEventListener('click', event => {
       event.stopPropagation();
-      MeldexContextMenuUI.openAt({ anchorRect: document.querySelector('[data-annotation-toolbar]').getBoundingClientRect(), ariaLabel: 'ハイライトの色',
-        items: GBAnnotationHighlights.colors().map((value, index) => ({ label: 'テーマカラー ' + (index + 1), icon: 'square', color: value, action: () => void GBAnnotationHighlights.mutate(a, value) })) });
+      const card = document.querySelector(`[data-ann-card-id="${CSS.escape(String(a.id || ''))}"]`);
+      const rect = (card || document.querySelector('[data-annotation-toolbar]'))?.getBoundingClientRect();
+      if (!window.GBAnnotationRecolor) return;
+      void window.GBAnnotationRecolor.open({ id: a.id, targetPath: a.target_path, label: 'アノテート: ハイライトの色',
+        anchor: window.GBAnnotationRecolor.anchorAt(rect ? rect.left : 0, rect ? rect.top : 0),
+        refresh: () => window.GBAnnotationSurfaces?.reloadTarget?.(a.target_path) });
     });
     container.append(color);
     const remove = _rpAnnotationActionButton('trash2', 'ハイライトを削除');
@@ -233177,6 +235233,22 @@ function _appendRpAnnotationActionItems(container, a) {
     });
     container.append(remove);
     return;
+  }
+  if (_rpAnnotationMatchesTypeTab(a, 'marking') && window.GBAnnotationRecolor && !a.deleted) {
+    // 描いた線・塗りの色（共通カラーパレット。不透明度も選べる）
+    const colorBtn = _rpAnnotationActionButton('palette', '色を変更...');
+    colorBtn.dataset.rpAnnAction = 'recolor';
+    colorBtn.dataset.testid = `rp-ann-recolor-${a.id || 'unknown'}`;
+    colorBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      const card = document.querySelector(`[data-ann-card-id="${CSS.escape(String(a.id || ''))}"]`);
+      const rect = (card || document.getElementById('rp-ann-list'))?.getBoundingClientRect();
+      const surfaces = window.GBAnnotationSurfaces;
+      void window.GBAnnotationRecolor.open({ id: a.id, targetPath: a.target_path,
+        anchor: window.GBAnnotationRecolor.anchorAt(rect ? rect.left : 0, rect ? rect.top : 0),
+        refresh: () => surfaces?.reloadTarget?.(a.target_path) });
+    });
+    container.appendChild(colorBtn);
   }
   if (a.uiKind === 'comment') {
     const editBtn = _rpAnnotationActionButton('pencil', '編集');
@@ -233341,6 +235413,8 @@ async function _jumpFromRpAnnotation(a) {
     return;
   }
   if (typeof jumpToAnnotation === 'function') jumpToAnnotation(targetPath);
+  // 画像・PDF等はビューワーで開く（jumpToAnnotation が振り分ける）。ノート用のスクロールは当てない。
+  if (typeof _annotationViewerMediaTarget === 'function' && _annotationViewerMediaTarget(targetPath)) return;
   setTimeout(() => _scrollToRpAnnotationGeometry(a), 450);
 }
 
@@ -233370,7 +235444,7 @@ async function _deleteAnnotationFromPanel(a) {
   const confirmMsg = a.uiKind === 'screenshot'
     ? 'このスクリーンショットアノテートを削除しますか？\n（アノテートレコードのみ削除され、画像ファイルは残ります）'
     : 'このアノテートを削除しますか？';
-  if (typeof cfConfirm === 'function' && !await cfConfirm(confirmMsg)) return;
+  if (typeof _pushAnnotationHistory !== 'function' && typeof cfConfirm === 'function' && !await cfConfirm(confirmMsg)) return;
   try {
     const before = typeof _fetchAnnotationHistoryRow === 'function'
       ? await _fetchAnnotationHistoryRow(a.id).catch(() => null)
@@ -233437,6 +235511,10 @@ function _commentGroupKey(c) {
   if (kind === 'sheet_cell') {
     const key = `sheet_cell:${ref.file || ''}:${ref.entryId || ''}:${ref.colId || ''}`;
     return { key, label: `${orphanPrefix}セル · ${file}` + (snap ? ` · "${snap}"` : '') };
+  }
+  if (kind === 'sheet_entry') {
+    const key = `sheet_entry:${ref.file || ''}:${ref.entryId || ''}`;
+    return { key, label: `${orphanPrefix}トピック · ${file}` + (ref.entryId ? ` · "${ref.entryId}"` : '') };
   }
   if (kind === 'calendar_event') {
     // Audit-P1 H-6: カレンダーイベントコメントをグルーピング
@@ -233591,7 +235669,7 @@ async function _deleteComment(c) {
     showStatus('アノテートの削除はソースフォルダの管理者だけが行えます', true);
     return;
   }
-  if (!await cfConfirm('このコメントを削除しますか？')) return;
+  if (typeof _pushAnnotationHistory !== 'function' && !await cfConfirm('このコメントを削除しますか？')) return;
   try {
     const before = typeof _fetchAnnotationHistoryRow === 'function'
       ? await _fetchAnnotationHistoryRow(c.id).catch(() => null)
@@ -233651,7 +235729,7 @@ function _rpCommentTargetKind(c) {
 
 function _rpCommentNavType(c, file) {
   const kind = _rpCommentTargetKind(c);
-  if (kind === 'sheet_cell' || kind === 'sheet_col') return 'pivot';
+  if (kind === 'sheet_cell' || kind === 'sheet_col' || kind === 'sheet_entry') return 'pivot';
   if (/\.board\.md$/i.test(file)) return 'board';
   if (/\.(?:scriptnote|scenario)\.json$/i.test(file)) return 'scriptnote';
   if (/\.calendar\.json$/i.test(file)) return 'calendar';
@@ -233708,6 +235786,8 @@ function _jumpToCommentTarget(c) {
     } else if (c.target_kind === 'sheet_cell' && ref.entryId && ref.colId) {
       const row = document.querySelector(`tr[data-entity-name="${_rpEscSel(ref.entryId)}"]`);
       target = row?.querySelector(`td[data-prop-name="${_rpEscSel(ref.colId)}"]`) || row;
+    } else if (c.target_kind === 'sheet_entry' && ref.entryId) {
+      target = document.querySelector(`tr[data-entity-name="${_rpEscSel(ref.entryId)}"]`);
     }
     if (!target) return;
     _flashRpCommentTarget(target);
@@ -233833,7 +235913,7 @@ function openCalendar() {
       const group = (id, label, icon, ids) => {
         const fields = document.createElement('div'); fields.className = 'gb-search-filter-fields';
         for (const name of ids) {
-          const field = document.getElementById('rp-ann-' + name);
+          const field = document.getElementById('rp-ann-' + name) || storage.querySelector('#rp-ann-' + name);
           if (!field) continue;
           const wrap = document.createElement('label'); wrap.textContent = field.getAttribute('aria-label') || field.title;
           field.className = field.tagName === 'SELECT' ? 'gb-select' : 'gb-input'; field.removeAttribute('style');
@@ -233842,11 +235922,23 @@ function openCalendar() {
         storage.append(fields);
         return { id, label, icon, content: () => fields, onClose: () => storage.append(fields) };
       };
+      // 文字の向き（縦書きの書籍のスクリーンショットを読みやすくする）。HTMLに無い画面でも同じ欄を作る。
+      if (!document.getElementById('rp-ann-writing')) {
+        const writing = document.createElement('select');
+        writing.id = 'rp-ann-writing';
+        writing.title = '文字の向き';
+        writing.setAttribute('aria-label', '文字の向き');
+        writing.append(new Option('横書き', 'horizontal'), new Option('縦書き', 'vertical'));
+        storage.append(writing);
+      }
       const shared = MeldexSearchFilterRow.create({ label: 'アノテートを検索', onChange: () => shared.input.dispatchEvent(new Event('change')),
         filters: [
-          group('display', 'アノテートの表示と並び順', 'slidersHorizontal', ['view', 'sort']),
-          group('filter', 'アノテートの絞り込み', 'filter', ['type', 'scope', 'status', 'user', 'date-from', 'date-to']),
+          group('display', 'アノテートの表示と並び順', 'slidersHorizontal', ['view', 'sort', 'writing']),
+          // タイプはタブで切り替える（#rp-ann-type は値の保持だけに使う）
+          group('filter', 'アノテートの絞り込み', 'filter', ['scope', 'status', 'user', 'date-from', 'date-to']),
         ] });
+      const typeField = document.getElementById('rp-ann-type');
+      if (typeField) { typeField.hidden = true; storage.append(typeField); }
       shared.input.id = old.id;
       shared.input.value = old.value;
       Object.assign(shared.input.dataset, old.dataset);
@@ -233867,8 +235959,17 @@ function openCalendar() {
     const user = document.getElementById('rp-ann-user');
     const dateFrom = document.getElementById('rp-ann-date-from');
     const dateTo = document.getElementById('rp-ann-date-to');
+    const writing = document.getElementById('rp-ann-writing');
     if (!search || search.dataset.rpBound) return;
     search.dataset.rpBound = '1';
+    if (typeof _installRpAnnotationTypeTabs === 'function') _installRpAnnotationTypeTabs();
+    if (writing) {
+      writing.value = typeof _rpAnnotationWritingMode === 'function' ? _rpAnnotationWritingMode() : 'horizontal';
+      writing.addEventListener('change', () => {
+        try { localStorage.setItem('rp-ann-writing-mode', writing.value === 'vertical' ? 'vertical' : 'horizontal'); } catch {}
+        if (typeof _applyRpAnnotationWritingMode === 'function') _applyRpAnnotationWritingMode(writing.value);
+      });
+    }
     if (view) view.value = localStorage.getItem('rp-ann-view-mode') || 'preview';
     if (sort) sort.value = localStorage.getItem('rp-ann-sort-mode') || 'modified-desc';
     if (dateFrom) dateFrom.value = localStorage.getItem('rp-ann-date-from') || '';
@@ -239676,7 +241777,7 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
 (function _bindChatSourceFolderSelector() {
   const run = () => {
     // デスクトップ付箋の小窓にはチャットが無い。対象フォルダ候補の収集を走らせない。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     _initChatSourceFolderSelector();
     const select = document.getElementById('chat-source-folder');
     if (!select || select._chatSourceFolderBound) return;
@@ -240339,6 +242440,7 @@ function chatAddToolUse(name, result, parent = null) {
 let _chatToolRefreshTimer = null;
 const CHAT_WORKSPACE_REFRESH_TOOLS = new Set([
   'write_file',
+  'board_mutate',
   'create_sheet',
   'write_to_database',
   'create_entity',
@@ -240492,12 +242594,57 @@ async function _refreshWorkspaceAfterChatToolEffect() {
   }
 }
 
+function _chatApplyAcknowledgedBoardTextPatch(result) {
+  if (typeof bd === 'undefined' || !bd || bd.dirty || bd.editing
+      || !Array.isArray(result.text_updates) || !result.revision || !result.previous_revision
+      || typeof bdRefreshNodesPartial !== 'function' || typeof bdPushUndo !== 'function') return false;
+  const normalize = path => String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (normalize(bd.path) !== normalize(result.path)) return false;
+  if (bd.lastSavedEtag === result.revision && result.text_updates.every(update =>
+    typeof update.after === 'string' && bd.nodes.some(node => node.id === update.id && node.text === update.after))) return true;
+  if (bd.lastSavedEtag !== result.previous_revision) return false;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const key = coordinator?.documentKeyForPath?.(bd.path);
+  if (key && (coordinator.isSaving?.(key) || coordinator.getConflict?.(key))) return false;
+  if (typeof GBLayout === 'undefined' || !GBLayout.getAllPanes) return false;
+  const copies = GBLayout.getAllPanes(GBLayout.root).flatMap(pane => pane.tabs || [])
+    .filter(tab => tab.type === 'board' && normalize(tab.path || tab.state?.boardPath) === normalize(bd.path));
+  if (copies.length !== 1) return false;
+  const changes = [];
+  for (const update of result.text_updates) {
+    const node = bd.nodes.find(item => item.id === update.id);
+    if (!node || typeof update.before !== 'string' || typeof update.after !== 'string' || node.text !== update.before
+        || node._topicCanonicalOnly || node._topicReadOnly
+        || (node.topicRef && !['local-vault', 'source'].includes(node.topicRef.sourceId))) return false;
+    changes.push({node, text:update.after});
+  }
+  if (changes.length) bdPushUndo('AIの変更');
+  changes.forEach(({node,text}) => { node.text = text; });
+  bd.lastSavedEtag = result.revision;
+  bd.lastSavedTransportRevision = coordinator
+    ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), result.revision) : result.revision;
+  bd._topicSaveVersion = Number(bd._topicSaveVersion || 0) + 1;
+  bdRefreshNodesPartial(changes.map(({node}) => node.id), 'acknowledged-ai-text', {detailPanel:true});
+  if (typeof bdFlushBoardUpdates === 'function') bdFlushBoardUpdates();
+  return true;
+}
+
 let _chatPendingMutationPaths = [];
 function _handleChatToolWorkspaceEffect(name, result) {
   const toolName = String(name || '');
   const parsed = _parseChatToolResult(result);
   if (!CHAT_WORKSPACE_REFRESH_TOOLS.has(toolName) || !_chatToolResultSucceeded(parsed)) return;
   const mutationPaths = _chatToolMutationPaths(parsed);
+  // Patching an existing board changes neither the source tree nor folder
+  // membership. Refresh only its open views; a whole-workspace refresh delays
+  // the acknowledged edit and needlessly reloads unrelated folder panels.
+  if (toolName === 'board_mutate' && parsed.operation === 'board.patch'
+      && typeof window.reloadOpenFilesAfterExternalMutation === 'function') {
+    if (_chatApplyAcknowledgedBoardTextPatch(parsed)) return;
+    return window.reloadOpenFilesAfterExternalMutation(mutationPaths).catch(error => {
+      if (typeof showStatus === 'function') showStatus('AIの変更を画面に反映できませんでした: ' + (error?.message || error), true);
+    });
+  }
   _chatPendingMutationPaths.push(...mutationPaths);
   if (/rename/.test(toolName) && typeof renameAppPathReferences === 'function') {
     const changes = Array.isArray(parsed.changes) ? parsed.changes : [];
@@ -250120,7 +252267,7 @@ if (typeof document !== 'undefined') {
 
   document.addEventListener('DOMContentLoaded', () => {
     // デスクトップ付箋の小窓にはチャットが無い。送信設定の確認まで走らせない。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     installCliChatPatches();
     loadCliChatConfig().then(async () => {
       if (window.GBChatProviderDefault?.applyFirstRun) {
@@ -251623,6 +253770,7 @@ if (typeof document !== 'undefined') {
       board_card: new Map(),
       board_line: new Map(),
       sheet_cell: new Map(),
+      sheet_entry: new Map(),
       calendar_event: new Map(),
       map_feature: new Map(),
       form_field: new Map(),
@@ -251641,6 +253789,9 @@ if (typeof document !== 'undefined') {
       } else if (k === 'sheet_cell' && r.entryId && r.colId) {
         const key = r.entryId + '\x00' + r.colId;
         m.sheet_cell.set(key, (m.sheet_cell.get(key) || 0) + 1);
+      } else if (k === 'sheet_entry' && r.entryId) {
+        // トピック（シートの行）全体へのコメント。デスクトップのアノテートバー等から付く
+        m.sheet_entry.set(r.entryId, (m.sheet_entry.get(r.entryId) || 0) + 1);
       } else if (k === 'calendar_event' && r.eventId) {
         m.calendar_event.set(r.eventId, (m.calendar_event.get(r.eventId) || 0) + 1);
       } else if (k === 'map_feature' && r.featureId) {
@@ -252121,11 +254272,21 @@ if (typeof document !== 'undefined') {
     }
     const items = await fetchComments(filePath);
     if (!_isRefreshTargetCurrent(filePath, containerEl, 'sheet')) return;
-    const counts = buildCountMap(items).sheet_cell;
+    const countMap = buildCountMap(items);
+    const counts = countMap.sheet_cell;
     // renderPivot 準拠: tr[data-entity-name] > td[data-prop-name]
     // entryId=entityName, colId=propName
     containerEl.querySelectorAll('tr[data-entity-name]').forEach(tr => {
       const entryId = tr.dataset.entityName;
+      // トピック全体へのコメントは名前の列（td.col-entity）に出す
+      const entityTd = tr.querySelector(':scope > td.col-entity');
+      if (entityTd) {
+        const n = countMap.sheet_entry.get(entryId) || 0;
+        entityTd.classList.toggle('cmt-line-highlight', n > 0);
+        _bindCommentHighlight(entityTd, _commentsForTarget(items, 'sheet_entry', ref => ref.entryId === entryId), filePath);
+        _ensureBadge(entityTd, n,
+          () => _openPanelForTarget(filePath, 'sheet_entry', { file: filePath, entryId }));
+      }
       tr.querySelectorAll('td[data-prop-name]').forEach(td => {
         const colId = td.dataset.propName;
         const key = entryId + '\x00' + colId;
@@ -252576,7 +254737,7 @@ if (typeof document !== 'undefined') {
     const ctx = override || detectCommentContext();
     const kindLabel = ({
       note_line: 'ノート行', scriptnote_line: 'シナリオ行',
-      board_card: 'ボードカード', sheet_cell: 'シートのセル',
+      board_card: 'ボードカード', sheet_cell: 'シートのセル', sheet_entry: 'シートのトピック',
       board_line: 'ボードライン',
       calendar_event: 'カレンダーイベント',
       map_feature: 'マップの地点・図形', form_field: 'フォームの項目',
@@ -252593,9 +254754,11 @@ if (typeof document !== 'undefined') {
       };
       if (ctx.targetRef) payload.target_ref = ctx.targetRef;
       if (ctx.snapshot) payload.target_snapshot = ctx.snapshot;
+      if (opts.returnSavedRow) payload.return_saved_row = true;
       const res = await apiPost('/annotations', payload);
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        await _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '').catch(() => {});
+        await _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '', undefined,
+          opts.returnSavedRow ? res.saved_annotation : undefined).catch(() => {});
       }
       if (ctx.filePath) invalidate(ctx.filePath);
       // Adding a comment is an explicit request to see its anchor immediately.
@@ -252681,7 +254844,16 @@ if (typeof document !== 'undefined') {
     const counts = buildCountMap(items).form_field;
     root.querySelectorAll('[data-form-field]').forEach(fieldEl => {
       const field = fieldEl.dataset.formField;
-      _ensureBadge(fieldEl, counts.get(field) || 0, () => _openPanelForTarget(filePath, 'form_field', { file: filePath, field }));
+      const parentField = fieldEl.parentElement?.closest?.('[data-form-field]');
+      if (parentField?.dataset.formField === field) {
+        fieldEl.querySelector?.(':scope > .cmt-badge')?.remove();
+        return;
+      }
+      const host = fieldEl.matches?.('input,textarea,select')
+        ? fieldEl.closest('.gb-form-input-row') || fieldEl.parentElement : fieldEl;
+      _ensureBadge(host, counts.get(field) || 0, () => _openPanelForTarget(filePath, 'form_field', { file: filePath, field }));
+      const badge = host?.querySelector?.(':scope > .cmt-badge');
+      if (badge) badge.style.alignSelf = 'flex-start';
     });
   }
 
@@ -252930,7 +255102,14 @@ async function _folderDuplicateItems(items, refresh) {
     const treeSync = typeof folderToolbarSyncTree === 'function'
       ? folderToolbarSyncTree((items || []).map(target => _folderDirectParentKey(target.path))).catch(() => null)
       : null;
-    try { await refresh(); } catch (error) { console.error('[folder duplicate] 表示の更新に失敗', error); }
+    // 確定した複製を既に描けた面は、そのカードを消して再読込しない。履歴用のrefreshは上で保持する。
+    const reflected = result.created?.length > 0 && result.created.every(path =>
+      result.panelReflectedPaths?.includes(path) && typeof _folderPath !== 'undefined'
+      && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, _folderDirectParentKey(path))
+      && _folderItems.some(item => _folderDropPathsEqual(item.path, path)));
+    if (!reflected) {
+      try { await refresh(); } catch (error) { console.error('[folder duplicate] 表示の更新に失敗', error); }
+    }
     await treeSync;
   }
   const reason = result.failed ? _folderFailureReason(result.error) : '';
@@ -253869,6 +256048,19 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
   progress?.updateOperation?.(result.ok + result.failed);
 }
 
+function _folderLocalPathKey(value) {
+  let normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const provider = window.MeldexStorageAdapter?.getProvider?.();
+  const browserData = window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  const base = String(typeof state !== 'undefined' ? state.vaultPath || '' : '').replace(/\\/g, '/');
+  // Dropboxの名前空間・ブラウザの仮想パスは、ローカル保存先へ結合しない。
+  if (normalized && !provider?._dropboxLocation && !browserData && /^(?:[a-z]:\/|\/)/i.test(base)
+      && !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(normalized)) {
+    normalized = base.replace(/\/+$/, '') + '/' + normalized;
+  }
+  return /^[a-z]:(?:\/|$)/i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+}
+
 function _folderDropPathsEqual(left, right) {
   const provider = window.MeldexStorageAdapter?.getProvider?.();
   const cloudKey = window.__MeldexPwaDataAccessInternals?._folderLinkPathKey;
@@ -253876,11 +256068,7 @@ function _folderDropPathsEqual(left, right) {
     const key = cloudKey(provider, left);
     return !!key && key === cloudKey(provider, right);
   }
-  const normalize = value => {
-    const normalized = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
-    return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
-  };
-  return !!left && !!right && normalize(left) === normalize(right);
+  return !!left && !!right && _folderLocalPathKey(left) === _folderLocalPathKey(right);
 }
 
 function _folderStageCreateTreePreview(parentPath, type, label) {
@@ -253980,7 +256168,7 @@ function _folderInsertDroppedItemsIntoOutliner(parentPath, items) {
   });
 }
 
-function _folderApplySavedDropResults(parentPath, savedResults, files) {
+function _folderApplySavedDropResults(parentPath, savedResults, files, options = {}) {
   const rows = (savedResults || []).map((saved, index) =>
     _folderDroppedFileFallbackItem(saved, files?.[index])).filter(item => item.path);
   if (!rows.length) return 0;
@@ -253991,14 +256179,21 @@ function _folderApplySavedDropResults(parentPath, savedResults, files) {
       const provider = window.MeldexStorageAdapter?.getProvider?.();
       const cloudKey = window.__MeldexPwaDataAccessInternals?._folderLinkPathKey;
       if (provider?._dropboxLocation && cloudKey) return cloudKey(provider, value) || 'unresolved:' + normalized;
-      return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+      return _folderLocalPathKey(value);
     };
     const byPath = new Map(_folderItems.map(item => [pathKey(item?.path), item]));
-    rows.forEach(item => byPath.set(pathKey(item.path), item));
+    rows.forEach(item => {
+      const key = pathKey(item.path);
+      const existing = byPath.get(key);
+      byPath.set(key, existing ? { ...existing, ...item, path: existing.path } : item);
+    });
     _folderItems = [...byPath.values()];
     if (typeof registerFileTypes === 'function') registerFileTypes(rows);
     if (typeof renderFolderGrid === 'function') {
-      renderFolderGrid({ preserveSelectedPaths: (_folderSelectedItems || []).map(item => item?.path).filter(Boolean) });
+      const selectedPaths = Array.isArray(options?.selectPaths)
+        ? options.selectPaths.map(path => byPath.get(pathKey(path))?.path || path)
+        : (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
+      renderFolderGrid({ preserveSelectedPaths: selectedPaths });
     }
   }
   _folderInsertDroppedItemsIntoOutliner(parentPath, rows);
@@ -254059,14 +256254,6 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   // ドロップの内容はイベントが続いている間に読む（待った後では読めない）。
   const dropped = _folderDragPayloadItemsFromEvent(event, payloadOverride);
   let targetPath = targetItem?.path || '';
-  // 移動先のフォルダの名前の変更がまだ保存中なら、終わるのを待って新しい場所へ移動する。
-  if (targetPath && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
-    try { targetPath = await _outlinerAwaitPendingRenameForTarget(targetPath); }
-    catch (error) {
-      showStatus(String(error?.message || '移動先の名前の変更を確認できません'), true);
-      return 0;
-    }
-  }
   const targetKey = _folderMembershipKey(targetPath);
   const items = dropped.filter(source => {
     const sourceKey = _folderMembershipKey(source.path);
@@ -254118,8 +256305,18 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   try {
   pendingPaths.forEach(path => _folderPendingMovePaths.add(path));
   if (pendingPaths.length) renderFolderGrid({ preserveSelectedPaths: pendingSelection });
+  // 移動先のフォルダの名前の変更がまだ保存中なら、終わるのを待って新しい場所へ移動する。
+  if (targetPath && typeof _outlinerAwaitPendingRenameForTarget === 'function') {
+    try { targetPath = await _outlinerAwaitPendingRenameForTarget(targetPath); }
+    catch (error) {
+      const reason = String(error?.message || '移動先の名前の変更を確認できません');
+      progress?.finishOperation?.(progressToken, { failed: items.length, label: '移動できませんでした', summary: reason });
+      showStatus(reason, true);
+      return 0;
+    }
+  }
   // 件数が多い時は、まとめての移動（/outliner/move-batch）へ分けて送る。結果は1件ずつ受け取る。
-  const mover = _folderCreateMover(items, targetPath, { skip: source => source.sourceSurface === 'sheet-image' });
+  const mover = _folderCreateMover(items, targetPath, { minimum: 2, skip: source => source.sourceSurface === 'sheet-image' });
   // 表示への反映は、まとめて送った分は塊ごとに1回（1件ごとに描き直すと件数の2乗で遅くなる）
   let unappliedMoves = [];
   const applyMovesToView = source => {
@@ -254224,6 +256421,7 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
     showStatus(`${ok}件を「${targetItem.name || targetPath}」へ移動しました`);
   }
   const registerMoves = () => window.MeldexFileMoveHistory?.register?.(movedItems, {
+    batchMinimum: 2,
     label: `フォルダパネル: ${movedItems.length} 件を移動`,
     detail: `→ ${targetPath}`,
     refresh: async () => {
@@ -254280,7 +256478,8 @@ function _folderCreateMover(sources, destFolder, options = {}) {
     return apiPost('/outliner/move', { path: source.path, dest_folder: dest, conflict_policy: 'error' });
   };
   const eligible = (Array.isArray(sources) ? sources : []).filter(source => source?.path && !(options.skip && options.skip(source)));
-  const batched = eligible.length >= FOLDER_MOVE_BATCH_MIN && !_folderMoveBatchUnsupported
+  const minimum = Number.isInteger(options.minimum) && options.minimum >= 2 ? options.minimum : FOLDER_MOVE_BATCH_MIN;
+  const batched = eligible.length >= minimum && !_folderMoveBatchUnsupported
     && !window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof apiPost === 'function';
   if (!batched) {
     return { batched: false, uncertain: false, post: single, isChunkEnd: () => true, unclaimed: () => [] };
@@ -255304,11 +257503,13 @@ function _folderCreateItemCard(item, idx, context) {
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
     if (item.path) el.dataset.path = item.path;
-    if ((typeof _folderPasteMovePending === 'function' && _folderPasteMovePending(item.path))
-        || (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path))) {
+    if (typeof _folderPasteMovePending === 'function' && _folderPasteMovePending(item.path)) {
       el.inert = true;
       el.setAttribute('aria-busy', 'true');
       el.style.opacity = '0.62';
+    }
+    if (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path)) {
+      _outlinerSetCopyPendingNode(el, true);
     }
     const fileLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
     const itemLocked = !!item.contained_reference || fileLocked;
@@ -256204,7 +258405,9 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   }
   const closeMenu = () => {
     _folderContextMenuOpenSeq += 1;
-    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    document.querySelectorAll('.gb-context-menu').forEach(m => {
+      if (!m.parentElement?.closest?.('.gb-context-menu')) m.remove();
+    });
   };
   function addItem(label, fn, cls, icon) {
     if (typeof _outlinerAppendMenuItem === 'function') {
@@ -256300,11 +258503,11 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   const createParent = isMulti ? null : _folderContextCreateParent(item);
   if (createParent && !(typeof isItemLocked === 'function' && isItemLocked(createParent))) {
     const createSub = addSub('新規作成', 'plus');
-    [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']].forEach(([label,type,icon]) => {
+    [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']].forEach(([label,type,icon]) => {
       createSub.item(label, async () => {
         if (typeof addItemAt === 'function') {
           await addItemAt(createParent, type);
-          await _folderRefreshCurrentFolder();
+          if (type !== 'form-app') await _folderRefreshCurrentFolder();
         }
       }, null, icon);
     });
@@ -257135,6 +259338,10 @@ function _updateFolderBulkBar() {
 
 // 一括操作: スライドショー
 function fvBulkSlideshow() {
+  if (!_folderSelectedItems.some(item => item.type === 'image')) {
+    showStatus('画像が選択されていません', true);
+    return;
+  }
   const selected = new Set(_folderSelectedItems.map(item => item.path));
   _openFolderImageSlideshow(_folderVisibleItems.filter(item => selected.has(item.path)));
 }
@@ -257444,7 +259651,8 @@ async function openFolderItem(item) {
   else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') { openMedia(item.name, item.path, item.type, _expOpts); }
   else if (item.type === 'html') { openHtmlFile(item.name, item.path, _expOpts); }
   else if (item.type === 'csv') { if (typeof openCsvFile === 'function') openCsvFile(item.name, item.path, _expOpts); else openPage(item.name, item.path, _expOpts); }
-  else if (item.type === 'document' && item.name && item.name.toLowerCase().endsWith('.pdf')) {
+  else if (item.type === 'document' && item.name && /\.(?:pdf|epub)$/i.test(item.name)) {
+    // EPUB もPDFと同じビューワーの経路で開く（ビューワーが拡張子でEPUBとして表示する）
     openViewer('/viewer?pdf=' + encodeURIComponent(item.path));
   }
   else { openNative(item.path); }
@@ -257550,8 +259758,8 @@ function _applyPanelSize(el, pos, size) {
 // プレビューコンテンツを生成
 function _renderPreviewContent(item) {
   const frag = document.createDocumentFragment();
-  // 画像・PDF → viewer.htmlをiframeで埋め込み
-  const isPdf = item.name && item.name.toLowerCase().endsWith('.pdf');
+  // 画像・PDF・EPUB → viewer.htmlをiframeで埋め込み（EPUBも ?pdf= で渡し、ビューワーが拡張子で見分ける）
+  const isPdf = item.name && /\.(?:pdf|epub)$/i.test(item.name);
   if (item.type === 'image' && item.external_reference) {
     const img = document.createElement('img');
     img.className = 'fp-img';
@@ -257737,7 +259945,8 @@ function showFolderPreview(item) {
   const previewPane = document.getElementById('gb-preview-pane');
   if (previewPane && previewPane.closest('.gb-pane-content')) {
     // 白フラッシュ防止: 同種のコンテンツならsrc更新のみ
-    const isPdf = item.name && item.name.toLowerCase().endsWith('.pdf');
+    // EPUB もPDFと同じ ?pdf= でビューワーへ渡す（ビューワーが拡張子でEPUBとして表示する）
+    const isPdf = item.name && /\.(?:pdf|epub)$/i.test(item.name);
     const existingIframe = previewPane.querySelector('iframe');
     if ((item.type === 'image' || isPdf) && existingIframe && !item.external_reference) {
       const newSrc = isPdf
@@ -258160,7 +260369,7 @@ function _inferViewerFileTypeFromPath(path) {
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'avif', 'ico', 'tif', 'tiff', 'heic', 'heif', 'psd', 'psb'].includes(ext)) return 'image';
   if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext)) return 'video';
   if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return 'audio';
-  if (ext === 'pdf') return 'pdf';
+  if (ext === 'pdf' || ext === 'epub') return 'pdf';
   if (ext === 'csv') return 'csv';
   if (ext === 'html' || ext === 'htm') return 'html';
   return '';
@@ -259429,7 +261638,7 @@ function fvBulkAutoTag(sourceItems = _folderSelectedItems) {
             const ext = name.split('.').pop().toLowerCase();
             const imgExts = ['jpg','jpeg','png','gif','bmp','webp','svg','ico'];
             const vidExts = ['mp4','webm','mov','avi','mkv'];
-            const type = imgExts.includes(ext) ? 'image' : vidExts.includes(ext) ? 'video' : ext === 'pdf' ? 'pdf' : 'file';
+            const type = imgExts.includes(ext) ? 'image' : vidExts.includes(ext) ? 'video' : (ext === 'pdf' || ext === 'epub') ? 'pdf' : 'file';
             showFolderPreview({ name, path: data.path, type });
           }
         } catch {}
@@ -259788,7 +261997,7 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
       });
       const movers = new Map();
       pendingByDestination.forEach((sources, destination) => {
-        if (typeof _folderCreateMover === 'function') movers.set(destination, _folderCreateMover(sources, destination));
+        if (typeof _folderCreateMover === 'function') movers.set(destination, _folderCreateMover(sources, destination, { minimum: options.batchMinimum }));
       });
       let unappliedMoves = [];
       const applyMovesToView = (mover, source) => {
@@ -260156,9 +262365,11 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
             executedCopies.push({ origPath: item.path, newPath, applied: true, item });
             try {
               if (typeof _folderApplySavedDropResults === 'function') {
-                _folderApplySavedDropResults(destFolder, [{ item: {
+                const reflected = _folderApplySavedDropResults(destFolder, [{ item: {
                   path: newPath, name: res?.new_name || item.name, type: item.type,
-                } }], []);
+                } }], [], { selectPaths: pastedPaths });
+                if (reflected && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function'
+                    && _folderDropPathsEqual(_folderPath, destFolder)) executedCopies[executedCopies.length - 1].panelReflected = true;
               }
             } catch (error) { console.warn('[paste] 保存済みの表示反映に失敗', error); }
           }
@@ -260220,7 +262431,12 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
     }
 
     const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
-    if (refresh) await refresh(pastedPaths.filter(Boolean));
+    const panelReflected = mode === 'copy' && executedCopies.length > 0 && executedCopies.every(copy => copy.panelReflected)
+      && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, destFolder)
+      && executedCopies.every(copy => _folderItems.some(item => _folderDropPathsEqual(item.path, copy.newPath)));
+    // 確定したコピーは追加時に選択まで描く。選択だけのために全カードを作り直さない。
+    // 履歴のrefreshは従来通り。保存直後だけ、確定したカードを保持したままツリーを照合する。
+    if (refresh) await refresh(pastedPaths.filter(Boolean), panelReflected ? { refreshFolder: false, treeFolders: [destFolder] } : undefined);
 
     if (failed.length) {
       if (typeof showStatus === 'function') showStatus((pastedPaths.length || 0) + ' 件を貼り付け、' + failed.length + ' 件は失敗しました', true);
@@ -262887,7 +265103,7 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
             return _pushCreatedOutlinerItemsHistory([
               { path: node.path, type: node.type || type, kind: (node.type || type) === 'folder' ? 'folder' : 'file' },
               ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
-            ], '新規作成: ' + name, historyScope);
+            ], '新規作成: ' + name, historyScope, type === 'form-app' ? { companionOwner: node.path } : {});
           }
           return typeof pushCreatedOutlinerItemHistory === 'function'
             ? pushCreatedOutlinerItemHistory({ path: node.path, type: node.type || type }, '新規作成: ' + name, {
@@ -263074,7 +265290,8 @@ async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, option
           }
         },
         // 貼り付けたフォルダの中身を先に描き、ツリーの読み直しは後で行う（全体の読み直しを待つと 1〜2 秒かかっていた）
-        refresh: typeof options.refresh === 'function' ? options.refresh : (paths => _folderToolbarRefresh(paths || [], {
+        refresh: typeof options.refresh === 'function' ? options.refresh : ((paths, refreshOptions = {}) => _folderToolbarRefresh(paths || [], {
+          ...refreshOptions,
           treeFolders: [destFolder, ...(clip.mode === 'cut' ? clip.items.map(item => _folderToolbarParentPath(item.path)) : [])],
         })),
       });
@@ -265958,7 +268175,7 @@ if (typeof window !== 'undefined') {
     const type = item?.type || '';
     if (type === 'image' || type === 'video' || type === 'audio' || type === 'pdf') return type;
     const ext = _pathExt(item?.path || item?.name || '');
-    if (ext === '.pdf') return 'pdf';
+    if (ext === '.pdf' || ext === '.epub') return 'pdf'; // EPUBもビューワーの文書の経路で開く
     if (IMAGE_EXTS.has(ext)) return 'image';
     if (VIDEO_EXTS.has(ext)) return 'video';
     if (AUDIO_EXTS.has(ext)) return 'audio';
@@ -267620,7 +269837,19 @@ let _fileLockRefreshTimer = null;
 const FILE_LOCK_SYSTEM_EXCLUDED = ['_chat', '_skills', '_models', '_knowledge', '.meldex', '_meldex', '.trash', '_trash'];
 
 function _normalizeLockedItemPath(path) {
-  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  let value = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  // Cloudの相対表記とソース仮想パスは、保存先とnamespaceを含めて照合する。
+  // 別ソースの同名ファイルをロック対象に混ぜない。
+  if (value && !/^dropbox:(?:home|team_root):\//i.test(value)
+    && window.MeldexRuntimeAdapter?.isDropboxMode?.()
+    && typeof window.MeldexSourceFolderRegistry?.resolveDropboxLocation === 'function') {
+    try {
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      const location = window.MeldexSourceFolderRegistry.resolveDropboxLocation(value, provider?.getVaultPath?.());
+      value = 'dropbox:' + location.namespaceKind + ':' + location.path;
+    } catch {}
+  }
+  return value.toLowerCase();
 }
 function _pathOrAncestorIn(entries, targetPath) {
   const target = _normalizeLockedItemPath(targetPath);
@@ -267661,6 +269890,10 @@ function _fileLockAuthHeaders() {
 async function _fileLockApi(path, opts = {}) {
   const headers = { ..._fileLockAuthHeaders(), ...(opts.headers || {}) };
   if (opts.body != null && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+    && typeof window.MeldexDataAccess?.requestJson === 'function') {
+    return window.MeldexDataAccess.requestJson(path, { ...opts, headers });
+  }
   const res = await fetch(API_BASE + path, { ...opts, headers });
   const text = await res.text();
   let payload = {};
@@ -267690,6 +269923,11 @@ async function _ensureRoleLoaded(force = false) {
   finally { _fileLockRolePromise = null; }
 }
 function isFileLockOwner() {
+  // 起動途中の役割キャッシュを、Cloud接続完了後や別ワークスペースへ持ち越さない。
+  // ロック保存側のMeldexFileLockStoreと同じ現在の所有者情報で表示を判断する。
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    return window.MeldexRuntimeAdapter.getWorkspaceState?.()?.isOwner === true;
+  }
   return _currentRoleCache === 'owner';
 }
 function _writeFileLockCache(entries) {
@@ -268471,6 +270709,10 @@ function createTreeNodeFromBrowse(item, rootPath) {
             });
           }
           childrenDiv.dataset.loaded = 'true';
+          // 検索中の遅延読込は、一致の子が届いた時点で祖先の表示も確定する。
+          // 検索側の次の250msタイマーまで、閉じたフォルダ全体を隠したまま待たせない。
+          if ((_treeSearchQuery || (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length)
+              && typeof applyTreeNameSearch === 'function') applyTreeNameSearch();
           // 読み込み中にArrowRightの2打目が押されていた場合、最初の子へフォーカス
           // 移動する予約を消化する。フォーカスが別ノードへ移っていたら（選択が
           // このノード以外になっていたら）予約は破棄し、勝手にフォーカスを飛ばさない。
@@ -270623,9 +272865,18 @@ async function _outlinerSyncFolderChildren(folderPath) {
   if (!container || container.dataset.loaded !== 'true') return true;
   if (container.dataset.virtual === 'true') return false;
   const sortCfg = getSortForFolder(folderPath);
-  const items = await _outlinerFetchFolderListingForConfirm(folderPath, parentNode, {
-    detail: !['manual', 'name'].includes(sortCfg.sort),
-  });
+  // シートの子はSQLiteのエントリ。通常のファイル一覧で照合すると既存トピックを消してしまう。
+  const sheet = parentNode._nodeData?.type === 'database';
+  let items;
+  if (sheet) {
+    const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(folderPath) + '&tree_only=true', { skipBrowseCache: true });
+    if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) return false;
+    items = _outlinerSheetTreeItems(parentNode._nodeData, pivot);
+  } else {
+    items = await _outlinerFetchFolderListingForConfirm(folderPath, parentNode, {
+      detail: !['manual', 'name'].includes(sortCfg.sort),
+    });
+  }
   if (!Array.isArray(items) || !container.isConnected) return false;
   const ordered = sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, folderPath)
     : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
@@ -270698,14 +272949,16 @@ function isOutlinerCopyPendingPath(path) {
 function _outlinerSetCopyPendingNode(node, pending) {
   if (!node) return;
   if (pending && node.dataset.copyPending !== 'true') {
-    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity };
+    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity, busy: node.getAttribute?.('aria-busy') ?? null };
     node.dataset.copyPending = 'true'; node.inert = true; node.style.opacity = '0.62';
     node.setAttribute('aria-busy', 'true');
   } else if (!pending && node.dataset.copyPending === 'true') {
     node.inert = node._copyPreviewPrevious?.inert || false;
     node.style.opacity = node._copyPreviewPrevious?.opacity || '';
+    const busy = node._copyPreviewPrevious?.busy;
     delete node._copyPreviewPrevious; delete node.dataset.copyPending;
-    node.removeAttribute('aria-busy');
+    if (busy == null) node.removeAttribute('aria-busy');
+    else node.setAttribute('aria-busy', busy);
   }
 }
 
@@ -270728,7 +272981,12 @@ function _beginOutlinerPublishedCopyPreview(item, detail) {
       if (!hadTree && typeof _removeOutlinerNodesForPaths === 'function') _removeOutlinerNodesForPaths([path]);
     }
     _outlinerSetCopyPendingNode(findNode(), stillPending);
-    if (typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+    // The committed result is applied by the caller. Release the preview's
+    // interaction guard in place instead of rebuilding the entire grid twice.
+    for (const card of document.querySelectorAll('.fv-item[data-path]')) {
+      if (same(card.dataset.path)) _outlinerSetCopyPendingNode(card, stillPending);
+    }
+    if (outcome === false && !stillPending && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
       renderFolderGrid({ preserveSelectedPaths: (typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems : []).map(row => row.path) });
     }
   };
@@ -270769,7 +273027,10 @@ async function _outlinerPostCopyWithPreview(route, body, item, options = {}) {
   window.addEventListener('meldex:mode-changed', abandon);
   try {
     if (options.revealTreeDestination) _outlinerRevealCopyDestination(body.dest_folder || _outlinerParentPath(body.path));
-    const result = await apiPost(route, prepared.body);
+    const nativeProgress = window.MeldexOsFileIntake?.isSupported?.() === true;
+    const result = await apiPost(route, nativeProgress ? { ...prepared.body, copy_publish_stream: true,
+      ...(options.nativeCopySnapshotGroup ? { copy_snapshot_group: options.nativeCopySnapshotGroup } : {}) } : prepared.body,
+      nativeProgress ? { copyPublishStream: { operationId: prepared.body.operation_id, sourcePath: prepared.body.path } } : {});
     succeeded = result?.ok !== false;
     if (succeeded && active) window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
     return result;
@@ -270792,10 +273053,13 @@ async function _outlinerDuplicateItems(items, options = {}) {
   try {
   const targets = Array.from(items || []);
   for (let offset = 0; offset < targets.length; offset += 2) {
+    const copyOptions = targets.length - offset > 1 && window.MeldexOsFileIntake?.isSupported?.() === true
+      ? { ...options, nativeCopySnapshotGroup: crypto.randomUUID() } : options;
     const outcomes = await Promise.all(targets.slice(offset, offset + 2).map(async target => {
-      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, options) }; }
+      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, copyOptions) }; }
       catch (error) { return { target, error }; }
     }));
+    const reflectedByParent = new Map();
     for (const { target, res, error } of outcomes) {
       if (error) { result.failed += 1; if (!result.error) result.error = error; continue; }
       result.ok += 1;
@@ -270804,12 +273068,20 @@ async function _outlinerDuplicateItems(items, options = {}) {
         result.created.push(createdPath);
         createdItems.push({ path: createdPath, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file',
           name: res?.new_name || createdPath.split('/').pop() || createdPath });
-        try {
-          if (typeof _folderApplySavedDropResults === 'function') {
-            _folderApplySavedDropResults(_outlinerParentPath(createdPath), [{ item: createdItems[createdItems.length - 1] }], []);
-          }
-        } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
+        const parent = _outlinerParentPath(createdPath);
+        if (!reflectedByParent.has(parent)) reflectedByParent.set(parent, []);
+        reflectedByParent.get(parent).push(createdItems[createdItems.length - 1]);
       }
+    }
+    // 同じ保存先への確定済み2件は1回の描画で反映する。失敗した項目は含めない。
+    for (const [parent, rows] of reflectedByParent) {
+      try {
+        if (typeof _folderApplySavedDropResults !== 'function') continue;
+        const reflected = _folderApplySavedDropResults(parent, rows.map(item => ({ item })), []);
+        if (reflected && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+          (result.panelReflectedPaths ||= []).push(...rows.map(item => item.path));
+        }
+      } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
     }
   }
   const register = () => {
@@ -270868,7 +273140,10 @@ function _pushCreatedOutlinerItemsHistory(createdItems, label, scope, options = 
       if (failures.length) throw new Error(`${failures.length} 件をゴミ箱から戻せませんでした`);
     },
     scope);
-  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path) });
+  const companionOwner = records.length === 2 && records.some(record => record.type === 'database' && record.kind === 'folder')
+    ? records.find(record => record.type === 'form-app' && record.kind === 'file' && record.path === options.companionOwner)?.path || '' : '';
+  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path),
+    ...(companionOwner ? { undoCompanionOwner: companionOwner } : {}) });
   return entry;
 }
 
@@ -271118,7 +273393,9 @@ function closeTreeContextMenu() {
     try { cleanup(); } catch {}
   });
   _outlinerContextMenuCleanups.clear();
-  document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+  document.querySelectorAll('.gb-context-menu').forEach(el => {
+    if (!el.parentElement?.closest?.('.gb-context-menu')) el.remove();
+  });
 }
 
 // gb-path-utils.js（window.GBPathUtils）へ委譲。未ロード時は同等ロジックへフォールバックする。
@@ -272130,10 +274407,10 @@ function _createOutlinerPendingCreateNode(type, label) {
   return node;
 }
 
-function _openOutlinerCreatedNode(nd, name) {
+function _openOutlinerCreatedNode(nd, name, options = {}) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
-  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
+  else if (nd.type === 'form-app') return openFormApp(nd.path, name, { ..._expOpts, ...options });
   else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
@@ -272185,10 +274462,10 @@ function _outlinerApplyCreateSuccess(pendingNode, found, options) {
 }
 
 // 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
-async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name, options) {
   if (pendingNode && pendingNode.parentNode) pendingNode.remove();
   await loadOutliner();
-  _openOutlinerCreatedNode(nd, name);
+  _openOutlinerCreatedNode(nd, name, options);
 }
 
 // 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
@@ -272318,7 +274595,9 @@ async function addItemAt(parentPath, type, options = {}) {
     // ゴミ箱へ移していた（2026-11-22 M-014 フォルダツリー網羅テスト）。別の画面からの共通履歴への落ち込みは
     // 履歴の守り（作ったファイル以外を消す記録へは落ちない）が止める。
     const createHistoryScope = '';
-    const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
+    const res = await apiPost('/outliner/add', { type, label, parent: parentPath, ...(type === 'form-app' ? { include_form_content: true } : {}) });
+    const formOpenOptions = type === 'form-app' && res.form_content?.path === res.node?.path
+      ? { formCopyOpen: { file: res.form_content } } : undefined;
     // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
     if (!res.node.name) res.node.name = res.node.label;
     const companions = Array.isArray(res.node.companion_paths) ? res.node.companion_paths.filter(Boolean) : [];
@@ -272328,7 +274607,8 @@ async function addItemAt(parentPath, type, options = {}) {
       _pushCreatedOutlinerItemsHistory([
         { path: res.node.path, type: res.node.type || type, kind: 'file' },
         ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
-      ], '新規作成: ' + (res.node.name || label), createHistoryScope);
+      ], '新規作成: ' + (res.node.name || label), createHistoryScope,
+      type === 'form-app' ? { companionOwner: res.node.path } : {});
     } else if (res.node.path && typeof pushCreatedOutlinerItemHistory === 'function') {
       pushCreatedOutlinerItemHistory({ path: res.node.path, type: res.node.type || type }, '新規作成: ' + (res.node.name || label), {
         scope: createHistoryScope,
@@ -272339,7 +274619,7 @@ async function addItemAt(parentPath, type, options = {}) {
       // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
       const createdNode = _findTreeNodeByPath(res.node.path);
       _selectOutlinerCreateNode(createdNode);
-      _openOutlinerCreatedNode(res.node, res.node.name);
+      _openOutlinerCreatedNode(res.node, res.node.name, formOpenOptions);
       return;
     }
 
@@ -272355,7 +274635,7 @@ async function addItemAt(parentPath, type, options = {}) {
     const name = nd.name || nd.label || label;
     // 挿入先が最後まで解決できない場合はルート等へ誤挿入せず全体再読込に委ねる
     if (!insertTarget.deferTreeInsert && !insertTarget.container) {
-      await _outlinerCreateFallbackToReload(pendingNode, nd, name);
+      await _outlinerCreateFallbackToReload(pendingNode, nd, name, formOpenOptions);
       return;
     }
     const virtualInsert = !insertTarget.deferTreeInsert
@@ -272381,10 +274661,14 @@ async function addItemAt(parentPath, type, options = {}) {
     }
     // 作成が確定した行を先に描画する。ボード等の初期表示で行の反映まで待たせない。
     const createVault = typeof state !== 'undefined' ? state.vaultPath : '';
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
+    if (type !== 'form-app') await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
     if (createVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
     // コンテンツを開く
-    _openOutlinerCreatedNode(nd, name);
+    const opened = _openOutlinerCreatedNode(nd, name, formOpenOptions);
+    if (type === 'form-app') {
+      await opened;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
     // フォルダパネルが同じフォルダを開いていれば、作ったものをすぐ出す
     if (typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([parentPath]);
     // 一緒に作ったもの（フォームのシート）も、作った場所のフォルダを差分で反映して出す。
@@ -272410,6 +274694,8 @@ async function addSheetEntryAt(sheetPath) {
   if (!path) return;
   const reservation = typeof historyReserve === 'function' ? historyReserve('トピック追加', '') : null;
   try {
+    // 子一覧は保存と並行して読み込む。確定したエントリは応答から差分で足す。
+    if (typeof _resolveOutlinerCreateInsertTarget === 'function') _resolveOutlinerCreateInsertTarget(path, { expandUnloaded: true });
     const result = await apiPost('/entity/create', { parent_path: path, name: '無題' });
     const entryPath = result?.path || result?.entry_path;
     if (entryPath && typeof pushCreatedOutlinerItemHistory === 'function') {
@@ -272420,7 +274706,27 @@ async function addSheetEntryAt(sheetPath) {
       if (reservation) reservation.capture(register); else register();
     }
     showStatus('トピックを追加しました');
-    if (typeof loadOutliner === 'function') await loadOutliner();
+    let target = typeof _resolveOutlinerCreateInsertTarget === 'function'
+      ? _resolveOutlinerCreateInsertTarget(path, { expandUnloaded: true }) : null;
+    const directInsert = entryPath && target?.container && !target.deferTreeInsert && typeof _folderInsertDroppedItemsIntoOutliner === 'function';
+    if (directInsert) {
+      _folderInsertDroppedItemsIntoOutliner(path, [{
+        path: entryPath, name: result.name || '無題', type: 'entity', _dbPath: path,
+        entityData: { _entry_path: entryPath, _id: result.entry_id || result.id || '' },
+      }]);
+    } else {
+      // 保存前に始めた読込がまだ続いている場合は、完了後の最新pivotで照合する。
+      for (let wait = 0; target?.deferTreeInsert && wait < 40; wait += 1) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        target = _resolveOutlinerCreateInsertTarget(path, { expandUnloaded: true });
+      }
+      if (typeof _outlinerSyncFoldersOrReload === 'function') await _outlinerSyncFoldersOrReload([path]);
+      else if (typeof loadOutliner === 'function') await loadOutliner();
+    }
+    // 行を描く前に、開いたシートの追加の読込で画面を混ませない。
+    if (typeof requestAnimationFrame === 'function') await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    // 確定した行を先に描いてから、並びと他のエントリを最新の保存内容へ照合する。
+    if (directInsert && typeof _outlinerSyncFoldersOrReload === 'function') await _outlinerSyncFoldersOrReload([path]);
     if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
   } catch (e) {
     showStatus((e && e.message) || 'トピックの追加に失敗しました', true);
@@ -272563,12 +274869,41 @@ function _outlinerTreeFormPath(fromPath, responsePath) {
 
 function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
   newPath = _outlinerTreeFormPath(oldPath, newPath);
-  const aliasPairs = (Array.isArray(nodeData?.pathAliases) ? nodeData.pathAliases : [])
+  const aliases = new Set(Array.isArray(nodeData?.pathAliases) ? nodeData.pathAliases : []);
+  // Native folder listings use vault-relative paths; an already open Form may use
+  // the absolute path returned by creation. Only derive this alias from the actual
+  // local vault root, never from a filename suffix or a Cloud namespace.
+  const root = String(typeof state !== 'undefined' ? state.vaultPath || '' : '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const from = String(oldPath).replace(/\\/g, '/');
+  if (nodeData?.type === 'form-app' && /^(?:[a-z]:\/|\/\/)/i.test(root)
+      && !(typeof window !== 'undefined' && window.MeldexRuntimeAdapter?.isBrowserDataMode?.())) {
+    if (from.startsWith(root + '/')) aliases.add(from.slice(root.length + 1));
+    else if (!/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(from)) aliases.add(root + '/' + from);
+  }
+  if (nodeData?.type === 'form-app' && typeof window !== 'undefined'
+      && window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof forEachComponent === 'function') {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (typeof provider?._dropboxLocation === 'function') {
+      const locationKey = path => {
+        const value = provider._dropboxLocation(path);
+        return typeof value?.path === 'string' && value.namespaceKind
+          ? JSON.stringify([value.namespaceKind, value.path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()]) : null;
+      };
+      try {
+        const target = locationKey(oldPath);
+        if (target) forEachComponent(component => {
+          if (component?.store?.doc?.fileType === 'meldex-form' && component.path && locationKey(component.path) === target) aliases.add(component.path);
+        });
+      } catch (error) { console.warn('[Meldex] フォームの改名先の別名を確認できませんでした', error); }
+    }
+  }
+  const targetBase = String(newPath).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+  const aliasPairs = [...aliases]
     .filter(alias => alias && alias !== oldPath)
     .map(alias => {
       const normalized = String(alias).replace(/[\\/]+$/, '');
       const cut = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
-      return { oldPath: alias, newPath: (cut >= 0 ? normalized.slice(0, cut + 1) : '') + newName };
+      return { oldPath: alias, newPath: (cut >= 0 ? normalized.slice(0, cut + 1) : '') + targetBase };
     });
   const applyPathReferences = (fromPath, toPath, label, response) => {
     if (typeof renameAppPathReferences !== 'function') return;
@@ -273767,7 +276102,8 @@ function _snapshotBaseTreeVisibility() {
   // 名前の検索で隠れている行を「フィルタで隠れている」と記録しない。記録すると、検索で開いたフォルダの中の一致が
   // 祖先ごと出なくなっていた（2026-11-22 M-014 フォルダツリー網羅テスト）。検索中に隠れている行は、
   // フィルタだけで決まる見え方を記録する。
-  const searching = typeof _treeSearchQuery !== 'undefined' && !!_treeSearchQuery;
+  const searching = (typeof _treeSearchQuery !== 'undefined' && !!_treeSearchQuery)
+    || (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
   document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node').forEach(node => {
     if (searching && node.style.display === 'none') {
       const d = node._nodeData;
@@ -274393,7 +276729,7 @@ function toggleSidebarSection(name) {
   _setSidebarSectionExpandedState(name, !collapsed);
   localStorage.setItem('sidebar-section-' + name, collapsed ? 'collapsed' : 'expanded');
   if (name === 'home' && !collapsed && typeof renderHomeFolderTree === 'function') {
-    Promise.resolve().then(() => renderHomeFolderTree({ force: true, reason: 'section-open' })).catch(() => {});
+    return Promise.resolve().then(() => renderHomeFolderTree({ force: true, reason: 'section-open' })).catch(() => {});
   }
 }
 
@@ -274530,7 +276866,7 @@ function _outlinerMediaTypeFromPath(path, type) {
   if (['jpg','jpeg','png','gif','webp','svg','bmp','avif','ico'].includes(ext)) return 'image';
   if (['mp4','mov','avi','webm','mkv','m4v'].includes(ext)) return 'video';
   if (['mp3','wav','ogg','flac','m4a'].includes(ext)) return 'audio';
-  if (ext === 'pdf') return 'pdf';
+  if (ext === 'pdf' || ext === 'epub') return 'pdf'; // EPUBもビューワーの文書の経路で開く
   return type || '';
 }
 
@@ -274538,6 +276874,7 @@ function _outlinerStoredItemType(item) {
   const type = String(item?.type || '');
   const lower = String(item?.path || '').toLowerCase();
   if (type === 'database' || lower.endsWith('.mel-sheet')) return 'database';
+  if (type === 'form-app' || lower.endsWith('.mel-form')) return 'form-app';
   if (type === 'scriptnote' || type === 'scenario' || lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return 'scriptnote';
   if (type === 'timer' || lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (type === 'board' || lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
@@ -274602,11 +276939,18 @@ async function _openStoredOutlinerItem(item, opts) {
   else if (type === 'entity') { if (typeof selectEntity === 'function') selectEntity(path, openOpts); }
   else if (type === 'page') openPage(name, path, openOpts);
   else if (type === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, name, openOpts); else openPage(name, path, openOpts); }
+  else if (type === 'form-app') {
+    if (typeof openFormApp !== 'function') {
+      if (typeof showStatus === 'function') showStatus('フォームを開けません', true);
+      return false;
+    }
+    return (await openFormApp(path, name, openOpts)) !== false;
+  }
   else if (type === 'board') openBoard(name, path, openOpts);
   else if (type === 'calendar') openCalendarFile(name, path, openOpts);
   else if (type === 'chat') { if (typeof openSavedChat === 'function') openSavedChat(path); else openPage(name, path, openOpts); }
   else if (type === 'image' || type === 'video' || type === 'audio') openMedia(name, path, type, openOpts);
-  else if (type === 'pdf' || (type === 'document' && path.toLowerCase().endsWith('.pdf'))) {
+  else if (type === 'pdf' || (type === 'document' && /\.(?:pdf|epub)$/i.test(path))) {
     if (typeof openViewer === 'function') openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
     else if (typeof openNative === 'function') openNative(path);
   }
@@ -275335,7 +277679,7 @@ async function renderHomeFolderTree(options = {}) {
 
 // デスクトップ付箋の小窓にはフォルダツリーが無い。ホームフォルダの一覧取得は本体側だけで行う
 // （付箋の枚数だけ保存フォルダ全体の走査が並走し、本体の起動が待たされる）。
-if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) loadHomeFolder();
+if (!((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost()))) loadHomeFolder();
 
 // ホームフォルダへのドロップ対応
 (function() {
@@ -275900,7 +278244,11 @@ const MeldexUnifiedSearch = (() => {
     const tagCondition = readTagCondition();
     // 文字列が空でも、タグ条件だけが入っていれば検索を通す（2-F）。
     if (!q && !tagCondition.tagIds.length) return { results: [], scopes: active(), unavailable: [] };
-    const params = new URLSearchParams({ q, scopes: active().join(','), limit: String(options.limit || 50) });
+    const enabled = active();
+    const scopes = Array.isArray(options.scopes) ? enabled.filter(scope => options.scopes.includes(scope)) : enabled;
+    if (!scopes.length) return { results: [], scopes: [], unavailable: [] };
+    const params = new URLSearchParams({ q, scopes: scopes.join(','), limit: String(options.limit || 50) });
+    if (options.namePreview === true) params.set('name_preview', '1');
     if (options.path) params.set('path', options.path);
     if (tagCondition.tagIds.length) {
       params.set('tag_ids', tagCondition.tagIds.join(','));
@@ -276110,16 +278458,39 @@ function doTreeNameSearch() {
   // 2026-11-22 M-014 フォルダツリー網羅テスト）。
   if (q || hasTagCondition) {
     clearTimeout(_treeUnifiedSearchTimer);
+    const scopes = MeldexUnifiedSearch.active();
+    const browserData = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || ['dropbox', 'browser'].includes(document.body?.dataset?.cloudMode);
+    const fastNames = q && !browserData && scopes.includes('name');
     _treeUnifiedSearchTimer = setTimeout(() => {
+      if (seq !== _treeUnifiedSearchSeq) return;
       _treeUnifiedSearchTimer = 0;
-      MeldexUnifiedSearch.search(q, { limit: 100 }).then(data => {
+      let complete = false;
+      const applyResults = data => {
         if (seq !== _treeUnifiedSearchSeq) return;
         _treeUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
         applyTreeNameSearch();
         _treeExpandToUnifiedResults(seq);
         MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), data, q);
-      }).catch(() => {});
-    }, 240);
+      };
+      // ローカル版では本文の検索を待たず名前の一致を出す。最終結果は従来の統一検索で確定する。
+      // Dropbox側では同じ保存先の読み直しを増やさず、従来の1要求を維持する。
+      const searchComplete = () => {
+        if (seq !== _treeUnifiedSearchSeq) return;
+        _treeUnifiedSearchTimer = 0;
+        MeldexUnifiedSearch.search(q, { limit: 100 }).then(data => {
+          complete = true;
+          applyResults(data);
+        }).catch(() => {});
+      };
+      if (fastNames) {
+        MeldexUnifiedSearch.search(q, { limit: 100, scopes: ['name'], namePreview: true }).then(data => {
+          if (!complete) applyResults(data);
+        }).catch(() => {});
+        // 本文検索は従来の240msまで待ち、連続入力中の重い要求を増やさない。
+        _treeUnifiedSearchTimer = setTimeout(searchComplete, 140);
+      } else searchComplete();
+    }, fastNames || (scopes.length === 1 && scopes[0] === 'name') ? 100 : 240);
   } else {
     clearTimeout(_treeUnifiedSearchTimer);
     _treeUnifiedSearchTimer = 0;
@@ -276746,7 +279117,7 @@ function openSearchResult(path, type, location = null) {
   else if (kind === 'image' || kind === 'video' || kind === 'audio') {
     if (typeof openMedia === 'function') openMedia(label, path, kind, _expOpts);
   }
-  else if (kind === 'document' && String(path || '').toLowerCase().endsWith('.pdf')) openViewer('/viewer?pdf=' + encodeURIComponent(path));
+  else if (kind === 'document' && /\.(?:pdf|epub)$/i.test(String(path || ''))) openViewer('/viewer?pdf=' + encodeURIComponent(path));
   else if (kind === 'scriptnote') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(path, label, _expOpts); }
   else if (kind === 'board') openBoard(label, path, _expOpts);
   else if (kind === 'csv' && typeof openCsvFile === 'function') openCsvFile(label, path, _expOpts);
@@ -281590,7 +283961,7 @@ _bindClipSearchResultDelegation();
   });
   window.addEventListener('load', () => setTimeout(() => {
     // デスクトップ付箋の小窓には重複の通知先もフォルダツリーも無い。監視は本体側だけが行う。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     startMonitor();
     refreshOutlinerBadges(document);
   }, 0), { once: true });
@@ -284168,7 +286539,7 @@ const GBPaneBridge = (() => {
       window.GBAnnotationSurfaces.sync();
       return;
     }
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     const storage = document.getElementById('legacy-views');
     const overlay = document.getElementById('ann-overlay');
     const button = document.getElementById('btn-tb-annotation');
@@ -284919,6 +287290,8 @@ const GBPaneBridge = (() => {
     const appTb = effectiveShowToolbar ? _ensureAppToolbarElement() : document.getElementById('app-toolbar');
     const tbDb = appTb?.querySelector?.('#tb-db') || document.getElementById('tb-db');
     if (tbDb) tbDb.style.display = effectiveIsDbView ? 'contents' : 'none';
+    // 見た目の規則はこの目印で見分ける（style属性を :has() で見ると全体の再計算が起きる。2026-11-27）。
+    if (appTb) appTb.dataset.sheetToolbar = effectiveIsDbView ? '1' : '0';
     const rtTb = appTb?.querySelector?.('#rt-toolbar') || document.getElementById('rt-toolbar');
     // page-view内に専用ツールバー(#page-rt-toolbar)があるので、app-toolbar内のrt-toolbarは常に非表示
     if (rtTb) rtTb.style.display = 'none';
@@ -286066,22 +288439,16 @@ const GBPaneBridge = (() => {
 
   function _activateToolPaneMatch(match, options) {
     if (!match?.paneId || !match?.tabId) return;
-    const previousActivePane = GBLayout?.activePane || '';
     let groupChanged = false;
     if (match.panelsetNode && match.groupId && match.panelsetNode.activeGroupId !== match.groupId) {
       groupChanged = true;
       if (typeof GBPanelSet?.switchGroup === 'function') {
-        GBPanelSet.switchGroup(match.panelsetNode, match.groupId);
+        GBPanelSet.switchGroup(match.panelsetNode, match.groupId, { deferRender: true });
       } else {
         match.panelsetNode.activeGroupId = match.groupId;
       }
     }
-    GBTabs.activateTab(match.paneId, match.tabId, options);
-    if (groupChanged && typeof _refreshPaneAfterTabSwitch === 'function') {
-      _refreshPaneAfterTabSwitch(match.paneId, {
-        previousActivePane: options?.preserveActivePane ? null : previousActivePane,
-      });
-    }
+    GBTabs.activateTab(match.paneId, match.tabId, groupChanged ? { ...(options || {}), forceRender: true } : options);
   }
 
   function _scheduleContentPaneRestore(paneId) {
@@ -286664,6 +289031,13 @@ const GBSubPanel = (() => {
   }
 
   // ---- 対象の正規化（既に解決済みならそのまま使い、未解決ならルーターへ委ねる） ----
+  function _moveFormOpenRead(from, to) {
+    const read = from?._formOpenRead;
+    if (!read || from === to) return;
+    delete from._formOpenRead;
+    if (read.path === to?.path) Object.defineProperty(to, '_formOpenRead', { value: read, configurable: true });
+  }
+
   async function _normalizeTarget(target) {
     let entry;
     if (target && typeof target === 'object' && target.type) {
@@ -286691,12 +289065,17 @@ const GBSubPanel = (() => {
         && GBLinkRouter.isExternalUrl(entry.path)) {
       entry.external = true;
     }
-    // 比較（compare）は合成パス、エントリ（entity）はSQLite上の論理.mdパスを取り得るため、
-    // 物理ファイルの実在確認には乗せない。各レンダラーが現役APIで読み込み、そこで
-    // 実在しない場合のエラーを表示する。
+    // 比較（compare）は合成パス、エントリ（entity）はSQLite上の論理.mdパスを取り得る。
+    // フォームは自身の読込で存在・権限・内容を確認し、失敗時は再読込を表示する。
+    // 各レンダラーの確認より前に、同じ実在確認の通信を直列で増やさない。
     if (!entry.external && entry.path && entry.type !== 'unsupported' && entry.type !== 'compare' && entry.type !== 'entity'
+        && entry.type !== 'form-app'
         && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.checkAvailability === 'function') {
       entry.availability = await GBLinkRouter.checkAvailability(entry.path);
+    }
+    if (!entry.external && entry.path && entry.type === 'form-app' && typeof FormAppComponent !== 'undefined' && typeof FormAppComponent.prepareOpenRead === 'function') {
+      const read = FormAppComponent.prepareOpenRead(entry.path);
+      if (read) Object.defineProperty(entry, '_formOpenRead', { value: read, configurable: true });
     }
     return entry;
   }
@@ -287047,6 +289426,7 @@ const GBSubPanel = (() => {
         path: entry.path || '',
         state: entry.state || {},
       };
+    _moveFormOpenRead(entry, tab);
     return { id: INNER_PANE_ID, type: 'pane', tabs: [tab], activeTabIndex: 0 };
   }
 
@@ -287394,7 +289774,7 @@ const GBSubPanel = (() => {
   function _isolatedViewerUrl(entry) {
     if (entry.state?.viewerUrl) return entry.state.viewerUrl;
     const mediaType = entry.state?.mediaType || '';
-    return mediaType === 'pdf' || /\.pdf$/i.test(entry.path)
+    return mediaType === 'pdf' || /\.(?:pdf|epub)$/i.test(entry.path)
       ? '/viewer?pdf=' + encodeURIComponent(entry.path)
       : '/viewer?file=' + encodeURIComponent(entry.path);
   }
@@ -287931,6 +290311,11 @@ const GBSubPanel = (() => {
     // （描き直しの後に通信を始めると、フォルダを開くまでが0.3秒を超えることがあった）。
     const normalized = _normalizeTarget(target);
     normalized.catch(() => {});
+    if (target?.type === 'form-app' && typeof FormAppComponent !== 'undefined' && typeof FormAppComponent.prepareOpenRead === 'function') {
+      // 読み取りの通信を送り出してから、右レールの描き直しを始める。
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (seq !== _opSeq) return false;
+    }
     // スマホのドロワー表示は _openMobileDrawer が自前で開くため、右レールの操作はしない。
     try {
       if (opts.reveal !== false && !_isMobileDrawerEnabled()) _revealRightSidebar();
@@ -287963,7 +290348,9 @@ const GBSubPanel = (() => {
         // 古い面の位置をguardが記録した後で、今回の明示的な選択を反映する。
         const state = { ...(tab.history[tab.index].state || {}), ...(entry.state || {}) };
         if (entry.state?.viewerUrl && !entry.state?._viewerState) delete state._viewerState;
-        tab.history[tab.index] = { ...tab.history[tab.index], ...entry, state };
+        const refreshed = { ...tab.history[tab.index], ...entry, state };
+        _moveFormOpenRead(entry, refreshed);
+        tab.history[tab.index] = refreshed;
       }
       _activeId = tab.id;
       _useTabHistory(tab);
@@ -289822,6 +292209,549 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
   }
   global.GBPanelScreenshot={start,capture,position,openSourceLink,cancel:()=>cancelSelection?.()};
 })(window);
+
+;
+
+/* === gb-tray-annotation-bar.js === */
+;
+/* gb-tray-annotation-bar.js: 常駐アプリが出すデスクトップのアノテートバー
+ *
+ * 常駐アプリのメニューから開く最前面の小さなバー（gb-window.py の専用ウィンドウ）。
+ * 本体のページを ?tray_annotation_bar=1 で読み、本体の画面は出さずにこのバーだけを表示する。
+ * - アノテート先: フォルダツリー（GBFolderPicker）から Meldex のファイル、またはシートのトピックを選ぶ
+ * - スクリーンショット（全画面・範囲選択・ウィンドウ選択）: 画像はこれまでどおりホームの
+ *   「スクリーンショット」へ保存し、アノテート先へ種類「スクリーンショット」のアノテートを記録する
+ * - コメント: アノテート先へコメントのアノテートを記録する
+ * 保存はすべて本体の通常のAPI（書き込み可否・編集ロックの確認を通る）で行い、失敗はバー内に示す。
+ * ウィンドウの移動・一時的な拡大・撮影はウィンドウ側（window.pywebview.api.tray_annotation_bar_*）が担う。
+ */
+(function () {
+  'use strict';
+
+  if (window.MeldexTrayAnnotationBar) return;
+
+  const QUERY_FLAG = 'tray_annotation_bar';
+  // gb-window.py / meldex_desktop_annotation_bar.py の PICKER_WIDTH / PICKER_HEIGHT と同じ値
+  const PICKER_SIZE = { width: 680, height: 640 };
+  const MODES = [
+    { mode: 'full', icon: 'monitor', label: '全画面を撮影してアノテート先に記録' },
+    { mode: 'region', icon: 'scissors', label: '範囲を選んで撮影してアノテート先に記録' },
+    { mode: 'window', icon: 'appWindow', label: 'ウィンドウを選んで撮影してアノテート先に記録' },
+  ];
+
+  const state = {
+    target: null,
+    busy: false,
+    pendingRecord: null,
+    shell: null,
+    targetButton: null,
+    targetLabel: null,
+    targetIcon: null,
+    commentInput: null,
+    status: null,
+    retryButton: null,
+  };
+
+  function isHost() {
+    try {
+      return new URLSearchParams(window.location.search || '').get(QUERY_FLAG) === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _icon(name, size) {
+    return typeof lucide === 'function' ? lucide(name, size || 16) : '';
+  }
+
+  function _bridge(name) {
+    const api = window.pywebview && window.pywebview.api;
+    const fn = api && api[name];
+    return typeof fn === 'function' ? fn.bind(api) : null;
+  }
+
+  // pywebview の窓口は読み込み後に届く。届くまで少し待ち、無ければ null を返す（ブラウザでの確認用）。
+  function _waitForBridge(timeoutMs) {
+    if (window.pywebview && window.pywebview.api) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const done = ok => { window.removeEventListener('pywebviewready', onReady); clearTimeout(timer); resolve(ok); };
+      const onReady = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      window.addEventListener('pywebviewready', onReady);
+    });
+  }
+
+  async function _call(name, ...args) {
+    const fn = _bridge(name);
+    if (!fn) return null;
+    try {
+      return await fn(...args);
+    } catch (error) {
+      _setStatus(`バーの操作に失敗しました: ${error?.message || error}`, true);
+      return null;
+    }
+  }
+
+  function _setStatus(text, isError, options) {
+    if (!state.status) return;
+    state.status.textContent = String(text || '');
+    state.status.dataset.statusKind = text ? (isError ? 'error' : 'success') : '';
+    state.status.setAttribute('role', isError ? 'alert' : 'status');
+    if (state.retryButton) state.retryButton.hidden = !(options && options.retry);
+  }
+
+  function _setBusy(busy) {
+    state.busy = !!busy;
+    state.shell?.querySelectorAll('button[data-tray-bar-action]').forEach(button => {
+      if (button.dataset.trayBarAction !== 'close') button.disabled = state.busy;
+    });
+    if (state.commentInput) state.commentInput.disabled = state.busy;
+  }
+
+  // 保存形（meldex_desktop_annotation_bar.normalize_target と同じ項目）
+  function normalizeTarget(selection) {
+    if (!selection || !selection.path) return null;
+    const target = {
+      path: String(selection.path).replace(/\\/g, '/'),
+      name: String(selection.sheetName || selection.name || '').trim(),
+      kind: selection.kind === 'topic' ? 'topic' : (selection.kind || 'file'),
+      type: String(selection.kind === 'topic' ? 'database' : (selection.type || '')),
+      rootPath: String(selection.rootPath || ''),
+      rootName: String(selection.rootName || ''),
+      rootKind: String(selection.rootKind || ''),
+    };
+    if (target.kind === 'topic') {
+      target.topicName = String(selection.topicName || '').trim();
+      target.topicId = String(selection.topicId || target.topicName);
+      if (!target.topicName) return null;
+    }
+    return target;
+  }
+
+  function targetLabel(target) {
+    if (!target) return 'アノテート先を選択';
+    if (target.kind === 'topic') return target.topicName;
+    return target.name || String(target.path).split('/').pop() || target.path;
+  }
+
+  function targetDescription(target) {
+    if (!target) return 'アノテート先が未選択です。押すとフォルダツリーから選べます';
+    const where = target.kind === 'topic' ? `${target.name || target.path} のトピック「${target.topicName}」` : target.path;
+    return `アノテート先: ${where}（押すと変更）`;
+  }
+
+  // アノテートの記録先。シートのトピックはトピック全体（sheet_entry）として記録する。
+  // entryId はシートのセルのコメント（sheet_cell）と同じくトピック名を使う。
+  function targetFields(target) {
+    if (target.kind === 'topic') {
+      return {
+        target_path: target.path,
+        target_kind: 'sheet_entry',
+        target_ref: { file: target.path, entryId: target.topicName, topicId: target.topicId || target.topicName },
+        target_snapshot: target.topicName,
+      };
+    }
+    return { target_path: target.path, target_kind: '' };
+  }
+
+  function _requestId(prefix) {
+    const rand = (window.crypto && typeof window.crypto.randomUUID === 'function')
+      ? window.crypto.randomUUID()
+      : String(Date.now()) + Math.random().toString(16).slice(2);
+    return `${prefix}-${rand}`;
+  }
+
+  function screenshotRecord(target, savedPath, shot) {
+    const requestId = _requestId('desktop-bar-shot');
+    return {
+      type: 'screenshot',
+      ...targetFields(target),
+      client_request_id: requestId,
+      data: {
+        path: savedPath,
+        mode: shot.mode || '',
+        width: shot.width,
+        height: shot.height,
+        origin: 'desktop-annotation-bar',
+        clientRequestId: requestId,
+      },
+    };
+  }
+
+  function commentRecord(target, text) {
+    const requestId = _requestId('desktop-bar-comment');
+    return {
+      type: 'comment',
+      ...targetFields(target),
+      body: text,
+      client_request_id: requestId,
+      data: { type: 'comment', text, origin: 'desktop-annotation-bar', clientRequestId: requestId },
+    };
+  }
+
+  function _renderTarget() {
+    const target = state.target;
+    if (!state.targetButton) return;
+    state.targetLabel.textContent = targetLabel(target);
+    const description = targetDescription(target);
+    state.targetButton.title = description;
+    state.targetButton.setAttribute('aria-label', description);
+    state.targetButton.dataset.targetKind = target ? target.kind : '';
+    const shared = window.MeldexFileIcons?.itemIconHtml;
+    state.targetIcon.innerHTML = !target
+      ? _icon('folderOpen', 16)
+      : (target.kind === 'topic'
+        ? _icon('fileText', 16)
+        : (typeof shared === 'function' ? shared({ path: target.path, type: target.type || '' }, 16) : _icon('file', 16)));
+  }
+
+  async function setTarget(target, options) {
+    state.target = target || null;
+    _renderTarget();
+    if (options && options.persist === false) return true;
+    const saved = await _call('tray_annotation_bar_set_target', state.target);
+    if (saved && saved.ok === false) {
+      _setStatus(saved.error || 'アノテート先を保存できませんでした', true);
+      return false;
+    }
+    return true;
+  }
+
+  async function pickTarget() {
+    if (!window.GBFolderPicker?.pickFolder) {
+      _setStatus('フォルダツリーを読み込めませんでした', true);
+      return null;
+    }
+    const current = state.target;
+    document.body.dataset.trayAnnotationBarPicking = '1';
+    await _call('tray_annotation_bar_resize', PICKER_SIZE.width, PICKER_SIZE.height);
+    let selection = null;
+    try {
+      selection = await window.GBFolderPicker.pickFolder({
+        title: 'アノテート先を選択',
+        selectFiles: true,
+        selectSheetTopics: true,
+        selectFolders: false,
+        includeHome: true,
+        includeSources: true,
+        includeWorkspaces: true,
+        initialPath: current?.path || '',
+        initialTopic: current?.kind === 'topic' ? current.topicName : '',
+        revealPath: current?.path || '',
+      });
+    } catch (error) {
+      _setStatus(`アノテート先を選べませんでした: ${error?.message || error}`, true);
+    } finally {
+      delete document.body.dataset.trayAnnotationBarPicking;
+      await _call('tray_annotation_bar_restore_size');
+    }
+    const target = normalizeTarget(selection);
+    if (!target) return null;
+    await setTarget(target);
+    _setStatus('');
+    return target;
+  }
+
+  async function _ensureTarget() {
+    if (state.target) return state.target;
+    return pickTarget();
+  }
+
+  async function _record(payload, successText) {
+    _setStatus('保存中...');
+    try {
+      const result = await apiPost('/annotations', payload);
+      state.pendingRecord = null;
+      _setStatus(successText);
+      return result;
+    } catch (error) {
+      state.pendingRecord = { payload, successText };
+      _setStatus(`アノテート先に記録できませんでした: ${error?.message || error}`, true, { retry: true });
+      return null;
+    }
+  }
+
+  async function retryPending() {
+    const pending = state.pendingRecord;
+    if (!pending || state.busy) return null;
+    _setBusy(true);
+    try {
+      // 同じ client_request_id で送り直すので、前回届いていても二重に記録されない
+      return await _record(pending.payload, pending.successText);
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  async function capture(mode) {
+    if (state.busy) return null;
+    const target = await _ensureTarget();
+    if (!target) return null;
+    _setBusy(true);
+    try {
+      _setStatus('');
+      const shot = await _call('tray_annotation_bar_capture', mode);
+      if (!shot) {
+        _setStatus('この画面では撮影できません。常駐アプリのメニューからアノテートバーを開いてください', true);
+        return null;
+      }
+      if (shot.ok !== true) {
+        if (!shot.cancelled) _setStatus(shot.error || 'スクリーンショットを撮影できませんでした', true);
+        return null;
+      }
+      _setStatus('保存中...');
+      let saved;
+      try {
+        // 画像の保存は常駐アプリの撮影と同じ経路（ホームの「スクリーンショット」へ保存）
+        saved = await apiPost('/annotation/screenshot', {
+          data: shot.data, mode: shot.mode || mode, width: shot.width, height: shot.height,
+        });
+      } catch (error) {
+        _setStatus(`スクリーンショットを保存できませんでした: ${error?.message || error}`, true);
+        return null;
+      }
+      if (!saved?.path) {
+        _setStatus('スクリーンショットを保存できませんでした', true);
+        return null;
+      }
+      const label = target.kind === 'topic' ? `「${target.topicName}」` : `「${targetLabel(target)}」`;
+      return await _record(screenshotRecord(target, saved.path, shot), `${label}にスクリーンショットを記録しました`);
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  async function addComment(text) {
+    const body = String(text ?? state.commentInput?.value ?? '').trim();
+    if (!body || state.busy) return null;
+    const target = await _ensureTarget();
+    if (!target) return null;
+    _setBusy(true);
+    try {
+      const label = target.kind === 'topic' ? `「${target.topicName}」` : `「${targetLabel(target)}」`;
+      const result = await _record(commentRecord(target, body), `${label}にコメントを記録しました`);
+      // 失敗時は入力内容を残し、再試行または書き直しできるようにする
+      if (result && state.commentInput) state.commentInput.value = '';
+      return result;
+    } finally {
+      _setBusy(false);
+      state.commentInput?.focus();
+    }
+  }
+
+  function _button(action, icon, label) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-btn gb-btn-sm gb-btn-quiet tray-annotation-bar-icon-btn';
+    button.dataset.trayBarAction = action;
+    button.dataset.e2eId = `tray-annotation-bar-${action}`;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.innerHTML = _icon(icon, 16);
+    return button;
+  }
+
+  function _bindDrag(handle) {
+    let dragging = false;
+    let frame = 0;
+    const move = () => {
+      frame = 0;
+      if (dragging) _call('tray_annotation_bar_drag_move');
+    };
+    const end = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', end);
+      _call('tray_annotation_bar_drag_end');
+    };
+    const onMove = event => {
+      if (!dragging) return;
+      event.preventDefault();
+      if (!frame) frame = requestAnimationFrame(move);
+    };
+    handle.addEventListener('pointerdown', async event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      dragging = true;
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', end);
+      document.addEventListener('pointercancel', end);
+      const started = await _call('tray_annotation_bar_drag_start');
+      if (!started) end();
+    });
+  }
+
+  const _STYLE = `
+    body[data-tray-annotation-bar="1"] { margin: 0; overflow: hidden; background: var(--bg); }
+    .tray-annotation-bar { position: fixed; inset: 0; z-index: 1; display: flex; flex-direction: column;
+      gap: var(--ui-space-1); padding: var(--ui-space-2) var(--ui-space-3); background: var(--bg); color: var(--fg);
+      box-sizing: border-box; font-size: var(--ui-font-12); }
+    .tray-annotation-bar-row { display: flex; align-items: center; gap: var(--ui-space-2); min-width: 0; }
+    .tray-annotation-bar-drag { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+      width: var(--ui-h-xs); height: var(--ui-h-sm); color: var(--fg2); cursor: grab; touch-action: none; }
+    .tray-annotation-bar-target { display: inline-flex; align-items: center; gap: var(--ui-space-2); flex: 0 1 auto;
+      min-width: 0; max-width: 40%; }
+    .tray-annotation-bar-target-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tray-annotation-bar-target[data-target-kind=""] .tray-annotation-bar-target-label { color: var(--fg2); }
+    .tray-annotation-bar-sep { flex: 0 0 auto; width: 1px; height: var(--ui-h-xs); background: var(--border); }
+    .tray-annotation-bar-comment { flex: 1 1 auto; min-width: 0; height: var(--ui-h-sm); }
+    .tray-annotation-bar-status-row { min-height: var(--ui-h-2xs); }
+    .tray-annotation-bar-status { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: var(--fg2); font-size: var(--ui-font-11); }
+    .tray-annotation-bar-status[data-status-kind="error"] { color: var(--red); }
+    body[data-tray-annotation-bar-picking="1"] .tray-annotation-bar { visibility: hidden; }
+  `;
+
+  function _isolate(shell) {
+    const keep = node => node === shell
+      || ['SCRIPT', 'STYLE', 'LINK', 'TEMPLATE'].includes(node.tagName)
+      || node.matches?.('.gb-modal-overlay,.modal-overlay,.gb-context-menu,[role="tooltip"],.gb-tooltip,[data-gb-folder-picker]');
+    const hide = node => {
+      if (!(node instanceof HTMLElement) || keep(node)) return;
+      node.setAttribute('aria-hidden', 'true');
+      node.inert = true;
+      node.style.setProperty('display', 'none', 'important');
+    };
+    [...document.body.children].forEach(hide);
+    new MutationObserver(mutations => mutations.forEach(mutation => mutation.addedNodes.forEach(node => {
+      if (node.parentElement === document.body) hide(node);
+    }))).observe(document.body, { childList: true });
+  }
+
+  function build() {
+    if (state.shell) return state.shell;
+    document.body.dataset.trayAnnotationBar = '1';
+    const style = document.createElement('style');
+    style.dataset.trayAnnotationBarStyle = '1';
+    style.textContent = _STYLE;
+    document.head.appendChild(style);
+
+    const shell = document.createElement('main');
+    shell.className = 'tray-annotation-bar';
+    shell.dataset.e2eId = 'tray-annotation-bar';
+    shell.setAttribute('aria-label', 'デスクトップのアノテートバー');
+
+    const row = document.createElement('div');
+    row.className = 'tray-annotation-bar-row';
+    row.setAttribute('role', 'toolbar');
+    row.setAttribute('aria-label', 'アノテートバーの操作');
+
+    const drag = document.createElement('span');
+    drag.className = 'tray-annotation-bar-drag';
+    drag.dataset.e2eId = 'tray-annotation-bar-drag';
+    drag.title = 'ドラッグして移動';
+    drag.setAttribute('aria-hidden', 'true');
+    drag.innerHTML = _icon('gripVertical', 16);
+    _bindDrag(drag);
+    row.appendChild(drag);
+
+    const targetButton = document.createElement('button');
+    targetButton.type = 'button';
+    targetButton.className = 'gb-btn gb-btn-sm tray-annotation-bar-target';
+    targetButton.dataset.trayBarAction = 'target';
+    targetButton.dataset.e2eId = 'tray-annotation-bar-target';
+    const targetIcon = document.createElement('span');
+    targetIcon.setAttribute('aria-hidden', 'true');
+    const targetText = document.createElement('span');
+    targetText.className = 'tray-annotation-bar-target-label';
+    targetButton.append(targetIcon, targetText);
+    targetButton.addEventListener('click', () => { if (!state.busy) pickTarget(); });
+    row.appendChild(targetButton);
+
+    const sep = () => { const el = document.createElement('span'); el.className = 'tray-annotation-bar-sep'; return el; };
+    row.appendChild(sep());
+    MODES.forEach(item => {
+      const button = _button(`capture-${item.mode}`, item.icon, item.label);
+      button.addEventListener('click', () => capture(item.mode));
+      row.appendChild(button);
+    });
+    row.appendChild(sep());
+
+    const comment = document.createElement('input');
+    comment.type = 'text';
+    comment.className = 'gb-input tray-annotation-bar-comment';
+    comment.dataset.e2eId = 'tray-annotation-bar-comment';
+    comment.placeholder = 'コメント';
+    comment.maxLength = 2000;
+    comment.setAttribute('aria-label', 'アノテート先へのコメント（Enterで記録）');
+    comment.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      addComment();
+    });
+    row.appendChild(comment);
+    const send = _button('comment', 'send', 'コメントをアノテート先に記録');
+    send.addEventListener('click', () => addComment());
+    row.appendChild(send);
+    const close = _button('close', 'x', 'アノテートバーを閉じる');
+    close.addEventListener('click', () => _call('tray_annotation_bar_close'));
+    row.appendChild(close);
+    shell.appendChild(row);
+
+    const statusRow = document.createElement('div');
+    statusRow.className = 'tray-annotation-bar-row tray-annotation-bar-status-row';
+    const status = document.createElement('div');
+    status.className = 'tray-annotation-bar-status';
+    status.dataset.e2eId = 'tray-annotation-bar-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'gb-btn gb-btn-sm';
+    retry.dataset.trayBarAction = 'retry';
+    retry.dataset.e2eId = 'tray-annotation-bar-retry';
+    retry.textContent = '再試行';
+    retry.hidden = true;
+    retry.addEventListener('click', () => retryPending());
+    statusRow.append(status, retry);
+    shell.appendChild(statusRow);
+
+    document.body.appendChild(shell);
+    Object.assign(state, {
+      shell, targetButton, targetLabel: targetText, targetIcon, commentInput: comment, status, retryButton: retry,
+    });
+    _isolate(shell);
+    if (typeof replaceIcons === 'function') replaceIcons(shell);
+    _renderTarget();
+    comment.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && comment.value) { event.preventDefault(); comment.value = ''; }
+    });
+    return shell;
+  }
+
+  async function init() {
+    if (!isHost()) return false;
+    build();
+    await _waitForBridge(3000);
+    const saved = await _call('tray_annotation_bar_state');
+    const target = normalizeTarget(saved?.target ? { ...saved.target, sheetName: saved.target.name } : null);
+    if (target && !state.target) await setTarget(target, { persist: false });
+    return true;
+  }
+
+  window.MeldexTrayAnnotationBar = {
+    isHost,
+    init,
+    build,
+    pickTarget,
+    setTarget,
+    capture,
+    addComment,
+    retryPending,
+    normalizeTarget,
+    targetFields,
+    screenshotRecord,
+    commentRecord,
+    getTarget: () => state.target,
+  };
+
+  if (isHost()) {
+    if (document.body) init();
+    else document.addEventListener('DOMContentLoaded', () => init(), { once: true });
+  }
+})();
 
 ;
 
@@ -292563,6 +295493,50 @@ function _gbAppApiFetchAcquireLane(path, opts) {
   });
 }
 
+async function _gbAppReadNativeCopyStream(response, identity) {
+  const reader = response.body?.getReader?.();
+  if (!reader || !identity?.operationId || !identity.sourcePath) throw new Error('コピーの通知を確認できません');
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let buffer = '', result = null, finished = false, published = false, eof = false;
+  const accept = line => {
+    if (!line.trim()) return;
+    if (finished) throw new Error('コピーの完了後に余分な通知があります');
+    const event = JSON.parse(line);
+    if (event?.type === 'published') {
+      const detail = event.detail;
+      if (published || detail?.operation_id !== identity.operationId || detail.source_path !== identity.sourcePath
+          || typeof detail.new_path !== 'string' || !detail.new_path) throw new Error('コピーの公開通知が要求と一致しません');
+      published = true;
+      window.dispatchEvent(new CustomEvent('meldex:copy-published', { detail }));
+    } else if (event?.type === 'result') {
+      if (event.result?.operation_id !== identity.operationId || event.result?.ok !== true) throw new Error('コピーの完了通知が要求と一致しません');
+      result = event.result; finished = true;
+    } else if (event?.type === 'error') {
+      const message = typeof event.detail === 'string' ? event.detail : event.detail?.message;
+      const error = new Error(message || 'コピーを完了できませんでした');
+      error.status = Number.isInteger(event.status) && event.status >= 400 && event.status < 600 ? event.status : 500;
+      error.payload = { detail: event.detail };
+      throw error;
+    } else throw new Error('コピーの通知形式が不正です');
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      if (buffer.length > 4 * 1024 * 1024) throw new Error('コピーの通知が大きすぎます');
+      let end;
+      while ((end = buffer.indexOf('\n')) >= 0) { accept(buffer.slice(0, end)); buffer = buffer.slice(end + 1); }
+      if (done) { eof = true; break; }
+    }
+    if (buffer.trim()) accept(buffer);
+    if (!finished) throw new Error('コピーの完了通知がありません。再試行してください');
+    return result;
+  } finally {
+    if (!eof) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 async function apiFetch(path, opts) {
   const historyProjection = await window.MeldexChatManagementSheet?.handleApi?.(path, opts);
   if (historyProjection) return historyProjection.value;
@@ -292621,7 +295595,9 @@ async function apiFetch(path, opts) {
             throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
           }
           const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
-          const data = await res.json();
+          const data = requestOpts?.copyPublishStream && (res.headers?.get?.('content-type') || '').includes('application/x-ndjson')
+            ? await _gbAppReadNativeCopyStream(res, requestOpts.copyPublishStream)
+            : await res.json();
           if (perfInfo) {
             _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
               ...perfInfo,
@@ -292817,6 +295793,12 @@ async function _gbAppPutValueConfirmed(path, body, options) {
 
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
+  if (options.backgroundFileWrite === true && String(path).split('?')[0] === '/file'
+    && typeof window.runFileWriteJob === 'function') {
+    const result = await window.runFileWriteJob(path, guardedBody, options);
+    _gbAppNotifyPathsWritten(path, guardedBody, result);
+    return result;
+  }
   if (String(path).split('?')[0].replace(/^\/api/, '') === '/value') {
     const notify = phase => { if (typeof _gbAppNotifyEntityValuesChanged === 'function') _gbAppNotifyEntityValuesChanged(path, phase, guardedBody); };
     notify('pending');
@@ -292845,7 +295827,7 @@ async function apiPut(path, body, options = {}) {
   } else result = await send();
   _scheduleLinkDictionaryRefreshForMutation(path);
   window.MeldexChatManagementSheet?.notifyMutation?.(path, body);
-  _gbAppNotifyPathsWritten(path, guardedBody, result);
+  if (!result?.job_id) _gbAppNotifyPathsWritten(path, guardedBody, result);
   return result;
 }
 
@@ -293054,7 +296036,7 @@ function _apiLockWriteCandidatePaths(path, opts) {
   } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
     addBody('folder_path');
     addBody('file_path');
-  } else if (route === '/import-csv' || route === '/import-xlsx') {
+  } else if (route === '/import-csv' || route === '/import-xlsx' || route === '/import-kindle') {
     addBody('csv_path');
     addBody('xlsx_path');
     addBody('db_path');
@@ -293106,7 +296088,7 @@ function _apiUsesTransientActiveLock(path) {
     '/outliner/save-as', '/outliner/move', '/outliner/move-batch', '/trash/restore', '/replace', '/replace-batch',
     // シートの行の追加・名前の自動生成・取り込みは、その間だけシートを取り、終わったら放す（シートのロックを残すと、
     // ほかの端末・裏の取り込みがどの行へも書けなくなる。セルの入力中のロックは行だけ。2026-11-25）。
-    '/entity/create', '/entity/auto-name', '/import-csv', '/import-xlsx',
+    '/entity/create', '/entity/auto-name', '/import-csv', '/import-xlsx', '/import-kindle',
   ]).has(route);
 }
 
@@ -293174,8 +296156,11 @@ apiFetch = async function(path, opts) {
   const lockSpecs = sheetWide === 'schema'
     ? lockCandidatePaths.map(candidate => ({ path: candidate, includeDescendants: true }))
     : lockCandidatePaths;
+  const compactCopyLocks = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/outliner/save-as';
   const transientLease = !((_apiUsesTransientActiveLock(path) || sheetWide) && activeLocks?.acquireMutationLocks) ? null
     : lockBatchRoute ? await activeLocks.acquireMutationLocks(lockCandidatePaths, { partial: true })
+    : compactCopyLocks ? await activeLocks.acquireMutationLocks(lockSpecs, { minimum: 2 })
     : await activeLocks.acquireMutationLocks(lockSpecs);
   let lockRejectedOrder = null;
   if (lockBatchRoute && transientLease?.failed?.length) {
@@ -293191,10 +296176,9 @@ apiFetch = async function(path, opts) {
       lockRejectedOrder = split.order;
     }
   }
-  const formCreate = String(opts.method || 'GET').toUpperCase() === 'POST'
-    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/entity/create'
-    && _apiLockJsonBody(opts).source === 'form';
-  const deferredCommittedUnlock = formCreate || (String(opts.method || 'GET').toUpperCase() === 'POST'
+  const entityCreate = String(opts.method || 'GET').toUpperCase() === 'POST'
+    && String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '') === '/entity/create';
+  const deferredCommittedUnlock = entityCreate || (String(opts.method || 'GET').toUpperCase() === 'POST'
     && ['/outliner/add', '/outliner/duplicate', '/outliner/save-as'].includes(String(path || '').split('?')[0].replace(/^\/api(?=\/|$)/, '')));
   let mutationSucceeded = false;
   try {
@@ -293212,7 +296196,7 @@ apiFetch = async function(path, opts) {
     if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
     if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
     let result = await _origApiFetch(path, opts);
-    mutationSucceeded = !formCreate || !!(result?.entry_id && result?.path);
+    mutationSucceeded = !entityCreate || !!(result?.entry_id && result?.path);
     if (lockRejectedOrder) result = _apiMergeLockRejectedResults(result, lockRejectedOrder);
     if (result?.history_sync_pending) {
       if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
@@ -293816,6 +296800,10 @@ function showView(viewName, ctx) {
   // app-toolbarの表示切替
   const appTb = document.getElementById('app-toolbar');
   _setDisplay('tb-db', isDbView ? 'contents' : 'none');
+  // シートのツールバーを出しているかは目印の属性で見分ける。見た目の規則で「表示の書き方」（style属性）を
+  // :has() の中から見ると、どの要素のstyleを変えても画面全体の見た目を計算し直し、列の多いシートでは
+  // メニューを開くだけで1秒かかっていた（2026-11-27）。
+  if (appTb) appTb.dataset.sheetToolbar = isDbView ? '1' : '0';
   // ページビュー: app-toolbarにリッチテキストツールバー表示
   const showRtInAppbar = (resolvedViewName === 'page');
   _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
@@ -296699,7 +299687,7 @@ const MeldexExportHtml = (() => {
         }
       });
       const style = node.getAttribute?.('style') || '';
-      if (/url\(\s*(["']?)(?!data:|__MELDEX_ASSET_BASE__\/)/i.test(style)) {
+      if (/url\((?!\s*["']?(?:data:|#|__MELDEX_ASSET_BASE__\/))/i.test(style)) {
         throw new Error('公開HTMLに未埋込みのCSS資産が残っています');
       }
     });
@@ -299481,24 +302469,50 @@ async function _exportDictFile(options = {}) {
 async function _duplicateCurrentFile(toolType) {
   const path = getCurrentFilePath();
   if (!path) return;
+  const isForm = toolType === 'form-app';
+  const progress = isForm ? window.MeldexOperationProgress?.begin?.({
+    kind: 'file-duplicate', label: 'ファイルを複製しています',
+    mode: 'indeterminate', showInTray: true, priority: 35,
+  }) : null;
+  let reservation;
   try {
+    const copyOpen = isForm && typeof FormAppComponent !== 'undefined'
+      ? FormAppComponent.prepareCopyOpen?.(path) : null;
+    if (copyOpen?.flush && !await copyOpen.flush()) throw new Error('元のフォームを保存できないため、複製を中止しました');
     // 取り消しの記録は、操作した画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは複製をゴミ箱へ移す）
     const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
-    const res = await apiPost('/outliner/duplicate', { path });
-    await _refreshWorkspaceAfterFileMutation();
+    if (isForm && typeof historyReserve === 'function') reservation = historyReserve('ファイルを複製', historyScope, null, { preserveRedoOnCancel: true });
+    const res = isForm && typeof FormAppComponent !== 'undefined' && typeof FormAppComponent.copyWithPreview === 'function'
+      ? await FormAppComponent.copyWithPreview(path, copyOpen, { historyPending: reservation?.entry?._historyPending })
+      : await apiPost('/outliner/duplicate', { path, ...(copyOpen ? { include_form_content: true } : {}) });
+    if (!isForm) await _refreshWorkspaceAfterFileMutation();
     const duplicatedPath = res?.new_path || '';
     const duplicatedName = _toolMenuDisplayName(duplicatedPath || path, toolType, res?.new_name || '');
     if (duplicatedPath && typeof pushCreatedOutlinerItemHistory === 'function') {
-      pushCreatedOutlinerItemHistory({ path: duplicatedPath, type: toolType || 'page' }, 'ファイルを複製: ' + (duplicatedName || duplicatedPath), {
+      const register = () => pushCreatedOutlinerItemHistory({ path: duplicatedPath, type: toolType || 'page' }, 'ファイルを複製: ' + (duplicatedName || duplicatedPath), {
         scope: historyScope, refresh: () => _refreshWorkspaceAfterFileMutation(),
       });
+      if (reservation?.capture) reservation.capture(register); else register();
+      if (res.form_previewed && typeof historySetScope === 'function' && typeof _historyActiveScope !== 'undefined') historySetScope(_historyActiveScope);
     }
-    if (duplicatedPath && typeof navOpen === 'function') {
-      navOpen({ type: _toolMenuNavType(toolType), label: duplicatedName, path: duplicatedPath });
+    if (duplicatedPath && !res.form_previewed && typeof navOpen === 'function') {
+      const opened = navOpen({ type: _toolMenuNavType(toolType), label: duplicatedName, path: duplicatedPath },
+        copyOpen ? { formCopyOpen: { ...copyOpen, file: res.form_content } } : undefined);
+      if (isForm) await opened;
     }
+    if (isForm) {
+      // Opening resolves when the content is mounted, before its first paint.
+      // Keep the unrelated tree rebuild out of that first visible frame.
+      if (globalThis.requestAnimationFrame) await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await _refreshWorkspaceAfterFileMutation();
+    }
+    progress?.succeed?.({ summary: 'ファイルを複製しました' });
     showStatus('ファイルを複製しました' + (duplicatedName ? ': ' + duplicatedName : ''));
   } catch (e) {
+    progress?.fail?.({ error: 'ファイルの複製に失敗しました: ' + (e?.message || e || '') });
     showStatus('ファイルの複製に失敗しました: ' + (e?.message || e || ''), true);
+  } finally {
+    reservation?.cancel?.();
   }
 }
 
@@ -299577,6 +302591,10 @@ function buildToolMenuItems(toolType, component) {
           if (typeof importXlsxToDb === 'function') importXlsxToDb();
           else _showUnavailableToolMenuAction('Excelからインポート');
         }, disabled: !hasFile },
+        ...(_toolMenuKindleImportAvailable() ? [{ label: 'Kindleの本棚を取り込む...', action: () => {
+          if (typeof importKindleLibraryToDb === 'function') importKindleLibraryToDb();
+          else _showUnavailableToolMenuAction('Kindleの本棚を取り込む');
+        }, disabled: !hasFile }] : []),
       ],
       export: [
         { label: 'CSVとして保存...', action: () => _exportFile('db', 'csv'), disabled: !hasFile },
@@ -299695,6 +302713,8 @@ function buildToolMenuItems(toolType, component) {
       { label: 'シートから一括読込...', action: () => {
         if (typeof bdOpenBulkLinkImport === 'function') bdOpenBulkLinkImport();
       }, disabled: !hasFile },
+      { separator: true },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
     calendar: [
       { label: '新規イベント', action: () => _openCalendarEventFromMenu() },
@@ -299739,7 +302759,7 @@ function buildToolMenuItems(toolType, component) {
 
   const fileActions = hasFile && !isFolderTool ? [
     { separator: true },
-    { label: '別名で保存...', action: context => _showSaveAsModal(currentPath, { trigger: context?.trigger }) },
+    { label: '別名で保存...', action: context => _showSaveAsModal(currentPath, { trigger: context?.trigger, toolType }) },
     { label: 'ファイルを複製', action: () => _duplicateCurrentFile(toolType) },
     { label: 'ファイルを削除', action: () => _deleteCurrentFile(toolType) },
   ] : [];
@@ -299908,6 +302928,62 @@ async function importXlsxToDb() {
       return;
     }
     if (typeof showStatus === 'function') showStatus('Excelのインポートに失敗しました: ' + (e?.userMessage || e?.message || e), true);
+  }
+}
+
+// シート: 「インポート」→「Kindleの本棚を取り込む...」
+// Kindle for PC（Windows）がこのPCに残す本棚の記録を、開いているシートへ取り込む。Cloud・Windows以外では出さない。
+function _toolMenuKindleImportAvailable() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
+  const platform = String(navigator.userAgentData?.platform || navigator.platform || '');
+  return /^win/i.test(platform);
+}
+
+async function importKindleLibraryToDb() {
+  const label = 'Kindleの本棚を取り込む';
+  const dbPath = typeof getCurrentFilePath === 'function' ? getCurrentFilePath() : null;
+  if (!dbPath) { _showUnavailableToolMenuAction(label); return; }
+  let status = null;
+  try {
+    status = await apiFetch('/import-kindle/status');
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('Kindleの本棚を確認できませんでした: ' + (e?.userMessage || e?.message || e), true);
+    return;
+  }
+  if (!status?.available) {
+    if (typeof showStatus === 'function') showStatus(status?.message || (label + 'を実行できませんでした'), true);
+    return;
+  }
+  const count = Number(status.count || 0);
+  const syncLine = status.sync_time ? 'Kindle for PCの最終同期: ' + status.sync_time : 'Kindle for PCの最終同期: 不明';
+  const helpHost = document.createElement('div');
+  helpHost.className = 'gb-kindle-import-help';
+  helpHost.dataset.e2eId = 'kindle-import-help';
+  helpHost.innerHTML = '最新の本棚にするには ' + (typeof fieldHelp === 'function' ? fieldHelp(
+    '取り込まれるのは、Kindle for PCが最後に同期した時点の本棚です。最新にしたい時は、先にKindle for PCを開いて同期してから取り込んでください。'
+    + '同じシートへもう一度取り込むと、ASINで照合して新しい本を追加し、変わった項目だけを更新します。'
+    + '自分で足した列の値と、Kindleから無くなった本はそのまま残ります。'
+  ) : '');
+  const accepted = typeof cfConfirm === 'function'
+    ? await cfConfirm('Kindleの本棚（' + count + '冊）をこのシートに取り込みます\n' + syncLine, { okLabel: '取り込む', extraNode: helpHost })
+    : false;
+  if (!accepted) return;
+  try {
+    const result = await runBackgroundJob('/import-kindle', { db_path: dbPath, background: true }, { operationLabel: 'Kindleの本棚を取り込んでいます' });
+    const added = Number(result?.added || 0);
+    const updated = Number(result?.updated || 0);
+    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    if (typeof showStatus === 'function') {
+      showStatus('Kindleの本棚を取り込みました（追加 ' + added + '冊・更新 ' + updated + '冊）' + (warnings.length ? '。' + warnings[0] : ''), warnings.length > 0);
+    }
+    if (typeof selectDatabase === 'function' && getCurrentFilePath() === dbPath) selectDatabase(dbPath);
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      if (typeof showStatus === 'function') showStatus('Kindleの本棚の取り込みを停止しました。取り込み済みの本は残り、もう一度取り込むと続きを反映します。');
+      if (getCurrentFilePath() === dbPath && typeof selectDatabase === 'function') selectDatabase(dbPath);
+      return;
+    }
+    if (typeof showStatus === 'function') showStatus('Kindleの本棚を取り込めませんでした: ' + (e?.userMessage || e?.message || e), true);
   }
 }
 
@@ -300124,6 +303200,12 @@ async function _showSaveAsModal(srcPath, options = {}) {
     // 取り消しの記録は、操作した画面の履歴に積む（2026-11-21 ユーザー決定。取り消しは作ったコピーをゴミ箱へ移す）
     const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
     try {
+      if (options.toolType === 'form-app' && typeof FormAppComponent !== 'undefined') {
+        const source = FormAppComponent.prepareCopyOpen?.(srcPath, { preloadSheet: false });
+        if (source?.flush && !await source.flush()) {
+          throw new Error('元のフォームを保存できないため、別名での保存を中止しました');
+        }
+      }
       const res = await apiPost('/outliner/save-as', {
         path: srcPath,
         new_name: newName,
@@ -301291,6 +304373,7 @@ function _showDictStatusDialog(statuses, summary, options = {}) {
         if (seq === state.seq) _setPaletteStatus('本文検索を完了できませんでした。ファイル名の結果だけを表示しています', true);
       }
     }
+    if (seq !== state.seq) return;
     state.items = items;
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
@@ -301344,8 +304427,8 @@ function _showDictStatusDialog(statuses, summary, options = {}) {
     const action = item.action;
     closeCommandPalette();
     if (typeof action !== 'function') return Promise.resolve(false);
-    // パレットが閉じてフォーカスが戻ってから実行する。失敗は握りつぶさず表示する。
-    return new Promise(resolve => setTimeout(resolve, 0))
+    // 閉じる処理でフォーカスは同期的に戻る。イベント処理の後、描画待ちのタイマーへ回さず開始する。
+    return Promise.resolve()
       .then(() => action())
       .catch((error) => {
         _notifyActionFailed(item.label, error);
@@ -301519,6 +304602,8 @@ function _showDictStatusDialog(statuses, summary, options = {}) {
   function closeCommandPalette(options = {}) {
     state.visualUrls.forEach(url => URL.revokeObjectURL(url)); state.visualUrls = [];
     if (!state.overlay) return;
+    // 一覧・本文検索の遅延応答で、閉じた候補を再描画しない。
+    state.seq++;
     clearTimeout(state.searchTimer);
     state.searchTimer = 0;
     state.overlay.hidden = true;

@@ -1991,7 +1991,7 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     // デスクトップ付箋の小窓にはチャットが無い。送信設定の確認まで走らせない。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     installCliChatPatches();
     loadCliChatConfig().then(async () => {
       if (window.GBChatProviderDefault?.applyFirstRun) {

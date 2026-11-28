@@ -133,19 +133,30 @@
     }
 
     async function _readFileSnapshot(provider, filePath, entry) {
-      if (typeof provider.readBytesSnapshot === 'function') {
-        const snapshot = await provider.readBytesSnapshot(filePath);
-        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+      try {
+        if (typeof provider.readBytesSnapshot === 'function') {
+          const snapshot = await provider.readBytesSnapshot(filePath);
+          return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+        }
+        if (typeof provider.readBytesFresh === 'function') {
+          const snapshot = await provider.readBytesFresh(filePath);
+          return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
+        }
+        const before = await _fileEtag(provider, filePath, entry);
+        const bytes = new TextEncoder().encode(await provider.readText(filePath));
+        const after = await _fileEtag(provider, filePath, entry);
+        if (!before || before !== after) _throwEtagConflict(filePath, before, after);
+        return { bytes, etag: after };
+      } catch (error) {
+        // 古い一覧に項目が残っていても、実際の読み取りで無ければ同じ404契約へそろえる。
+        if (error?.status === 404 || error?.code === 'path_not_found'
+          || (error?.status === 409 && /^path\/not_found(?:\/|$)/i.test(String(error?.message || '')))) {
+          throw Object.assign(new Error(`ファイルが見つかりません: ${filePath}`), {
+            status: 404, httpStatus: 404, code: 'file_missing', meldexCode: 'file_missing', cause: error,
+          });
+        }
+        throw error;
       }
-      if (typeof provider.readBytesFresh === 'function') {
-        const snapshot = await provider.readBytesFresh(filePath);
-        return { bytes: snapshot.bytes, etag: String(snapshot.revision || '') };
-      }
-      const before = await _fileEtag(provider, filePath, entry);
-      const bytes = new TextEncoder().encode(await provider.readText(filePath));
-      const after = await _fileEtag(provider, filePath, entry);
-      if (!before || before !== after) _throwEtagConflict(filePath, before, after);
-      return { bytes, etag: after };
     }
 
     function _savedNoteMetadata(filePath, content) {

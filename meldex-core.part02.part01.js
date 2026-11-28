@@ -244,7 +244,7 @@ function initIframeMarkup(scrollContainer, options = {}) {
     el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
     el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
     el.setAttribute('fill', color);
-    el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+    el.setAttribute('fill-opacity', String(_annotationFillOpacity(data, normalizedOpacity, preview)));
     el.setAttribute('stroke', color);
     el.setAttribute('stroke-width', '1');
     el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -465,6 +465,13 @@ function initIframeMarkup(scrollContainer, options = {}) {
   }
 
   const pendingWrites = new Set();
+  const pendingNoteSaves = new Set();
+  async function flushMarkupWrites() {
+    while (pendingNoteSaves.size || pendingWrites.size) {
+      for (const commit of [...pendingNoteSaves]) commit();
+      if (pendingWrites.size) await Promise.allSettled([...pendingWrites]);
+    }
+  }
   function _saveBoardAnnotation(payload, onSaved, onError) {
     if ((!boardMode && !options.localSurface) || typeof apiPost !== 'function') return false;
     options.onMutation?.();
@@ -558,6 +565,10 @@ function initIframeMarkup(scrollContainer, options = {}) {
   }
 
   function _confirmEmbeddedNoteDelete(onOk) {
+    if ((boardMode || options.localSurface) && typeof _putAnnotationWithHistory === 'function') {
+      onOk?.();
+      return;
+    }
     const message = 'この付箋を削除しますか？';
     if (typeof showConfirmDialog === 'function') {
       showConfirmDialog(message, onOk);
@@ -870,9 +881,16 @@ function initIframeMarkup(scrollContainer, options = {}) {
       if (_updateBoardAnnotation(item.id, { data: next })) return;
       _postToParent({ type: 'ann-update-note', annId: item.id, data: next });
     };
+    const flushNoteSave = () => {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      pendingNoteSaves.delete(flushNoteSave);
+      persist();
+    };
     const scheduleSave = () => {
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(persist, 400);
+      pendingNoteSaves.add(flushNoteSave);
+      saveTimer = setTimeout(flushNoteSave, 400);
     };
     editor = _createNoteEditor(data, scheduleSave, item.id);
     note.appendChild(editor);
@@ -1073,7 +1091,9 @@ function initIframeMarkup(scrollContainer, options = {}) {
             delete note._annTailCtx.data.tailX;
             delete note._annTailCtx.data.tailY;
           }
-          AnnotationStickyTail.setTail(note, newTail, null);
+          // The menu persists its complete payload below. The tail renderer
+          // otherwise falls back to persist(), racing a second Cloud write.
+          AnnotationStickyTail.setTail(note, newTail, () => {});
         }
         persistTailState();
       };
@@ -1083,10 +1103,14 @@ function initIframeMarkup(scrollContainer, options = {}) {
         closeMenu(false);
         if (typeof window.openColorPalette === 'function') {
           window.openColorPalette(note, item.color || '', (newColor) => {
+            const previousColor = item.color;
             item.color = newColor || item.color;
             _applyNoteColor(note, item.color);
             if ((boardMode || options.localSurface) && String(item.id || '').startsWith('pending-note-')) return;
-            if (_updateBoardAnnotation(item.id, { color: item.color })) return;
+            if (_updateBoardAnnotation(item.id, { color: item.color }, null, () => {
+              item.color = previousColor;
+              _applyNoteColor(note, previousColor);
+            })) return;
             _postToParent({ type: 'ann-update-note', annId: item.id, color: item.color });
           });
         }

@@ -95,7 +95,7 @@
     const type = item?.type || '';
     if (type === 'image' || type === 'video' || type === 'audio' || type === 'pdf') return type;
     const ext = _pathExt(item?.path || item?.name || '');
-    if (ext === '.pdf') return 'pdf';
+    if (ext === '.pdf' || ext === '.epub') return 'pdf'; // EPUBもビューワーの文書の経路で開く
     if (IMAGE_EXTS.has(ext)) return 'image';
     if (VIDEO_EXTS.has(ext)) return 'video';
     if (AUDIO_EXTS.has(ext)) return 'audio';

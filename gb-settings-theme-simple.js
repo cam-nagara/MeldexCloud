@@ -291,8 +291,10 @@ function settingsThemeApplyBulkDecoration(prop, value) {
 function settingsThemeOpenBulkDecoration(button) {
   if (_settingsThemeIsReadonlyElement(button)) { _settingsThemePromptDuplicateForEdit(); return; }
   const extra = document.createElement('label');
-  extra.className = 'gb-field-row';
-  extra.innerHTML = '行間 <input type="number" class="gb-input" min="50" max="400" step="1" placeholder="個別" aria-label="行間を一括設定" data-e2e-id="settings-theme-bulk-line-height"> %';
+  // 書式ポップアップの他の項目と同じ組（項目名＋入力＋単位）にする。設定行（項目名128px・折り返さない）を
+  // 使うと幅の狭いポップアップで「行間」が縦に折れ、単位がはみ出していた（2026-11-27）。
+  extra.className = 'gb-fmt-popup-group';
+  extra.innerHTML = '<span class="gb-fmt-popup-label">行間</span><input type="number" class="gb-input gb-fmt-num" min="50" max="400" step="1" placeholder="個別" aria-label="行間を一括設定" data-e2e-id="settings-theme-bulk-line-height"><span class="gb-fmt-popup-label">%</span>';
   extra.querySelector('input').addEventListener('change', event => {
     if (event.target.value) settingsThemeApplyBulkDecoration('lineHeight', Number(event.target.value));
   });

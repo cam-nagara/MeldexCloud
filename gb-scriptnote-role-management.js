@@ -1,6 +1,95 @@
 /* gb-scriptnote-role-management.js: タイプ／キャラ分離管理UI */
 
 Object.assign(ScriptNoteEditor.prototype, {
+  _roleManagementValueKey(value) {
+    return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+  },
+
+  _roleManagementBodySnapshot(doc) {
+    const model = globalThis.GBScriptNoteRoleModel;
+    if (Number(doc?.schema_version) < 4 || !Array.isArray(doc?.rows)
+      || !Array.isArray(doc.scenarioTypes) || !Array.isArray(doc.characters)
+      || typeof model?.getEffectiveRole !== 'function' || typeof model?.buildRoleChoices !== 'function') return null;
+    try {
+      const content = { ...doc }; delete content.scenarioTypes; delete content.characters;
+      // 表示中のビューは履歴で戻さない。履歴本文に残った古い印だけで全文更新しない。
+      delete content.activeViewId;
+      const identity = { ...(doc.meldex || {}) }; delete identity.save_stamp;
+      if (Object.keys(identity).length) content.meldex = identity;
+      else delete content.meldex;
+      const names = new Set(doc.rows.map(row => String(row.role || '')));
+      const breaks = new Set(), summaries = new Set();
+      [...model.buildRoleChoices(doc), ...doc.rows].forEach(subject => {
+        const effective = model.getEffectiveRole(doc, subject);
+        const name = String(effective?.name || subject?.role || subject?.name || '');
+        if (!names.has(name)) return;
+        const type = effective?.type || effective?.style;
+        if (type?.isBreak || type?.kind === 'break') breaks.add(name);
+        if (type?.isSummary || type?.kind === 'summary') summaries.add(name);
+      });
+      return this._roleManagementValueKey({ content, roles: doc.rows.map(row => model.getEffectiveRole(doc, row)),
+        breaks: [...breaks].sort(), summaries: [...summaries].sort() });
+    } catch (_) { return null; }
+  },
+
+  _restoreNoneCharacterPaintSnapshot(data) {
+    const body = this.host?.querySelector?.('.sn2-editor');
+    if (!body?.isConnected || !this.host.contains(body) || typeof this._refreshRowStyles !== 'function') return false;
+    const withoutPaint = doc => {
+      if (!doc?.editor || !Array.isArray(doc.rows)) return null;
+      const content = { ...doc }, editor = { ...doc.editor };
+      delete content.activeViewId;
+      const identity = { ...(doc.meldex || {}) }; delete identity.save_stamp;
+      if (Object.keys(identity).length) content.meldex = identity;
+      else delete content.meldex;
+      const stored = editor.noneCharacter;
+      if (stored != null) {
+        if (typeof stored !== 'object' || Array.isArray(stored)) return null;
+        const none = { ...stored }, style = { ...(none.roleStyle || {}) };
+        // 色は寸法を変えない。文字サイズなど、他の値は比較から外さない。
+        for (const key of ['bgColor', 'textColor', 'textStrokeColor', 'accentColor']) delete style[key];
+        if (Object.keys(style).length) none.roleStyle = style;
+        else delete none.roleStyle;
+        if (none.id === 'none') delete none.id;
+        if (none.name === '') delete none.name;
+        if (Object.keys(none).length) editor.noneCharacter = none;
+        else delete editor.noneCharacter;
+      }
+      content.editor = editor;
+      return this._roleManagementValueKey(content);
+    };
+    try {
+      if (this._roleManagementValueKey(this.doc?.editor?.noneCharacter)
+          === this._roleManagementValueKey(data?.editor?.noneCharacter)) return false;
+      const before = withoutPaint(this.doc);
+      if (before === null || before !== withoutPaint(data)) return false;
+      if (Object.prototype.hasOwnProperty.call(data.editor, 'noneCharacter')) {
+        this.doc.editor.noneCharacter = data.editor.noneCharacter;
+      } else delete this.doc.editor.noneCharacter;
+      this._refreshRowStyles();
+      return true;
+    } catch (_) { return false; }
+  },
+
+  _restoreRoleManagementBodySnapshot(data) {
+    const body = this.host?.querySelector?.('.sn2-editor');
+    if (!body?.isConnected || !this.host.contains(body)) return false;
+    const before = this._roleManagementBodySnapshot(this.doc);
+    if (before === null || before !== this._roleManagementBodySnapshot(data)) return false;
+    const restore = (previous, next) => {
+      const byId = new Map(previous.map(item => [item.id, item]));
+      return next.map(item => {
+        const old = byId.get(item.id);
+        return old && this._roleManagementValueKey(old) === this._roleManagementValueKey(item) ? old : item;
+      });
+    };
+    // 本文のセルが参照するモデルは保持する。変更した未使用の役割だけ交換する。
+    this.doc.scenarioTypes = restore(this.doc.scenarioTypes, data.scenarioTypes);
+    this.doc.characters = restore(this.doc.characters, data.characters);
+    return true;
+  },
+
   _roleManagementAdapter() {
     const doc = this.doc;
     const model = globalThis.GBScriptNoteRoleModel || null;
@@ -68,10 +157,23 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       return references(kind, id) === 0;
     };
+    let bodySnapshot = this._roleManagementBodySnapshot(doc);
+    let bodyHost = this.host;
+    let bodyElement = bodyHost?.querySelector?.('.sn2-editor');
+    let bodyReadOnly = !!this._readOnly, bodyPath = this._path;
     const touch = () => {
+      const nextSnapshot = this._roleManagementBodySnapshot(doc);
+      const keepBody = this.doc === doc && this.host === bodyHost && bodyElement?.isConnected
+        && bodyReadOnly === !!this._readOnly && bodyPath === this._path
+        && bodyHost.contains(bodyElement) && bodyHost.querySelector('.sn2-editor') === bodyElement
+        && bodySnapshot !== null && bodySnapshot === nextSnapshot;
       this._calcCache = null;
       this._markDirty();
-      this._render();
+      if (!keepBody) this._render();
+      bodySnapshot = nextSnapshot;
+      bodyHost = this.host;
+      bodyElement = bodyHost?.querySelector?.('.sn2-editor');
+      bodyReadOnly = !!this._readOnly; bodyPath = this._path;
     };
     const rename = (method, item, name) => {
       if (this._readOnly) throw new Error('編集ロック中のため変更できません');
@@ -184,6 +286,24 @@ Object.assign(ScriptNoteEditor.prototype, {
     };
   },
 
+  _fitRoleManagementColumnsAfterRender(root, container) {
+    const doc = this.doc, host = this.host, path = this._path;
+    const fit = () => {
+      if (this.doc !== doc || this.host !== host || this._path !== path || !root.isConnected
+        || !container.isConnected || !container.contains(root)
+        || container.querySelector('.sn2-role-management') !== root) return;
+      const widths = [...root.querySelectorAll('table[data-role-management-kind]')]
+        .map(table => ({ table, width: table.parentElement?.clientWidth || 0 }));
+      widths.forEach(({ table, width }) => {
+        this._applyRoleManagementColumnWidths(table, table.dataset.roleManagementKind, null, null, width);
+      });
+    };
+    // 本文の再配置と表の構築を終えてから、描画直前に全表をまとめて測る。
+    // 旧環境では同期の配置を維持する。
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fit);
+    else fit();
+  },
+
   _renderSeparatedRoleManagement(container) {
     const adapter = this._roleManagementAdapter();
     this._detailTypeSelection = this._detailTypeSelection || new Set();
@@ -214,11 +334,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     container.appendChild(root);
     // 表示領域の幅が決まってから列幅を収める（描画前の幅0では縮められないため）。
-    const tableWidths = [...root.querySelectorAll('table[data-role-management-kind]')]
-      .map(table => ({ table, width: table.parentElement?.clientWidth || 0 }));
-    tableWidths.forEach(({ table, width }) => {
-      this._applyRoleManagementColumnWidths(table, table.dataset.roleManagementKind, null, null, width);
-    });
+    this._fitRoleManagementColumnsAfterRender(root, container);
   },
 
   _buildRoleManagementSeparator(typeSection, characterSection) {

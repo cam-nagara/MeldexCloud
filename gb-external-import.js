@@ -927,6 +927,7 @@
       if (inputEl) inputEl.value = '';
       return;
     }
+    const historyScope = typeof _historyActiveScope !== 'undefined' ? _historyActiveScope : '';
     try {
       if (file.size > PUREREF_MAX_BYTES) {
         setStatus('PureRefファイルが大きすぎます。256MB以下に分割してから取り込んでください。', true);
@@ -953,6 +954,11 @@
         onProgress: (progress) => setStatus(formatJobProgress(progress, { unit: '件', defaultPhase: '画像を取り込み中' }), false),
       });
       if (!data.image_count) throw new Error('画像を検出できませんでした。PureRefで画像を書き出してから取り込んでください。');
+      if (data.board_path && !data.skipped && typeof pushCreatedOutlinerItemHistory === 'function') {
+        // Only the new document is reversible. Keep checkpointed images and
+        // the original PureRef file intact for retries and other references.
+        pushCreatedOutlinerItemHistory({ path: data.board_path, kind: 'file' }, 'PureRefの取り込み', { scope: historyScope });
+      }
       resultStatus(`PureRef取り込み完了: 画像${data.image_count}件 / ${data.board_path || ''}`, data);
       if (typeof reloadOutlinerTree === 'function') reloadOutlinerTree();
     } catch (err) {

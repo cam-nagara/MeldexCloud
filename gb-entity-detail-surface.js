@@ -201,7 +201,7 @@
     return toolbar;
   }
 
-  async function refreshValueHistory(scope, entryId, path) {
+  async function refreshValueHistory(scope, entryId, path, change) {
     for (const root of document.querySelectorAll('[data-meldex-entity-detail]')) {
       const controller = root._meldexEntityDetailController;
       const target = controller?.valueHistoryTarget?.();
@@ -215,9 +215,13 @@
       const sameControls = () => Array.from(root.querySelectorAll('[data-e2e-id]'))
         .filter(control => control.dataset.e2eId === focusId);
       const focusIndex = focusId ? sameControls().indexOf(focused) : -1;
-      await controller.rerender();
-      // The columns tab is selected asynchronously and may replace its controls once more.
-      await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.flush?.();
+      const propertyRefreshed = !!change?.property && typeof controller.refreshValueProperty === 'function'
+        && await controller.refreshValueProperty(change.property, change.entitySnapshot);
+      if (!propertyRefreshed) {
+        await controller.rerender();
+        // The columns tab is selected asynchronously and may replace its controls once more.
+        await root.querySelector('.meldex-entity-attachments-section')?._linkedFiles?.flush?.();
+      }
       // Do not steal focus if the user moved elsewhere while the value was loading.
       if (focusIndex >= 0 && (document.activeElement === focused || document.activeElement === document.body)) {
         sameControls()[focusIndex]?.focus({ preventScroll: true });
@@ -620,13 +624,53 @@
       const valueHistoryPath = state.path;
       const entityGridOptions = {
         parentDb: parent,
+        emptyProperties: options.emptyProperties,
         propTypes: meta?.property_types || options.propTypes || undefined,
         surface: state.surface,
         topicTabs: true,
         historyScope: options.historyScope,
-        onHistoryChanged: typeof valueHistoryScope === 'string' ? () => refreshValueHistory(valueHistoryScope, entryId, valueHistoryPath) : undefined,
+        onHistoryChanged: typeof valueHistoryScope === 'string' ? change => refreshValueHistory(valueHistoryScope, entryId, valueHistoryPath, change) : undefined,
         readOnly: access.readOnly,
         ctx: options.ctx,
+      };
+      let propertyRefreshSeq = new Map();
+      state.refreshValueProperty = async (property, snapshot) => {
+        const columnsId = window.GBEntityLayout?.COLUMNS_TAB_ID || 'columns';
+        if (state.currentTopicLayoutId && state.currentTopicLayoutId !== columnsId) return false;
+        const card = Array.from(grid.querySelectorAll('.entry-prop-card')).find(el => el.dataset.propName === property);
+        const values = card?.querySelector('.entry-prop-values');
+        if (!values || typeof renderEntityPropValuesInto !== 'function') return false;
+        const seq = (propertyRefreshSeq.get(property) || 0) + 1, baseline = state.data;
+        propertyRefreshSeq.set(property, seq);
+        const normalize = path => String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const currentId = String(baseline?.entry_id || baseline?.id || '');
+        const snapshotId = String(snapshot?.entry_id || snapshot?.id || '');
+        const usableSnapshot = snapshot && normalize(snapshot.path) === normalize(state.path)
+          && (!currentId || snapshotId === currentId) && snapshot.properties && Number.isInteger(snapshot.revision) && snapshot.revision >= Number(baseline?.revision || 0);
+        const fresh = usableSnapshot ? snapshot
+          : await apiFetch('/entity?path=' + encodeURIComponent(state.path), { cache: 'no-store', skipBrowseCache: true });
+        if (state.disposed || !grid.isConnected || !values.isConnected || root.dataset.meldexEntityDetail !== id
+          || seq !== propertyRefreshSeq.get(property) || state.data !== baseline) return true;
+        const props = { ...(state.data?.properties || data.properties || {}), [property]: fresh.properties?.[property] || [] };
+        data.properties = props; state.data.properties = props;
+        // 値だけの変更で本文の入力や保存基準を置き換えない。
+        const bodyUnchanged = !state.saving && Number(fresh.revision ?? 0) >= Number(state.data?.revision || 0) && fresh.page_content != null
+          && String(fresh.page_content) === String(state.editor?.dataset.lastSavedMd || '');
+        if (bodyUnchanged) {
+          for (const target of new Set([data, state.data])) {
+            if (fresh.revision != null) target.revision = fresh.revision;
+            if (fresh.freetext_etag) target.freetext_etag = fresh.freetext_etag;
+          }
+          if (state.editor && fresh.revision != null) state.editor.dataset.lastSavedRevision = String(fresh.revision);
+          if (state.editor && fresh.freetext_etag) state.editor.dataset.lastSavedEtag = fresh.freetext_etag;
+        }
+        const nextValues = values.cloneNode(false);
+        renderEntityPropValuesInto(nextValues, property, data, state.path, entityGridOptions.propTypes || {}, {
+          ...entityGridOptions, dbPath: options.ctx?.dbPath || parent,
+          readOnly: entityGridOptions.readOnly || root.dataset.readOnly === '1',
+        });
+        values.replaceWith(nextValues);
+        return true;
       };
       state.selectTopicLayout = async (layoutId, selection = {}) => {
         // Mounting the outer columns panel must retain the default form inside it.
@@ -908,7 +952,7 @@
       get editor() { return state.editor; },
       valueHistoryTarget() { return { path: state.path, entryId: state.valueHistoryEntryId || '', connected: root.isConnected && !state.disposed,
         scope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope }; },
-      flush, dispose, rerender, ready: null,
+      flush, dispose, rerender, refreshValueProperty: (property, snapshot) => state.refreshValueProperty?.(property, snapshot) || false, ready: null,
     };
     controller.ready = Promise.resolve(previousDispose).catch(() => false).then(saved => {
       if (saved === false) return false;

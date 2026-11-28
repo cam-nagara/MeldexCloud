@@ -295,7 +295,9 @@ function _imagePropLockMessage(entityPath, propName) {
   return dbPath && typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
 }
 
-async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
+async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc, saveOptions = {}) {
+  const writeOptions = { ...saveOptions,
+    historyScope: typeof saveOptions.historyScope === 'function' ? saveOptions.historyScope() : saveOptions.historyScope };
   const options = _imagePropOptions(ptc);
   const current = parseImagePropertyValue(val?.value);
   const accepted = Array.from(files || []).filter(file => _isAcceptedAttachmentFile(file, options.accept));
@@ -348,7 +350,10 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
       console.warn('[image-property] upload failed:', err);
     }
   }
-  if (added > 0) await saveImagePropertyItems(entityPath, propName, val, current);
+  if (added > 0) {
+    if (typeof writeOptions.saveItems === 'function') await writeOptions.saveItems(current);
+    else await saveImagePropertyItems(entityPath, propName, val, current, writeOptions);
+  }
   if (failed > 0) {
     const message = added > 0
       ? `一部の画像を追加できませんでした（成功 ${added} 件 / 失敗 ${failed} 件）`
@@ -359,7 +364,9 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
   return current;
 }
 
-async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
+async function importImagePropertyNodes(event, entityPath, propName, val, ptc, saveOptions = {}) {
+  const writeOptions = { ...saveOptions,
+    historyScope: typeof saveOptions.historyScope === 'function' ? saveOptions.historyScope() : saveOptions.historyScope };
   if (typeof MeldexDnD === 'undefined' || typeof MeldexDnD.resolveDropData !== 'function') return null;
   const resolved = await MeldexDnD.resolveDropData(event, 'node');
   const payload = resolved?.payload;
@@ -401,7 +408,8 @@ async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
     }
   }
   if (added) {
-    await saveImagePropertyItems(entityPath, propName, val, current);
+    if (typeof writeOptions.saveItems === 'function') await writeOptions.saveItems(current);
+    else await saveImagePropertyItems(entityPath, propName, val, current, writeOptions);
     MeldexDnD.completeDrop?.(resolved);
   } else {
     MeldexDnD.failDrop?.(resolved);
@@ -411,17 +419,25 @@ async function importImagePropertyNodes(event, entityPath, propName, val, ptc) {
   return current;
 }
 
-async function saveImagePropertyItems(entityPath, propName, val, items) {
+async function saveImagePropertyItems(entityPath, propName, val, items, options = {}) {
   const newValue = stringifyImagePropertyValue(items);
   const oldValue = typeof val?.value === 'string'
     ? val.value
     : stringifyImagePropertyValue(parseImagePropertyValue(val?.value));
-  const dbPath = _imagePropDbPathForEntity(entityPath);
+  const dbPath = options.dbPath || options.ctx?.dbPath || _imagePropDbPathForEntity(entityPath);
+  const requestEntity = globalThis.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true;
+  const candidateRetry = options._candidateAddRetry || (options._candidateAddRetry = {});
+  const responseOptions = { ...(requestEntity ? { _return_entity: true } : {}),
+    ...(val?.entry_id ? { entry_id: val.entry_id } : {}) };
+  let savedResult;
+  const historyOptions = { dbPath, ctx: options.ctx, entityPath, valueProperty: propName, requestEntity,
+    historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+    onHistoryChanged: options.onHistoryChanged };
   const isExistingValue = !!(val && val.file && (val.candidate_index != null || _imagePropNormalizePath(val.file) !== _imagePropNormalizePath(entityPath)));
   if (isExistingValue) {
-    await _apiPutValue(val, { new_value: newValue });
+    savedResult = await _apiPutValue(val, { new_value: newValue, ...responseOptions });
     if (oldValue !== newValue && typeof _dbUndoValue === 'function') {
-      _dbUndoValue(`画像変更: ${propName}`, val, oldValue, newValue, undefined, undefined, { dbPath, entityPath });
+      _dbUndoValue(`画像変更: ${propName}`, val, oldValue, newValue, undefined, undefined, historyOptions);
     }
     val.value = newValue;
   } else {
@@ -444,22 +460,27 @@ async function saveImagePropertyItems(entityPath, propName, val, items) {
       }
       return currentRef;
     };
-    applyCreatedResult(await _apiPostValue(entityPath, propName, newValue, status, ''));
+    savedResult = await _apiPostValue(entityPath, propName, newValue, status, '', undefined, { ...responseOptions, _candidateAddRetry: candidateRetry });
+    applyCreatedResult(savedResult);
     if (currentRef && typeof historyPush === 'function') {
-      const historyScope = typeof _dbScope === 'function' ? _dbScope(dbPath) : `db:${dbPath || ''}`;
+      const historyScope = typeof historyOptions.historyScope === 'string' ? historyOptions.historyScope
+        : typeof _dbScope === 'function' ? _dbScope(dbPath) : `db:${dbPath || ''}`;
       const deleteCurrent = async () => {
+        let result;
         if (currentRef.candidate_index != null) {
-          await _apiPutValue(currentRef, { _delete: true });
+          result = await _apiPutValue(currentRef, { _delete: true, ...responseOptions });
         } else if (currentRef.file && _imagePropNormalizePath(currentRef.file) !== _imagePropNormalizePath(entityPath)) {
           await apiPost('/outliner/delete', { path: currentRef.file });
         }
-        await apiPost('/media/rebuild-refs', {}).catch(() => {});
-        if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
+        if (typeof historyOptions.onHistoryChanged === 'function') await historyOptions.onHistoryChanged({ property: propName, entitySnapshot: result?.entity_snapshot });
+        else if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, options.ctx, { silent: true });
       };
+      const redoRetry = {};
       const recreate = async () => {
-        applyCreatedResult(await _apiPostValue(entityPath, propName, newValue, status, ''));
-        await apiPost('/media/rebuild-refs', {}).catch(() => {});
-        if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
+        const result = await _apiPostValue(entityPath, propName, newValue, status, '', undefined, { ...responseOptions, entry_id: currentRef?.entry_id || responseOptions.entry_id, _candidateAddRetry: redoRetry });
+        applyCreatedResult(result);
+        if (typeof historyOptions.onHistoryChanged === 'function') await historyOptions.onHistoryChanged({ property: propName, entitySnapshot: result?.entity_snapshot });
+        else if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, options.ctx, { silent: true });
       };
       historyPush(`画像候補追加: ${propName}`, deleteCurrent, recreate, historyScope);
     }
@@ -469,8 +490,14 @@ async function saveImagePropertyItems(entityPath, propName, val, items) {
       val.status = status;
     }
   }
-  apiPost('/media/rebuild-refs', {}).catch(() => {});
-  if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(document.activeElement, entityPath, propName);
+  // 画像削除・GCのAPIは永続データから参照を取り直す。
+  // 値の変更や履歴のたびに保存先全体を走査して、画面更新を待たせない。
+  if (typeof historyOptions.onHistoryChanged === 'function') {
+    try { await historyOptions.onHistoryChanged({ property: propName, entitySnapshot: savedResult?.entity_snapshot }); }
+    catch (error) {
+      if (typeof showStatus === 'function') showStatus('画像は保存済みですが表示を更新できません: ' + (error?.message || error), true);
+    }
+  } else if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(document.activeElement, entityPath, propName);
   else if (state.currentDbPath && typeof selectDatabase === 'function') selectDatabase(state.currentDbPath, undefined, { silent: true });
 }
 
@@ -609,11 +636,11 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
       const beforeCount = parseImagePropertyValue(val?.value).length;
       const internal = Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node');
       const updated = internal
-        ? await importImagePropertyNodes(e, entityPath, propName, val, ptc)
-        : await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc);
+        ? await importImagePropertyNodes(e, entityPath, propName, val, ptc, options)
+        : await uploadImagePropertyFiles(e.dataTransfer.files, entityPath, propName, val, ptc, options);
       if (!updated || updated.length <= beforeCount) return;
       showStatus('画像を追加しました');
-      if (dbPath) selectDatabase(dbPath, undefined, { silent: true });
+      if (dbPath && typeof options.onHistoryChanged !== 'function') selectDatabase(dbPath, options.ctx, { silent: true });
     } catch (err) {
       showStatus(err?.message || '画像追加に失敗しました', true);
     }
@@ -633,7 +660,11 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
 
 function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}) {
   const options = _imagePropOptions(ptc);
+  const saveOptions = { ...modalOptions, _candidateAddRetry: {},
+    historyScope: typeof modalOptions.historyScope === 'function' ? modalOptions.historyScope() : modalOptions.historyScope };
+  const dbPath = saveOptions.dbPath || saveOptions.ctx?.dbPath || _imagePropDbPathForEntity(entityPath);
   let items = parseImagePropertyValue(val?.value);
+  let pendingItems = null;
   const lockMsg = _imagePropLockMessage(entityPath, propName);
   const canEdit = !lockMsg;
   let busy = false;
@@ -666,9 +697,26 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     initialFocus: '[data-e2e-id="image-gallery-add"]',
     returnFocus: returnFocus || undefined,
     onBeforeClose: () => {
-      if (!busy) return true;
-      if (typeof showStatus === 'function') showStatus('画像を保存しています。完了後に閉じてください', true);
-      return false;
+      if (busy) {
+        if (typeof showStatus === 'function') showStatus('画像を保存しています。完了後に閉じてください', true);
+        return false;
+      }
+      if (saveOptions._candidateAddRetry.body) {
+        if (typeof cfConfirm !== 'function') return false;
+        return Promise.resolve(cfConfirm('保存されている可能性があります。再試行せずに編集を終了し、現在の保存内容を読み直しますか？')).then(async confirmed => {
+          if (!confirmed) return false;
+          setBusy(true);
+          try {
+            if (typeof saveOptions.onHistoryChanged === 'function') await saveOptions.onHistoryChanged({ property: propName });
+            else await selectDatabase(dbPath, saveOptions.ctx, { silent: true });
+            showStatus('現在の保存内容を読み直しました。保存の成否は確認してください', true);
+          } catch (error) { showStatus('保存結果は未確認です。表示を更新できません: ' + (error?.userMessage || error?.message || error), true); }
+          finally { setBusy(false); }
+          return true;
+        });
+      }
+      return !pendingItems || (typeof cfConfirm === 'function'
+        ? cfConfirm('保存できていない画像の変更を破棄して閉じますか？') : false);
     },
   });
   const overlay = modalApi.overlay;
@@ -682,9 +730,13 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
   const list = overlay.querySelector('#gb-img-gallery-list');
   const fileInput = overlay.querySelector('#gb-img-file-input');
   const countEl = overlay.querySelector('.gb-section-desc');
+  const saveError = GBUI.createInlineError({ message: '', onRetry: () => pendingItems && saveNextItems(pendingItems) });
+  saveError.dataset.e2eId = 'image-gallery-save-error';
+  list.before(saveError);
   if (fileInput) fileInput.disabled = !canEdit;
   const setBusy = (nextBusy) => {
     busy = nextBusy === true;
+    saveError.setBusy(busy);
     overlay.dataset.imageGalleryBusy = busy ? '1' : '0';
     overlay.querySelectorAll('.gb-image-gallery-card input, .gb-image-gallery-card button').forEach((control) => {
       control.disabled = busy || !canEdit && control.title !== '開き方を選ぶ';
@@ -777,14 +829,16 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     setBusy(busy);
   };
   const saveNextItems = async (nextItems) => {
-    const prevItems = _imagePropCloneItems(items);
     setBusy(true);
     try {
-      await saveImagePropertyItems(entityPath, propName, val, nextItems);
+      await saveImagePropertyItems(entityPath, propName, val, nextItems, saveOptions);
       items = _imagePropCloneItems(nextItems);
+      pendingItems = null;
+      saveError.setMessage('');
     } catch (err) {
-      items = prevItems;
-      showStatus(err?.message || '画像列の保存に失敗しました', true);
+      items = _imagePropCloneItems(nextItems);
+      pendingItems = _imagePropCloneItems(nextItems);
+      saveError.setMessage('画像を保存できませんでした。変更はこの画面に保持しています。' + (err?.message || ''));
     } finally {
       setBusy(false);
     }
@@ -797,7 +851,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     }
     setBusy(true);
     try {
-      items = await uploadImagePropertyFiles(files, entityPath, propName, val, ptc);
+      items = await uploadImagePropertyFiles(files, entityPath, propName, val, ptc, { ...saveOptions, saveItems: saveNextItems });
     } catch (err) {
       showStatus(err?.message || '画像追加に失敗しました', true);
     } finally {
@@ -817,7 +871,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}
     if (!internal) { await addFiles(e.dataTransfer.files); return; }
     if (!canEdit) { if (lockMsg) showStatus(lockMsg, true); return; }
     setBusy(true);
-    try { items = await importImagePropertyNodes(e, entityPath, propName, val, ptc) || items; }
+    try { items = await importImagePropertyNodes(e, entityPath, propName, val, ptc, { ...saveOptions, saveItems: saveNextItems }) || items; }
     finally { setBusy(false); render(); }
   });
   render();

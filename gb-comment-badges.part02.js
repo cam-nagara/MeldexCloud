@@ -66,7 +66,7 @@
     const ctx = override || detectCommentContext();
     const kindLabel = ({
       note_line: 'ノート行', scriptnote_line: 'シナリオ行',
-      board_card: 'ボードカード', sheet_cell: 'シートのセル',
+      board_card: 'ボードカード', sheet_cell: 'シートのセル', sheet_entry: 'シートのトピック',
       board_line: 'ボードライン',
       calendar_event: 'カレンダーイベント',
       map_feature: 'マップの地点・図形', form_field: 'フォームの項目',
@@ -83,9 +83,11 @@
       };
       if (ctx.targetRef) payload.target_ref = ctx.targetRef;
       if (ctx.snapshot) payload.target_snapshot = ctx.snapshot;
+      if (opts.returnSavedRow) payload.return_saved_row = true;
       const res = await apiPost('/annotations', payload);
       if (res?.id && typeof _pushAnnotationCreateHistory === 'function') {
-        await _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '').catch(() => {});
+        await _pushAnnotationCreateHistory(res.id, 'アノテート: コメント追加', ctx.filePath || '', undefined,
+          opts.returnSavedRow ? res.saved_annotation : undefined).catch(() => {});
       }
       if (ctx.filePath) invalidate(ctx.filePath);
       // Adding a comment is an explicit request to see its anchor immediately.
@@ -171,7 +173,16 @@
     const counts = buildCountMap(items).form_field;
     root.querySelectorAll('[data-form-field]').forEach(fieldEl => {
       const field = fieldEl.dataset.formField;
-      _ensureBadge(fieldEl, counts.get(field) || 0, () => _openPanelForTarget(filePath, 'form_field', { file: filePath, field }));
+      const parentField = fieldEl.parentElement?.closest?.('[data-form-field]');
+      if (parentField?.dataset.formField === field) {
+        fieldEl.querySelector?.(':scope > .cmt-badge')?.remove();
+        return;
+      }
+      const host = fieldEl.matches?.('input,textarea,select')
+        ? fieldEl.closest('.gb-form-input-row') || fieldEl.parentElement : fieldEl;
+      _ensureBadge(host, counts.get(field) || 0, () => _openPanelForTarget(filePath, 'form_field', { file: filePath, field }));
+      const badge = host?.querySelector?.(':scope > .cmt-badge');
+      if (badge) badge.style.alignSelf = 'flex-start';
     });
   }
 

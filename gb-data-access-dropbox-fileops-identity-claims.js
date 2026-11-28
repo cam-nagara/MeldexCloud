@@ -57,8 +57,9 @@
         if (!/\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet|mel-form)$/i.test(sourceLocator)) {
           continue;
         }
-        if (typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');
-        const read = await provider.readBytesFresh(item.path);
+        const verifiedRead = typeof provider.readBytesIdentityFresh === 'function';
+        if (!verifiedRead && typeof provider.readBytesFresh !== 'function') throw new Error('Dropbox bytes fresh read契約を利用できません');
+        const read = verifiedRead ? await provider.readBytesIdentityFresh(item.path) : await provider.readBytesFresh(item.path);
         const text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes);
         const entryId = /\.md$/i.test(sourceLocator) ? _settingsEntryIdForClaim(text) : '';
         let kind = entryId ? 'entry' : '';
@@ -70,7 +71,11 @@
           kind = uid ? 'document' : '';
         }
         if (!uid) continue;
-        const meta = await _providerObjectIdentity(provider, item.path, null);
+        // The strict snapshot binds bytes to the downloaded object and checks
+        // its current identity. Older providers retain their readback checks.
+        const meta = verifiedRead ? { id: read.provider_id, rev: read.revision }
+          : read.metadata?.id && read.metadata?.rev === read.revision
+            ? read.metadata : await _providerObjectIdentity(provider, item.path, null);
         if (!meta?.id || !meta?.rev || String(read.revision || '') !== String(meta.rev)) {
           throw Object.assign(new Error('Dropbox bytes readback後にprovider identityが変更されました'), { status: 409 });
         }

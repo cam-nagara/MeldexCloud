@@ -273,6 +273,10 @@
 
     if (state.nodeByPath) state.nodeByPath.set(path, { row, selectRow, isFile, expand: null });
 
+    if (isFile && state.selectSheetTopics && folder.type === 'database') {
+      return _attachSheetTopics(node, row, toggle, root, { path, name }, depth, state, selectRow, activate);
+    }
+
     if (isFile) {
       row.addEventListener('click', () => selectRow());
       row.addEventListener('dblclick', () => { selectRow(); activate(); });
@@ -388,6 +392,161 @@
     node.appendChild(row);
     node.appendChild(children);
     if (!state.userSelected && _normalizePath(state.initialPath) === path) selectRow(true);
+    return node;
+  }
+
+  // selectSheetTopics: シートの行の下にトピック（シートの行）を並べ、トピックも選べるようにする。
+  // トピックの一覧はシートの名前解決と同じ取得経路（_getRelationMap / /pivot）を使う。
+  async function _loadSheetTopics(sheetPath) {
+    if (typeof _getRelationMap === 'function') {
+      const map = await _getRelationMap(sheetPath);
+      return Object.entries(map?.idToName || {}).map(([id, name]) => ({ id, name }));
+    }
+    const data = await apiFetch('/pivot?path=' + encodeURIComponent(sheetPath));
+    return Object.keys(data?.entities || {}).map(name => ({ id: String(data.entities[name]?._id || name), name }));
+  }
+
+  function _topicSelection(root, sheet, topic) {
+    return {
+      ..._selectionFor(root, sheet.path, sheet.name, 'topic', 'topic'),
+      sheetName: sheet.name,
+      topicName: topic.name,
+      topicId: topic.id || topic.name,
+    };
+  }
+
+  function _attachSheetTopics(node, row, toggle, root, sheet, depth, state, selectRow, activate) {
+    row.setAttribute('aria-expanded', 'false');
+    toggle.style.visibility = '';
+    const children = document.createElement('div');
+    children.className = 'gb-folder-picker-children';
+    children.style.display = 'none';
+    children.dataset.loaded = '0';
+    const setExpanded = open => {
+      children.style.display = open ? '' : 'none';
+      row.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.title = open ? '折りたたむ' : '展開';
+      toggle.setAttribute('aria-label', `${sheet.name}${open ? 'を折りたたむ' : 'のトピックを表示'}`);
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.innerHTML = _icon(open ? 'chevronDown' : 'chevronRight', 16);
+      if (typeof replaceIcons === 'function') replaceIcons(toggle);
+    };
+    const message = (text, isError) => {
+      const el = document.createElement('div');
+      el.textContent = text;
+      el.className = isError ? 'gb-folder-picker-message is-error' : 'gb-folder-picker-message';
+      el.style.setProperty('--gb-picker-depth', String(depth + 1));
+      return el;
+    };
+    const expand = async () => {
+      const open = children.style.display === 'none';
+      setExpanded(open);
+      if (!open || children.dataset.loaded === '1') return;
+      children.dataset.loaded = '1';
+      children.replaceChildren(message('トピックを読み込み中...'));
+      try {
+        const topics = (await (state.loadSheetTopics || _loadSheetTopics)(sheet.path))
+          .filter(topic => topic && String(topic.name || '').trim())
+          .sort((a, b) => String(a.name).localeCompare(String(b.name), 'ja'));
+        children.replaceChildren();
+        if (!topics.length) {
+          children.appendChild(message('このシートにトピックはありません'));
+          return;
+        }
+        topics.forEach(topic => children.appendChild(_createTopicNode(root, sheet, topic, depth + 1, state)));
+        state.applyTreeView?.();
+      } catch (_) {
+        children.dataset.loaded = '0';
+        children.replaceChildren(message('トピックを読み込めませんでした。', true));
+      }
+    };
+    if (state.nodeByPath) {
+      const entry = state.nodeByPath.get(sheet.path);
+      if (entry) {
+        entry.expand = expand;
+        // 前回のトピックを初期選択する時は、表示位置合わせ（revealPath）でシート自体を選び直さない
+        entry.selectRow = automatic => {
+          if (automatic && state.initialTopic) return;
+          selectRow(automatic);
+        };
+      }
+    }
+    row.addEventListener('click', event => {
+      if (event.target === toggle || toggle.contains(event.target)) return;
+      selectRow();
+    });
+    row.addEventListener('dblclick', () => { selectRow(); activate(); });
+    row.addEventListener('keydown', event => {
+      const expanded = children.style.display !== 'none';
+      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+        event.preventDefault();
+        if ((event.key === 'ArrowRight') !== expanded) expand();
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectRow();
+        if (event.key === 'Enter') activate();
+      }
+    });
+    toggle.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      expand();
+    });
+    node.appendChild(row);
+    node.appendChild(children);
+    if (!state.userSelected && _normalizePath(state.initialPath) === sheet.path && !state.initialTopic) selectRow(true);
+    if (state.initialTopic && _normalizePath(state.initialPath) === sheet.path) expand();
+    return node;
+  }
+
+  function _createTopicNode(root, sheet, topic, depth, state) {
+    const node = document.createElement('div');
+    node.className = 'gb-folder-picker-node';
+    const row = document.createElement('div');
+    row.className = 'gb-folder-picker-row';
+    row.dataset.gbPickerKind = 'file';
+    row.dataset.gbPickerName = String(topic.name || '').toLocaleLowerCase('ja');
+    row.dataset.gbPickerPath = (sheet.path + '/' + topic.name).toLocaleLowerCase('ja');
+    row.dataset.gbPickerTopic = String(topic.name || '');
+    row.dataset.path = sheet.path;
+    row.dataset.e2eId = `gb-folder-picker-topic:${sheet.path}#${topic.name}`;
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('aria-level', String(depth + 1));
+    row.setAttribute('aria-selected', 'false');
+    row.tabIndex = 0;
+    row.style.setProperty('--gb-picker-depth', String(depth));
+    const spacer = document.createElement('span');
+    spacer.className = 'gb-folder-picker-toggle';
+    spacer.style.visibility = 'hidden';
+    row.appendChild(spacer);
+    const icon = document.createElement('span');
+    icon.className = 'gb-folder-picker-icon';
+    icon.innerHTML = _icon('fileText', 18);
+    row.appendChild(icon);
+    const label = document.createElement('span');
+    label.className = 'gb-folder-picker-label';
+    label.textContent = topic.name;
+    row.appendChild(label);
+    row.title = `${sheet.name} / ${topic.name}`;
+    const selectRow = (automatic = false) => {
+      if (!automatic) state.userSelected = true;
+      state.selected = _topicSelection(root, sheet, topic);
+      _markSelectedAcross(state, row);
+      _setCurrentPathText(state.current, `${_rowLabelText(state.selected)} / ${topic.name}`);
+      state.onSelect?.(state.selected, { automatic });
+    };
+    row.addEventListener('click', () => selectRow());
+    row.addEventListener('dblclick', () => { selectRow(); state.onActivate?.(state.selected); });
+    row.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      selectRow();
+      if (event.key === 'Enter') state.onActivate?.(state.selected);
+    });
+    node.appendChild(row);
+    if (!state.userSelected && state.initialTopic === topic.name && _normalizePath(state.initialPath) === sheet.path) {
+      selectRow(true);
+    }
     return node;
   }
 
@@ -508,6 +667,9 @@
       roots: null,
       selectFolders: options.selectFolders !== false,
       fileFilter: typeof options.fileFilter === 'function' ? options.fileFilter : null,
+      selectSheetTopics: !!(options.selectFiles && options.selectSheetTopics),
+      loadSheetTopics: typeof options.loadSheetTopics === 'function' ? options.loadSheetTopics : null,
+      initialTopic: String(options.initialTopic || ''),
       onSelect: typeof options.onSelect === 'function' ? options.onSelect : null,
       onActivate: typeof options.onActivate === 'function' ? options.onActivate : null,
     };

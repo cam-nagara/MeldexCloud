@@ -368,15 +368,15 @@
       nodes.forEach(node => {
         if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(node)) {
           needsFullRender = true;
+          if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(node.id, reason);
         }
-        if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(node.id, reason);
       });
       if (needsFullRender) {
         if (typeof bdRequestFullRender === 'function') bdRequestFullRender(`${reason}-fallback`);
         else if (typeof bdRender === 'function') bdRender();
       }
       if (typeof bdMarkExtrasDirty === 'function') {
-        bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: ids }, reason);
+        bdMarkExtrasDirty({ minimap: true, boardUi: typeof bdSyncBoardUi !== 'function', comments: ids }, reason);
       }
     } finally {
       if (typeof bdEndFastBoardMutation === 'function') bdEndFastBoardMutation();
@@ -400,6 +400,12 @@
   function addCardSpecs(rawSpecs, point, options) {
     const specs = (Array.isArray(rawSpecs) ? rawSpecs : []).filter(Boolean).slice(0, MAX_ITEMS);
     if (!specs.length || typeof bd === 'undefined' || !Array.isArray(bd.nodes)) return [];
+    const append = () => addCardSpecsWithUi(specs, point, options);
+    return typeof bdWithNormalizedBoardUiState === 'function'
+      ? bdWithNormalizedBoardUiState(append) : append();
+  }
+
+  function addCardSpecsWithUi(specs, point, options) {
     const origin = pastePoint(point);
     const mediaOnly = specs.every(spec => spec.kind === 'image');
     const nodes = specs.map((spec, index) => {

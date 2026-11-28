@@ -1,3 +1,61 @@
+      && typeof GBPaneBridge !== 'undefined'
+      && GBPaneBridge?.initialized) {
+      // ツリーやサブパネルをクリックすると activePane はその補助パネルになる。
+      // 読込前の明示 navPush も、他のファイルと同じ作業パネル選択を通す。
+      requestedPaneId = openOpts.paneId || GBPaneBridge.activateFileOpenPane?.()
+        || (typeof GBLayout !== 'undefined' ? GBLayout.activePane : null);
+      const paneInfo = requestedPaneId
+        && typeof GBLayout !== 'undefined'
+        && typeof GBLayout.findNode === 'function'
+        ? GBLayout.findNode(GBLayout.root, requestedPaneId)
+        : null;
+      requestedPane = paneInfo?.node || null;
+      requestedTabIndex = requestedPane?.activeTabIndex ?? -1;
+      requestedTab = requestedPane?.tabs?.[requestedTabIndex] || null;
+      if (requestedTab) {
+        requestedTabSnapshot = {
+          fields: {
+            type: requestedTab.type,
+            label: requestedTab.label,
+            path: requestedTab.path,
+            state: requestedTab.state,
+            icon: requestedTab.icon,
+          },
+          navHistory: Array.isArray(requestedTab.navHistory) ? [...requestedTab.navHistory] : requestedTab.navHistory,
+          navIndex: requestedTab.navIndex,
+        };
+      }
+      await navPush({ type: 'board', label, path }, requestedPaneId);
+      navPushedBeforeLoad = true;
+      if (requestedPane && typeof getComponentInstance === 'function') {
+        const tab = requestedPane.tabs?.[requestedPane.activeTabIndex] || null;
+        const component = tab ? getComponentInstance(tab.id) : null;
+        mountedBoardLoad = component?._boardLoadPending || null;
+      }
+    }
+    if (!openOpts.skipShowView) showView('board');
+    if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
+    const opened = mountedBoardLoad
+      ? await mountedBoardLoad
+      : (typeof bdOpenBoard === 'function' ? await bdOpenBoard(label, path, { ...openOpts, loading }) : true);
+    if (opened === false) {
+      restorePreviousView();
+      return false;
+    }
+    if (!openOpts.skipSaveLastView) saveLastView({type:'board', label, path});
+    if (!openOpts.skipNavPush && !navPushedBeforeLoad) {
+      const _navEntry = {type:'board', label, path};
+      navPush(_navEntry);
+    }
+    if (!openOpts.skipRecent) addRecent(label, path, 'board');
+    if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+    if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
+    return true;
+  } catch (err) {
+    restorePreviousView();
+    showStatus('ボード読み込みエラー: ' + (err.message || err), true);
+    return false;
+  } finally {
     if (showOpenLoading) {
       hideLoading(loading);
     }
@@ -840,29 +898,3 @@ function _sendHeartbeat() {
 
 function _startHeartbeat() {
   _sendHeartbeat();
-  if (_heartbeatTimer) return;
-  _heartbeatTimer = setInterval(_sendHeartbeat, 10000);
-}
-
-function _stopHeartbeat() {
-  if (!_heartbeatTimer) return;
-  clearInterval(_heartbeatTimer);
-  _heartbeatTimer = null;
-}
-
-function _syncHeartbeatForVisibility() {
-  if (_isHeartbeatCloudMode()) {
-    _stopHeartbeat();
-    return;
-  }
-  _startHeartbeat();
-}
-
-document.addEventListener('visibilitychange', _syncHeartbeatForVisibility);
-if (document.body && typeof MutationObserver !== 'undefined') {
-  new MutationObserver(_syncHeartbeatForVisibility).observe(document.body, {
-    attributes: true,
-    attributeFilter: ['data-cloud-mode'],
-  });
-}
-_syncHeartbeatForVisibility();

@@ -1155,6 +1155,36 @@
     throw new Error('Dropboxへもう一度接続してください');
   }
 
+  // 画像の縮小表示をまとめて取る（1回で最大25件）。1枚ごとに「親フォルダの一覧・ファイルの確認・縮小表示」の
+  // 3回の通信を、同時2本までで順に送っていたため、数千件のシートでは画面の分が出るまで数十秒〜数分かかっていた
+  // （2026-11-26 利用者報告）。本文・応答ともJSON（縮小表示はbase64）。画像の読み込みと同じ枠（同時2本）で送る。
+  async function apiThumbnailBatch(entries, options) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await getValidAccessToken();
+      if (!token) throw new Error('Dropboxへもう一度接続してください');
+      const response = await _fetchDropboxWithRetry('files/get_thumbnail_batch', async () => fetch('https://content.dropboxapi.com/2/files/get_thumbnail_batch', {
+        method: 'POST',
+        headers: await _fileApiHeaders('files/get_thumbnail_batch', {
+          Authorization: 'Bearer ' + token,
+          'Content-Type': 'application/json',
+        }, options),
+        body: JSON.stringify({ entries: entries || [] }),
+      }), true);
+      if (response.ok) {
+        let payload = null;
+        try { payload = await response.json(); } catch {}
+        return Array.isArray(payload?.entries) ? payload.entries : [];
+      }
+      if (response.status === 401 && attempt === 0 && await _refreshAfterUnauthorized()) continue;
+      const detail = await _readDropboxError(response);
+      if (response.status === 401 && !_sessionBroker()?.isManaged?.(_sessionBroker()?.session?.())) await clearSession();
+      throw Object.assign(new Error(String(detail)), {
+        httpStatus: response.status, dropboxRoute: 'files/get_thumbnail_batch', namespaceKind: options?.namespaceKind || 'home',
+      });
+    }
+    throw new Error('Dropboxへもう一度接続してください');
+  }
+
   async function apiContent(route, arg, init, options) {
     if (route === 'files/download') await _guardMissingRead(arg?.path, options);
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1285,6 +1315,7 @@
     resolveFileLocation,
     apiRpc,
     apiContent,
+    apiThumbnailBatch,
     readFolderEntries: _readFolderEntries,
     isMissingReadPath: _isMissingReadPath,
     getCurrentAccount,

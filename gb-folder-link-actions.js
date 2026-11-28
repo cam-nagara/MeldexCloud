@@ -75,7 +75,7 @@
       });
       const movers = new Map();
       pendingByDestination.forEach((sources, destination) => {
-        if (typeof _folderCreateMover === 'function') movers.set(destination, _folderCreateMover(sources, destination));
+        if (typeof _folderCreateMover === 'function') movers.set(destination, _folderCreateMover(sources, destination, { minimum: options.batchMinimum }));
       });
       let unappliedMoves = [];
       const applyMovesToView = (mover, source) => {
@@ -443,9 +443,11 @@
             executedCopies.push({ origPath: item.path, newPath, applied: true, item });
             try {
               if (typeof _folderApplySavedDropResults === 'function') {
-                _folderApplySavedDropResults(destFolder, [{ item: {
+                const reflected = _folderApplySavedDropResults(destFolder, [{ item: {
                   path: newPath, name: res?.new_name || item.name, type: item.type,
-                } }], []);
+                } }], [], { selectPaths: pastedPaths });
+                if (reflected && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function'
+                    && _folderDropPathsEqual(_folderPath, destFolder)) executedCopies[executedCopies.length - 1].panelReflected = true;
               }
             } catch (error) { console.warn('[paste] 保存済みの表示反映に失敗', error); }
           }
@@ -507,7 +509,12 @@
     }
 
     const refresh = typeof options.refresh === 'function' ? options.refresh : (typeof _folderToolbarRefresh === 'function' ? _folderToolbarRefresh : null);
-    if (refresh) await refresh(pastedPaths.filter(Boolean));
+    const panelReflected = mode === 'copy' && executedCopies.length > 0 && executedCopies.every(copy => copy.panelReflected)
+      && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, destFolder)
+      && executedCopies.every(copy => _folderItems.some(item => _folderDropPathsEqual(item.path, copy.newPath)));
+    // 確定したコピーは追加時に選択まで描く。選択だけのために全カードを作り直さない。
+    // 履歴のrefreshは従来通り。保存直後だけ、確定したカードを保持したままツリーを照合する。
+    if (refresh) await refresh(pastedPaths.filter(Boolean), panelReflected ? { refreshFolder: false, treeFolders: [destFolder] } : undefined);
 
     if (failed.length) {
       if (typeof showStatus === 'function') showStatus((pastedPaths.length || 0) + ' 件を貼り付け、' + failed.length + ' 件は失敗しました', true);

@@ -42,7 +42,7 @@
   function _isolatedViewerUrl(entry) {
     if (entry.state?.viewerUrl) return entry.state.viewerUrl;
     const mediaType = entry.state?.mediaType || '';
-    return mediaType === 'pdf' || /\.pdf$/i.test(entry.path)
+    return mediaType === 'pdf' || /\.(?:pdf|epub)$/i.test(entry.path)
       ? '/viewer?pdf=' + encodeURIComponent(entry.path)
       : '/viewer?file=' + encodeURIComponent(entry.path);
   }
@@ -579,6 +579,11 @@
     // （描き直しの後に通信を始めると、フォルダを開くまでが0.3秒を超えることがあった）。
     const normalized = _normalizeTarget(target);
     normalized.catch(() => {});
+    if (target?.type === 'form-app' && typeof FormAppComponent !== 'undefined' && typeof FormAppComponent.prepareOpenRead === 'function') {
+      // 読み取りの通信を送り出してから、右レールの描き直しを始める。
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (seq !== _opSeq) return false;
+    }
     // スマホのドロワー表示は _openMobileDrawer が自前で開くため、右レールの操作はしない。
     try {
       if (opts.reveal !== false && !_isMobileDrawerEnabled()) _revealRightSidebar();
@@ -611,7 +616,9 @@
         // 古い面の位置をguardが記録した後で、今回の明示的な選択を反映する。
         const state = { ...(tab.history[tab.index].state || {}), ...(entry.state || {}) };
         if (entry.state?.viewerUrl && !entry.state?._viewerState) delete state._viewerState;
-        tab.history[tab.index] = { ...tab.history[tab.index], ...entry, state };
+        const refreshed = { ...tab.history[tab.index], ...entry, state };
+        _moveFormOpenRead(entry, refreshed);
+        tab.history[tab.index] = refreshed;
       }
       _activeId = tab.id;
       _useTabHistory(tab);

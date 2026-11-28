@@ -153,21 +153,32 @@
   // ============================================================
   const REOPEN_UNSUPPORTED_PARAM_KEYS = ['archive', 'member', 'native', 'markup', 'open', 'path'];
 
+  // EPUB は本体の各入口がPDFと同じ ?pdf= で開く（ファイルを開く経路・タブの復元・サブパネルを共用するため）。
+  // 拡張子が .epub の時だけEPUBとして扱う（viewer-epub.js）。
+  function isEpubPath(path) { return imageExtFromPath(path) === 'epub'; }
+  function normalizeEpubTarget(target) {
+    const next = { ...target, epubPath: target.epubPath || '' };
+    if (!next.epubPath && isEpubPath(next.pdfPath)) { next.epubPath = next.pdfPath; next.pdfPath = ''; }
+    if (!next.epubPath && isEpubPath(next.singleFile)) { next.epubPath = next.singleFile; next.singleFile = ''; }
+    return next;
+  }
+
   function deriveViewerTargetFromSearchParams(sp) {
-    return {
+    return normalizeEpubTarget({
       folderPath: sp.get('folder') || '',
       pdfPath: sp.get('pdf') || '',
+      epubPath: sp.get('epub') || '',
       singleFile: sp.get('file') || '',
       sheetContextId: sp.get('sheetContext') || '',
       multiFilePaths: parseFilesParamFrom(sp),
-    };
+    });
   }
 
   function isViewerReopenTargetSupported(sp) {
     for (const key of REOPEN_UNSUPPORTED_PARAM_KEYS) {
       if (sp.has(key)) return false;
     }
-    return !!(sp.get('folder') || sp.get('pdf') || sp.get('file') || sp.get('sheetContext') || sp.get('files') || sp.getAll('files').length);
+    return !!(sp.get('folder') || sp.get('pdf') || sp.get('epub') || sp.get('file') || sp.get('sheetContext') || sp.get('files') || sp.getAll('files').length);
   }
 
   // 同期・高速判定のみ（postMessageのack/nackを即答するため）。実際の読み込みは行わない。
@@ -252,6 +263,8 @@
     imageElementHasRenderablePixels,
     waitForImageElement,
     deriveViewerTargetFromSearchParams,
+    isEpubPath,
+    normalizeEpubTarget,
     isViewerReopenTargetSupported,
     canReopenWithUrl,
     logicalPointFromScreenDelta,

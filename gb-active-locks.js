@@ -336,7 +336,7 @@
 
   // 戻り値: 取れなかった対象の一覧 [{ path, error }]。取れた対象は localLocks へ入る。
   async function _ensureLocksBatch(specs) {
-    await _waitPendingReleases();
+    if (pendingReleases.size) await _waitPendingReleases();
     const need = [];
     for (const spec of specs) {
       lastUsedAt.set(spec.path, Date.now());
@@ -459,9 +459,30 @@
 
   // options.partial === true: 取れなかった対象があっても投げず、戻り値の failed（[{ path, error }]）で知らせる
   // （まとめての移動・削除が、取れなかった対象だけを操作から外すため）。まとめて取る時だけ有効。
-  async function acquireMutationLocks(candidates, options) {
+  const mutationAcquireBarriers = new Map();
+  function acquireMutationLocks(candidates, options) {
+    const specs = _candidateSpecs(candidates);
+    const keys = specs.filter(spec => !_isLockExemptPath(spec.path)).map(spec => spec.path);
+    // 同じ対象の確保だけを順序付ける。並行する複製が参照数を1へ上書きし、
+    // 先に終わった保存がもう一方のロックまで外す競合を防ぐ。別の対象は待たせない。
+    const waits = keys.map(key => mutationAcquireBarriers.get(key)).filter(Boolean);
+    let finish;
+    const settled = new Promise(resolve => { finish = resolve; });
+    keys.forEach(key => mutationAcquireBarriers.set(key, settled));
+    const pending = waits.length
+      ? Promise.all(waits).then(() => _acquireMutationLocksNow(specs, options))
+      : _acquireMutationLocksNow(specs, options);
+    void pending.then(() => finish(), () => finish());
+    void settled.then(() => keys.forEach(key => {
+      if (mutationAcquireBarriers.get(key) === settled) mutationAcquireBarriers.delete(key);
+    }));
+    return pending;
+  }
+
+  async function _acquireMutationLocksNow(candidates, options) {
     const batchSpecs = _candidateSpecs(candidates).filter(candidate => !_isLockExemptPath(candidate.path));
-    if (batchSpecs.length >= BATCH_LOCK_MIN && _batchLockApiUsable()) {
+    const minimum = Number.isInteger(options?.minimum) && options.minimum >= 2 ? options.minimum : BATCH_LOCK_MIN;
+    if (batchSpecs.length >= minimum && _batchLockApiUsable()) {
       try {
         return await _acquireMutationLocksBatch(batchSpecs, options);
       } catch (error) {

@@ -774,19 +774,138 @@ button.pt-chip-style-sample--relation,
 .pt-modal .field + .field { margin-top: var(--ui-space-3); }
 /* チェックボックスラベル */
 .pt-check-label { display: flex; align-items: center; gap: var(--ui-space-3); margin-top: var(--ui-space-4); font-size: var(--ui-font-12); cursor: pointer; }
-/* 数式テキストエリア */
-.pt-formula-textarea {
-  width: 100%; font-size: var(--ui-font-12); font-family: monospace;
-  padding: var(--ui-space-2); tab-size: 2; white-space: pre; overflow: auto;
+/* 数式の列設定（gb-db-formula-editor.js, 2026-11-27）。設定欄の「項目名と値を1行」の形にせず、
+   見出し・入力欄・引数の並び・色分け・結果を縦に積む。入力欄は常に全幅。 */
+.pt-formula-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  min-width: 0;
 }
-.pt-formula-tools,
-.pt-formula-props {
+.pt-formula-head {
   display: flex;
   align-items: center;
-  gap: var(--ui-space-2);
-  flex-wrap: wrap;
-  margin-top: var(--ui-space-2);
+  gap: var(--ui-space-3);
+  min-width: 0;
 }
+.pt-formula-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+}
+.pt-formula-head-actions {
+  display: inline-flex;
+  gap: var(--ui-space-2);
+  flex: 0 0 auto;
+}
+.pt-formula-insert {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+}
+.pt-formula-textarea {
+  display: block;
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 88px;
+  box-sizing: border-box;
+  font-size: var(--ui-font-13);
+  font-family: var(--ui-font-mono, monospace);
+  line-height: 1.5;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  resize: vertical;
+}
+/* 引数の並びは1行分の高さを常に取り、出し入れで下の要素を動かさない。 */
+.pt-formula-signature {
+  min-height: 18px;
+  font-family: var(--ui-font-mono, monospace);
+  font-size: var(--ui-font-12);
+  line-height: 18px;
+  color: var(--ui-fg-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pt-formula-signature-arg.active {
+  color: var(--ui-fg-strong, var(--fg));
+  font-weight: var(--ui-weight-bold, 600);
+  text-decoration: underline;
+}
+.pt-formula-signature-desc {
+  margin-left: var(--ui-space-3);
+  font-family: var(--ui-font-sans, inherit);
+}
+.pt-formula-result-box {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ui-space-3);
+  min-width: 0;
+}
+.pt-formula-result-label {
+  flex: 0 0 auto;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-12);
+}
+.pt-formula-result {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 20px;
+  font-size: var(--ui-font-13);
+  line-height: 20px;
+  color: var(--ui-fg-default);
+  overflow-wrap: anywhere;
+}
+.pt-formula-result.is-error { color: var(--red); }
+.pt-formula-result-warning {
+  color: var(--ui-warning, var(--orange, var(--red)));
+  font-size: var(--ui-font-12);
+}
+/* 列・関数を選ぶ一覧（MeldexFilterPopup の中身） */
+.pt-formula-picker { width: 320px; max-width: calc(100vw - 16px); }
+.pt-formula-picker-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-2);
+  min-width: 0;
+}
+.pt-formula-picker-body .meldex-search-field { width: 100%; }
+.pt-formula-picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.pt-formula-picker-item,
+.pt-formula-picker-group,
+.pt-formula-picker-empty {
+  flex: 0 0 auto;
+}
+.pt-formula-picker-item {
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start !important;
+  gap: 0;
+  height: auto !important;
+  min-height: 0;
+  padding-top: var(--ui-space-2) !important;
+  padding-bottom: var(--ui-space-2) !important;
+  text-align: left;
+}
+.pt-formula-picker-label {
+  font-family: var(--ui-font-mono, monospace);
+  font-size: var(--ui-font-12);
+}
+.pt-formula-picker-detail {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+.pt-formula-picker-group { margin-top: var(--ui-space-2); }
 /* Phase 3e-b: 枠線設定モーダル (showGridBorderModal) */
 .gbm-modal { min-width: 340px; }
 .gbm-sections {

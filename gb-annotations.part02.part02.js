@@ -87,11 +87,29 @@ async function openAnnotationManager() {
   if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
 }
 
+// 画像・PDF・動画・音声のアノテートはビューワーで開く（ノートとして開くと
+// 「内容を受け付けられませんでした」になる。2026-11-27 報告）。PDFの「#page=N」は外す。
+function _annotationViewerMediaTarget(targetPath) {
+  const documentPath = String(targetPath || '').replace(/(\.pdf)#page=\d+$/i, '$1');
+  const router = typeof GBLinkRouter !== 'undefined' ? GBLinkRouter : window.GBLinkRouter;
+  let type = '';
+  if (router && typeof router.mediaTypeFromExt === 'function' && typeof router.ext === 'function') {
+    type = router.mediaTypeFromExt(router.ext(documentPath));
+  } else if (/\.pdf$/i.test(documentPath)) type = 'pdf';
+  else if (/\.(?:png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(documentPath)) type = 'image';
+  return type ? { path: documentPath, type } : null;
+}
+
 function jumpToAnnotation(targetPath) {
   // ターゲットパスからビューを推定して移動
   document.querySelector('.modal-overlay')?.remove();
   if (!targetPath) {
     showStatus('アノテートの対象ファイルが見つかりません', true);
+    return;
+  }
+  const media = _annotationViewerMediaTarget(targetPath);
+  if (media && typeof openMedia === 'function') {
+    openMedia(media.path.split(/[\\/]/).pop(), media.path, media.type);
     return;
   }
   if (targetPath === 'calendar:panel') {

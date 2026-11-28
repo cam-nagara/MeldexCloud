@@ -67,6 +67,13 @@ function saveActiveFormConfig(dbPath, formConfig, ctx, options = {}) {
   if (ctx?.formApp) return ctx.formApp.saveConfig(formConfig, options);
   if (ctx && typeof _cellUiWriteBlockedMessage === 'function' && _cellUiWriteBlockedMessage(ctx)) return false;
   const config = getDbViewConfig(dbPath);
+  if (options.layoutToAdd) {
+    config.entityLayouts = [...(config.entityLayouts || []), options.layoutToAdd];
+    if (options.activateLayout) {
+      config.entityTabOrder = [...(config.entityTabOrder || ['columns']), options.layoutToAdd.id];
+      config.currentEntityTab = options.layoutToAdd.id;
+    }
+  }
   if (options.shared !== false && formConfig.layoutId && globalThis.MeldexDbFormModel) {
     const layout = config.entityLayouts?.find(item => item.id === formConfig.layoutId);
     if (layout) {

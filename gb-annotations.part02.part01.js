@@ -1161,7 +1161,7 @@ async function loadAnnotations() {
         return;
       } else if (item.type === 'lasso') {
         if (data.points) {
-          const el = _createLassoEl(data.points, item.color, item.opacity);
+          const el = _createLassoEl(data.points, item.color, item.opacity, data);
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }

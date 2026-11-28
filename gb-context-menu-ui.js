@@ -169,7 +169,11 @@
     button.className = `gb-context-menu-item${item.danger ? ' danger' : ''}${item.disabled ? ' disabled' : ''}`;
     button.setAttribute('role', 'menuitem');
     if (item.ariaLabel) button.setAttribute('aria-label', String(item.ariaLabel));
-    button.disabled = item.disabled === true;
+    // 使えない理由（title）を持つ項目は、ツールチップを出せるよう aria-disabled で無効にし、押しても何もしない
+    const reasonOnly = item.disabled === true && !!item.title;
+    button.disabled = item.disabled === true && !reasonOnly;
+    if (reasonOnly) button.setAttribute('aria-disabled', 'true');
+    if (item.title) button.title = String(item.title);
     if (item.e2eId) button.dataset.e2eId = String(item.e2eId);
     if (item.icon && typeof global.lucide === 'function') {
       const icon = document.createElement('span');
@@ -205,7 +209,7 @@
       _onHover(button, () => {
         _hoverItem(menu, _closeSubmenu);
       });
-      button.addEventListener('click', () => { close(); item.action?.(); });
+      button.addEventListener('click', () => { if (reasonOnly) return; close(); item.action?.(); });
     }
     menu.appendChild(button);
   }

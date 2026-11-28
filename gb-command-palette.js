@@ -851,6 +851,7 @@
         if (seq === state.seq) _setPaletteStatus('本文検索を完了できませんでした。ファイル名の結果だけを表示しています', true);
       }
     }
+    if (seq !== state.seq) return;
     state.items = items;
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
@@ -904,8 +905,8 @@
     const action = item.action;
     closeCommandPalette();
     if (typeof action !== 'function') return Promise.resolve(false);
-    // パレットが閉じてフォーカスが戻ってから実行する。失敗は握りつぶさず表示する。
-    return new Promise(resolve => setTimeout(resolve, 0))
+    // 閉じる処理でフォーカスは同期的に戻る。イベント処理の後、描画待ちのタイマーへ回さず開始する。
+    return Promise.resolve()
       .then(() => action())
       .catch((error) => {
         _notifyActionFailed(item.label, error);
@@ -1079,6 +1080,8 @@
   function closeCommandPalette(options = {}) {
     state.visualUrls.forEach(url => URL.revokeObjectURL(url)); state.visualUrls = [];
     if (!state.overlay) return;
+    // 一覧・本文検索の遅延応答で、閉じた候補を再描画しない。
+    state.seq++;
     clearTimeout(state.searchTimer);
     state.searchTimer = 0;
     state.overlay.hidden = true;

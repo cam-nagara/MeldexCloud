@@ -103,27 +103,32 @@ function _bdNormalizeDepthLine(raw, _fallback) {
 }
 
 function bdNormalizeDepthStyles(styles) {
-  const defaults = _bdDefaultDepthStyles();
-  const source = Array.isArray(styles) && styles.length ? styles : defaults;
+  // 現在の書式に欠ける値がある時だけ、テーマから既定値を作る。
+  let defaults;
+  const readDefaults = () => defaults || (defaults = _bdDefaultDepthStyles());
+  const source = Array.isArray(styles) && styles.length ? styles : readDefaults();
   const normalized = source.map((entry, index) => {
-    const fallback = defaults[Math.min(index, defaults.length - 1)] || defaults[0];
-    const raw = entry || fallback;
+    const fallback = () => {
+      const values = readDefaults();
+      return values[Math.min(index, values.length - 1)] || values[0];
+    };
+    const raw = entry || fallback();
     const out = {
-      name: raw.name != null ? String(raw.name).trim() : (fallback.name || ''),
+      name: raw.name != null ? String(raw.name).trim() : (fallback().name || ''),
       cardStyleRef: raw.cardStyleRef != null ? _bdNormalizeDepthCardStyleRef(raw.cardStyleRef) : '',
       lineStyleRef: raw.lineStyleRef != null ? String(raw.lineStyleRef) : '',
-      fontSize: Number.isFinite(+raw.fontSize) ? Math.max(8, Math.min(72, +raw.fontSize)) : fallback.fontSize,
-      fontBold: raw.fontBold !== undefined ? !!raw.fontBold : fallback.fontBold,
-      fontItalic: raw.fontItalic !== undefined ? !!raw.fontItalic : !!fallback.fontItalic,
+      fontSize: Number.isFinite(+raw.fontSize) ? Math.max(8, Math.min(72, +raw.fontSize)) : fallback().fontSize,
+      fontBold: raw.fontBold !== undefined ? !!raw.fontBold : fallback().fontBold,
+      fontItalic: raw.fontItalic !== undefined ? !!raw.fontItalic : !!fallback().fontItalic,
       fontFamily: typeof normalizeFontFamilyValue === 'function' ? normalizeFontFamilyValue(raw.fontFamily) : String(raw.fontFamily || ''),
-      width: Number.isFinite(+raw.width) ? Math.max(40, Math.min(600, +raw.width)) : fallback.width,
-      bgColor: raw.bgColor != null ? String(raw.bgColor) : fallback.bgColor,
-      bgOpacity: _bdNormalizeStyleOpacity(raw.bgOpacity, _bdNormalizeStyleOpacity(fallback.bgOpacity, 1)),
-      textColor: raw.textColor != null ? String(raw.textColor) : (fallback.textColor || ''),
-      borderColor: raw.borderColor != null ? String(raw.borderColor) : (fallback.borderColor || ''),
-      borderOpacity: _bdNormalizeStyleOpacity(raw.borderOpacity, _bdNormalizeStyleOpacity(fallback.borderOpacity, 1)),
-      borderWidth: Number.isFinite(+raw.borderWidth) ? Math.max(0, Math.min(20, +raw.borderWidth)) : (Number.isFinite(+fallback.borderWidth) ? +fallback.borderWidth : 0),
-      borderRadius: Number.isFinite(+raw.borderRadius) ? Math.max(0, Math.min(64, +raw.borderRadius)) : (Number.isFinite(+fallback.borderRadius) ? +fallback.borderRadius : 6),
+      width: Number.isFinite(+raw.width) ? Math.max(40, Math.min(600, +raw.width)) : fallback().width,
+      bgColor: raw.bgColor != null ? String(raw.bgColor) : fallback().bgColor,
+      bgOpacity: Number.isFinite(Number(raw.bgOpacity)) ? _bdNormalizeStyleOpacity(raw.bgOpacity) : _bdNormalizeStyleOpacity(fallback().bgOpacity, 1),
+      textColor: raw.textColor != null ? String(raw.textColor) : (fallback().textColor || ''),
+      borderColor: raw.borderColor != null ? String(raw.borderColor) : (fallback().borderColor || ''),
+      borderOpacity: Number.isFinite(Number(raw.borderOpacity)) ? _bdNormalizeStyleOpacity(raw.borderOpacity) : _bdNormalizeStyleOpacity(fallback().borderOpacity, 1),
+      borderWidth: Number.isFinite(+raw.borderWidth) ? Math.max(0, Math.min(20, +raw.borderWidth)) : (Number.isFinite(+fallback().borderWidth) ? +fallback().borderWidth : 0),
+      borderRadius: Number.isFinite(+raw.borderRadius) ? Math.max(0, Math.min(64, +raw.borderRadius)) : (Number.isFinite(+fallback().borderRadius) ? +fallback().borderRadius : 6),
       textStrokeColor: raw.textStrokeColor != null ? String(raw.textStrokeColor) : '',
       textStrokeWidth: Number.isFinite(+raw.textStrokeWidth) ? Math.max(0, Math.min(12, +raw.textStrokeWidth)) : 0,
       shape: raw.shape != null ? _bdNormalizeDepthCardShape(raw.shape) : '',
@@ -133,12 +138,12 @@ function bdNormalizeDepthStyles(styles) {
       cloudOffset: Number.isFinite(+raw.cloudOffset) ? Math.max(0, Math.min(1, +raw.cloudOffset)) : 0.5,
       cloudSubWidthRatio: Number.isFinite(+raw.cloudSubWidthRatio) ? Math.max(0, Math.min(100, +raw.cloudSubWidthRatio)) : 0,
       cloudSubHeightRatio: Number.isFinite(+raw.cloudSubHeightRatio) ? Math.max(0, Math.min(100, +raw.cloudSubHeightRatio)) : 0,
-    defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback.defaultText || 'トピック'),
-      line: _bdNormalizeDepthLine(raw.line, fallback.line),
+    defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback().defaultText || 'トピック'),
+      line: _bdNormalizeDepthLine(raw.line),
     };
     return out;
   });
-  return normalized.length ? normalized : defaults.map(style => ({ ...style, line: { ..._bdNormalizeDepthLine(style.line, style.line) } }));
+  return normalized.length ? normalized : readDefaults().map(style => ({ ...style, line: { ..._bdNormalizeDepthLine(style.line, style.line) } }));
 }
 
 function bdEnsureDepthStyles() {

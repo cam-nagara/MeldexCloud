@@ -423,7 +423,7 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
 (function _bindChatSourceFolderSelector() {
   const run = () => {
     // デスクトップ付箋の小窓にはチャットが無い。対象フォルダ候補の収集を走らせない。
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     _initChatSourceFolderSelector();
     const select = document.getElementById('chat-source-folder');
     if (!select || select._chatSourceFolderBound) return;
@@ -1086,6 +1086,7 @@ function chatAddToolUse(name, result, parent = null) {
 let _chatToolRefreshTimer = null;
 const CHAT_WORKSPACE_REFRESH_TOOLS = new Set([
   'write_file',
+  'board_mutate',
   'create_sheet',
   'write_to_database',
   'create_entity',

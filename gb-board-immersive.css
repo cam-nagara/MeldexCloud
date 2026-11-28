@@ -207,6 +207,11 @@
   transform: translateX(0);
 }
 
+/* Keep the visible top toolbar clickable while the auto sidebar is open. */
+#board-standalone-shell.bd-immersive-shell.bd-chrome-right-open:not(.bd-chrome-right-pinned):has(#board-canvas-root.bd-chrome-top-open) #board-right-sidebar {
+  top: var(--bsa-top-toolbar-height, 44px);
+}
+
 #board-standalone-shell.bd-immersive-shell #board-sidebar-resizer {
   display: none !important;
 }

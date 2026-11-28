@@ -364,7 +364,7 @@ function saveCustomColor(color) {
 }
 function removeCustomColor(color) {
   const target = _normalizeCustomColor(color).toLowerCase();
-  _saveCustomColors(
+  return _saveCustomColors(
     getCustomColors().filter(c => c.toLowerCase() !== target),
     { label: '設定: カスタムカラー削除', detail: target }
   );
@@ -823,9 +823,15 @@ let _gbPalettePopup = null;
 let _gbPaletteOutsideHandler = null;
 let _gbPaletteKeyHandler = null;
 let _gbPaletteAnchor = null;
+// 閉じた時の通知（options.onClose）。色の変更を閉じた時にまとめて保存する呼び出し元が使う。
+let _gbPaletteOnClose = null;
+let _gbPaletteRemovalObserver = null;
 
 function closeColorPalette({ restoreFocus = false } = {}) {
   const anchor = _gbPaletteAnchor;
+  const onClose = _gbPaletteOnClose;
+  _gbPaletteOnClose = null;
+  _gbPaletteRemovalObserver?.disconnect(); _gbPaletteRemovalObserver = null;
   if (_gbPalettePopup) { _gbPalettePopup.remove(); _gbPalettePopup = null; }
   _gbPaletteAnchor = null;
   document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => {
@@ -834,6 +840,7 @@ function closeColorPalette({ restoreFocus = false } = {}) {
   });
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
+  if (typeof onClose === 'function') { try { onClose(); } catch (error) { console.warn('[color-palette] onClose failed', error); } }
   if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
     // 狭い画面で起点のボタンがツールバーの「▼」にしまわれている時は、その「▼」へ戻す
     // （見えないボタンへは戻せず、フォーカスが画面全体へ外れていた）。
@@ -856,12 +863,21 @@ function _constrainColorPaletteToViewport(palette) {
 function openColorPalette(anchorEl, currentColor, onSelect, options = {}) {
   closeColorPalette();
   _gbPaletteAnchor = anchorEl;
+  _gbPaletteOnClose = typeof options.onClose === 'function' ? options.onClose : null;
   const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }), options);
   palette.classList.add('gb-palette-popup');
   palette.setAttribute('role', 'dialog');
   palette.setAttribute('aria-label', '色を選択');
   document.body.appendChild(palette);
   _gbPalettePopup = palette;
+  // 他の処理がパレットの要素だけを取り除いた時（設定の取り消しによる作り直し等）も、閉じた時と同じ後片付けと
+  // 閉じた時の通知（onClose）を行う。通知が無いと、選んだ色を閉じた時に保存する呼び出し元が保存しそこなう。
+  if (typeof MutationObserver === 'function' && palette.parentNode) {
+    _gbPaletteRemovalObserver = new MutationObserver(() => {
+      if (_gbPalettePopup === palette && !palette.isConnected) closeColorPalette();
+    });
+    _gbPaletteRemovalObserver.observe(palette.parentNode, { childList: true });
+  }
   if (typeof positionPopup === 'function') positionPopup(palette, anchorEl.getBoundingClientRect());
   else { const rect = anchorEl.getBoundingClientRect(); const z = (typeof _getZoom === 'function') ? _getZoom() : 1; palette.style.left = (rect.left / z) + 'px'; palette.style.top = (rect.bottom / z + 4) + 'px'; }
   // positionPopup() は計測前に maxHeight を初期化するため、UI拡大率を含む
@@ -1230,7 +1246,10 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         del.textContent = '削除';
         del.addEventListener('click', () => {
           closeMenu();
-          removeCustomColor(c);
+          if (removeCustomColor(c) === false) {
+            swatch.focus?.({ preventScroll: true });
+            return;
+          }
           if (selectedCustomIdx === i) selectedCustomIdx = -1;
           else if (selectedCustomIdx > i) selectedCustomIdx--;
           renderCustomGrid(); updateSwatchHighlights();
@@ -1288,7 +1307,10 @@ function _buildPaletteElement(currentColor, onChange, onClose, options = {}) {
         let insertAt = e.clientX < swatch.getBoundingClientRect().left + swatch.getBoundingClientRect().width / 2 ? i : i + 1;
         if (dragIdx < i) insertAt--;
         colors.splice(insertAt, 0, item);
-        _saveCustomColors(colors);
+        if (_saveCustomColors(colors) === false) {
+          dragIdx = -1;
+          return;
+        }
         if (selectedCustomIdx === dragIdx) selectedCustomIdx = insertAt;
         else if (selectedColor) selectedCustomIdx = colors.indexOf(selectedColor);
         dragIdx = -1; renderCustomGrid(); updateSwatchHighlights();
@@ -1652,6 +1674,14 @@ function _adoptPersonalColorsRecord(record, options) {
 // GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS 以内の呼び出しは即座に諦めて
 // 連続リトライ（無限ループ）を避ける。明確な404だけは恒久フォールバックとする。
 function _ensurePersonalColorsInit() {
+  // Browser data mode has no PC-wide personal-color endpoint. Its durable
+  // palette is the browser store; do not turn a successful import into a
+  // desktop synchronization failure or retry loop.
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    _personalColorsApiAvailable = false;
+    _personalColorsApiPermanentlyUnavailable = true;
+    return Promise.resolve();
+  }
   if (_personalColorsApiPermanentlyUnavailable) return Promise.resolve();
   if (_personalColorsInitPromise) return _personalColorsInitPromise;
   if (_personalColorsApiAvailable === false
@@ -2017,17 +2047,21 @@ async function _applyImportedCustomColors(rawColors, mode) {
       });
       if (res && Array.isArray(res.colors)) {
         _personalColorsRevision = res.revision == null ? null : res.revision;
-        _saveCustomColors(res.colors, { label, skipServerSync: true });
+        if (!_saveCustomColors(res.colors, { label, skipServerSync: true })) return false;
         if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${res.colors.length}色）`);
-        return;
+        return true;
       }
+      throw new Error('読み込み結果を確認できませんでした');
     } catch (e) {
-      console.warn('[gb-color-palette] import via API failed, falling back to local merge:', e);
+      console.warn('[gb-color-palette] import via API failed:', e);
+      if (typeof showStatus === 'function') showStatus('カスタムカラーを読み込めませんでした（保存先に書けません）', true);
+      return false;
     }
   }
   const finalColors = mode === 'replace'
     ? normalized
     : _personalColorsNormalizeList([...getCustomColors(), ...normalized]);
-  _saveCustomColors(finalColors, { label });
+  if (!_saveCustomColors(finalColors, { label })) return false;
   if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${finalColors.length}色）`);
+  return true;
 }

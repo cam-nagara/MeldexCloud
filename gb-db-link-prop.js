@@ -312,6 +312,8 @@ async function _dbLinkCommitValue(args) {
     closeInlineEditorShell, refreshCellDisplayNow, restoreCellPos, anchorEl, historySteps,
   } = args || {};
   const anchor = anchorEl || td || null;
+  const historyOptions = { historyScope: typeof args?.historyScope === 'function' ? args.historyScope() : args?.historyScope,
+    onHistoryChanged: args?.onHistoryChanged };
   const oldValue = existing?.value || '';
   const oldLink = existing?.link && typeof existing.link === 'object' ? { ...existing.link } : null;
   const normalizedLink = _dbLinkDescriptor({ value: newPath, link: newLink });
@@ -341,11 +343,18 @@ async function _dbLinkCommitValue(args) {
       const refreshedLocally = typeof refreshCellDisplayNow === 'function' ? refreshCellDisplayNow([], newPath) : false;
       if (typeof restoreCellPos === 'function') restoreCellPos();
       await _apiPutValue(existing, { new_value: newPath, new_link: normalizedLink });
-      if (!refreshedLocally && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
+      if (!refreshedLocally && typeof historyOptions.onHistoryChanged !== 'function' && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
       if (typeof _dbUndoValue === 'function') {
         _dbUndoValue('リンク: ' + oldValue + ' → ' + newPath, existing, oldValue, newPath, undefined, undefined, {
-          dbPath, ctx, oldUpdates: { new_link: oldLink }, newUpdates: { new_link: normalizedLink },
+          dbPath, ctx, ...historyOptions, oldUpdates: { new_link: oldLink }, newUpdates: { new_link: normalizedLink },
         });
+      }
+      if (typeof historyOptions.onHistoryChanged === 'function') {
+        try { await historyOptions.onHistoryChanged(); }
+        catch (error) {
+          if (typeof showStatus === 'function') showStatus('リンクは保存済みですが表示を更新できません: ' + (error?.message || error), true);
+          return true;
+        }
       }
       if (typeof showStatus === 'function') showStatus('リンクを設定しました');
     } catch (e) {
@@ -361,7 +370,7 @@ async function _dbLinkCommitValue(args) {
         existing.value = oldValue;
       }
       if (oldLink) existing.link = oldLink; else delete existing.link;
-      if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
+      if (typeof historyOptions.onHistoryChanged !== 'function' && typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
       return false;
     }
@@ -451,7 +460,7 @@ async function _dbLinkFetchWebTitle(target) {
   } catch (_) { return ''; }
 }
 
-function _dbLinkShowEditor(initial, anchorEl) {
+function _dbLinkShowEditor(initial, anchorEl, options = {}) {
   const current = _dbLinkDescriptor(initial || '');
   return new Promise(resolve => {
     if (!globalThis.GBUI?.createModal) {
@@ -502,6 +511,7 @@ function _dbLinkShowEditor(initial, anchorEl) {
       returnFocus: anchorEl || undefined,
       closeOnEsc: true,
       closeOnOverlay: true,
+      onBeforeClose: () => !submitting,
       onClose: () => {
         if (resolved) return;
         resolved = true;
@@ -569,14 +579,28 @@ function _dbLinkShowEditor(initial, anchorEl) {
       }
       submitting = true;
       saveButton.disabled = true;
-      if (kind.value === 'web' && (labelWasAutomatic || !label.value.trim())) {
-        status.textContent = 'ページ名を取得しています…';
-        const fetchedTitle = await _dbLinkFetchWebTitle(targetValue);
-        if (fetchedTitle) label.value = fetchedTitle;
+      try {
+        if (kind.value === 'web' && (labelWasAutomatic || !label.value.trim())) {
+          status.textContent = 'ページ名を取得しています…';
+          const fetchedTitle = await _dbLinkFetchWebTitle(targetValue);
+          if (fetchedTitle) label.value = fetchedTitle;
+        }
+        if (!modalApi.modal.isConnected) return;
+        const descriptor = _dbLinkDescriptor({ value: targetValue, link: {
+          version: 1, kind: kind.value, target: targetValue, label: label.value.trim(),
+        } });
+        if (typeof options.onSave === 'function' && await options.onSave(descriptor) === false) {
+          status.textContent = '保存できませんでした。入力を確認して再試行してください';
+          return;
+        }
+        submitting = false;
+        finish(descriptor, 'save');
+      } catch (error) {
+        status.textContent = '保存に失敗: ' + (error?.message || error);
+      } finally {
+        submitting = false;
+        saveButton.disabled = false;
       }
-      finish(_dbLinkDescriptor({ value: targetValue, link: {
-        version: 1, kind: kind.value, target: targetValue, label: label.value.trim(),
-      } }), 'save');
     };
     saveButton.addEventListener('click', submit);
     cancelButton.addEventListener('click', () => finish(null, 'cancel'));
@@ -866,18 +890,19 @@ async function moveDbMultiLinkValue(val, entityPath, propName, dbPath, ctx, dire
 }
 
 // 既存値がある状態からの「リンク先を変更」（値コンテキストメニューから呼ばれる）
-async function startDbLinkCellPick(val, entityPath, propName, dbPath, ctx, anchorEl) {
-  const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
+async function startDbLinkCellPick(val, entityPath, propName, dbPath, ctx, anchorEl, options = {}) {
+  const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName, ctx) : null;
   if (lockMsg) { if (typeof showStatus === 'function') showStatus(lockMsg); return; }
-
-  const edited = await _dbLinkShowEditor(val || '', anchorEl);
-  if (!edited) return;
-  await _dbLinkCommitValue({
-    entityPath, propName, dbPath, ctx,
-    existing: (val?.file ? val : null),
-    newPath: edited.target,
-    newLink: edited,
-    anchorEl: anchorEl || null,
+  const historyOptions = {
+    historyScope: typeof options.historyScope === 'function' ? options.historyScope() : options.historyScope,
+    onHistoryChanged: options.onHistoryChanged,
+  };
+  await _dbLinkShowEditor(val || '', anchorEl, {
+    onSave: edited => _dbLinkCommitValue({
+      entityPath, propName, dbPath, ctx, ...historyOptions,
+      existing: (val?.file ? val : null),
+      newPath: edited.target, newLink: edited, anchorEl: anchorEl || null,
+    }),
   });
 }
 

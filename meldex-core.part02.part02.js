@@ -4,16 +4,17 @@
     if (_ann.anchor) {
       const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
       const previewData = previewType === 'rect'
-        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
-        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor, opacityModel: MELDEX_ANNOTATION_OPACITY_MODEL };
       _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
     } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
       const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
       data.lineWidth = _ann.widths?.pen;
+      data.opacityModel = MELDEX_ANNOTATION_OPACITY_MODEL;
       _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
-      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
+      preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', String(_normalizeMarkupOpacity(_ann.opacity, 1)));
       preview.setAttribute('stroke', _ann.color); preview.setAttribute('stroke-dasharray', '4,4');
     } else {
       preview.setAttribute('d', _pathD(_ann.path));
@@ -38,6 +39,8 @@
     if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
     if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
     else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    // 新しい塗りは色の不透明度だけで描く（半透明を強制しない）
+    if (_MELDEX_ANNOTATION_FILL_TYPES.has(type)) strokeData.opacityModel = MELDEX_ANNOTATION_OPACITY_MODEL;
     const savedEl = shapeTypes.has(type)
       ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
       : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
@@ -81,7 +84,7 @@
     } else {
       el.setAttribute('points', points.map(point => point.join(',')).join(' '));
       el.setAttribute('fill', color);
-      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('fill-opacity', String(_annotationFillOpacity(data, normalizedOpacity, preview)));
       el.setAttribute('stroke', color);
       el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
       el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -211,7 +214,7 @@
     } else if (type === 'lasso') {
       el = document.createElementNS(_svgNS, 'polygon');
       el.setAttribute('points', points.map(p => p.join(',')).join(' '));
-      el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
+      el.setAttribute('fill', color); el.setAttribute('fill-opacity', _annotationFillOpacity(data, normalizedOpacity, false));
       el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1');
     } else {
       el = document.createElementNS(_svgNS, 'path');
@@ -253,7 +256,7 @@
       el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
     }
     el.setAttribute('fill', outlined ? 'none' : color);
-    el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? .2 : .4)));
+    el.setAttribute('fill-opacity', outlined ? '0' : String(_annotationFillOpacity(data, normalizedOpacity, preview)));
     el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(normalizedOpacity));
     el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || _ann.widths?.pen || 3)));
     if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
@@ -277,11 +280,12 @@
       _ann.opacity = msg.opacity ?? 1;
       _ann.widths = { ..._ann.widths, ...(msg.widths || {}) };
       _ann.targetPath = msg.targetPath || '';
-      svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
-      svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
+      const drawing = !!_ann.active;
+      svg.style.pointerEvents = drawing ? 'auto' : 'none';
+      svg.style.cursor = drawing ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
       if (_ann.active && !options.localSurface) svg.style.outline = '2px solid color-mix(in srgb, var(--ui-accent, var(--accent)) 30%, transparent)';
       else svg.style.outline = '';
-      hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
+      hitRect.setAttribute('pointer-events', drawing ? 'all' : 'none');
       _updateSize();
       _syncNoteInteractivity();
     }
@@ -374,8 +378,8 @@
 
   const bridge = {
     options,
-    hasPendingWrites: () => pendingWrites.size > 0,
-    flush: async () => { while (pendingWrites.size) await Promise.allSettled([...pendingWrites]); },
+    hasPendingWrites: () => pendingNoteSaves.size > 0 || pendingWrites.size > 0,
+    flush: flushMarkupWrites,
     svg,
     layer,
     notesLayer,

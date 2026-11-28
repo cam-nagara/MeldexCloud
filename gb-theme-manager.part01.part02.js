@@ -535,6 +535,18 @@
   // ボードはトピックの色を決めるたびにテーマを探し、そのたびに全テーマを複製・整形していた
   // （2026-11-25 応答時間検査: ボードの長い処理の約4分の1）。
   let _builtInThemeJsonCache = null;
+  // 組み込みテーマごとの「選択中のタブを塗っていた頃」の形（保存値の合わせ直し専用）。
+  const _filledTabsBuiltInSelected = new Map();
+  // v0.7.899〜v0.7.926 の標準（下線が自動＝タブごとに順番の色）の形（同じく合わせ直し専用）。
+  const _sequentialTabsBuiltInSelected = new Map();
+  function _filledTabsSelectedForBuiltIn(themeId) {
+    _builtInThemeJsonList();
+    return _filledTabsBuiltInSelected.get(String(themeId || '')) || null;
+  }
+  function _sequentialTabsSelectedForBuiltIn(themeId) {
+    _builtInThemeJsonList();
+    return _sequentialTabsBuiltInSelected.get(String(themeId || '')) || null;
+  }
   function _builtInThemeJsonList() {
     if (!_builtInThemeJsonCache) {
       _builtInThemeJsonCache = _buildBuiltInThemes().map(theme => [theme.id, JSON.stringify(theme)]);
@@ -574,10 +586,22 @@
         }
         if (theme.ui.themeUiApplications['style-calendar']?.selected) theme.ui.themeUiApplications['style-calendar'].selected.fg = 'color:' + theme.ui.cssVars['--accent'];
       }
+      // 選択中のタブ: v0.7.621〜v0.7.895 はアクセント色で塗っていた。利用者の判断（2026-11-27）で塗らない形へ戻す。
+      // 下線はアクセント色一色（2026-11-28）。v0.7.899〜v0.7.926 は下線を「自動」にしていたが、
+      // 自動はタブごとに順番の色になり、初期搭載のダークの見た目ではなかった。
+      // 明るいテーマは白文字と組の塗りを従来どおり保つ。
+      // 過去の標準の形は、保存値の合わせ直し（その形と完全に一致する時だけ）に使うため控える。
+      const filledTabs = {};
+      const sequentialTabs = {};
       for (const id of ['panel-tab', 'inner-tab']) {
         const selected = theme.ui.themeUiApplications[id]?.selected;
-        if (selected) selected.bg = 'var:--ui-accent';
+        if (!selected) continue;
+        filledTabs[id] = { ...selected, bg: 'var:--ui-accent' };
+        sequentialTabs[id] = { ...selected, fg: THEME_UI_VALUE_NONE, bg: THEME_UI_VALUE_NONE, underline: THEME_UI_VALUE_AUTO };
+        if (!isThemeLight(theme)) Object.assign(selected, { bg: THEME_UI_VALUE_NONE, underline: 'var:--ui-accent' });
       }
+      _filledTabsBuiltInSelected.set(theme.id, filledTabs);
+      _sequentialTabsBuiltInSelected.set(theme.id, isThemeLight(theme) ? {} : sequentialTabs);
       // The starter rail uses white icons. Shade only its shipped background;
       // saved custom themes keep their explicit foreground and background.
       const railAccent = normalizeThemeColor(theme.ui.cssVars['--accent'])

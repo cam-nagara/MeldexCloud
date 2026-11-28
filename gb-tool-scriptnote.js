@@ -78,7 +78,7 @@ function _sn2MapRenamedFilePath(current, oldPath, newPath) {
   const to = norm(newPath);
   if (!cur || !from || !to) return null;
   const lower = value => value.toLowerCase();
-  const isAbs = value => /^(?:[a-z]:\/|\/)/i.test(value);
+  const isAbs = value => /^(?:[a-z]:\/|\/|__dropbox_root__\/[^/]+(?:\/|$))/i.test(value);
   // 同じ表記どうし
   if (lower(cur) === lower(from)) return { path: to, exact: true };
   if (lower(cur).startsWith(lower(from) + '/')) return { path: to + cur.slice(from.length), exact: false };
@@ -516,6 +516,10 @@ class ScriptNoteComponent extends ToolComponent {
     this.el.dataset.fileReadOnly = locked ? 'true' : 'false';
     const title = this.el.querySelector?.('#title-input');
     const layout = this.el.querySelector?.('#scenario-note-layout-select');
+    // 電話幅ではタイトル用ツールバーが隠れるため、表示中のビュー選択欄にも同じ鍵の印を出す。
+    const viewSelect = this.el.querySelector?.('.gb-view-tabs-select');
+    if (viewSelect && viewSelect.dataset.lockBadgePath !== path) window.MeldexFileLockBadge?.apply?.(viewSelect, path);
+    viewSelect?._fileLockBadgeEl?.classList?.add('sn2-mobile-lock-badge');
     if (title) title.disabled = locked;
     if (layout) layout.disabled = locked;
     const mutationActions = new Set([

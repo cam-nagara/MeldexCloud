@@ -3361,6 +3361,10 @@
     font-size: 15px;
   }
 }
+.sn2-mobile-lock-badge { display: none; }
+@media (max-width: 768px) {
+  .sn2-mobile-lock-badge { display: inline-flex; }
+}
 
 
 /* キャラ／タイプ分離管理。上下の一覧は互いにスクロール位置を共有しない。 */

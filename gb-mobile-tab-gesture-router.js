@@ -23,7 +23,7 @@
   }
 
   function tabTitle(tab) {
-    const label = tab?.querySelector?.('.view-tab-label, .gb-tab-label, .tab-label');
+    const label = tab?.querySelector?.('.view-tab-label, .gb-view-tab-label, .gb-tab-label, .tab-label');
     return String(tab?.dataset?.tabTitle || tab?.getAttribute?.('aria-label') ||
       tab?.getAttribute?.('title') || label?.textContent || tab?.textContent || 'タブ').trim() || 'タブ';
   }
@@ -271,7 +271,8 @@
     if (tablist.classList?.contains('gb-production-list-switch') || tablist.closest?.('.gb-production-list-switch')) return;
     // Sheet/board view bars already provide their own phone select and menu.
     // Adding a second dropdown also collects hidden menu text into its label.
-    const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select');
+    const nativeSwitcher = tablist.closest?.('.db-view-switcher')?.querySelector('select.db-view-select')
+      || tablist.closest?.('.gb-view-tabs')?.querySelector('select.gb-view-tabs-select');
     // A tab-styled toolbar may wrap a semantic tablist plus an add button.
     // Convert the inner list so the toolbar's other controls remain visible.
     const nestedTablist = tablist.classList?.contains('gb-pane-tabs')

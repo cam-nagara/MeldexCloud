@@ -86,12 +86,41 @@ function _outlinerTreeFormPath(fromPath, responsePath) {
 
 function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
   newPath = _outlinerTreeFormPath(oldPath, newPath);
-  const aliasPairs = (Array.isArray(nodeData?.pathAliases) ? nodeData.pathAliases : [])
+  const aliases = new Set(Array.isArray(nodeData?.pathAliases) ? nodeData.pathAliases : []);
+  // Native folder listings use vault-relative paths; an already open Form may use
+  // the absolute path returned by creation. Only derive this alias from the actual
+  // local vault root, never from a filename suffix or a Cloud namespace.
+  const root = String(typeof state !== 'undefined' ? state.vaultPath || '' : '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const from = String(oldPath).replace(/\\/g, '/');
+  if (nodeData?.type === 'form-app' && /^(?:[a-z]:\/|\/\/)/i.test(root)
+      && !(typeof window !== 'undefined' && window.MeldexRuntimeAdapter?.isBrowserDataMode?.())) {
+    if (from.startsWith(root + '/')) aliases.add(from.slice(root.length + 1));
+    else if (!/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(from)) aliases.add(root + '/' + from);
+  }
+  if (nodeData?.type === 'form-app' && typeof window !== 'undefined'
+      && window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof forEachComponent === 'function') {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (typeof provider?._dropboxLocation === 'function') {
+      const locationKey = path => {
+        const value = provider._dropboxLocation(path);
+        return typeof value?.path === 'string' && value.namespaceKind
+          ? JSON.stringify([value.namespaceKind, value.path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()]) : null;
+      };
+      try {
+        const target = locationKey(oldPath);
+        if (target) forEachComponent(component => {
+          if (component?.store?.doc?.fileType === 'meldex-form' && component.path && locationKey(component.path) === target) aliases.add(component.path);
+        });
+      } catch (error) { console.warn('[Meldex] フォームの改名先の別名を確認できませんでした', error); }
+    }
+  }
+  const targetBase = String(newPath).replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+  const aliasPairs = [...aliases]
     .filter(alias => alias && alias !== oldPath)
     .map(alias => {
       const normalized = String(alias).replace(/[\\/]+$/, '');
       const cut = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
-      return { oldPath: alias, newPath: (cut >= 0 ? normalized.slice(0, cut + 1) : '') + newName };
+      return { oldPath: alias, newPath: (cut >= 0 ? normalized.slice(0, cut + 1) : '') + targetBase };
     });
   const applyPathReferences = (fromPath, toPath, label, response) => {
     if (typeof renameAppPathReferences !== 'function') return;

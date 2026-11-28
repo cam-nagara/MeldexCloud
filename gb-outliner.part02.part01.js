@@ -1012,9 +1012,18 @@ async function _outlinerSyncFolderChildren(folderPath) {
   if (!container || container.dataset.loaded !== 'true') return true;
   if (container.dataset.virtual === 'true') return false;
   const sortCfg = getSortForFolder(folderPath);
-  const items = await _outlinerFetchFolderListingForConfirm(folderPath, parentNode, {
-    detail: !['manual', 'name'].includes(sortCfg.sort),
-  });
+  // シートの子はSQLiteのエントリ。通常のファイル一覧で照合すると既存トピックを消してしまう。
+  const sheet = parentNode._nodeData?.type === 'database';
+  let items;
+  if (sheet) {
+    const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(folderPath) + '&tree_only=true', { skipBrowseCache: true });
+    if (!pivot?.entities || typeof pivot.entities !== 'object' || Array.isArray(pivot.entities)) return false;
+    items = _outlinerSheetTreeItems(parentNode._nodeData, pivot);
+  } else {
+    items = await _outlinerFetchFolderListingForConfirm(folderPath, parentNode, {
+      detail: !['manual', 'name'].includes(sortCfg.sort),
+    });
+  }
   if (!Array.isArray(items) || !container.isConnected) return false;
   const ordered = sortCfg.sort === 'manual' ? _sortItemsByManualOrder(items, folderPath)
     : [...items].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
@@ -1087,14 +1096,16 @@ function isOutlinerCopyPendingPath(path) {
 function _outlinerSetCopyPendingNode(node, pending) {
   if (!node) return;
   if (pending && node.dataset.copyPending !== 'true') {
-    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity };
+    node._copyPreviewPrevious = { inert: node.inert, opacity: node.style.opacity, busy: node.getAttribute?.('aria-busy') ?? null };
     node.dataset.copyPending = 'true'; node.inert = true; node.style.opacity = '0.62';
     node.setAttribute('aria-busy', 'true');
   } else if (!pending && node.dataset.copyPending === 'true') {
     node.inert = node._copyPreviewPrevious?.inert || false;
     node.style.opacity = node._copyPreviewPrevious?.opacity || '';
+    const busy = node._copyPreviewPrevious?.busy;
     delete node._copyPreviewPrevious; delete node.dataset.copyPending;
-    node.removeAttribute('aria-busy');
+    if (busy == null) node.removeAttribute('aria-busy');
+    else node.setAttribute('aria-busy', busy);
   }
 }
 
@@ -1117,7 +1128,12 @@ function _beginOutlinerPublishedCopyPreview(item, detail) {
       if (!hadTree && typeof _removeOutlinerNodesForPaths === 'function') _removeOutlinerNodesForPaths([path]);
     }
     _outlinerSetCopyPendingNode(findNode(), stillPending);
-    if (typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+    // The committed result is applied by the caller. Release the preview's
+    // interaction guard in place instead of rebuilding the entire grid twice.
+    for (const card of document.querySelectorAll('.fv-item[data-path]')) {
+      if (same(card.dataset.path)) _outlinerSetCopyPendingNode(card, stillPending);
+    }
+    if (outcome === false && !stillPending && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
       renderFolderGrid({ preserveSelectedPaths: (typeof _folderSelectedItems !== 'undefined' ? _folderSelectedItems : []).map(row => row.path) });
     }
   };
@@ -1158,7 +1174,10 @@ async function _outlinerPostCopyWithPreview(route, body, item, options = {}) {
   window.addEventListener('meldex:mode-changed', abandon);
   try {
     if (options.revealTreeDestination) _outlinerRevealCopyDestination(body.dest_folder || _outlinerParentPath(body.path));
-    const result = await apiPost(route, prepared.body);
+    const nativeProgress = window.MeldexOsFileIntake?.isSupported?.() === true;
+    const result = await apiPost(route, nativeProgress ? { ...prepared.body, copy_publish_stream: true,
+      ...(options.nativeCopySnapshotGroup ? { copy_snapshot_group: options.nativeCopySnapshotGroup } : {}) } : prepared.body,
+      nativeProgress ? { copyPublishStream: { operationId: prepared.body.operation_id, sourcePath: prepared.body.path } } : {});
     succeeded = result?.ok !== false;
     if (succeeded && active) window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
     return result;
@@ -1181,10 +1200,13 @@ async function _outlinerDuplicateItems(items, options = {}) {
   try {
   const targets = Array.from(items || []);
   for (let offset = 0; offset < targets.length; offset += 2) {
+    const copyOptions = targets.length - offset > 1 && window.MeldexOsFileIntake?.isSupported?.() === true
+      ? { ...options, nativeCopySnapshotGroup: crypto.randomUUID() } : options;
     const outcomes = await Promise.all(targets.slice(offset, offset + 2).map(async target => {
-      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, options) }; }
+      try { return { target, res: await _outlinerPostCopyWithPreview('/outliner/duplicate', { path: target.path }, target, copyOptions) }; }
       catch (error) { return { target, error }; }
     }));
+    const reflectedByParent = new Map();
     for (const { target, res, error } of outcomes) {
       if (error) { result.failed += 1; if (!result.error) result.error = error; continue; }
       result.ok += 1;
@@ -1193,12 +1215,20 @@ async function _outlinerDuplicateItems(items, options = {}) {
         result.created.push(createdPath);
         createdItems.push({ path: createdPath, type: target.type || '', kind: target.type === 'folder' ? 'folder' : 'file',
           name: res?.new_name || createdPath.split('/').pop() || createdPath });
-        try {
-          if (typeof _folderApplySavedDropResults === 'function') {
-            _folderApplySavedDropResults(_outlinerParentPath(createdPath), [{ item: createdItems[createdItems.length - 1] }], []);
-          }
-        } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
+        const parent = _outlinerParentPath(createdPath);
+        if (!reflectedByParent.has(parent)) reflectedByParent.set(parent, []);
+        reflectedByParent.get(parent).push(createdItems[createdItems.length - 1]);
       }
+    }
+    // 同じ保存先への確定済み2件は1回の描画で反映する。失敗した項目は含めない。
+    for (const [parent, rows] of reflectedByParent) {
+      try {
+        if (typeof _folderApplySavedDropResults !== 'function') continue;
+        const reflected = _folderApplySavedDropResults(parent, rows.map(item => ({ item })), []);
+        if (reflected && typeof _folderPath !== 'undefined' && typeof _folderDropPathsEqual === 'function' && _folderDropPathsEqual(_folderPath, parent)) {
+          (result.panelReflectedPaths ||= []).push(...rows.map(item => item.path));
+        }
+      } catch (error) { console.warn('[duplicate] 保存済みの表示反映に失敗', error); }
     }
   }
   const register = () => {
@@ -1257,7 +1287,10 @@ function _pushCreatedOutlinerItemsHistory(createdItems, label, scope, options = 
       if (failures.length) throw new Error(`${failures.length} 件をゴミ箱から戻せませんでした`);
     },
     scope);
-  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path) });
+  const companionOwner = records.length === 2 && records.some(record => record.type === 'database' && record.kind === 'folder')
+    ? records.find(record => record.type === 'form-app' && record.kind === 'file' && record.path === options.companionOwner)?.path || '' : '';
+  if (typeof historyMarkFileEffects === 'function') historyMarkFileEffects(entry, { undoDeletes: records.map(record => record.path),
+    ...(companionOwner ? { undoCompanionOwner: companionOwner } : {}) });
   return entry;
 }
 
@@ -1507,7 +1540,9 @@ function closeTreeContextMenu() {
     try { cleanup(); } catch {}
   });
   _outlinerContextMenuCleanups.clear();
-  document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
+  document.querySelectorAll('.gb-context-menu').forEach(el => {
+    if (!el.parentElement?.closest?.('.gb-context-menu')) el.remove();
+  });
 }
 
 // gb-path-utils.js（window.GBPathUtils）へ委譲。未ロード時は同等ロジックへフォールバックする。

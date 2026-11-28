@@ -1,3 +1,63 @@
+        checked: isMain === val,
+        action: () => {
+        closeTreeContextMenu();
+        const before = _captureMainCalendarSettingsHistory();
+        if (val) {
+          localStorage.setItem('main-calendar-path', nodeData.path);
+          const mcFid = _pathToFileId(nodeData.path);
+          if (mcFid) localStorage.setItem('main-calendar-id', mcFid);
+          showStatus(`「${nodeData.name}」をメインカレンダーに設定しました`);
+          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー設定', before, nodeData.path);
+        } else {
+          localStorage.removeItem('main-calendar-path');
+          localStorage.removeItem('main-calendar-id');
+          showStatus('メインカレンダー設定を解除しました');
+          _pushMainCalendarSettingsHistory('カレンダー: メインカレンダー解除', before, nodeData.path);
+        }
+        },
+      });
+    });
+  }
+
+  // --- バージョン管理（フォルダのみ） ---
+  if (!isMulti && (isFolder || isDB) && nodeData.path) {
+    addSep();
+    addMenuItem('バージョンを保存', async () => {
+      closeTreeContextMenu();
+      if (typeof saveFolderVersion !== 'function') {
+        showStatus('バージョンを保存できませんでした：この画面ではバージョン管理を使えません', true);
+        return;
+      }
+      await saveFolderVersion(nodeData.path);
+    }, null, 'save');
+    addMenuItem('バージョン管理', () => {
+      closeTreeContextMenu();
+      if (typeof openFolderVersionTab === 'function') openFolderVersionTab(nodeData.path);
+      else if (typeof openVersionTab === 'function') openVersionTab(nodeData.path, 'folder');
+    }, null, 'gitBranch');
+  }
+
+  // --- 画像ツール（フォルダのみ） ---
+  if (!isMulti && (nodeData.type === 'folder' || nodeData._isRoot) && nodeData.path) {
+    addMenuItem('重複画像を検出', () => {
+      closeTreeContextMenu();
+      showDuplicateScanModal(nodeData.path);
+    }, null, 'search');
+    addMenuItem('画像インデックスを作成', () => {
+      closeTreeContextMenu();
+      clipIndexFolder(nodeData.path);
+    }, null, 'image');
+  }
+
+  // --- 自動タグ付け（フォルダは深い階層まで再帰処理） ---
+  if (!isMulti && nodeData.path && !isEntity && window.isAutoTagRuntimeAvailable?.() === true) {
+    const recursiveAutoTag = isFolder || !!nodeData._isRoot;
+    addMenuItem(
+      recursiveAutoTag ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け',
+      () => {
+        closeTreeContextMenu();
+        if (typeof autoTagFolderTarget === 'function') {
+          autoTagFolderTarget(nodeData, { recursive: recursiveAutoTag });
         } else {
           showStatus('自動タグ付けを初期化できませんでした', true);
         }
@@ -554,10 +614,10 @@ function _createOutlinerPendingCreateNode(type, label) {
   return node;
 }
 
-function _openOutlinerCreatedNode(nd, name) {
+function _openOutlinerCreatedNode(nd, name, options = {}) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
-  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
+  else if (nd.type === 'form-app') return openFormApp(nd.path, name, { ..._expOpts, ...options });
   else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
@@ -609,10 +669,10 @@ function _outlinerApplyCreateSuccess(pendingNode, found, options) {
 }
 
 // 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
-async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name, options) {
   if (pendingNode && pendingNode.parentNode) pendingNode.remove();
   await loadOutliner();
-  _openOutlinerCreatedNode(nd, name);
+  _openOutlinerCreatedNode(nd, name, options);
 }
 
 // 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
@@ -742,7 +802,9 @@ async function addItemAt(parentPath, type, options = {}) {
     // ゴミ箱へ移していた（2026-11-22 M-014 フォルダツリー網羅テスト）。別の画面からの共通履歴への落ち込みは
     // 履歴の守り（作ったファイル以外を消す記録へは落ちない）が止める。
     const createHistoryScope = '';
-    const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
+    const res = await apiPost('/outliner/add', { type, label, parent: parentPath, ...(type === 'form-app' ? { include_form_content: true } : {}) });
+    const formOpenOptions = type === 'form-app' && res.form_content?.path === res.node?.path
+      ? { formCopyOpen: { file: res.form_content } } : undefined;
     // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
     if (!res.node.name) res.node.name = res.node.label;
     const companions = Array.isArray(res.node.companion_paths) ? res.node.companion_paths.filter(Boolean) : [];
@@ -752,7 +814,8 @@ async function addItemAt(parentPath, type, options = {}) {
       _pushCreatedOutlinerItemsHistory([
         { path: res.node.path, type: res.node.type || type, kind: 'file' },
         ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
-      ], '新規作成: ' + (res.node.name || label), createHistoryScope);
+      ], '新規作成: ' + (res.node.name || label), createHistoryScope,
+      type === 'form-app' ? { companionOwner: res.node.path } : {});
     } else if (res.node.path && typeof pushCreatedOutlinerItemHistory === 'function') {
       pushCreatedOutlinerItemHistory({ path: res.node.path, type: res.node.type || type }, '新規作成: ' + (res.node.name || label), {
         scope: createHistoryScope,
@@ -763,7 +826,7 @@ async function addItemAt(parentPath, type, options = {}) {
       // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
       const createdNode = _findTreeNodeByPath(res.node.path);
       _selectOutlinerCreateNode(createdNode);
-      _openOutlinerCreatedNode(res.node, res.node.name);
+      _openOutlinerCreatedNode(res.node, res.node.name, formOpenOptions);
       return;
     }
 
@@ -779,7 +842,7 @@ async function addItemAt(parentPath, type, options = {}) {
     const name = nd.name || nd.label || label;
     // 挿入先が最後まで解決できない場合はルート等へ誤挿入せず全体再読込に委ねる
     if (!insertTarget.deferTreeInsert && !insertTarget.container) {
-      await _outlinerCreateFallbackToReload(pendingNode, nd, name);
+      await _outlinerCreateFallbackToReload(pendingNode, nd, name, formOpenOptions);
       return;
     }
     const virtualInsert = !insertTarget.deferTreeInsert
@@ -805,10 +868,14 @@ async function addItemAt(parentPath, type, options = {}) {
     }
     // 作成が確定した行を先に描画する。ボード等の初期表示で行の反映まで待たせない。
     const createVault = typeof state !== 'undefined' ? state.vaultPath : '';
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
+    if (type !== 'form-app') await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
     if (createVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
     // コンテンツを開く
-    _openOutlinerCreatedNode(nd, name);
+    const opened = _openOutlinerCreatedNode(nd, name, formOpenOptions);
+    if (type === 'form-app') {
+      await opened;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
     // フォルダパネルが同じフォルダを開いていれば、作ったものをすぐ出す
     if (typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([parentPath]);
     // 一緒に作ったもの（フォームのシート）も、作った場所のフォルダを差分で反映して出す。
@@ -831,70 +898,3 @@ async function addItemAt(parentPath, type, options = {}) {
 // シートの中へエントリを追加する（シートに作れるのはエントリだけ）
 async function addSheetEntryAt(sheetPath) {
   const path = String(sheetPath || '').trim();
-  if (!path) return;
-  const reservation = typeof historyReserve === 'function' ? historyReserve('トピック追加', '') : null;
-  try {
-    const result = await apiPost('/entity/create', { parent_path: path, name: '無題' });
-    const entryPath = result?.path || result?.entry_path;
-    if (entryPath && typeof pushCreatedOutlinerItemHistory === 'function') {
-      const register = () => pushCreatedOutlinerItemHistory({
-        path: entryPath, type: 'entity', name: result.name || '無題',
-        entry_id: result.entry_id || result.id || '',
-      }, 'トピック追加', { scope: '' });
-      if (reservation) reservation.capture(register); else register();
-    }
-    showStatus('トピックを追加しました');
-    if (typeof loadOutliner === 'function') await loadOutliner();
-    if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
-  } catch (e) {
-    showStatus((e && e.message) || 'トピックの追加に失敗しました', true);
-  } finally {
-    reservation?.cancel();
-  }
-}
-
-// ヘッダーボタンからの追加（選択中アイテムのコンテキストを考慮）
-async function showAddOutlinerItem(type) {
-  // 選択中のアイテムから追加先を決定
-  let parentPath = '';
-  if (treeSelection.lastClicked && treeSelection.lastClicked._nodeData) {
-    // ホーム内のノードが選択されている場合
-    if (treeSelection.lastClicked.closest('#body-home') && _homeFolderPath) {
-      const nd = treeSelection.lastClicked._nodeData;
-      if (nd.type === 'folder' || (nd.type === 'database' && _outlinerContainerAcceptsItemType(nd, type))) {
-        const toggle = treeSelection.lastClicked.querySelector('.tree-toggle');
-        parentPath = (toggle && toggle.dataset.expanded === 'true') ? nd.path : _homeFolderPath;
-      } else {
-        const pn = treeSelection.lastClicked.parentElement?.closest('.tree-node');
-        parentPath = pn?._nodeData?.path || _homeFolderPath;
-      }
-    } else {
-      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData, { itemType: type });
-    }
-  }
-  // 何も選択されていない場合、ホームフォルダにフォールバック
-  if (!parentPath && _homeFolderPath) {
-    parentPath = _homeFolderPath;
-  }
-  await addItemAt(parentPath, type);
-}
-
-// フォルダツリーのラベルをインライン編集
-function startTreeLabelEdit(labelEl, nodeData, onFinish) {
-  const pending = typeof _outlinerPendingRenames !== 'undefined'
-    ? _outlinerPendingRenames.get(_outlinerPendingRenameKey(nodeData?.path)) : null;
-  if (pending) {
-    // 最初の失敗の表示とラベルの復帰の間にF2が来ても、仮の名前を次の変更前の値にしない。
-    pending.retryLabels ||= new WeakSet();
-    if (!pending.retryLabels.has(labelEl)) {
-      pending.retryLabels.add(labelEl);
-      pending.promise.then(() => {
-        if (labelEl.isConnected && !labelEl.querySelector('input')) startTreeLabelEdit(labelEl, nodeData, onFinish);
-      }).catch(error => showStatus('名前の入力を再開できませんでした: ' + (error?.message || error), true));
-    }
-    return;
-  }
-  const old = labelEl.textContent;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = old === '無題' ? '' : old;

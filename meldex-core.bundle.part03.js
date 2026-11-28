@@ -1,3 +1,6 @@
+          _boardClientToWorld(r.left, r.bottom),
+        ].filter(pt => Number.isFinite(pt?.x) && Number.isFinite(pt?.y));
+        if (pts.length) {
           visibleLeft = Math.min(...pts.map(pt => pt.x));
           visibleTop = Math.min(...pts.map(pt => pt.y));
           visibleRight = Math.max(...pts.map(pt => pt.x));
@@ -105,7 +108,7 @@
     el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
     el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
     el.setAttribute('fill', color);
-    el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+    el.setAttribute('fill-opacity', String(_annotationFillOpacity(data, normalizedOpacity, preview)));
     el.setAttribute('stroke', color);
     el.setAttribute('stroke-width', '1');
     el.setAttribute('stroke-opacity', String(normalizedOpacity));
@@ -326,6 +329,13 @@
   }
 
   const pendingWrites = new Set();
+  const pendingNoteSaves = new Set();
+  async function flushMarkupWrites() {
+    while (pendingNoteSaves.size || pendingWrites.size) {
+      for (const commit of [...pendingNoteSaves]) commit();
+      if (pendingWrites.size) await Promise.allSettled([...pendingWrites]);
+    }
+  }
   function _saveBoardAnnotation(payload, onSaved, onError) {
     if ((!boardMode && !options.localSurface) || typeof apiPost !== 'function') return false;
     options.onMutation?.();
@@ -419,6 +429,10 @@
   }
 
   function _confirmEmbeddedNoteDelete(onOk) {
+    if ((boardMode || options.localSurface) && typeof _putAnnotationWithHistory === 'function') {
+      onOk?.();
+      return;
+    }
     const message = 'この付箋を削除しますか？';
     if (typeof showConfirmDialog === 'function') {
       showConfirmDialog(message, onOk);
@@ -731,9 +745,16 @@
       if (_updateBoardAnnotation(item.id, { data: next })) return;
       _postToParent({ type: 'ann-update-note', annId: item.id, data: next });
     };
+    const flushNoteSave = () => {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      pendingNoteSaves.delete(flushNoteSave);
+      persist();
+    };
     const scheduleSave = () => {
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(persist, 400);
+      pendingNoteSaves.add(flushNoteSave);
+      saveTimer = setTimeout(flushNoteSave, 400);
     };
     editor = _createNoteEditor(data, scheduleSave, item.id);
     note.appendChild(editor);
@@ -877,24 +898,3 @@
         }
       };
       const createMenuButton = ({ label, icon, action, danger = false, role = 'menuitem', checked = null }) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'gb-context-menu-item' + (danger ? ' danger' : '');
-        button.dataset.action = action;
-        button.setAttribute('role', role);
-        if (checked != null) button.setAttribute('aria-checked', checked ? 'true' : 'false');
-        const iconSlot = document.createElement('span');
-        iconSlot.className = 'menu-icon';
-        iconSlot.setAttribute('aria-hidden', 'true');
-        iconSlot.innerHTML = typeof window.lucide === 'function' && icon ? window.lucide(icon, 16) : '';
-        const labelSlot = document.createElement('span');
-        labelSlot.textContent = label;
-        button.appendChild(iconSlot);
-        button.appendChild(labelSlot);
-        return button;
-      };
-      const persistTailState = () => {
-        const payload = _notePayload(data, editor, note);
-        if (item.id && !String(item.id).startsWith('pending-note-') && typeof apiPut === 'function') {
-          if (!_updateBoardAnnotation(item.id, { data: payload })) {
-            apiPut('/annotations/' + encodeURIComponent(item.id), { data: payload })

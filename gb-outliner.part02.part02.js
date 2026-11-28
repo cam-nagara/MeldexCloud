@@ -315,10 +315,10 @@ function _createOutlinerPendingCreateNode(type, label) {
   return node;
 }
 
-function _openOutlinerCreatedNode(nd, name) {
+function _openOutlinerCreatedNode(nd, name, options = {}) {
   const _expOpts = { fromExplorer: true };
   if (nd.type === 'page') openPage(name, nd.path, _expOpts);
-  else if (nd.type === 'form-app') openFormApp(nd.path, name, _expOpts);
+  else if (nd.type === 'form-app') return openFormApp(nd.path, name, { ..._expOpts, ...options });
   else if (nd.type === 'map') openMapApp(nd.path, name, _expOpts);
   else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
   else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
@@ -370,10 +370,10 @@ function _outlinerApplyCreateSuccess(pendingNode, found, options) {
 }
 
 // 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
-async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name, options) {
   if (pendingNode && pendingNode.parentNode) pendingNode.remove();
   await loadOutliner();
-  _openOutlinerCreatedNode(nd, name);
+  _openOutlinerCreatedNode(nd, name, options);
 }
 
 // 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
@@ -503,7 +503,9 @@ async function addItemAt(parentPath, type, options = {}) {
     // ゴミ箱へ移していた（2026-11-22 M-014 フォルダツリー網羅テスト）。別の画面からの共通履歴への落ち込みは
     // 履歴の守り（作ったファイル以外を消す記録へは落ちない）が止める。
     const createHistoryScope = '';
-    const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
+    const res = await apiPost('/outliner/add', { type, label, parent: parentPath, ...(type === 'form-app' ? { include_form_content: true } : {}) });
+    const formOpenOptions = type === 'form-app' && res.form_content?.path === res.node?.path
+      ? { formCopyOpen: { file: res.form_content } } : undefined;
     // サーバーはlabelを返すが、createTreeNodeFromBrowseはnameを使う
     if (!res.node.name) res.node.name = res.node.label;
     const companions = Array.isArray(res.node.companion_paths) ? res.node.companion_paths.filter(Boolean) : [];
@@ -513,7 +515,8 @@ async function addItemAt(parentPath, type, options = {}) {
       _pushCreatedOutlinerItemsHistory([
         { path: res.node.path, type: res.node.type || type, kind: 'file' },
         ...companions.map(path => ({ path, type: 'database', kind: 'folder' })),
-      ], '新規作成: ' + (res.node.name || label), createHistoryScope);
+      ], '新規作成: ' + (res.node.name || label), createHistoryScope,
+      type === 'form-app' ? { companionOwner: res.node.path } : {});
     } else if (res.node.path && typeof pushCreatedOutlinerItemHistory === 'function') {
       pushCreatedOutlinerItemHistory({ path: res.node.path, type: res.node.type || type }, '新規作成: ' + (res.node.name || label), {
         scope: createHistoryScope,
@@ -524,7 +527,7 @@ async function addItemAt(parentPath, type, options = {}) {
       // 遅延読込または仮想化モデルで反映し、DOMだけの挿入を避ける。
       const createdNode = _findTreeNodeByPath(res.node.path);
       _selectOutlinerCreateNode(createdNode);
-      _openOutlinerCreatedNode(res.node, res.node.name);
+      _openOutlinerCreatedNode(res.node, res.node.name, formOpenOptions);
       return;
     }
 
@@ -540,7 +543,7 @@ async function addItemAt(parentPath, type, options = {}) {
     const name = nd.name || nd.label || label;
     // 挿入先が最後まで解決できない場合はルート等へ誤挿入せず全体再読込に委ねる
     if (!insertTarget.deferTreeInsert && !insertTarget.container) {
-      await _outlinerCreateFallbackToReload(pendingNode, nd, name);
+      await _outlinerCreateFallbackToReload(pendingNode, nd, name, formOpenOptions);
       return;
     }
     const virtualInsert = !insertTarget.deferTreeInsert
@@ -566,10 +569,14 @@ async function addItemAt(parentPath, type, options = {}) {
     }
     // 作成が確定した行を先に描画する。ボード等の初期表示で行の反映まで待たせない。
     const createVault = typeof state !== 'undefined' ? state.vaultPath : '';
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
+    if (type !== 'form-app') await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0))));
     if (createVault !== (typeof state !== 'undefined' ? state.vaultPath : '')) return;
     // コンテンツを開く
-    _openOutlinerCreatedNode(nd, name);
+    const opened = _openOutlinerCreatedNode(nd, name, formOpenOptions);
+    if (type === 'form-app') {
+      await opened;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
     // フォルダパネルが同じフォルダを開いていれば、作ったものをすぐ出す
     if (typeof _outlinerRefreshFolderPanelFor === 'function') _outlinerRefreshFolderPanelFor([parentPath]);
     // 一緒に作ったもの（フォームのシート）も、作った場所のフォルダを差分で反映して出す。
@@ -595,6 +602,8 @@ async function addSheetEntryAt(sheetPath) {
   if (!path) return;
   const reservation = typeof historyReserve === 'function' ? historyReserve('トピック追加', '') : null;
   try {
+    // 子一覧は保存と並行して読み込む。確定したエントリは応答から差分で足す。
+    if (typeof _resolveOutlinerCreateInsertTarget === 'function') _resolveOutlinerCreateInsertTarget(path, { expandUnloaded: true });
     const result = await apiPost('/entity/create', { parent_path: path, name: '無題' });
     const entryPath = result?.path || result?.entry_path;
     if (entryPath && typeof pushCreatedOutlinerItemHistory === 'function') {
@@ -605,7 +614,27 @@ async function addSheetEntryAt(sheetPath) {
       if (reservation) reservation.capture(register); else register();
     }
     showStatus('トピックを追加しました');
-    if (typeof loadOutliner === 'function') await loadOutliner();
+    let target = typeof _resolveOutlinerCreateInsertTarget === 'function'
+      ? _resolveOutlinerCreateInsertTarget(path, { expandUnloaded: true }) : null;
+    const directInsert = entryPath && target?.container && !target.deferTreeInsert && typeof _folderInsertDroppedItemsIntoOutliner === 'function';
+    if (directInsert) {
+      _folderInsertDroppedItemsIntoOutliner(path, [{
+        path: entryPath, name: result.name || '無題', type: 'entity', _dbPath: path,
+        entityData: { _entry_path: entryPath, _id: result.entry_id || result.id || '' },
+      }]);
+    } else {
+      // 保存前に始めた読込がまだ続いている場合は、完了後の最新pivotで照合する。
+      for (let wait = 0; target?.deferTreeInsert && wait < 40; wait += 1) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        target = _resolveOutlinerCreateInsertTarget(path, { expandUnloaded: true });
+      }
+      if (typeof _outlinerSyncFoldersOrReload === 'function') await _outlinerSyncFoldersOrReload([path]);
+      else if (typeof loadOutliner === 'function') await loadOutliner();
+    }
+    // 行を描く前に、開いたシートの追加の読込で画面を混ませない。
+    if (typeof requestAnimationFrame === 'function') await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    // 確定した行を先に描いてから、並びと他のエントリを最新の保存内容へ照合する。
+    if (directInsert && typeof _outlinerSyncFoldersOrReload === 'function') await _outlinerSyncFoldersOrReload([path]);
     if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
   } catch (e) {
     showStatus((e && e.message) || 'トピックの追加に失敗しました', true);

@@ -492,7 +492,7 @@ function _elAddPresetLayout(context, template) {
   if (!_elCanMutateGrid(context.grid, context.options)) return;
   const api = globalThis.MeldexDbTopicLayoutStyle;
   let imported;
-  _elMutateState(context.dbPath, 'トピックレイアウト: テンプレートから追加', template.layout.name, state => {
+  const add = state => {
     const source = JSON.parse(JSON.stringify(template));
     if (state.layouts.some(item => item.name === source.layout.name)) {
       source.layout.name = _elMakeDuplicateName(source.layout.name, state.layouts);
@@ -502,7 +502,13 @@ function _elAddPresetLayout(context, template) {
     state.layouts.push(imported.layout);
     state.tabOrder.push(imported.layout.id);
     state.currentTab = imported.layout.id;
-  }, _elRestoreOption(context.grid, context.rerender));
+  };
+  if (typeof context.commitLayout === 'function') {
+    add(_elGetState(context.dbPath));
+    if (!imported?.added || context.commitLayout(imported.layout) === false) return;
+  } else {
+    _elMutateState(context.dbPath, 'トピックレイアウト: テンプレートから追加', template.layout.name, add, _elRestoreOption(context.grid, context.rerender));
+  }
   if (!imported?.added) return;
   _elSession(context.grid, context.entityPath).tab = imported.layout.id;
   context.rerender?.();

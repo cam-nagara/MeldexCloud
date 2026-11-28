@@ -648,17 +648,18 @@ async function _addDropboxOutlinerRootFromSettings() {
 
 async function _restoreOutlinerRootsSettingsSnapshot(snapshot) {
   const normalized = _normalizeOutlinerRootsSettingsSnapshot(snapshot);
-  await apiPut('/vault', { path: normalized.vaultPath || '' });
+  const dropbox = window.MeldexRuntimeAdapter?.isDropboxMode?.() === true;
+  if (!dropbox) await apiPut('/vault', { path: normalized.vaultPath || '' });
   // baseRoots: この呼び出し元（Undo/Redo）が最後に把握していた一覧を基準として送る
   // （saveOutlinerRootsと同じ理由。台帳合流分のrootをUndo/Redoで消す操作でも
   // 正しく削除印が付くようにするため）。
   await apiPut('/outliner-roots', { roots: normalized.roots, baseRoots: _outlinerRootsBaseline });
   _outlinerRootsBaseline = _cloneOutlinerRootsBaseline(normalized.roots);
-  if (typeof state !== 'undefined') state.vaultPath = normalized.vaultPath || '';
+  if (!dropbox && typeof state !== 'undefined') state.vaultPath = normalized.vaultPath || '';
   _outlinerRoots = normalized.roots.map(root => ({ ...root }));
   renderOutlinerRootsSettings();
   const workEl = document.getElementById('sb-work');
-  if (workEl) {
+  if (workEl && !dropbox) {
     const label = normalized.vaultName || normalized.vaultPath.split(/[\\/]/).pop() || '';
     workEl.textContent = normalized.vaultPath ? ('ソースフォルダ: ' + label) : '';
   }

@@ -278,11 +278,14 @@ function _kanbanAdoptedValueForWrite(values) {
    ギャラリービュー
    ============================== */
 function _dbViewSurfaceEl(ctx, selector, id) {
+  const belongsHere = element => element && (!element.classList?.contains('gb-form-app-surface')
+    || (ctx?.containerEl && element.closest?.('.gb-form-app') === ctx.containerEl));
   if (ctx && ctx.containerEl) {
-    const scoped = ctx.containerEl.querySelector(selector);
+    const scoped = [...ctx.containerEl.querySelectorAll(selector)].find(belongsHere);
     if (scoped) return scoped;
   }
-  return document.getElementById(id) || document.querySelector(selector);
+  const byId = document.getElementById(id);
+  return (belongsHere(byId) && byId) || [...document.querySelectorAll(selector)].find(belongsHere) || null;
 }
 
 function _galleryImageSrcFromValue(rawValue, dbPath, entityName) {

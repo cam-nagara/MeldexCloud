@@ -1,3 +1,69 @@
+        if (readback.sha256 !== await _conflictSnapshotSha256(plan.nextBytes)) throw new Error('復元後の内容が一致しません');
+      }
+      await _restoreVersionAnnotations(provider, normalized, meta.annotation_snapshot, options.annotation_revision);
+    } catch (error) {
+      const incomplete = [];
+      for (const { plan, revision } of [...committed].reverse()) {
+        try {
+          if (!revision) throw new Error('更新情報不明');
+          if (plan.bytes === null) await provider.deletePathConditional(plan.path, revision);
+          else await provider.uploadBytesConditional(plan.path, plan.bytes, revision);
+        } catch { incomplete.push(plan.relPath); }
+      }
+      throw Object.assign(new Error(incomplete.length
+        ? `復元を完了できませんでした。元データは復元前版「${backup.version}」に保持しています。再読込してください。`
+        : '復元を完了できなかったため、変更したファイルを元に戻しました。' + (error?.message || '')), { status: Number(error?.status || 500) });
+    }
+    return { ok: true, restored_count: baseline.plans.length, restored_files: baseline.plans.map(plan => plan.relPath) };
+  }
+
+  async function _deleteFolderVersion(provider, folderPath, version) {
+    const { adapter, storageKind, record } = await _findFolderVersionRecord(provider, folderPath, version, false, true);
+    if (!record) throw new Error('フォルダバージョンが見つかりません');
+    const token = _deletedVersionToken();
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, token, version: record.payload.version_name };
+  }
+
+  async function _undeleteFolderVersion(provider, folderPath, token) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeToken = _safeVersionName(token);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const records = await adapter.listDocuments(storageKind);
+    const record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.deleted_token === safeToken;
+    });
+    if (!record) throw new Error('削除済みバージョンが見つかりません');
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: '', deleted_token: '' },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, version: record.payload.version_name };
+  }
+
+  window.MeldexFolderVersionProviderOps = Object.freeze({
+    save: (provider, path, options) => _saveFolderVersion(provider, path, options || {}),
+    read: (provider, path, version) => _readFolderVersion(provider, path, version),
+    restoreRevision: async (provider,path,files) => (await _folderRestoreBaseline(provider,path,files)).token,
+  });
+  async function _findDropboxConflictedCopies(provider, limit) {
+    const maxItems = Math.max(1, Math.min(Number(limit || 50), 200));
+    const maxFiles = 2500;
+    const maxDirs = 500;
+    const items = [];
+    let total = 0;
+    let scannedFiles = 0;
     let scannedDirs = 0;
     let scanTruncated = false;
 
@@ -832,69 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     const folderLinkBatchResult = typeof folderLinkRoute === 'function'
       ? await folderLinkRoute(pathname, method, body) : undefined;
     if (folderLinkBatchResult !== undefined) return folderLinkBatchResult;
-
-    if (pathname === '/folder-links/add' && method === 'POST') {
-      const filePath = _normalizeFolderPath(body?.file_path || '');
-      if (typeof folderLinkRoute !== 'function') throw new Error('フォルダリンク一括処理を利用できません');
-      const batch = await folderLinkRoute('/folder-links/batch/add', 'POST', {
-        ...body,
-        items: [{ file_path: filePath }],
-        request_id: String(body?.request_id || `single-add-${Date.now()}-${Math.random()}`),
-      });
-      const row = batch.results[0];
-      if (row?.status === 'failed') throw new Error(row.error || 'リンク登録に失敗しました');
-      return { ok: true, file_id: row.file_id, folder_path: row.folder_path, folder_id: row.folder_id, created: row.status === 'created' };
-    }
-
-    if (pathname === '/folder-links/remove' && method === 'POST') {
-      const fileId = String(body?.file_id || '').trim();
-      if (typeof folderLinkRoute !== 'function') throw new Error('フォルダリンク一括処理を利用できません');
-      const batch = await folderLinkRoute('/folder-links/batch/remove', 'POST', {
-        ...body,
-        items: [{ file_id: fileId, file_path: _normalizeFolderPath(body?.file_path || '') }],
-        request_id: String(body?.request_id || `single-remove-${Date.now()}-${Math.random()}`),
-      });
-      const row = batch.results[0];
-      if (row?.status === 'failed') throw new Error(row.error || 'リンク解除に失敗しました');
-      return { ok: true, removed: row.status === 'removed' };
-    }
-
-    if (pathname === '/file-folders' && method === 'GET') {
-      const filePath = _normalizeFolderPath(url.searchParams.get('path') || '');
-      const result = [];
-      const physical = _dirname(filePath);
-      if (physical) result.push({ folder: physical, type: 'physical' });
-      const fileId = filePath ? _fnvFileId(filePath) : '';
-      const provider = await _requirePwaProvider('read');
-      (await _folderLinksForProvider(provider)).filter((link) => link.file_id === fileId).forEach((link) => {
-        result.push({ folder: link.folder_path, type: 'link', file_id: fileId, added_at: link.added_at || '' });
-      });
-      return result;
-    }
-
-    if (pathname === '/backlinks' && method === 'GET' && url.searchParams.get('target')) {
-      const provider = await _requirePwaProvider('read');
-      return _queryBacklinks(provider, url.searchParams.get('target') || '');
-    }
-
-    if (pathname === '/backlinks/rebuild' && method === 'POST') return { ok: true, mode: 'live-scan' };
-    if (pathname === '/backlinks/update' && method === 'POST') {
-      const normalizedPath = _normalizeFolderPath(body?.path || '');
-      if (!normalizedPath) return { ok: false, error: 'path required' };
-      return { ok: true, path: normalizedPath };
-    }
-
-    if (pathname === '/references/delete-impact' && method === 'POST') {
-      // ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 4:
-      // 削除確認ダイアログの被参照警告(gb-delete-impact-warning.js)向け。
-      // Desktop側 /api/references/delete-impact の Cloud（Dropbox直結）等価。
-      const provider = await _requirePwaProvider('read');
-      const items = Array.isArray(body?.items) ? body.items : [];
-      const gate = window.MeldexCloudDeleteConfirmation;
-      if (!gate?.prepareProviderDelete) {
-        const error = new Error('削除確認の永続ストレージを利用できません');
-        error.status = 503;
-        throw error;
-      }
-      return gate.prepareProviderDelete({
-        provider, items, operation: body?.operation,

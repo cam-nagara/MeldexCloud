@@ -60,7 +60,7 @@ const GBLinkRouter = (() => {
     if (IMAGE_EXTS.includes(e)) return 'image';
     if (VIDEO_EXTS.includes(e)) return 'video';
     if (AUDIO_EXTS.includes(e)) return 'audio';
-    if (e === 'pdf') return 'pdf';
+    if (e === 'pdf' || e === 'epub') return 'pdf'; // EPUBもビューワーの文書の経路（?pdf=）で開く
     return '';
   }
 
@@ -91,7 +91,7 @@ const GBLinkRouter = (() => {
     if (lower.endsWith('.mel-sheet')) return 'database';
     if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
     if (extension === 'md' || extension === 'txt') return 'page';
-    if (extension === 'pdf') return 'pdf';
+    if (extension === 'pdf' || extension === 'epub') return 'pdf';
     if (extension === 'csv') return 'csv';
     if (extension === 'html' || extension === 'htm') return 'html';
     const media = mediaTypeFromExt(extension);
@@ -159,7 +159,7 @@ const GBLinkRouter = (() => {
     else if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) entry = { type: explicitType, label: nextLabel, path: nextPath };
     else if (explicitType === 'folder') entry = { type: 'folder', label: nextLabel, path: nextPath };
     else if (explicitType === 'calendar') entry = { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
-    else if (explicitType === 'pdf' || (explicitType === 'document' && extension === 'pdf')) {
+    else if (explicitType === 'pdf' || (explicitType === 'document' && (extension === 'pdf' || extension === 'epub'))) {
       entry = { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
     } else if (explicitType === 'document') entry = { type: 'page', label: nextLabel, path: nextPath };
     else if (explicitType === 'page') entry = { type: 'page', label: nextLabel, path: nextPath };
@@ -179,7 +179,7 @@ const GBLinkRouter = (() => {
     else if (IMAGE_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
     else if (VIDEO_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'video', label: nextLabel, path: nextPath };
     else if (AUDIO_EXTS.includes(extension)) entry = { type: 'media', mediaType: 'audio', label: nextLabel, path: nextPath };
-    else if (extension === 'pdf') entry = { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
+    else if (extension === 'pdf' || extension === 'epub') entry = { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
     else entry = { type: 'page', label: nextLabel, path: nextPath };
 
     return entry;

@@ -16,12 +16,10 @@
 
   const WIDTH_TOOLS = [
     { tool: 'pen', label: 'ペンの太さ', min: 1, max: 16, value: 3 },
-    { tool: 'marker', label: 'マーカーの太さ', min: 4, max: 40, value: 12 },
     { tool: 'eraser', label: '消しゴムの太さ', min: 4, max: 48, value: 14 },
   ];
   const TOOLS = [
     { name: 'pen', icon: 'pencil', title: 'ペン' },
-    { name: 'marker', icon: 'highlighter', title: 'マーカー' },
     { name: 'lasso', icon: 'lasso', title: '投げ縄塗り' },
     { name: 'rect', icon: 'square', title: '矩形塗り' },
     { name: 'eraser', icon: 'eraser', title: '消しゴム' },
@@ -184,6 +182,22 @@
       if (width) toolbar.appendChild(widthControl(width, controller));
     });
 
+    // ハイライト: 選んでいる文字に付ける（描画ツールではない）。文字を選んでいない時は理由つきで押せない。
+    // アイコンは以前のマーカーのもの（2026-11-27）。
+    const highlight = document.createElement('button');
+    highlight.type = 'button';
+    highlight.id = 'ann-highlight-selection';
+    highlight.className = 'ann-tool';
+    highlight.dataset.annAction = 'highlight-selection';
+    highlight.setAttribute('aria-label', 'ハイライト');
+    highlight.innerHTML = icon('highlighter', 16);
+    highlight.addEventListener('pointerdown', event => event.preventDefault()); // 選択を外さない
+    highlight.addEventListener('click', () => {
+      if (highlight.getAttribute('aria-disabled') === 'true') return;
+      controller.highlightSelection?.();
+    });
+    toolbar.appendChild(highlight);
+
     toolbar.appendChild(separator());
     const swatch = document.createElement('button');
     swatch.type = 'button';
@@ -286,6 +300,18 @@
       }
     }
 
+    function syncHighlightButton() {
+      const button = toolbar.querySelector('#ann-highlight-selection');
+      if (!button) return;
+      const ready = !!controller.hasTextSelection?.();
+      button.setAttribute('aria-disabled', ready ? 'false' : 'true');
+      button.classList.toggle('disabled', !ready);
+      button.title = ready ? 'ハイライト — 選んだ文字にハイライトを付けます' : (controller.noTextReason?.() || 'ハイライト — 文字を選ぶと使えます');
+    }
+    let highlightTimer = 0;
+    document.addEventListener('selectionchange', () => { clearTimeout(highlightTimer); highlightTimer = setTimeout(syncHighlightButton, 60); });
+    syncHighlightButton();
+
     function setVisible(visible, anchor) {
       if (!visible) {
         toolbar.classList.remove('visible');
@@ -310,7 +336,7 @@
     // 幅が伸びると、電話幅では右側（色ボタン等）が画面外へ出ていた。
     if (typeof ResizeObserver === 'function') new ResizeObserver(reclamp).observe(toolbar);
 
-    return { element: toolbar, setVisible, syncFromState };
+    return { element: toolbar, setVisible, syncFromState, syncHighlightButton };
   }
 
   window.MeldexViewerAnnotationToolbar = { create };

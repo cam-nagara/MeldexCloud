@@ -21,7 +21,16 @@ function _bdCanUseBoardDetailTabs() {
 
 function _bdEnsureBoardFileStyleTab() {
   if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
-  if (typeof renderFileStyleTab === 'function') renderFileStyleTab('board');
+  const el = typeof document !== 'undefined' ? document.getElementById?.('detail-tab-file-style') : null;
+  if (el?.hidden) {
+    el.dataset.fileStyleContext = 'board';
+    el._bdBoardFileStyleRefreshPending = true;
+    return;
+  }
+  if (typeof renderFileStyleTab === 'function') {
+    renderFileStyleTab('board');
+    if (el) el._bdBoardFileStyleRefreshPending = false;
+  }
 }
 
 // 課題3 (2026-08-14): 階層別/カード/ラインスタイルのフィールドを編集すると、その値を反映する
@@ -150,9 +159,26 @@ function _bdEnsureBoardStyleManagerTabs() {
 
 // グループスタイルタブの「編集するグループ」はタブを作った時のグループ一覧のままだった
 // （グループ化した直後に開いても空で、開き直すまで選べない）。タブへ切り替えた時に作り直す。
+// 非表示だった階層別スタイルとテーマ欄も、開く際に最新の対象へ同期する。
 if (typeof document !== 'undefined' && !window.__bdGroupTabRefreshBound) {
   window.__bdGroupTabRefreshBound = true;
   document.addEventListener('meldex:detail-tab-switched', event => {
+    if (event?.detail?.tab === 'file-style') {
+      const el = document.getElementById('detail-tab-file-style');
+      if (!el?._bdBoardFileStyleRefreshPending || el.hidden || el.dataset?.fileStyleContext !== 'board'
+          || typeof renderFileStyleTab !== 'function') return;
+      if (typeof _bdHasActiveBoardCanvas === 'function' && !_bdHasActiveBoardCanvas()) return;
+      renderFileStyleTab('board');
+      el._bdBoardFileStyleRefreshPending = false;
+      return;
+    }
+    if (event?.detail?.tab === 'board-depth-style') {
+      const el = document.getElementById('detail-tab-board-depth-style');
+      if (!el?._bdDepthSelectionRefreshPending || typeof _bdRenderDepthStyleInPanel !== 'function') return;
+      _bdRenderDepthStyleInPanel(el, _bdLastDepthEditIndex);
+      el._bdDepthSelectionRefreshPending = false;
+      return;
+    }
     if (event?.detail?.tab !== 'board-group-style') return;
     const el = document.getElementById('detail-tab-board-group-style');
     if (!el || typeof bd === 'undefined' || !bd?.path) return;

@@ -1,3 +1,57 @@
+        });
+      }
+      return null;
+    });
+}
+
+function _refreshOutlinerAfterStartupReady() {
+  try {
+    const outlinerOptions = {
+      coalesce: true,
+      skipIfRecentlyLoaded: true,
+      reason: 'startup-ready',
+    };
+    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
+    const refreshJobs = [];
+    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
+    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+    return Promise.allSettled(refreshJobs);
+  } catch (error) {
+    console.warn('[Meldex] startup outliner refresh failed:', error);
+    return Promise.resolve(null);
+  }
+}
+
+function _highlightLastOutlinerNodeAfterStartup() {
+  setTimeout(() => {
+    const last = _readLastViewFromStorage();
+    if (!last) return;
+    const p = last.path || last.dbPath || last.entityPath || '';
+    if (p) highlightOutlinerNode(p);
+  }, 500);
+}
+
+function _readLastViewFromStorage() {
+  try {
+    return JSON.parse(localStorage.getItem('lastView') || 'null');
+  } catch {
+    localStorage.removeItem('lastView');
+    return null;
+  }
+}
+
+async function _openCloudStartupHome(homeRes, isUrlOpen, onboardingShown) {
+  // Explicit links keep their target; Desktop keeps its saved workspace.
+  if (_isDesktopStartupLaunch() || isUrlOpen || onboardingShown || !homeRes?.exists || !homeRes.path) return false;
+  // ホームから始めるのは Cloud（この端末内・Dropbox の保存先）だけ。本体のサーバーを普通のブラウザで
+  // 開いた時は、デスクトップ版と同じく前回のタブを復元する（ここでホームを開くと、復元中のシートのタブが
+  // 「ホームフォルダ」に置き換わり、タブ名と本文が食い違ったまま表が描かれなかった。2026-11-22 探索）。
+  const runtime = typeof window !== 'undefined' ? window.MeldexRuntimeAdapter : null;
+  if (!runtime?.isBrowserDataMode?.()) return false;
+  const label = typeof HOME_FOLDER_DISPLAY_LABEL !== 'undefined' ? HOME_FOLDER_DISPLAY_LABEL : 'ホームフォルダ';
+  await openFolder(label, homeRes.path, {
+    fromExplorer: true,
     skipAutoAppLayout: true,
     skipSaveLastView: true,
   });
@@ -393,6 +447,10 @@ function showView(viewName, ctx) {
   // app-toolbarの表示切替
   const appTb = document.getElementById('app-toolbar');
   _setDisplay('tb-db', isDbView ? 'contents' : 'none');
+  // シートのツールバーを出しているかは目印の属性で見分ける。見た目の規則で「表示の書き方」（style属性）を
+  // :has() の中から見ると、どの要素のstyleを変えても画面全体の見た目を計算し直し、列の多いシートでは
+  // メニューを開くだけで1秒かかっていた（2026-11-27）。
+  if (appTb) appTb.dataset.sheetToolbar = isDbView ? '1' : '0';
   // ページビュー: app-toolbarにリッチテキストツールバー表示
   const showRtInAppbar = (resolvedViewName === 'page');
   _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
@@ -840,61 +898,3 @@ async function captureScreenshot(mode) {
     if (stream) stream.getTracks().forEach(t => t.stop());
     if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
   }
-}
-
-// モバイル: スワイプでサイドバー開閉
-(function() {
-  let touchStartX = 0, touchStartY = 0;
-  document.addEventListener('touchstart', (e) => {
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-  }, { passive: true });
-  document.addEventListener('touchend', (e) => {
-    if (window.innerWidth > 768) return;
-    const dx = e.changedTouches[0].clientX - touchStartX;
-    const dy = e.changedTouches[0].clientY - touchStartY;
-    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
-    const sidebar = document.getElementById('sidebar');
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (dx > 0 && touchStartX < 40 && !sidebar.classList.contains('open')) {
-      // 左端から右スワイプ → サイドバー開く
-      sidebar.classList.add('open');
-      if (backdrop) {
-        backdrop.classList.add('open');
-        backdrop.style.setProperty('display', 'block', 'important');
-      }
-    } else if (dx < 0 && sidebar.classList.contains('open')) {
-      // 左スワイプ → サイドバー閉じる
-      sidebar.classList.remove('open');
-      if (backdrop) {
-        backdrop.classList.remove('open');
-        backdrop.style.setProperty('display', 'none', 'important');
-      }
-    }
-  }, { passive: true });
-})();
-
-/* ==============================
-   ステータスバー
-   ============================== */
-// メッセージ先頭行をタイトル、残りを本文として安全なDOMへ変換する。
-// 単一行メッセージは従来通り本文だけ、複数行のみ先頭行を強調する。
-function _buildCfDialogBodyNodes(message, idBase) {
-  const text = String(message ?? '');
-  if (!text) return [];
-  const lines = text.split('\n');
-  const entries = lines.length < 2
-    ? [{ text, kind: 'body' }]
-    : [
-        { text: (lines.shift() || '').trim(), kind: 'title' },
-        { text: lines.join('\n').trim(), kind: 'muted' },
-      ];
-  return entries.filter(entry => entry.text).map((entry, index) => {
-    const node = document.createElement('div');
-    node.className = 'gb-confirm-message';
-    node.id = `${idBase}-message-${index}`;
-    node.textContent = entry.text;
-    if (entry.kind === 'title') node.style.fontWeight = '600';
-    if (entry.kind === 'muted') node.style.color = 'var(--ui-fg-muted)';
-    return node;
-  });

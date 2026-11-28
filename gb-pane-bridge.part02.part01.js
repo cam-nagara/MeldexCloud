@@ -629,7 +629,7 @@
       window.GBAnnotationSurfaces.sync();
       return;
     }
-    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if ((typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) || (typeof _isTrayAnnotationBarHost === 'function' && _isTrayAnnotationBarHost())) return;
     const storage = document.getElementById('legacy-views');
     const overlay = document.getElementById('ann-overlay');
     const button = document.getElementById('btn-tb-annotation');

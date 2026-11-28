@@ -509,6 +509,9 @@
 
     async _rpc(route, body, location) {
       const freshMissingCheck = !!location?.freshMissingCheck;
+      // Skip only the parent-list cache hint for strict reads. Server access
+      // and the caller's identity/revision checks still run on the real reply.
+      const skipMissingGuard = !!location?.skipMissingGuard;
       if (location && _auth()?.resolveFileLocation) {
         await _auth().getCurrentAccount(false);
         const resolved = _auth().resolveFileLocation(location.path, location.namespaceKind);
@@ -524,12 +527,13 @@
       }
       return _auth().apiRpc(route, body, {
         namespaceKind: location?.namespaceKind || 'home',
-        checkMissing: route === 'files/get_metadata' || route === 'files/list_folder',
+        checkMissing: route === 'files/list_folder' || (route === 'files/get_metadata' && !skipMissingGuard),
         freshMissingCheck,
       });
     }
 
     async _content(route, arg, init, location) {
+      const skipMissingGuard = !!location?.skipMissingGuard;
       if (location && _auth()?.resolveFileLocation) {
         await _auth().getCurrentAccount(false);
         const resolved = _auth().resolveFileLocation(location.path, location.namespaceKind);
@@ -538,7 +542,7 @@
       }
       return _auth().apiContent(route, arg, init, {
         namespaceKind: location?.namespaceKind || 'home',
-        checkMissing: route === 'files/download',
+        checkMissing: route === 'files/download' && !skipMissingGuard,
       });
     }
 
@@ -992,7 +996,7 @@
       return null;
     }
 
-    async getMetadata(relativePath) {
+    async getMetadata(relativePath, options = {}) {
       const normalized = _normalizeRelativePath(relativePath);
       if (this._metaCache.has(normalized)) return this._metaCache.get(normalized);
       try {
@@ -1001,7 +1005,7 @@
           path: location.path,
           include_deleted: false,
           include_has_explicit_shared_members: false,
-        }, location);
+        }, options?.skipMissingGuard ? { ...location, skipMissingGuard: true } : location);
         this._rememberMeta(normalized, payload);
         return payload;
       } catch (err) {
@@ -1013,10 +1017,10 @@
       }
     }
 
-    async refreshMetadata(relativePath) {
+    async refreshMetadata(relativePath, options = {}) {
       const normalized = _normalizeRelativePath(relativePath);
       this._forgetMeta(normalized);
-      return this.getMetadata(normalized);
+      return this.getMetadata(normalized, options);
     }
 
     async resolveFileIdentity(id, pathHint) {
@@ -1491,25 +1495,49 @@
       return { bytes, revision: meta.rev };
     }
 
-    async readBytesFresh(relativePath) {
+    async readBytesFresh(relativePath, options = {}) {
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);
       const metadata = () => this._rpc('files/get_metadata', {
         path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
-      }, { ...location, freshMissingCheck: true });
+      // These mandatory exact reads are authoritative; an optional parent-list
+      // hint cannot add proof and would duplicate the strict readback below.
+      }, { ...location, freshMissingCheck: true, skipMissingGuard: true });
       const before = await metadata();
       if (before?.['.tag'] === 'folder') {
         throw Object.assign(new Error('Dropboxの対象はフォルダです'), { status: 409, code: 'target_is_directory' });
       }
-      const response = await this._content('files/download', { path: location.path }, undefined, location);
+      const response = await this._content('files/download', { path: location.path }, undefined,
+        { ...location, skipMissingGuard: true });
       const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
       const bytes = new Uint8Array(await response.arrayBuffer());
       const after = await metadata();
-      if (!before?.rev || before.rev !== downloaded.rev || before.rev !== after?.rev) {
+      const ids = [before?.id, downloaded.id, after?.id].filter(Boolean);
+      if (!before?.rev || before.rev !== downloaded.rev || before.rev !== after?.rev
+          || new Set(ids).size > 1) {
         throw Object.assign(new Error('Dropboxファイルの読込中に内容が変わりました'), { status: 409, meldexCode: 'etag_conflict' });
       }
       this._rememberMeta(normalized, after);
-      return { bytes, revision: after.rev };
+      return { bytes, revision: after.rev,
+        ...(ids.length === 3 ? { metadata: after } : {}) };
+    }
+
+    async readBytesIdentityFresh(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath), location = this._dropboxLocation(normalized);
+      const response = await this._content('files/download', { path: location.path }, undefined, { ...location, skipMissingGuard: true });
+      const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (!downloaded.id || !downloaded.rev) throw Object.assign(new Error('Dropboxの読込識別番号とrevisionを確認できません'), {
+        status: 503, code: 'strict_cas_unavailable',
+      });
+      const current = await this._rpc('files/get_metadata', {
+        path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
+      }, { ...location, freshMissingCheck: true, skipMissingGuard: true });
+      if (downloaded.id !== current?.id || downloaded.rev !== current?.rev) {
+        throw Object.assign(new Error('Dropboxファイルの読込中に内容または識別番号が変わりました'), { status: 409, meldexCode: 'etag_conflict' });
+      }
+      this._rememberMeta(normalized, current);
+      return { bytes, revision: current.rev, provider_id: current.id };
     }
 
     async getTemporaryLink(relativePath) {

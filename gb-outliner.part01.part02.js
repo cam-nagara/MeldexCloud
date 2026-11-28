@@ -265,6 +265,10 @@
             });
           }
           childrenDiv.dataset.loaded = 'true';
+          // 検索中の遅延読込は、一致の子が届いた時点で祖先の表示も確定する。
+          // 検索側の次の250msタイマーまで、閉じたフォルダ全体を隠したまま待たせない。
+          if ((_treeSearchQuery || (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length)
+              && typeof applyTreeNameSearch === 'function') applyTreeNameSearch();
           // 読み込み中にArrowRightの2打目が押されていた場合、最初の子へフォーカス
           // 移動する予約を消化する。フォーカスが別ノードへ移っていたら（選択が
           // このノード以外になっていたら）予約は破棄し、勝手にフォーカスを飛ばさない。

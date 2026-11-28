@@ -313,20 +313,28 @@
 }
 
 @media (pointer: coarse) and (max-width: 768px) {
-  #app-toolbar:has(#tb-db[style*="contents"]) {
+  /* 入りきらない操作は共通のあふれメニュー（…）へ回す。ボタンを隠したり横スクロールにしたりしない（2026-11-26）。 */
+  #app-toolbar[data-sheet-toolbar="1"] {
     max-width: 100%;
     min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: hidden;
     flex-wrap: nowrap;
   }
 
-  #tb-db .sep,
-  #tb-db > button:not(.tool-menu-btn):not(#btn-filter):not([data-e2e-id="sheet-reload-current"]):not(#btn-db-detail) {
-    display: none !important;
+  /* 折り返して3段になると表が狭くなる。1行に保ち、はみ出した分をあふれメニューで測らせる。 */
+  /* ファイル名欄の固定幅（240px）はスマホ幅では操作が1つも残らない。名前はタブにも出ているので、
+     スマホでは幅を縮めて、フィルタ・再読み込み・検索のボタンを残す。 */
+  #app-toolbar[data-sheet-toolbar="1"] > #tb-db {
+    --ui-toolbar-title-width: 28vw;
   }
 
-  #app-toolbar:has(#tb-db[style*="contents"]) #toolbar-title,
+  #app-toolbar[data-sheet-toolbar="1"] > #tb-db,
+  #tb-db .db-toolbar-actions-right,
+  #tb-db .db-toolbar-display-actions {
+    flex-wrap: nowrap !important;
+  }
+
+  #app-toolbar[data-sheet-toolbar="1"] #toolbar-title,
   #tb-db .tb-title {
     min-width: 0;
     max-width: 38vw;

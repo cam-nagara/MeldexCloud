@@ -415,7 +415,7 @@ function _bdInferLinkType(path, explicitType) {
   if (lower.endsWith('.mel-sheet')) return 'database';
   if (lower.endsWith('.mel-timer') || lower.endsWith('.timer.json')) return 'unsupported';
   if (ext === 'md' || ext === 'txt') return 'page';
-  if (ext === 'pdf') return 'pdf';
+  if (ext === 'pdf' || ext === 'epub') return 'pdf'; // EPUBもビューワーの文書の経路で開く
   if (ext === 'csv') return 'csv';
   if (ext === 'html' || ext === 'htm') return 'html';
   if (_bdLinkMediaType(ext)) return _bdLinkMediaType(ext);
@@ -447,7 +447,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
   if (explicitType === 'folder') return { type: 'folder', label: nextLabel, path: nextPath };
   if (explicitType === 'calendar') return { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
-  if (explicitType === 'pdf' || (explicitType === 'document' && ext === 'pdf')) {
+  if (explicitType === 'pdf' || (explicitType === 'document' && (ext === 'pdf' || ext === 'epub'))) {
     return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
   }
   if (explicitType === 'document') return { type: 'page', label: nextLabel, path: nextPath };
@@ -465,7 +465,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'apng', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(ext)) return { type: 'media', mediaType: 'image', label: nextLabel, path: nextPath };
   if (['mp4', 'mov', 'avi', 'webm', 'mkv', 'ogv'].includes(ext)) return { type: 'media', mediaType: 'video', label: nextLabel, path: nextPath };
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return { type: 'media', mediaType: 'audio', label: nextLabel, path: nextPath };
-  if (ext === 'pdf') return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
+  if (ext === 'pdf' || ext === 'epub') return { type: 'media', mediaType: 'pdf', label: nextLabel, path: nextPath };
   if (ext === 'md' || ext === 'json' || !ext) return { type: 'page', label: nextLabel, path: nextPath };
   return { type: 'page', label: nextLabel, path: nextPath };
 }
@@ -794,6 +794,10 @@ async function openLinkedPathInMainPane(path, label, options) {
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
   if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
+  // Standalone Board has its own viewer, not the main application's pane layout.
+  if (_bdIsStandaloneBoardSurface() && typeof window._bsaOpenLinkedPathInSidebar === 'function') {
+    return window._bsaOpenLinkedPathInSidebar(entry.path, entry.label || label, { linkType: entry.type || opts.linkType });
+  }
   const paneId = _bdMainPaneIdForLinkedOpen();
   if (!paneId) {
     if (typeof navOpen === 'function') {
@@ -1020,7 +1024,7 @@ function _bdStandaloneViewerUrl(entry) {
   const path = entry?.path || '';
   const mediaType = entry?.mediaType || _bdLinkMediaType(_bdLinkExt(path));
   if (entry?.type === 'media' || mediaType) {
-    if (mediaType === 'pdf' || _bdLinkExt(path) === 'pdf') return 'viewer.html?pdf=' + encodeURIComponent(path);
+    if (mediaType === 'pdf' || _bdLinkExt(path) === 'pdf' || _bdLinkExt(path) === 'epub') return 'viewer.html?pdf=' + encodeURIComponent(path);
     if (mediaType === 'image') return 'viewer.html?file=' + encodeURIComponent(path);
   }
   if (entry?.type === 'html' && entry?.urlExternal) return path;

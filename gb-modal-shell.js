@@ -155,6 +155,7 @@
         value: function removeWithMobileSheetAnimation() {
           if (
             !_isMobileSheetMode()
+            || overlay.dataset.mobileDialogCloseAnimation === 'off'
             || overlay.dataset.mobileDialogClosing === '1'
             || !overlay.classList.contains('gb-mobile-dialog-overlay')
           ) {

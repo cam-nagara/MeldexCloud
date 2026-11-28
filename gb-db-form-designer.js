@@ -111,25 +111,20 @@
     row.appendChild(button('テンプレートから追加', async event => {
       const anchor = event.currentTarget;
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
-      const known = new Set(layouts.map(layout => layout.id));
       const data = { properties: Object.fromEntries(Object.keys(propTypes).map(name => [name, []])) };
-      _elShowAddLayoutMenu(anchor, { grid: root, dbPath, entityPath: '', pivotData: data, options: { ctx }, layoutId: 'columns', rerender() {
-        const added = _elGetState(dbPath).layouts.find(layout => !known.has(layout.id));
-        if (added) bind(added.id, true);
-      } });
+      _elShowAddLayoutMenu(anchor, { grid: root, dbPath, entityPath: '', pivotData: data, options: { ctx }, layoutId: 'columns',
+        commitLayout(layout) {
+          return saveActiveFormConfig(dbPath, { ...cfg, ...model().forLayout(layout), layoutId: layout.id }, ctx, { layoutToAdd: layout, activateLayout: true });
+        }, rerender() { renderDbFormView(ctx); } });
     }, identity('template')));
     row.appendChild(button('現在の項目から配置を作成', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;
-      let id;
-      _elMutateState(dbPath, 'フォーム: 共通レイアウトを作成', '', state => {
-        id = _elGenId('form');
-        const fields = cfg.fields || [];
-        state.layouts.push(_elNormalizeLayout({ id, name: _elMakeDuplicateName('フォーム', state.layouts),
+      const id = _elGenId('form'), fields = cfg.fields || [];
+      const layout = _elNormalizeLayout({ id, name: _elMakeDuplicateName('フォーム', _elGetState(dbPath).layouts),
           canvasSize: { w: 1000, h: Math.max(700, fields.length * 140 + 40) }, formConfig: clone(cfg),
           cells: fields.map((prop, index) => ({ id: _elGenId('field'), type: 'field', prop, x: 20, y: 20 + index * 140, w: 940, h: 120 })),
-        }));
-      }, { ctx, historyScope: sheetHistoryScope() });
-      bind(id, true);
+        });
+      if (saveActiveFormConfig(dbPath, { ...cfg, ...model().forLayout(layout), layoutId: id }, ctx, { layoutToAdd: layout })) renderDbFormView(ctx);
     }, identity('create')));
     if (cfg.layoutId) row.appendChild(button('配置を編集', async () => {
       if (!await MeldexDbFormRuntime.confirmLeave(root)) return;

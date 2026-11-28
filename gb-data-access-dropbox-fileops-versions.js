@@ -253,8 +253,8 @@ function _signPendingEditRecordsInBackground(provider, adapter, path, records) {
 }
 
 async function _listSharedEditRecords(provider, path, recursive, options = {}) {
-  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
+  await _awaitPendingEditFinalizations(options.skipIntegrity && !recursive ? {provider, path:normalized} : undefined);
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = options.records || await adapter.listDocuments(kind,
@@ -308,8 +308,8 @@ function _editRecordPrefix(path) {
 }
 
 async function _reconcileCloudEditIntents(provider, path, currentContent) {
-  await _awaitPendingEditFinalizations();
   const normalized = _normalizeFolderPath(path);
+  await _awaitPendingEditFinalizations({provider, path:normalized});
   const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
   const adapter = await _managementAdapterForProvider(provider, kind, normalized);
   const records = await adapter.listDocuments(kind, { documentIdPrefix: _editRecordPrefix(normalized) });
@@ -420,17 +420,26 @@ async function _prepareCloudFileEdit(provider, path, currentContent, nextContent
 // _awaitPendingEditFinalizations で先に完了を待つので、順序は従来と変わらない。
 // 確定できなかった場合は従来どおり、次回の保存時に内容の一致で回収される。
 const _pendingEditFinalizations = new Set();
+const _pendingEditFinalizationScopes = new WeakMap();
 
 const PENDING_EDIT_FINALIZATION_WAIT_MS = 45000;
 
-async function _awaitPendingEditFinalizations() {
+async function _awaitPendingEditFinalizations(target) {
+  const normalized = target?.path ? _normalizeFolderPath(target.path) : '';
   const deadline = Date.now() + PENDING_EDIT_FINALIZATION_WAIT_MS;
   while (_pendingEditFinalizations.size) {
+    const pending = [..._pendingEditFinalizations].filter(promise => {
+      if (!target?.provider || !normalized) return true;
+      const scope = _pendingEditFinalizationScopes.get(promise);
+      // Unknown scopes remain conservative. Global history/exit callers still wait for all.
+      return !scope?.provider || !scope.path || (scope.provider === target.provider && scope.path === normalized);
+    });
+    if (!pending.length) return;
     const remaining = deadline - Date.now();
     // 通信が返らず確定が終わらない場合でも、以後の保存や履歴表示を止め続けない。
     // 待ちきれなかった記録は未確定のまま残り、次回の保存時に内容の一致で回収される。
     if (remaining <= 0) return;
-    const settled = Promise.allSettled([..._pendingEditFinalizations]);
+    const settled = Promise.allSettled(pending);
     await (typeof setTimeout === 'function'
       ? Promise.race([settled, new Promise(resolve => setTimeout(resolve, remaining))])
       : settled);
@@ -455,7 +464,10 @@ function _commitCloudFileEdit(prepared, committedRevision) {
     return pending;
   }).catch(() => true).finally(() => {
     _pendingEditFinalizations.delete(finalization);
+    _pendingEditFinalizationScopes.delete(finalization);
   });
+  _pendingEditFinalizationScopes.set(finalization, {provider:prepared.provider,
+    path:_normalizeFolderPath(prepared.payload?.original_relative_path || '')});
   _pendingEditFinalizations.add(finalization);
   return Promise.resolve(false);
 }
@@ -704,7 +716,7 @@ async function _saveFileVersion(provider, path, options) {
 async function _listFileVersions(provider, path) {
   const normalized = _normalizeFolderPath(path);
   const source = await _resolveEntryHandle(provider, normalized);
-  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  if (!source || source.kind !== 'file') throw Object.assign(new Error(`ファイルが見つかりません: ${normalized}`), { status: 404, code: 'file_missing' });
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
   await _awaitPendingEditFinalizations();
   const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);

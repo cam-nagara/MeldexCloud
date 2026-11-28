@@ -142,11 +142,10 @@
 
   // ====== Registry seed (B7: アノテート・チャット・LLM・チームチャット・DM) ======
   regData('tool', 'pen',     { label: 'ペン',       desc: 'ペンで自由にアノテートを書き込みます' });
-  regData('tool', 'marker',  { label: 'マーカー',   desc: '半透明のマーカーでアノテートを書き込みます' });
-  regData('tool', 'lasso',   { label: '塗りつぶし', desc: '囲んだ範囲を半透明色で塗ります' });
+  regData('tool', 'lasso',   { label: '塗りつぶし', desc: '囲んだ範囲を塗ります。透け具合は色の不透明度で選びます' });
   regData('tool', 'eraser',  { label: '消しゴム',   desc: '描き込んだアノテートを消します' });
   regData('tool', 'sticky',  { label: '付箋',       desc: '紙の付箋のようなアノテートを貼り付けます' });
-  regId('ann-color-swatch',  { label: 'アノテート色',     desc: 'アノテートペン・マーカー・付箋の色を変更します' });
+  regId('ann-color-swatch',  { label: 'アノテート色',     desc: 'ペン・図形・塗り・付箋の色と不透明度を変更します' });
   regId('ann-opacity',       { label: '不透明度',   desc: 'アノテートの不透明度を調整します' });
   regAction('annclear',      { label: 'アノテート全削除', desc: '現在のページのアノテートをすべて削除します' });
   regAction('newrpcomment',  { label: 'アノテートコメント追加', desc: '新しいアノテートコメントを作成します', shortcutId: 'global.addComment' });

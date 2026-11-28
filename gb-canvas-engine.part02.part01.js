@@ -1006,20 +1006,30 @@ function _bdPolylineMidpoint(points) {
   };
 }
 
-function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint) {
+function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint, generatedPath) {
   if (pathType === 'straight' || pathType === 'orthogonal') {
     return _bdPolylineMidpoint(pathPoints);
   }
+  // 自分で生成した同一のSVGパスだけ再利用する。端点・寸法・曲げ方が変わればdも変わる。
+  const key = typeof generatedPath === 'string' && generatedPath ? `${pathType}\n${generatedPath}` : null;
+  const cache = _bdMeasureConnectionCenter._geometryCache ||= new Map();
+  const copy = value => ({ point: { ...value.point }, angle: value.angle });
+  if (key && cache.has(key)) return copy(cache.get(key));
   try {
     const totalLength = pathEl?.getTotalLength?.() || 0;
     if (totalLength > 0) {
       const center = pathEl.getPointAtLength(totalLength / 2);
       const before = pathEl.getPointAtLength(Math.max(0, totalLength / 2 - 1));
       const after = pathEl.getPointAtLength(Math.min(totalLength, totalLength / 2 + 1));
-      return {
+      const measured = {
         point: { x: center.x, y: center.y },
         angle: Math.atan2(after.y - before.y, after.x - before.x) * 180 / Math.PI,
       };
+      if (key && [measured.point.x, measured.point.y, measured.angle].every(Number.isFinite)) {
+        cache.set(key, copy(measured));
+        if (cache.size > 128) cache.delete(cache.keys().next().value);
+      }
+      return measured;
     }
   } catch {}
   return { point: fallbackPoint || { x: 0, y: 0 }, angle: 0 };

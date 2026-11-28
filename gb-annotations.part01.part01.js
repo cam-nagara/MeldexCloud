@@ -717,6 +717,15 @@ function _configureTrayAnnotationHostFromLocation() {
 function _isTrayAnnotationHost() {
   return !!_trayAnnotationHost;
 }
+// 常駐アプリが出すデスクトップのアノテートバー（gb-tray-annotation-bar.js）。付箋の小窓と同じく
+// 本体の起動処理（フォルダツリー・ワークスペース・チャット等）を走らせない。
+function _isTrayAnnotationBarHost() {
+  try {
+    return new URLSearchParams(window.location.search || '').get('tray_annotation_bar') === '1';
+  } catch {
+    return false;
+  }
+}
 function _trayAnnotationApiFetch(path, options) {
   if (_isTrayAnnotationHost() && typeof _origApiFetch === 'function') {
     return _origApiFetch(path, options);
@@ -935,8 +944,11 @@ function _pushAnnotationBatchHistory(label, beforeRows, afterRows, detail, scope
   return true;
 }
 
-async function _pushAnnotationCreateHistory(annId, label, detail, scopeOverride) {
-  const after = await _fetchAnnotationHistoryRow(annId);
+async function _pushAnnotationCreateHistory(annId, label, detail, scopeOverride, savedRow) {
+  const committed = savedRow && String(savedRow.id || '') === String(annId || '')
+    && typeof savedRow.modified === 'string' && savedRow.modified
+    && typeof savedRow.type === 'string' && typeof savedRow.target_path === 'string';
+  const after = committed ? _normalizeAnnotationHistoryRow(savedRow) : await _fetchAnnotationHistoryRow(annId);
   return _pushAnnotationHistory(label || 'アノテート: 作成', null, after, detail, scopeOverride);
 }
 
@@ -1110,9 +1122,10 @@ function toggleAnnotation() {
 
 // ツール選択（アノテーションツールバー内）
 const _ANN_TOOL_GROUPS = {
+  // マーカーは撤去した（2026-11-27）。透かしたい線は色の不透明度で描く。ハイライトは描画ツールではなく、
+  // 選んだ文字に付ける別のボタン（#ann-highlight-selection）にした。ペンだけなのでメニューは出さない。
   stroke: [
     { tool: 'pen', label: 'ペン', icon: 'pencil' },
-    { tool: 'marker', label: 'マーカー', icon: 'highlighter' },
   ],
   line: [
     // 折れ線のアイコンは spline（曲線。折れ線を表せていなかった）から activity
@@ -1145,6 +1158,8 @@ function _applyAnnotationGroupButtonIcon(button, group, member) {
 }
 
 function _annotationSelectTool(tool, sourceButton) {
+  // 以前のマーカー・描画ツールだった頃のハイライト（保存したツールの状態・古い常駐パレット）はペンとして扱う
+  if (tool === 'marker' || tool === 'highlight') tool = 'pen';
   if (tool !== 'sticky' && typeof _discardEmptyAnnotationDrafts === 'function') _discardEmptyAnnotationDrafts('tool-change');
   ann.tool = tool;
   document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(button => {
@@ -1203,8 +1218,24 @@ function _initAnnotationToolGroups() {
   const fill = toolbar?.querySelector('[data-tool="lasso"]');
   const rectFill = toolbar?.querySelector('[data-tool="rect"]');
   if (!toolbar || !pen || !fill) return;
-  pen.dataset.annToolGroup = 'stroke';
+  // ストロークはペンだけなので、メニューを出さずペンを直接選ぶボタンにする
+  if (_ANN_TOOL_GROUPS.stroke.length > 1) pen.dataset.annToolGroup = 'stroke';
   marker?.remove();
+  // ハイライト: 選んでいる文字に付ける（描画ツールではない）。アイコンは以前のマーカーのもの。
+  if (!toolbar.querySelector('#ann-highlight-selection')) {
+    const highlight = document.createElement('button');
+    highlight.type = 'button';
+    highlight.id = 'ann-highlight-selection';
+    highlight.className = 'ann-tool';
+    highlight.dataset.annAction = 'highlight-selection';
+    highlight.dataset.e2eId = 'annotation-highlight-selection';
+    highlight.setAttribute('aria-label', 'ハイライト');
+    highlight.setAttribute('aria-disabled', 'true');
+    highlight.classList.add('disabled');
+    highlight.innerHTML = typeof lucide === 'function' ? lucide('highlighter', 14) : '';
+    const after = pen.nextElementSibling?.classList.contains('ann-width-control') ? pen.nextElementSibling : pen;
+    after.after(highlight);
+  }
   const line = document.createElement('button');
   line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = _ANN_TOOL_GROUPS.line[0].tool; line.dataset.annToolGroup = 'line';
   fill.before(line);
@@ -1212,7 +1243,7 @@ function _initAnnotationToolGroups() {
   rectFill?.remove();
   // 初期表示アイコン・ラベルは各グループの既定メンバー（先頭要素）に合わせる。
   // ペン/囲い塗りボタンは data-tool が既に既定メンバーと一致しているのでそのまま使う。
-  _applyAnnotationGroupButtonIcon(pen, 'stroke', _ANN_TOOL_GROUPS.stroke[0]);
+  if (pen.dataset.annToolGroup) _applyAnnotationGroupButtonIcon(pen, 'stroke', _ANN_TOOL_GROUPS.stroke[0]);
   _applyAnnotationGroupButtonIcon(line, 'line', _ANN_TOOL_GROUPS.line[0]);
   _applyAnnotationGroupButtonIcon(fill, 'fill', _ANN_TOOL_GROUPS.fill[0]);
 }
@@ -1442,6 +1473,7 @@ function _initTrayAnnotationPaletteHost() {
     '[data-action*="openRightPanelTab"]',
     '#ann-view-lock-btn',
     '[data-action="annClear()"]',
+    '#ann-highlight-selection', // 撮影画像には選べる文字が無い
   ]) toolbar.querySelector(selector)?.remove();
   const separators = [...toolbar.children].filter(el => (
     el.tagName === 'DIV' && el.style.width === '1px' && !el.classList.contains('ft-drag')
@@ -1579,11 +1611,11 @@ function _createStrokeEl(pathD, color, opacity, pressures, isPen, width) {
   return path;
 }
 
-function _createLassoEl(points, color, opacity) {
+function _createLassoEl(points, color, opacity, data) {
   const poly = document.createElementNS(_annSvgNS, 'polygon');
   poly.setAttribute('points', points.map(p => p.join(',')).join(' '));
   poly.setAttribute('fill', color);
-  poly.setAttribute('fill-opacity', opacity * 0.4);
+  poly.setAttribute('fill-opacity', typeof _annotationFillOpacity === 'function' ? _annotationFillOpacity(data, opacity, false) : opacity * 0.4);
   poly.setAttribute('stroke', color);
   poly.setAttribute('stroke-width', '1');
   poly.setAttribute('stroke-opacity', opacity);

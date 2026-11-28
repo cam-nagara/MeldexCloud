@@ -1,5 +1,28 @@
 /* First-class Meldex form. Definitions belong to this tab; records to its sheet. */
 class FormAppComponent extends ToolComponent {
+  static prepareOpenRead(path) {
+    const target = String(path || '').trim();
+    if (!target || FormAppComponent._pendingCopyCommits?.has(target) || FormAppComponent._copyOpen?.has(target)) return null;
+    const settle = run => {
+      try { return Promise.resolve(run()).then(value => ({ value }), error => ({ error })); }
+      catch (error) { return Promise.resolve({ error }); }
+    };
+    const read = { path: target,
+      file: settle(() => apiFetch('/file?path=' + encodeURIComponent(target))),
+      access: settle(() => MeldexEntityDetail.resolveReadOnly(target, false)),
+    };
+    let hint = null;
+    if (typeof forEachComponent === 'function') forEachComponent(component => {
+      if (!hint && component instanceof FormAppComponent && component.path === target && component.store?.doc?.sheet?.path
+          && !component.store.dirty && !component.store.pending) hint = component;
+    });
+    if (hint) {
+      read.sheetSource = MeldexFormDocument.clone(hint.store.doc.sheet);
+      read.sheet = settle(() => hint._readSheet(read.sheetSource));
+    }
+    (FormAppComponent._preparedOpenReads ||= new WeakSet()).add(read);
+    return read;
+  }
   create() {
     this.el = document.createElement('section');
     this.el.className = 'gb-form-app';
@@ -30,6 +53,7 @@ class FormAppComponent extends ToolComponent {
   // 形式は共通の解決表 _meldexFormAppTabHistoryScope と一致させる。
   _historyScope() {
     if (this._embedded) return 'form:' + (this.store?.doc?.meldex?.document_id || this.path || this.state.formPath);
+    if (typeof _meldexFormAppTabHistoryScope === 'function') return _meldexFormAppTabHistoryScope({ path: this.path || this._tab()?.path, state: this.state });
     const path = String(this.path || this._tab()?.path || this.state.formPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
     return path ? 'form-app:' + path : '';
   }
@@ -37,11 +61,16 @@ class FormAppComponent extends ToolComponent {
   _tab() { return (GBLayout.findNode(GBLayout.root, this.paneId)?.node || GBLayout.paneMap?.[this.paneId]?.node)?.tabs?.find(tab => tab.id === this.tabId); }
   activate() {
     super.activate();
-    this._syncDetailPanel();
-    if ((this._embedded || this.paneId === GBLayout.activePane) && typeof historySetScope === 'function') historySetScope(this._historyScope());
     const tab = this._tab();
     const path = tab?.path || this.state.formPath;
-    if (path && path !== this.path) this.ready = this.load(path);
+    if (!path || path === this.path && this.store && this.surface?.isConnected && !this.el?.inert) this._syncDetailPanel();
+    if ((this._embedded || this.paneId === GBLayout.activePane) && typeof historySetScope === 'function'
+      && (typeof _historyActiveScope === 'undefined' || _historyActiveScope !== this._historyScope())) historySetScope(this._historyScope());
+    if (path && path !== this.path) {
+      const copyOpen = FormAppComponent._copyOpen?.get(path);
+      FormAppComponent._copyOpen?.delete(path);
+      this.ready = this.load(path, { copyOpen });
+    }
     else if (!path && !this.store) {
       this.el.textContent = tab?.state?.pendingCreate ? '作成しています…' : 'フォームを新規作成するか、フォルダツリーから開いてください。';
       if (!tab?.state?.pendingCreate) this.el.appendChild(this._button('フォームを作成', async () => {
@@ -54,6 +83,12 @@ class FormAppComponent extends ToolComponent {
     }
   }
   async load(path, options = {}) {
+    const tab = typeof GBLayout !== 'undefined' ? this._tab() : null;
+    const prepared = tab?._formOpenRead;
+    if (tab && Object.prototype.hasOwnProperty.call(tab, '_formOpenRead')) delete tab._formOpenRead;
+    const trustedRead = FormAppComponent._preparedOpenReads?.has(prepared);
+    if (trustedRead) FormAppComponent._preparedOpenReads.delete(prepared);
+    const openRead = trustedRead && prepared.path === path && !options.copyOpen ? prepared : null;
     const generation = ++this._generation;
     if (this.path && path !== this.path && !await this.flush()) return false;
     if (this.store?.pending) await this.store.pending;
@@ -62,31 +97,86 @@ class FormAppComponent extends ToolComponent {
     if (options.discardDraft) this._removeOwnDraft();
     this.path = path;
     this.store = null;
+    if (this.el.inert) {
+      this.el.inert = false;
+      this.el.removeAttribute('aria-busy');
+    }
     this.el.textContent = 'フォームを読み込んでいます…';
     try {
-      const [loaded, access] = await Promise.all([
-        apiFetch('/file?path=' + encodeURIComponent(path)), MeldexEntityDetail.resolveReadOnly(path, this._embeddedReadOnly === true),
-      ]);
+      const preloaded = options.copyOpen?.file;
+      const commitReady = options.copyOpen?.commitReady || FormAppComponent._pendingCopyCommits?.get(path);
+      let copyCommitted = !commitReady;
+      const copyReady = commitReady ? Promise.resolve(commitReady).then(result => {
+        if (result?.error) return result;
+        copyCommitted = true;
+        return {};
+      }) : Promise.resolve({});
+      let settledAccess;
+      const unwrap = result => { if (result.error) throw result.error; return result.value; };
+      const readAccess = openRead ? openRead.access.then(unwrap).then(value => this._embeddedReadOnly === true ? { ...value, readOnly: true } : value)
+        : MeldexEntityDetail.resolveReadOnly(path, this._embeddedReadOnly === true);
+      const accessReady = Promise.all([readAccess, copyReady])
+        .then(([value, commit]) => (settledAccess = commit.error ? { error: commit.error } : { value }), error => (settledAccess = { error }));
+      const hasSavedCopy = preloaded?.path === path && typeof preloaded.content === 'string' && preloaded.etag;
+      const loaded = hasSavedCopy ? preloaded : openRead ? unwrap(await openRead.file) : await apiFetch('/file?path=' + encodeURIComponent(path));
       if (generation !== this._generation || !this.el) return false;
       const doc = MeldexFormDocument.parse(loaded.content);
       this._mode = null;
       this._pendingSheetSwitch = false;
       this._referenceRenames = [];
-      this.definitionReadOnly = !!access.readOnly;
+      this.definitionReadOnly = true;
       const store = this.store = new MeldexFormDocument.Store(doc, loaded.etag, async (content, etag) => {
+        if (!copyCommitted || commitReady?.abandoned) throw new Error('フォームの複製処理が確定していないため、保存できません');
         const target = this.path;
         const access = await MeldexEntityDetail.resolveReadOnly(target, false);
+        if (commitReady?.abandoned) throw new Error('接続先が変わったため、保存を中止しました');
         if (access.readOnly) throw new Error('フォームは読み取り専用です');
         return apiPut('/file?path=' + encodeURIComponent(target), { content, if_match_etag: etag });
       }, () => this._changed());
       const cached = this._readDraft();
+      let sheetLoaded = false;
+      const previewSheet = hasSavedCopy && options.copyOpen?.previewData && options.copyOpen.isCurrent?.();
+      // A successful copy already supplies its saved definition. Show that
+      // content while checking edit access, with every interaction blocked.
+      if (hasSavedCopy && !cached) {
+        await this._loadSheet(previewSheet ? { ...options.copyOpen, ready: Promise.resolve({ data: options.copyOpen.previewData }) } : options.copyOpen);
+        if (generation !== this._generation || !this.el) return false;
+        sheetLoaded = !previewSheet;
+        if (!settledAccess || previewSheet) {
+          this.ctx.writeBlocked = true;
+          this.el.inert = true;
+          this.el.setAttribute('aria-busy', 'true');
+          this._render();
+        }
+      }
+      const checkedAccess = await accessReady;
+      if (generation !== this._generation || !this.el) return false;
+      if (checkedAccess.error) throw checkedAccess.error;
+      if (commitReady?.abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      if (previewSheet) {
+        await this._loadSheet(options.copyOpen, { preserveContextUntilReady: true });
+        if (generation !== this._generation || !this.el) return false;
+        sheetLoaded = true;
+      }
+      if (commitReady?.abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      this.definitionReadOnly = !!checkedAccess.value.readOnly;
+      if (this.el.inert) {
+        this.ctx.writeBlocked = false;
+        this.el.inert = false;
+        this.el.removeAttribute('aria-busy');
+      }
       const recover = cached && !this.definitionReadOnly && await cfConfirm('保存できていないフォームの下書きを復元しますか？');
       if (generation !== this._generation || !this.el) return false;
       if (recover) {
-        // Preserve its base revision, so recovery cannot overwrite remote edits.
-        store.doc = MeldexFormDocument.parse(cached.doc);
-        store.etag = cached.etag; store.revision++;
         this._recoveredDraft = cached.recovery;
+        const recovered = MeldexFormDocument.parse(cached.doc);
+        if (JSON.stringify(recovered) !== JSON.stringify(store.doc)) {
+          // Preserve its base revision and record recovery itself, even after
+          // a restart has removed all earlier editing history.
+          store.etag = cached.etag;
+          this._update(doc => { Object.keys(doc).forEach(key => delete doc[key]); Object.assign(doc, recovered); });
+          clearTimeout(this._saveTimer);
+        }
       }
       this.state = { ...this.state, formPath: path, label: doc.display_title || doc.title };
       if (this._tab()) this._tab().state = { ...this._tab().state, ...this.state };
@@ -97,11 +187,18 @@ class FormAppComponent extends ToolComponent {
         if (generation !== this._generation || this.store !== store) return false;
       }
       if (this._pendingSheetSwitch) this._blockSheetSwitch(store.doc.sheet.path);
-      else await this._loadSheet();
+      else if (!sheetLoaded) await this._loadSheet(options.copyOpen, { openRead });
       if (generation !== this._generation) return false;
       this._render(); this._changed();
+      // Mount annotation geometry after the first content frame, rather than
+      // measuring a loading placeholder and forcing layout twice on each open.
+      globalThis.requestAnimationFrame?.(() => requestAnimationFrame(() => {
+        if (generation !== this._generation || !this.el?.isConnected) return;
+        window.GBAnnotationSurfaces?.sync?.();
+        if (hasSavedCopy) this._syncDetailPanel();
+      }));
       this._scheduleResponseIntake();
-      this._syncDetailPanel();
+      if (!hasSavedCopy || !globalThis.requestAnimationFrame) this._syncDetailPanel();
       if (this.store.dirty && !this.definitionReadOnly && !this._pendingSheetSwitch) {
         clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => this.store.save(), 250);
@@ -109,9 +206,14 @@ class FormAppComponent extends ToolComponent {
       return true;
     } catch (error) {
       if (generation !== this._generation || !this.el) return false;
+      if (this.el.inert) {
+        this.el.inert = false;
+        this.el.removeAttribute('aria-busy');
+      }
       this.el.replaceChildren();
       const message = document.createElement('p'); message.textContent = 'フォームを開けません: ' + (error.userMessage || error.message);
       this.el.append(message, this._button('再読込', () => this.load(path)));
+      this._syncDetailPanel();
       return false;
     }
   }
@@ -128,13 +230,24 @@ class FormAppComponent extends ToolComponent {
   _readDraft() {
     const candidates = [];
     try {
+      const prefix = this._draftPrefix();
+      const nativeScope = typeof _meldexFormAppTabHistoryScope === 'function'
+        && typeof MeldexRuntimeAdapter !== 'undefined' && MeldexRuntimeAdapter.isBrowserDataMode?.() === false
+        ? _meldexFormAppTabHistoryScope({ path: this.path }) : '';
+      const matchesKey = key => {
+        if (key === prefix || key?.startsWith(prefix + ':')) return true;
+        if (!nativeScope || !key?.startsWith('meldex-form-draft:')) return false;
+        const path = key.slice('meldex-form-draft:'.length), separator = path.lastIndexOf(':');
+        const matches = value => _meldexFormAppTabHistoryScope({ path: value }) === nativeScope;
+        return matches(path) || separator > 1 && matches(path.slice(0, separator));
+      };
       const live = new Set();
       if (typeof forEachComponent === 'function') forEachComponent(component => {
-        if (component !== this && component.path === this.path && component.el) live.add(component._draftKey?.());
+        if (component !== this && component.el) live.add(component._draftKey?.());
       });
       for (let index = 0; index < localStorage.length; index++) {
         const key = localStorage.key(index);
-        if (live.has(key) || key !== this._draftPrefix() && !key?.startsWith(this._draftPrefix() + ':')) continue;
+        if (live.has(key) || !matchesKey(key)) continue;
         try {
           const raw = localStorage.getItem(key), draft = JSON.parse(raw);
           if (!draft?.doc || !draft.etag) continue;
@@ -156,8 +269,15 @@ class FormAppComponent extends ToolComponent {
       if (this.titleElement.title !== title) this.titleElement.title = title;
     }
     try {
-      if (this.store.dirty) localStorage.setItem(this._draftKey(), JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }));
-      else this._removeOwnDraft();
+      if (this.store.dirty) {
+        // 保存待ちや再試行の通知で、古い入力の日時を進めない。実際の保存結果は読み戻して確かめる。
+        const key = this._draftKey(), content = JSON.stringify({ doc: this.store.doc, etag: this.store.etag });
+        const previous = this._draftWriteCache;
+        const draft = previous?.key === key && previous.content === content ? previous
+          : { key, content, raw: JSON.stringify({ doc: this.store.doc, etag: this.store.etag, savedAt: Date.now() }) };
+        this._draftWriteCache = draft;
+        if (typeof localStorage.getItem !== 'function' || localStorage.getItem(key) !== draft.raw) localStorage.setItem(key, draft.raw);
+      } else { this._removeOwnDraft(); this._draftWriteCache = null; }
     } catch (_) { /* beforeunload and flush still guard the in-memory draft. */ }
     let statusText = this.store.error
       ? '保存できません: ' + (this.store.error.userMessage || this.store.error.message)
@@ -196,7 +316,7 @@ class FormAppComponent extends ToolComponent {
         // Undoing a design edit must never revive a revoked publication.
         if (owner.doc.publish) restored.publish = MeldexFormDocument.clone(owner.doc.publish);
         else delete restored.publish;
-        for (const [from, to] of app._referenceRenames || []) restored.sheet.path = _mapRenamedPath(restored.sheet.path, from, to);
+        for (const [from, to] of app._referenceRenames || []) restored.sheet.path = app._mapReferenceRename(restored.sheet.path, from, to);
         if (restored.sheet.path === owner.doc.sheet.path) restored.sheet = MeldexFormDocument.clone(owner.doc.sheet);
         else if (restored.publish?.form_submit_enabled) restored.publish = { ...restored.publish,
           form_submit_enabled: false, form_submit_token: crypto.randomUUID().replace(/-/g, '') };
@@ -226,7 +346,8 @@ class FormAppComponent extends ToolComponent {
   // 期待どおり（取り消しなら操作の直後、やり直しなら取り消しの直後）の時だけ引き継ぐ。
   static _liveForHistory(scope, ownerPath, expected) {
     if (!scope || !ownerPath || !expected) return null;
-    const norm = value => String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const norm = value => typeof _meldexFormAppTabHistoryScope === 'function'
+      ? _meldexFormAppTabHistoryScope({ path: value }) : String(value || '').replace(/\\/g, '/').replace(/^\/+/, '');
     const comparable = doc => {
       const copy = MeldexFormDocument.clone(doc || {});
       delete copy.title; delete copy.display_title; delete copy.meldex;
@@ -240,36 +361,139 @@ class FormAppComponent extends ToolComponent {
       const store = app?.store;
       if (!app?.el || !store || app.definitionReadOnly || store.dirty || store.pending) continue;
       if (norm(app.path) !== norm(ownerPath) || app._historyScope() !== scope) continue;
+      if (expected.meldex?.document_id && expected.meldex.document_id !== store.doc.meldex?.document_id) continue;
       if (comparable(store.doc) === want) return app;
     }
     return null;
   }
-  async _loadSheet() {
+  static async copyWithPreview(path, copyOpen, { historyPending } = {}) {
+    const route = '/outliner/duplicate', body = { path, include_form_content: true };
+    const ids = window.MeldexStableCopyOperationIds;
+    const prepared = ids?.prepare?.(route, body) || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+    const origin = typeof state !== 'undefined' ? state.vaultPath : '';
+    let abandoned = false, previewPath = '', commitReady, settleCommit, previewReady;
+    const finish = error => {
+      settleCommit?.(error ? { error } : {});
+      if (!error && commitReady) {
+        const clear = () => { if (FormAppComponent._pendingCopyCommits?.get(previewPath) === commitReady) FormAppComponent._pendingCopyCommits.delete(previewPath); };
+        if (commitReady.historyReady) Promise.resolve(commitReady.historyReady).then(clear, clear); else clear();
+      }
+    };
+    const abandon = () => {
+      abandoned = true;
+      if (commitReady) commitReady.abandoned = true;
+      finish(new Error('接続先が変わったため、複製の表示を中止しました'));
+      if (commitReady && FormAppComponent._pendingCopyCommits?.get(previewPath) === commitReady) FormAppComponent._pendingCopyCommits.delete(previewPath);
+    };
+    const published = event => {
+      const detail = event.detail || {}, file = detail.form_content;
+      if (abandoned || previewPath || detail.operation_id !== prepared.body.operation_id || detail.source_path !== path
+        || !detail.new_path || file?.path !== detail.new_path || typeof file.content !== 'string' || !file.etag) return;
+      if ((typeof state !== 'undefined' ? state.vaultPath : '') !== origin) { abandon(); return; }
+      previewPath = detail.new_path;
+      commitReady = new Promise(resolve => { settleCommit = resolve; });
+      commitReady.historyReady = historyPending;
+      (FormAppComponent._pendingCopyCommits ||= new Map()).set(previewPath, commitReady);
+      try {
+        previewReady = Promise.resolve(navOpen({ type: 'form-app', path: previewPath, label: detail.new_name || 'フォーム' },
+          { forceNewTab: true, formCopyOpen: { ...copyOpen, file, commitReady } })).catch(() => false);
+      } catch (_) { previewReady = Promise.resolve(false); }
+    };
+    window.addEventListener('meldex:copy-published', published);
+    window.addEventListener('meldex:dropbox-auth-session-changed', abandon);
+    window.addEventListener('meldex:mode-changed', abandon);
+    try {
+      const result = await apiPost(route, prepared.body);
+      if (abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      if (result?.ok === false) throw new Error('フォームの複製を確定できません');
+      finish();
+      await previewReady;
+      if (abandoned) throw new Error('接続先が変わったため、複製の表示を中止しました');
+      ids?.complete?.(prepared.key);
+      return { ...result, form_previewed: !!previewPath };
+    } catch (error) {
+      finish(error);
+      await previewReady;
+      throw error;
+    } finally {
+      window.removeEventListener('meldex:copy-published', published);
+      window.removeEventListener('meldex:dropbox-auth-session-changed', abandon);
+      window.removeEventListener('meldex:mode-changed', abandon);
+    }
+  }
+  static prepareCopyOpen(path, { preloadSheet = true } = {}) {
+    const activeTab = typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined' ? GBTabs.getActiveTab(GBLayout.activePane) : null;
+    const active = activeTab && typeof getComponentInstance === 'function' ? getComponentInstance(activeTab.id) : null;
+    const matches = app => app?.path === path && app.store && typeof app._readSheet === 'function' && typeof app.flush === 'function';
+    const app = matches(active) ? active : [...document.querySelectorAll('.gb-form-app')].map(el => el._gbFormApp).find(matches);
+    if (!app) return null;
+    const source = MeldexFormDocument.clone(app.store.doc.sheet);
+    const generation = app._generation, owner = app.ctx, key = JSON.stringify(source);
+    // A copy can contend with the mutation locks used by a fresh pivot read. Start
+    // that read after publication, while showing only the existing definition
+    // schema. Answers are loaded afresh before any interaction is enabled.
+    const previewData = preloadSheet && !app.sheetError
+      && !owner?.destroyed && !owner?.writeBlocked && owner?.dbPath && owner.dbMetadata && owner.pivotData
+      ? MeldexFormDocument.clone({ dbPath: owner.dbPath, dbMetadata: owner.dbMetadata,
+        pivotData: { ...owner.pivotData, entities: {} }, readOnly: !!owner.readOnly }) : null;
+    const read = () => app._readSheet(source).then(data => ({ data }), error => ({ error }));
+    let ready = preloadSheet && !previewData ? read() : null;
+    return { source, previewData,
+      flush: async () => app.path === path && await app.flush() && app.path === path,
+      isCurrent: () => !!app.el && app._generation === generation && app.ctx === owner
+        && !owner?.destroyed && !owner?.writeBlocked && !app._sourceMoved && JSON.stringify(app.store?.doc.sheet) === key,
+      get ready() {
+        if (!preloadSheet) return null;
+        return ready ||= previewData && globalThis.requestAnimationFrame
+          ? new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(read())))) : read();
+      } };
+  }
+  async _readSheet(source) {
+    if (!source.path) return {};
+    let path = source.path;
+    const browserData = globalThis.MeldexExportSave?.isBrowserDataContext?.();
+    const identity = browserData ? source.cloud_id : source.id;
+    if (identity) {
+      const resolved = await apiFetch('/file-path?id=' + encodeURIComponent(identity) + '&hint=' + encodeURIComponent(source.path), { silentError: true });
+      if (!resolved?.path) throw new Error('シートの識別番号を確認できません');
+      path = resolved.path;
+    }
+    const [metadata, pivot, access] = await Promise.all([
+      apiFetch('/db-metadata?path=' + encodeURIComponent(path)),
+      apiFetch('/pivot?path=' + encodeURIComponent(path)),
+      MeldexEntityDetail.resolveReadOnly(path, false),
+    ]);
+    return { dbPath: path, dbMetadata: metadata, pivotData: pivot, readOnly: !!access.readOnly };
+  }
+  async _loadSheet(copyOpen, { preserveContextUntilReady = false, openRead = null } = {}) {
     this.sheetError = '';
     this._sourceMoved = false;
     const source = this.store.doc.sheet;
-    if (this.ctx) { this.ctx.destroyed = true; this.ctx.writeBlocked = true; }
-    this.ctx = { paneId: this.paneId, tabId: this.tabId, containerEl: this.el, dbPath: source.path, filter: 'disabled', formApp: this };
-    const ctx = this.ctx;
-    if (!source.path) return;
+    const previous = this.ctx;
+    const ctx = { paneId: this.paneId, tabId: this.tabId, containerEl: this.el, dbPath: source.path, filter: 'disabled', formApp: this, writeBlocked: !!this.el?.inert };
+    const current = () => preserveContextUntilReady ? this.ctx === previous && !previous?.destroyed : this.ctx === ctx && !ctx.destroyed;
+    const activate = () => {
+      if (previous) { previous.destroyed = true; previous.writeBlocked = true; }
+      this.ctx = ctx;
+    };
+    if (!preserveContextUntilReady) activate();
+    if (!source.path) { if (preserveContextUntilReady) activate(); return; }
     try {
-      let path = source.path;
-      const browserData = globalThis.MeldexExportSave?.isBrowserDataContext?.();
-      const identity = browserData ? source.cloud_id : source.id;
-      if (identity) {
-        const resolved = await apiFetch('/file-path?id=' + encodeURIComponent(identity) + '&hint=' + encodeURIComponent(source.path), { silentError: true });
-        if (!resolved?.path) throw new Error('シートの識別番号を確認できません');
-        if (resolved?.path) path = resolved.path;
-      }
-      const [metadata, pivot, access] = await Promise.all([
-        apiFetch('/db-metadata?path=' + encodeURIComponent(path)),
-        apiFetch('/pivot?path=' + encodeURIComponent(path)),
-        MeldexEntityDetail.resolveReadOnly(path, false),
-      ]);
-      if (this.ctx !== ctx || ctx.destroyed) return;
-      ctx.dbPath = path; ctx.dbMetadata = metadata; ctx.pivotData = pivot; ctx.readOnly = !!access.readOnly || this._embeddedReadOnly === true;
-      if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(path, pivot);
-    } catch (error) { if (this.ctx === ctx) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
+      let data;
+      if (openRead?.sheet && JSON.stringify(openRead.sheetSource) === JSON.stringify(source)) {
+        const result = await openRead.sheet;
+        if (result.error) throw result.error;
+        data = result.value;
+      } else if (copyOpen?.ready && copyOpen.isCurrent?.() && JSON.stringify(copyOpen.source) === JSON.stringify(source)) {
+        const result = await copyOpen.ready;
+        if (result.error) throw result.error;
+        data = result.data;
+      } else data = await this._readSheet(source);
+      if (!current()) return;
+      Object.assign(ctx, data, { readOnly: !!data.readOnly || this._embeddedReadOnly === true });
+      if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(data.dbPath, data.pivotData);
+    } catch (error) { if (current()) this.sheetError = '参照先シートを開けません: ' + (error.userMessage || error.message); }
+    finally { if (preserveContextUntilReady && current()) activate(); }
   }
   getLayout() { return this.store?.doc.layout; }
   getConfig(props, propTypes) {
@@ -525,7 +749,8 @@ class FormAppComponent extends ToolComponent {
         const result = await MeldexDbTopicLayoutStyle.saveSharedTemplateToLibrary(template);
         if (!result.saved) throw new Error('同名のテンプレートがあります。別の名前で登録してください');
         this._recordTemplateRegistration(template);
-        status.textContent = result.shared === false ? 'この端末に登録しました。共有先が利用できるときに他の端末へ同期できます。' : 'テンプレートに登録しました';
+        status.textContent = result.shared === false ? 'この端末に登録しました。共有先が利用できるときに他の端末へ同期できます。'
+          : result.cacheSaved === false ? 'テンプレートに登録しました。この端末への控えは保存できませんでした。' : 'テンプレートに登録しました';
         if (this.store === store && this.el?.isConnected) {
           const select = this.el.querySelector('[data-form-templates]');
           if (select) { select.replaceChildren(new Option(this.getLayout() ? '現在の配置: ' + this.getLayout().name : 'テンプレートを選択', '')); this._presetOptions(select); }
@@ -552,6 +777,17 @@ class FormAppComponent extends ToolComponent {
         } },
       }, this.ctx.dbPath, layout.id, render);
     }; this._designRender = render; render();
+  }
+  async _openSheet() {
+    const path = this.ctx?.dbPath;
+    if (!path) return false;
+    const paneId = typeof _getFileOpenPane === 'function' ? _getFileOpenPane(GBLayout.activePane) : GBLayout.activePane;
+    const store = this.store, generation = this._generation;
+    const activeTabId = GBTabs.getActiveTab(paneId)?.id;
+    if (!await this.flush() || !this.el || this.store !== store || this._generation !== generation ||
+        this.ctx?.dbPath !== path || GBTabs.getActiveTab(paneId)?.id !== activeTabId) return false;
+    const label = this.ctx.dbMetadata?.display_title || path.split(/[\\/]/).pop();
+    return GBTabs.addTab(paneId, label, 'pivot', path, { dbPath: path }, { preferTargetPane: true });
   }
   _render() {
     if (!this.el || !this.store) return;
@@ -600,7 +836,7 @@ class FormAppComponent extends ToolComponent {
     select.disabled = this.definitionReadOnly; select.addEventListener('change', () => this._chooseSheet().catch(error => showStatus(error.message, true)));
     this._fillSheets(select);
     if (this.ctx.dbPath && !this.sheetError) {
-      bar.appendChild(textButton('シートを開く', () => navOpen({ type: 'database', path: this.ctx.dbPath, label: select.selectedOptions[0]?.textContent }, { newTab: true })));
+      bar.appendChild(textButton('シートを開く', () => this._openSheet()));
       const templateButton = iconButton('テンプレート', 'layoutTemplate', event => this._openTemplatePicker(event.currentTarget));
       templateButton.dataset.e2eId = `form-${this.tabId}-templates`;
       templateButton.disabled = this.definitionReadOnly;
@@ -625,9 +861,11 @@ class FormAppComponent extends ToolComponent {
     this.retry = this._button('保存を再試行', () => this._saveDefinitionAndSheet()); saveBar.appendChild(this.retry);
     this.exportDraft = this._button('下書きを書き出す', () => {
       const url = URL.createObjectURL(new Blob([JSON.stringify(this.store.doc, null, 2)], { type: 'application/json' }));
-      const link = document.createElement('a'); link.href = url;
-      link.download = (GBPathUtils.displayTitle.storageName(this.store.doc.title || 'フォーム')) + '.mel-form';
-      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      try {
+        const link = document.createElement('a'); link.href = url;
+        link.download = (GBPathUtils.displayTitle.storageName(this.store.doc.title || 'フォーム')) + '.mel-form';
+        link.click();
+      } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
     }); saveBar.appendChild(this.exportDraft);
     if (this.definitionReadOnly) saveBar.appendChild(document.createTextNode('（フォーム定義は読み取り専用）'));
     this.surface = document.createElement('div'); this.surface.className = 'form-view gb-form-app-surface'; this.el.appendChild(this.surface);
@@ -646,7 +884,8 @@ class FormAppComponent extends ToolComponent {
     const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
     if (!target) return false;
     target.scrollIntoView?.({ block: 'center' });
-    target.querySelector('input,textarea,select,[tabindex]')?.focus?.({ preventScroll: true });
+    const input = target.matches?.('input,textarea,select') ? target : target.querySelector('input,textarea,select,[tabindex]');
+    input?.focus?.({ preventScroll: true });
     return true;
   }
   async flush() {
@@ -677,7 +916,11 @@ class FormAppComponent extends ToolComponent {
         if (this.store !== store || this._generation !== generation) return;
         if (result?.failed || result?.blocked) {
           if (this.status) this.status.textContent = '未反映の回答があります。保存先・共有権限・受付設定を確認してください。';
+        } else if (result?.queued && this.status) {
+          this.status.textContent = (result.imported ? '回答を' + result.imported + '件取り込みました。' : '')
+            + '回答' + result.queued + '件は受付待ちです。保存先を編集できる状態になると再試行します。';
         } else if (result?.imported && this.status) this.status.textContent = '回答を' + result.imported + '件取り込みました。参照先シートで確認できます。';
+        else if (result?.replayed && this.status) this.status.textContent = '受領済みの回答を確認しました。';
       } catch (error) { if (this.store === store && this._generation === generation && this.status) this.status.textContent = '回答を取り込めません: ' + (error.userMessage || error.message); }
       if (this.store !== store || this._generation !== generation) return;
       if (this.el) this._responseTimer = setTimeout(run, 30000);
@@ -695,8 +938,10 @@ class FormAppComponent extends ToolComponent {
     // 作成途中（まだファイルが無い）の時は、前に開いたファイルのプロパティを出し続けない。
     if (!path) { window.GBOptionTargetContext?.clear?.('form-new'); return; }
     if (typeof _syncDetailPanel === 'function') {
-      return Promise.resolve(_syncDetailPanel(this.state.label || 'フォーム', path, 'form-app')).then(result => {
-        if (result === false || !this._ownsDetailPanel()) return result;
+      if (this._detailSyncInFlight?.path === path) return this._detailSyncInFlight.promise;
+      const pending = { path };
+      pending.promise = Promise.resolve(_syncDetailPanel(this.state.label || 'フォーム', path, 'form-app')).then(result => {
+        if (result === false || !this._ownsDetailPanel() || path !== (this.path || this._tab()?.path || this.state.formPath)) return result;
         this._renderFieldInspector();
         if (this.paneId === GBLayout.activePane && typeof switchDetailTab === 'function' && typeof _resolveDetailTabForType === 'function') {
           // 利用者が別のタブ（プロパティ等）を選んでいる時は切り替えない。何も選ばれていない時か、表示されないタブの時だけ。
@@ -705,7 +950,11 @@ class FormAppComponent extends ToolComponent {
           if (!current || (currentButton && currentButton.hidden)) switchDetailTab(_resolveDetailTabForType('form-app', 'form-field'));
         }
         return result;
+      }).finally(() => {
+        if (this._detailSyncInFlight === pending) this._detailSyncInFlight = null;
       });
+      this._detailSyncInFlight = pending;
+      return pending.promise;
     }
     window.GBOptionTargetContext?.set({ path, kind:'form-app', fileType:'form-app' }, 'form-open');
   }
@@ -741,7 +990,7 @@ class FormAppComponent extends ToolComponent {
     root.appendChild(list);
     const annotate = this._button('アノテートを追加', event => {
       const target = [...(this.surface?.querySelectorAll?.('[data-form-field]') || [])].find(el => el.dataset.formField === field);
-      window.CommentBadges?.addCommentHere?.({ targetKind: 'form_field', filePath: this.path, targetRef: { file: this.path, field }, snapshot: field }, { anchorEl: target || event.currentTarget });
+      window.CommentBadges?.addCommentHere?.({ targetKind: 'form_field', filePath: this.path, targetRef: { file: this.path, field }, snapshot: field }, { anchorEl: target || event.currentTarget, retainOnFailure: true, returnSavedRow: true });
     });
     annotate.dataset.e2eId = 'form-field-add-annotation';
     root.appendChild(annotate);
@@ -757,6 +1006,27 @@ class FormAppComponent extends ToolComponent {
   _commitFocusedControl() {
     const control = document.activeElement;
     if (this.el?.contains(control) && control.matches('input,textarea,select,[contenteditable=true]')) control.blur();
+  }
+  _mapReferenceRename(path, oldPath, newPath) {
+    const direct = _mapRenamedPath(path, oldPath, newPath);
+    if (direct === path && typeof MeldexRuntimeAdapter !== 'undefined' && MeldexRuntimeAdapter.isBrowserDataMode?.() === true) {
+      const provider = typeof MeldexStorageAdapter !== 'undefined' ? MeldexStorageAdapter.getProvider?.() : null;
+      if (typeof provider?._dropboxLocation !== 'function') return direct;
+      try {
+        const current = provider._dropboxLocation(path), before = provider._dropboxLocation(oldPath), after = provider._dropboxLocation(newPath);
+        const normalized = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const from = normalized(before.path), value = normalized(current.path);
+        if (current.namespaceKind !== before.namespaceKind || before.namespaceKind !== after.namespaceKind) return direct;
+        if (value.toLowerCase() === from.toLowerCase() || value.toLowerCase().startsWith(from.toLowerCase() + '/'))
+          return normalized(newPath) + value.slice(from.length);
+      } catch (_) { /* Unknown roots cannot establish that the reference moved. */ }
+      return direct;
+    }
+    if (direct !== path || typeof MeldexRuntimeAdapter === 'undefined' || MeldexRuntimeAdapter.isBrowserDataMode?.() !== false
+      || typeof GBPathUtils === 'undefined' || typeof GBPathUtils.resolveForClipboard !== 'function') return direct;
+    const canonical = value => String(GBPathUtils.resolveForClipboard(value, typeof state !== 'undefined' ? state.vaultPath : '')).replace(/\\/g, '/').replace(/\/+$/, '');
+    const current = canonical(path), mapped = _mapRenamedPath(current, canonical(oldPath), canonical(newPath));
+    return mapped === current ? path : mapped;
   }
   onPathRename(oldPath, newPath, options) {
     if (!this.path || !this.store) return;
@@ -774,9 +1044,13 @@ class FormAppComponent extends ToolComponent {
       this._changed();
     }
     const source = this.store.doc.sheet.path;
-    const movedSource = _mapRenamedPath(source, oldPath, newPath);
+    const movedSource = this._mapReferenceRename(source, oldPath, newPath);
     if (source && source !== movedSource) {
-      this._update(doc => { doc.sheet.path = movedSource; }, { history: false });
+      // Relocation owns the persisted reference. Mirror it without creating a
+      // user edit or racing that write with an automatic definition save.
+      const doc = MeldexFormDocument.clone(this.store.doc);
+      doc.sheet.path = movedSource;
+      this.store.doc = doc;
       // Keep any typed values on screen, but never write them to the old path.
       if (this.ctx) this.ctx.writeBlocked = true;
       this._sourceMoved = true; this._changed();
@@ -793,10 +1067,30 @@ class FormAppComponent extends ToolComponent {
   }
 }
 registerToolComponent('form-app', { cls: FormAppComponent, icon: 'clipboardList', label: 'フォーム', multi: true, requiresViewLock: true });
+if (typeof window !== 'undefined') for (const event of ['meldex:dropbox-auth-session-changed', 'meldex:mode-changed']) {
+  window.addEventListener?.(event, () => {
+    for (const pending of FormAppComponent._pendingCopyCommits?.values() || []) pending.abandoned = true;
+    FormAppComponent._pendingCopyCommits?.clear();
+  });
+}
+if (typeof historyRegisterSnapshotProvider === 'function') historyRegisterSnapshotProvider('form-app:', {
+  prepare: async scope => {
+    const scopeFor = path => typeof _meldexFormAppTabHistoryScope === 'function'
+      ? _meldexFormAppTabHistoryScope({ path }) : 'form-app:' + String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const pending = [...(FormAppComponent._pendingCopyCommits?.entries() || [])].find(([path]) => scopeFor(path) === scope)?.[1];
+    if (!pending) return true;
+    if ((await pending)?.error || pending.abandoned) return false;
+    await pending.historyReady;
+    return !pending.abandoned;
+  },
+});
 
 async function openFormApp(path, label, options = {}) {
   const paneId = options.paneId || (typeof getScriptNoteTargetPaneId === 'function' ? getScriptNoteTargetPaneId() : GBLayout.activePane);
-  const tabId = GBTabs.addTab(paneId, label || 'フォーム', 'form-app', path, { formPath: path, label: label || 'フォーム' }, options);
+  let tabId;
+  if (options.formCopyOpen) (FormAppComponent._copyOpen ||= new Map()).set(path, options.formCopyOpen);
+  try { tabId = GBTabs.addTab(paneId, label || 'フォーム', 'form-app', path, { formPath: path, label: label || 'フォーム' }, options); }
+  finally { FormAppComponent._copyOpen?.delete(path); }
   if (!tabId) return false;
   if (typeof navPush === 'function' && !options.skipNavPush) navPush({ type: 'form-app', path, label: label || 'フォーム' }, paneId);
   if (!options.skipSaveLastView && typeof saveLastView === 'function') saveLastView({ type: 'form-app', path, label: label || 'フォーム' });

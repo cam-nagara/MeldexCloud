@@ -238,7 +238,7 @@
   async function _prepareFeedbackHistoryOnBoot(attempt = 0) {
     let prepared = false;
     try {
-      await ensureFeedbackSheet({ open: false });
+      await ensureFeedbackSheet({ open: false, background: true });
       prepared = true;
     } catch (_) {}
     try { await flushDebuggerQueue(); } catch (_) {}

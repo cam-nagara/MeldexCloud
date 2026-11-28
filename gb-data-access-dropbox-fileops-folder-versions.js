@@ -49,9 +49,14 @@ async function _undeleteFileVersion(provider, path, token) {
     return file === folder ? '' : (file.startsWith(folder + '/') ? file.slice(folder.length + 1) : file);
   }
 
+  function _isFormCandidateReceiptRelPath(relPath) {
+    return _normalizeFolderPath(relPath).split('/').some(part => part === '_form-candidate-receipts'
+      || /^_form-candidate-[a-f0-9]{64}\.json$/i.test(part));
+  }
+
   function _skipFolderVersionRelPath(relPath) {
     const normalized = _normalizeFolderPath(relPath);
-    return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+    return _isFormCandidateReceiptRelPath(normalized) || FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
   }
 
   async function _versionFileBase64(provider, path) {
@@ -234,6 +239,9 @@ async function _undeleteFileVersion(provider, path, token) {
     for (const file of files) {
       if (file.entry_type === 'directory') continue;
       const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      // Older snapshots may contain a prepared receipt. Never roll operation
+      // completion back together with user contents, or a replay could resurrect data.
+      if (_isFormCandidateReceiptRelPath(relPath)) continue;
       if (seen.has(relPath.toLowerCase())) throw new Error('復元対象のパスが重複しています');
       seen.add(relPath.toLowerCase());
       const path = _joinPath(folderPath, relPath);

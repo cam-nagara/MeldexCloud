@@ -676,11 +676,13 @@ function _folderCreateItemCard(item, idx, context) {
     el.dataset.itemType = item.type || '';
     el.dataset.itemName = item.name || '';
     if (item.path) el.dataset.path = item.path;
-    if ((typeof _folderPasteMovePending === 'function' && _folderPasteMovePending(item.path))
-        || (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path))) {
+    if (typeof _folderPasteMovePending === 'function' && _folderPasteMovePending(item.path)) {
       el.inert = true;
       el.setAttribute('aria-busy', 'true');
       el.style.opacity = '0.62';
+    }
+    if (typeof isOutlinerCopyPendingPath === 'function' && isOutlinerCopyPendingPath(item.path)) {
+      _outlinerSetCopyPendingNode(el, true);
     }
     const fileLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
     const itemLocked = !!item.contained_reference || fileLocked;
@@ -1576,7 +1578,9 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   }
   const closeMenu = () => {
     _folderContextMenuOpenSeq += 1;
-    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+    document.querySelectorAll('.gb-context-menu').forEach(m => {
+      if (!m.parentElement?.closest?.('.gb-context-menu')) m.remove();
+    });
   };
   function addItem(label, fn, cls, icon) {
     if (typeof _outlinerAppendMenuItem === 'function') {
@@ -1672,11 +1676,11 @@ async function showFolderItemContextMenu(e, item, options = {}) {
   const createParent = isMulti ? null : _folderContextCreateParent(item);
   if (createParent && !(typeof isItemLocked === 'function' && isItemLocked(createParent))) {
     const createSub = addSub('新規作成', 'plus');
-    [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation']].forEach(([label,type,icon]) => {
+    [['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['フォーム','form-app','clipboardList']].forEach(([label,type,icon]) => {
       createSub.item(label, async () => {
         if (typeof addItemAt === 'function') {
           await addItemAt(createParent, type);
-          await _folderRefreshCurrentFolder();
+          if (type !== 'form-app') await _folderRefreshCurrentFolder();
         }
       }, null, icon);
     });

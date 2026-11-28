@@ -561,32 +561,31 @@ async function applyPropertyType(propName, root, options = {}) {
   return config;
 }
 
-function testFormula(root) {
-  const scope = _ptResolveRoot(root);
-  const src = _ptGet('pt-formula-src', scope)?.value || '';
-  const resultEl = _ptGet('pt-formula-result', scope);
-  if (!resultEl) return;
-  if (!src.trim()) { resultEl.textContent = ''; return; }
-  if (typeof _ptUpdateFormulaPreview === 'function') _ptUpdateFormulaPreview(scope);
-  // 最初のエントリでテスト
+// 数式を先頭のトピックで計算する（数式の列設定の結果表示）。
+function _ptEvaluateFormulaForEditor(scope, src) {
   const { dbPath, pivotData } = _ptState(scope);
   const data = pivotData || state.pivotData;
-  if (!data || !data.entities) { resultEl.textContent = 'データがありません'; return; }
+  if (!data || !data.entities) return { message: 'データがありません' };
   const firstEntity = Object.keys(data.entities)[0];
-  if (!firstEntity) { resultEl.textContent = 'トピックがありません'; return; }
+  if (!firstEntity) return { message: 'トピックがありません' };
   const entityData = data.entities[firstEntity];
+  const entityLabel = (typeof _dbEntityDisplayName === 'function' ? _dbEntityDisplayName(firstEntity, entityData) : '') || firstEntity;
   let result;
   try {
     result = formulaEvalForEntity(src, entityData, { propTypes: getPropertyTypes(dbPath), dbPath });
   } catch (e) {
     result = { error: e?.message || String(e) };
   }
-  if (result.error) {
-    const loc = Number.isFinite(result.errorPos) ? '（位置 ' + (result.errorPos + 1) + '）' : '';
-    resultEl.innerHTML = '<span style="color:var(--red);">エラー' + loc + ': ' + esc(result.error) + '</span>';
-  } else {
-    resultEl.innerHTML = '<span style="color:var(--green);">' + esc(firstEntity) + ' → ' + esc(String(result.value)) + '</span>';
-  }
+  return { ...result, entityLabel };
+}
+
+// 結果は入力に合わせて自動で計算する。この関数は今すぐ計算し直す入口として残す。
+function testFormula(root) {
+  const scope = _ptResolveRoot(root);
+  const textarea = _ptGet('pt-formula-src', scope);
+  if (!textarea) return;
+  if (typeof _ptBindFormulaEditor === 'function') _ptBindFormulaEditor(scope);
+  textarea.__meldexFormulaEditor?.evaluateNow?.();
 }
 
 function _ptFormulaProps(root) {
@@ -597,34 +596,7 @@ function _ptFormulaProps(root) {
   return typeof filterDeletedDbProperties === 'function' ? filterDeletedDbProperties(dbPath, props) : props;
 }
 
-function _ptFormulaTemplates() {
-  return [
-    { label: 'if', snippet: 'if(prop("状態") == "完了", "完了", "未完了")' },
-    { label: '日時差', snippet: 'dateBetween(now(), prop("開始日時"), "days")' },
-    { label: '表示形式', snippet: 'format(prop("数値"), "#,##0.00")' },
-  ];
-}
-
-function _ptBuildFormulaOptionsHtml(current, root) {
-  const props = _ptFormulaProps(root);
-  const propButtons = props.length
-    ? props.map(p => '<button type="button" class="pt-small-btn" data-formula-prop="' + esc(p) + '">prop("' + esc(_formulaPropLiteral(p, '"')) + '")</button>').join('')
-    : '<span class="pt-hint">利用可能な列がありません</span>';
-  const templateButtons = _ptFormulaTemplates()
-    .map(t => '<button type="button" class="pt-small-btn" data-formula-template="' + esc(t.snippet) + '">' + esc(t.label) + '</button>')
-    .join('');
-  return `<div class="field"><label>数式（Notion互換構文） ${fieldHelp('使用可能: prop("名前"), if, let/lets, and, or, not, empty, contains, replace, floor, round, mod, toNumber, format, year, month, day, dateBetween, dateSubtract, now, +, -, *, /, >, <, ==, !=')}</label>
-    <textarea id="pt-formula-src" class="pt-formula-textarea" rows="8">${esc(current.formula||'')}</textarea>
-    <div class="pt-formula-tools" aria-label="数式テンプレート">${templateButtons}</div>
-    <div class="pt-formula-props" aria-label="列候補">${propButtons}</div>
-    <pre id="pt-formula-preview" class="pt-formula-preview" aria-label="数式シンタックスプレビュー"></pre>
-  </div>
-  <div class="field">
-    <button data-action="testFormula(this.closest('[data-pt-root]'))" class="pt-small-btn">テスト</button>
-    <span id="pt-formula-result" class="pt-hint"></span>
-  </div>`;
-}
-
+// 入力欄のカーソル位置へ文字を入れる（AI自動生成の指示文でも使う）。
 function _ptInsertFormulaText(textarea, text) {
   if (!textarea) return;
   const start = textarea.selectionStart ?? textarea.value.length;
@@ -636,64 +608,20 @@ function _ptInsertFormulaText(textarea, text) {
   textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function _ptFormulaTokenClass(token) {
-  if (token.type === 'str') return 'string';
-  if (token.type === 'num') return 'number';
-  if (token.type === 'bool') return 'boolean';
-  if (token.type === 'id') return 'identifier';
-  return 'operator';
-}
-
-function _ptHighlightFormula(src) {
-  if (!src) return '';
-  if (typeof formulaTokenize !== 'function') return esc(src);
-  let tokens = [];
-  try {
-    tokens = formulaTokenize(src);
-  } catch {
-    return esc(src);
-  }
-  let cursor = 0;
-  let html = '';
-  tokens.forEach(token => {
-    const start = Number.isFinite(token.pos) ? token.pos : cursor;
-    const end = Number.isFinite(token.end) ? token.end : start + String(token.value || '').length;
-    if (start > cursor) html += esc(src.slice(cursor, start));
-    html += '<span class="pt-formula-token pt-formula-token-' + _ptFormulaTokenClass(token) + '">' + esc(src.slice(start, end)) + '</span>';
-    cursor = end;
-  });
-  if (cursor < src.length) html += esc(src.slice(cursor));
-  return html;
-}
-
-function _ptUpdateFormulaPreview(root) {
-  const scope = _ptResolveRoot(root);
-  const textarea = _ptGet('pt-formula-src', scope);
-  const preview = _ptGet('pt-formula-preview', scope);
-  if (!textarea || !preview) return;
-  try {
-    preview.innerHTML = _ptHighlightFormula(textarea.value || '');
-  } catch {
-    preview.textContent = textarea.value || '';
-  }
+// 数式の列設定（gb-db-formula-editor.js）。入力欄は1行の全幅、列と関数は検索できる一覧から選ぶ。
+function _ptBuildFormulaOptionsHtml(current, root) {
+  return MeldexFormulaEditor.html(current);
 }
 
 function _ptBindFormulaEditor(root) {
   const scope = _ptResolveRoot(root);
   const textarea = _ptGet('pt-formula-src', scope);
-  if (!textarea || textarea.dataset.formulaEditorBound) return;
-  textarea.dataset.formulaEditorBound = '1';
-  textarea.addEventListener('input', () => _ptUpdateFormulaPreview(scope));
-  scope.querySelectorAll('[data-formula-prop]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const prop = btn.dataset.formulaProp || '';
-      _ptInsertFormulaText(textarea, 'prop("' + _formulaPropLiteral(prop, '"') + '")');
-    });
+  if (!textarea || textarea.__meldexFormulaEditor) return;
+  const host = textarea.closest('.pt-formula-editor') || scope;
+  textarea.__meldexFormulaEditor = MeldexFormulaEditor.bind(host, {
+    getProps: () => _ptFormulaProps(scope),
+    evaluate: (src) => _ptEvaluateFormulaForEditor(scope, src),
   });
-  scope.querySelectorAll('[data-formula-template]').forEach(btn => {
-    btn.addEventListener('click', () => _ptInsertFormulaText(textarea, btn.dataset.formulaTemplate || ''));
-  });
-  _ptUpdateFormulaPreview(scope);
 }
 
 function showDbPropertySettingsForColumn(dbPath, propName, opts) {

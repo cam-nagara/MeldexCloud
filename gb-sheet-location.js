@@ -42,6 +42,10 @@ const MeldexSheetLocation = (() => {
     const dbPath = options.dbPath || _cellUiDbPathForEntity(entityPath), ctx = options.ctx || _valueEditorContext(entityPath, anchor, dbPath);
     try { editable(anchor, dbPath, propName, ctx); } catch (error) { showStatus(error.message, true); return; }
     if (anchor._locationDialog) { anchor._locationDialog.modal.focus(); return; }
+    const focusOwner = anchor.closest?.('.entry-prop-card, .el-cell');
+    const focusKey = anchor.dataset?.e2eId;
+    const returnFocus = () => focusOwner?.isConnected && focusKey
+      ? focusOwner.querySelector('[data-e2e-id="' + CSS.escape(focusKey) + '"]') || anchor : anchor;
     const entityName = anchor.closest?.('tr[data-entity-name]')?.dataset.entityName;
     const entity = ctx?.pivotData?.entities?.[entityName];
     let projected = null;
@@ -54,11 +58,22 @@ const MeldexSheetLocation = (() => {
     try { if (val) old = D().parse(val.value, val.link); } catch (_) {
       try { if (JSON.parse(val.value)?.fileType === 'meldex-location') { showStatus('この場所は未対応の形式です。対応するMeldexで開いてください', true); return; } } catch (_) {}
     }
-    let active = true, saving = false, request = 0, mapDoc = null;
+    const historyScope = typeof options.historyScope === 'function' ? options.historyScope()
+      : typeof options.historyScope === 'string' ? options.historyScope
+      : typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : 'db:' + dbPath;
+    const closeOptions = typeof historyScope === 'string' && historyScope.startsWith('form-app:') ? { animate: false } : undefined;
+    const requestEntity = globalThis.MeldexRuntimeAdapter?.isBrowserDataMode?.() === true;
+    const candidateRetry = {}, redoRetry = {};
+    const responseOptions = requestEntity ? { _return_entity: true } : {};
+    const historyOptions = { dbPath, ctx, historyScope, onHistoryChanged: options.onHistoryChanged, valueProperty: propName, requestEntity };
+    const refresh = result => typeof options.onHistoryChanged === 'function'
+      ? options.onHistoryChanged({ property: propName, entitySnapshot: result?.entity_snapshot })
+      : selectDatabase(dbPath, ctx || undefined, { silent: true });
+    let active = true, saving = false, saved = false, request = 0, mapDoc = null;
     let link = val?.link ? { ...val.link } : null, mapId = old?.map_id || null, featureId = old?.feature_id || null;
     const save = button('場所を保存', async () => {
       if (saving) return;
-      saving = true; save.disabled = true; dialog.body.inert = true; request++;
+      saving = true; save.disabled = true; dialog.body.inert = true; request++; saveError.replaceChildren();
       try {
         editable(anchor, dbPath, propName, ctx);
         if (![x, y].every(input => input.value.trim() && input.reportValidity())) throw new Error('2つの座標を入力してください');
@@ -75,47 +90,68 @@ const MeldexSheetLocation = (() => {
         editable(anchor, dbPath, propName, ctx);
         saving = true; save.disabled = true;
         const metadata = link ? { ...link, type: 'file', fileType: 'map' } : null;
-        const refresh = () => selectDatabase(dbPath, ctx || undefined, { silent: true });
+        let savedResult;
         if (projected) {
           const candidate = { value, status: getStatusEnabled(dbPath) ? '案' : '採用', note: '', candidate_id: MeldexMapDocument.id(), ...(metadata ? { link: metadata } : {}) };
-          await _apiPutValue(projected, { _append_candidate: candidate });
+          savedResult = await _apiPutValue(projected, { _append_candidate: candidate, ...responseOptions });
           let ref = { ...projected, _topicCandidateList: true, _topicCandidateOriginal: candidate, candidate_id: candidate.candidate_id, value };
-          historyPush('場所を追加: ' + propName, async () => { await _apiPutValue(ref, { _delete: true }); await refresh(); }, async () => {
+          historyPush('場所を追加: ' + propName, async () => { await refresh(await _apiPutValue(ref, { _delete: true, ...responseOptions })); }, async () => {
             const next = { ...candidate, candidate_id: MeldexMapDocument.id() };
-            await _apiPutValue(projected, { _append_candidate: next });
-            ref = { ...ref, candidate_id: next.candidate_id, _topicCandidateOriginal: next }; await refresh();
-          }, _dbScopeForPath(dbPath));
+            const result = await _apiPutValue(projected, { _append_candidate: next, ...responseOptions });
+            ref = { ...ref, candidate_id: next.candidate_id, _topicCandidateOriginal: next }; await refresh(result);
+          }, historyScope);
         } else if (val?._topicCanonicalOnly && !val._topicCandidateList) {
           const previous = val.value;
           const candidate = { value, status: val.status || '採用', note: val.note || '', candidate_id: MeldexMapDocument.id(), ...(metadata ? { link: metadata } : {}) };
           const next = [candidate];
-          await _apiPutValue(val, { new_value: next, _expected_value: previous });
+          savedResult = await _apiPutValue(val, { new_value: next, _expected_value: previous, ...responseOptions });
           historyPush('場所を設定: ' + propName,
-            async () => { await _apiPutValue(val, { new_value: previous, _expected_value: next }); await refresh(); },
-            async () => { await _apiPutValue(val, { new_value: next, _expected_value: previous }); await refresh(); }, _dbScopeForPath(dbPath));
-        } else if (val) {
+            async () => { await refresh(await _apiPutValue(val, { new_value: previous, _expected_value: next, ...responseOptions })); },
+            async () => { await refresh(await _apiPutValue(val, { new_value: next, _expected_value: previous, ...responseOptions })); }, historyScope);
+        } else if (val && val.file && (val.candidate_index != null
+          || String(val.file).replace(/\\/g, '/') !== String(entityPath).replace(/\\/g, '/'))) {
           const previous = val.value, previousLink = val.link ? { ...val.link } : null;
-          await _apiPutValue(val, { new_value: value, new_link: metadata });
+          savedResult = await _apiPutValue(val, { new_value: value, new_link: metadata, ...responseOptions });
           val.value = value; if (metadata) val.link = metadata; else delete val.link;
           _dbUndoValue('場所を変更: ' + propName, val, previous, value, undefined, undefined,
-            { dbPath, ctx, oldUpdates: { new_link: previousLink }, newUpdates: { new_link: metadata } });
+            { ...historyOptions, oldUpdates: { new_link: previousLink }, newUpdates: { new_link: metadata } });
         } else {
           const status = getStatusEnabled(dbPath) ? '案' : '採用';
-          const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata });
+          const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata, ...responseOptions, entry_id: val?.entry_id, _candidateAddRetry: candidateRetry });
+          savedResult = result;
           let ref = { file: result.path || result.file, entry_path: entityPath, property: propName,
             candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id };
-          historyPush('場所を追加: ' + propName, async () => { await _apiPutValue(ref, { _delete: true }); await refresh(); }, async () => {
-            const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata });
-            ref = { ...ref, file: result.path || result.file, candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id }; await refresh();
-          }, typeof _dbScopeForPath === 'function' ? _dbScopeForPath(dbPath) : 'db:' + dbPath);
+          historyPush('場所を追加: ' + propName, async () => { await refresh(await _apiPutValue(ref, { _delete: true, ...responseOptions })); }, async () => {
+            const result = await _apiPostValue(entityPath, propName, value, status, '', '', { link: metadata, ...responseOptions, entry_id: ref.entry_id, _candidateAddRetry: redoRetry });
+            ref = { ...ref, file: result.path || result.file, candidate_id: result.candidate_id, candidate_index: result.candidate_index, entry_id: result.entry_id }; await refresh(result);
+          }, historyScope);
         }
-        saving = false; dialog.close('saved'); await refresh(); showStatus('場所を保存しました');
-      } catch (error) { message.textContent = error.userMessage || error.message; }
+        saved = true; saving = false; await dialog.close('saved', closeOptions);
+        try { await refresh(savedResult); showStatus('場所を保存しました'); }
+        catch (error) { showStatus('場所は保存済みですが表示を更新できません: ' + (error?.userMessage || error?.message || error), true); }
+      } catch (error) { saveError.replaceChildren(GBUI.createInlineError({
+        message: '場所を保存できません。入力は保持しています。' + (error?.userMessage || error?.message || error), onRetry: () => save.onclick() })); }
       finally { saving = false; save.disabled = false; dialog.body.inert = false; }
     });
+    const draftKey = () => JSON.stringify([label.value, system.value, x.value, y.value, link, mapId, featureId]);
+    let baseline = null;
     const cancel = button('キャンセル', () => dialog.close('cancel'));
-    const dialog = GBUI.createModal({ title: '場所を編集 — ' + propName, footer: [cancel, save], returnFocus: () => anchor,
-      onBeforeClose: () => !saving, onClose: () => { active = false; request++; delete anchor._locationDialog; } });
+    const dialog = GBUI.createModal({ title: '場所を編集 — ' + propName, footer: [cancel, save], returnFocus,
+      onBeforeClose: () => {
+        if (saving) return false;
+        if (candidateRetry.body) {
+          if (typeof cfConfirm !== 'function') return false;
+          return Promise.resolve(cfConfirm('保存されている可能性があります。再試行せずに編集を終了し、現在の保存内容を読み直しますか？')).then(async confirmed => {
+            if (!confirmed) return false;
+            saving = true; save.disabled = true; dialog.body.inert = true;
+            try { await refresh(); showStatus('現在の保存内容を読み直しました。保存の成否は確認してください', true); }
+            catch (error) { showStatus('保存結果は未確認です。表示を更新できません: ' + (error?.userMessage || error?.message || error), true); }
+            finally { saving = false; save.disabled = false; dialog.body.inert = false; }
+            return true;
+          });
+        }
+        return saving ? false : saved || baseline === draftKey()
+        || (typeof cfConfirm === 'function' ? cfConfirm('保存していない場所の変更を破棄して閉じますか？') : false); }, onClose: () => { active = false; request++; delete anchor._locationDialog; } });
     anchor._locationDialog = dialog;
     const field = (caption, value = '', type = 'text') => {
       const wrap = document.createElement('label'); wrap.className = 'gb-map-field';
@@ -162,7 +198,8 @@ const MeldexSheetLocation = (() => {
     x.oninput = y.oninput = () => { featureId = null; feature.value = ''; };
     system.onchange = () => { request++; link = null; mapId = featureId = null; mapDoc = null; mapPath.value = ''; x.value = y.value = ''; fillFeatures(); sync(); };
     const message = document.createElement('p'); message.setAttribute('role', 'status'); message.textContent = '創作座標には参照先マップが必要です。マップの地点を選ぶと、その地点の移動に追従します。'; dialog.body.appendChild(message);
-    sync(); fillFeatures(); dialog.open(); label.focus();
+    const saveError = document.createElement('div'); dialog.body.appendChild(saveError);
+    sync(); fillFeatures(); baseline = draftKey(); dialog.open(); label.focus();
     if (link?.path) {
       const token = ++request;
       apiFetch('/file?path=' + encodeURIComponent(link.path)).then(loaded => {
